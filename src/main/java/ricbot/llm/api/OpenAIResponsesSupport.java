@@ -3,6 +3,8 @@ package ricbot.llm.api;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import ricbot.llm.openai.ResponsesParsing;
+
 import java.io.BufferedReader;
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -25,12 +27,23 @@ public final class OpenAIResponsesSupport {
     private OpenAIResponsesSupport() {
     }
 
+    public static LLMResponse consumeSse(
+            InputStream inputStream,
+            LLMProvider.StreamDeltaHandler onDelta
+    ) throws Exception {
+        ResponsesParsing.SseConsumeResult result = ResponsesParsing.consumeSse(
+                inputStream,
+                onDelta
+        );
+
+        return new LLMResponse()
+                .setContent(result.content())
+                .setToolCalls(result.toolCalls())
+                .setFinishReason(result.finishReason());
+    }
+
     /**
      * 对应 Python: convert_messages(...)
-     *
-     * 返回:
-     * - instructions
-     * - input items
      */
     public static Map<String, Object> convertMessages(List<Map<String, Object>> messages) {
         String instructions = null;
@@ -126,8 +139,6 @@ public final class OpenAIResponsesSupport {
 
     /**
      * 对应 Python: parse_response_output(response)
-     *
-     * 这里按 Responses API 常见结构做解析。
      */
     @SuppressWarnings("unchecked")
     public static LLMResponse parseResponseOutput(Object response) {
@@ -207,90 +218,95 @@ public final class OpenAIResponsesSupport {
     }
 
     /**
-     * 对应 Python: consume_sse(...)
+     * 消费 OpenAI 标准 SSE 流 (基于 Stream<String>)
      */
-    public static LLMResponse consumeSse(
-            InputStream inputStream,
-            LLMProvider.StreamDeltaHandler onDelta
-    ) throws Exception {
-        StringBuilder content = new StringBuilder();
+    @SuppressWarnings("unchecked")
+    public static LLMResponse consumeSSE(
+            java.util.stream.Stream<String> lines,
+            LLMProvider.StreamDeltaHandler onDelta,
+            LLMProvider.StreamEndHandler onEnd
+    ) {
+        StringBuilder fullContent = new StringBuilder();
         List<ToolCallRequest> toolCalls = new ArrayList<>();
-        String finishReason = "stop";
+        Map<String, Integer> usage = new LinkedHashMap<>();
+        String[] finishReasonArr = {"stop"};
 
-        try (BufferedReader reader = new BufferedReader(
-                new InputStreamReader(inputStream, StandardCharsets.UTF_8))) {
-
-            String line;
-            while ((line = reader.readLine()) != null) {
-                if (!line.startsWith("data:")) {
-                    continue;
-                }
-                String payload = line.substring("data:".length()).trim();
-                if (payload.isBlank() || "[DONE]".equals(payload)) {
-                    continue;
-                }
-
-                Map<String, Object> event;
-                try {
-                    event = MAPPER.readValue(payload, new TypeReference<>() {});
-                } catch (Exception e) {
-                    continue;
-                }
-
-                String type = String.valueOf(event.getOrDefault("type", ""));
-                if ("response.output_text.delta".equals(type)) {
-                    String delta = String.valueOf(event.getOrDefault("delta", ""));
-                    content.append(delta);
-                    if (onDelta != null && !delta.isEmpty()) {
-                        onDelta.onDelta(delta);
-                    }
-                } else if ("response.function_call_arguments.done".equals(type)) {
-                    String id = String.valueOf(event.getOrDefault("item_id", ""));
-                    String name = String.valueOf(event.getOrDefault("name", ""));
-                    Map<String, Object> args = new LinkedHashMap<>();
-
-                    Object argObj = event.get("arguments");
-                    if (argObj instanceof String s && !s.isBlank()) {
-                        try {
-                            args = MAPPER.readValue(s, new TypeReference<>() {});
-                        } catch (Exception ignored) {
-                        }
-                    }
-
-                    toolCalls.add(new ToolCallRequest(id, name, args));
-                }
+        lines.forEach(line -> {
+            String trimmed = line.trim();
+            if (trimmed.isEmpty() || !trimmed.startsWith("data: ")) {
+                return;
             }
-        }
 
-        return new LLMResponse()
-                .setContent(content.toString())
-                .setToolCalls(toolCalls)
-                .setFinishReason(finishReason);
+            String data = trimmed.substring(6).trim();
+            if ("[DONE]".equals(data)) {
+                return;
+            }
+
+            try {
+                Map<String, Object> chunk = MAPPER.readValue(data, new TypeReference<>() {});
+                List<Map<String, Object>> choices = (List<Map<String, Object>>) chunk.get("choices");
+                if (choices != null && !choices.isEmpty()) {
+                    Map<String, Object> choice = choices.get(0);
+                    Map<String, Object> delta = (Map<String, Object>) choice.get("delta");
+                    if (delta != null) {
+                        String content = (String) delta.get("content");
+                        if (content != null && !content.isEmpty()) {
+                            fullContent.append(content);
+                            if (onDelta != null) {
+                                try {
+                                    onDelta.handle(content);
+                                } catch (Exception ignored) {}
+                            }
+                        }
+
+                        // OpenAI SSE 的 tool_calls 是增量的，这里暂不进行深度拼装，
+                        // 通常在 StreamEndHandler 中处理最终状态，或者在这里累加。
+                    }
+                    if (choice.get("finish_reason") != null) {
+                        finishReasonArr[0] = String.valueOf(choice.get("finish_reason"));
+                    }
+                }
+
+                Map<String, Object> usageRaw = (Map<String, Object>) chunk.get("usage");
+                if (usageRaw != null) {
+                    usage.put("prompt_tokens", toInt(usageRaw.get("prompt_tokens")));
+                    usage.put("completion_tokens", toInt(usageRaw.get("completion_tokens")));
+                    usage.put("total_tokens", toInt(usageRaw.get("total_tokens")));
+                }
+
+            } catch (Exception ignored) {
+            }
+        });
+
+        LLMResponse resp = new LLMResponse()
+                .setContent(fullContent.toString())
+                .setFinishReason(finishReasonArr[0])
+                .setUsage(usage);
+
+        if (onEnd != null) {
+            try {
+                onEnd.handle(resp);
+            } catch (Exception ignored) {}
+        }
+        return resp;
     }
 
     /**
-     * 对应 Python: consume_sdk_stream(...)
-     *
-     * 这里先做一个兼容壳，底层如果已经是 InputStream 或 iterator 都能自己扩展。
+     * 消费基于 InputStream 的 SSE 流
      */
-    public static LLMResponse consumeSdkStream(
-            Object stream,
+    public static LLMResponse consumeSSE(
+            InputStream inputStream,
             LLMProvider.StreamDeltaHandler onDelta,
             LLMProvider.StreamEndHandler onEnd
     ) throws Exception {
-        if (stream instanceof InputStream is) {
-            LLMResponse response = consumeSse(is, onDelta);
-            if (onEnd != null) {
-                onEnd.onEnd(false);
-            }
-            return response;
+        try (BufferedReader reader = new BufferedReader(
+                new InputStreamReader(inputStream, StandardCharsets.UTF_8))) {
+            return consumeSSE(reader.lines(), onDelta, onEnd);
         }
+    }
 
-        // TODO:
-        // 如果后面接真正 SDK stream 对象，这里再细化。
-        if (onEnd != null) {
-            onEnd.onEnd(false);
-        }
-        return new LLMResponse().setContent("");
+    private static Integer toInt(Object o) {
+        if (o instanceof Number n) return n.intValue();
+        return null;
     }
 }

@@ -6,6 +6,13 @@ package ricbot.transport.channel;
 public class RestartUtils {
 
     public static RestartNotice consumeRestartNoticeFromEnv() {
+        String channel = System.getenv("RICBOT_RESTART_CHANNEL");
+        String chatId = System.getenv("RICBOT_RESTART_CHAT_ID");
+        String startedAt = System.getenv("RICBOT_RESTART_AT");
+
+        if (channel != null && chatId != null) {
+            return new RestartNotice(channel, chatId, startedAt);
+        }
         return null;
     }
 

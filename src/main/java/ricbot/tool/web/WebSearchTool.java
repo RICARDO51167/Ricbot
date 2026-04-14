@@ -132,7 +132,7 @@ public class WebSearchTool extends Tool {
         }
 
         String endpoint = baseUrl.replaceAll("/+$", "") + "/search";
-        var valid = WebToolSupport.validateUrl(endpoint);
+        var valid = WebToolSupport.validateUrlSafe(endpoint);
         if (!valid.ok()) {
             return "Error: invalid SearXNG URL: " + valid.message();
         }

@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import ricbot.core.message.MessageBus;
 import ricbot.core.message.OutboundMessage;
 
+import java.net.InetSocketAddress;
+import java.net.URI;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -103,11 +105,6 @@ public class WebSocketChannel extends BaseChannel {
         public String body;
     }
 
-    private static class IssuedToken {
-        String token;
-        long expiresAtMillis;
-    }
-
     private final WebSocketConfig config;
     private final ObjectMapper mapper = new ObjectMapper();
     private WsServer server;
@@ -136,7 +133,7 @@ public class WebSocketChannel extends BaseChannel {
     @Override
     public void start() throws Exception {
         if (server == null) {
-            throw new IllegalStateException("WsServer not injected");
+            server = new JavaWebSocketServer(new InetSocketAddress(config.getHost(), config.getPort()));
         }
         running = true;
         server.start(config.getHost(), config.getPort(), expectedPath(), new WsServerListener() {
@@ -204,6 +201,14 @@ public class WebSocketChannel extends BaseChannel {
         connection.sendText(mapper.writeValueAsString(payload));
     }
 
+    private boolean isAllowed(String clientId) {
+        List<String> allow = config.getAllowFrom();
+        if (allow == null || allow.isEmpty() || allow.contains("*")) {
+            return true;
+        }
+        return allow.contains(clientId);
+    }
+
     private void handleOpen(WsConnection connection, String pathWithQuery, Map<String, String> headers) {
         ParsedRequest req = parseRequestPath(pathWithQuery);
 
@@ -247,7 +252,14 @@ public class WebSocketChannel extends BaseChannel {
                 return;
             }
 
-            String clientId = connection.clientId();
+            String clientId = null;
+            for (Map.Entry<String, WsConnection> entry : connections.entrySet()) {
+                if (Objects.equals(entry.getValue().id(), connection.id())) {
+                    clientId = entry.getKey();
+                    break;
+                }
+            }
+
             if (clientId == null || clientId.isBlank()) {
                 clientId = "anonymous";
             }

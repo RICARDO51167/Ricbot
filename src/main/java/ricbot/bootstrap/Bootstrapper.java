@@ -4,9 +4,12 @@ import ricbot.core.agent.AgentLoop;
 import ricbot.core.message.MessageBus;
 import ricbot.infra.config.Config;
 import ricbot.infra.config.ConfigLoader;
+import ricbot.infra.heartbeat.HeartbeatService;
 import ricbot.llm.api.LLMProvider;
 import ricbot.llm.api.ProviderFactory;
+import ricbot.transport.channel.ChannelManager;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 
 /**
@@ -22,22 +25,32 @@ public class Bootstrapper {
      * @return 加载后的 Config 对象
      */
     public Config loadConfig(String configPath, String workspaceOverride) {
+        // 声明配置对象变量
         Config config;
+        // 检查配置文件路径是否非空且非空白
         if (configPath != null && !configPath.isBlank()) {
+            // 解析配置文件路径为绝对路径并规范化
             Path resolved = Path.of(configPath).toAbsolutePath().normalize();
-            if (!java.nio.file.Files.exists(resolved)) {
+            // 检查文件是否存在，不存在则抛出异常
+            if (!Files.exists(resolved)) {
                 throw new IllegalArgumentException("Config file not found: " + resolved);
             }
+            // 设置配置加载器的配置路径
             ConfigLoader.setConfigPath(resolved);
+            // 从指定路径加载配置
             config = ConfigLoader.loadConfig(resolved);
         } else {
+            // 使用默认配置加载
             config = ConfigLoader.loadConfig();
         }
 
+        // 检查工作区覆盖路径是否非空且非空白
         if (workspaceOverride != null && !workspaceOverride.isBlank()) {
+            // 设置代理默认配置中的工作区路径
             config.getAgents().getDefaults().setWorkspace(workspaceOverride);
         }
 
+        // 返回加载后的配置对象
         return config;
     }
 
@@ -47,6 +60,7 @@ public class Bootstrapper {
      * @return 新的 MessageBus 实例
      */
     public MessageBus createBus() {
+        // 创建并返回新的消息总线实例
         return new MessageBus();
     }
 
@@ -57,6 +71,7 @@ public class Bootstrapper {
      * @return LLMProvider 实例
      */
     public LLMProvider createProvider(Config config) {
+        // 通过工厂方法根据配置创建并返回 LLM 提供者实例
         return ProviderFactory.makeProvider(config);
     }
 
@@ -69,26 +84,65 @@ public class Bootstrapper {
      * @return AgentLoop 实例
      */
     public AgentLoop createAgentLoop(Config config, MessageBus bus, LLMProvider provider) {
+        // 获取代理的默认配置
         Config.AgentDefaults defaults = config.getAgents().getDefaults();
 
+        // 创建并返回 AgentLoop 实例，传入各种配置参数
         return new AgentLoop(
-                bus,
-                provider,
+                bus, // 消息总线
+                provider, // LLM 提供者
+                config.getWorkspacePath(), // 工作区路径
+                defaults.getModel(), // 模型名称
+                defaults.getMaxToolIterations(), // 最大工具迭代次数
+                defaults.getContextWindowTokens(), // 上下文窗口令牌数
+                defaults.getContextBlockLimit(), // 上下文块限制
+                defaults.getMaxToolResultChars(), // 最大工具结果字符数
+                defaults.getProviderRetryMode(), // 提供者重试模式
+                config.getTools().getWeb(), // Web 工具配置
+                config.getTools().getExec(), // 执行工具配置
+                config.getTools().getMcpServers(), // MCP 服务器配置
+                config.getTools().isRestrictToWorkspace(), // 是否限制在工作区内
+                null, // 保留参数，当前为 null
+                defaults.getTimezone(), // 时区
+                defaults.isUnifiedSession(), // 是否统一会话
+                defaults.getDisabledSkills(), // 禁用的技能列表
+                defaults.getSessionTtlMinutes() // 会话 TTL（分钟）
+        );
+    }
+
+    /**
+     * 创建渠道管理器实例。
+     *
+     * @param config 配置对象
+     * @param bus    消息总线
+     * @return ChannelManager 实例
+     */
+    public ChannelManager createChannelManager(Config config, MessageBus bus) {
+        return new ChannelManager(config, bus);
+    }
+
+    /**
+     * 创建心跳服务实例。
+     */
+    public HeartbeatService createHeartbeatService(
+            Config config,
+            LLMProvider provider,
+            HeartbeatService.ExecuteHandler onExecute,
+            HeartbeatService.NotifyHandler onNotify
+    ) {
+        Config.GatewayConfig gateway = config.getGateway();
+        Config.HeartbeatConfig hb = gateway.getHeartbeat();
+        Config.AgentDefaults defaults = config.getAgents().getDefaults();
+
+        return new HeartbeatService(
                 config.getWorkspacePath(),
+                provider,
                 defaults.getModel(),
-                defaults.getMaxToolIterations(),
-                defaults.getContextWindowTokens(),
-                defaults.getContextBlockLimit(),
-                defaults.getMaxToolResultChars(),
-                defaults.getProviderRetryMode(),
-                config.getTools().getWeb(),
-                config.getTools().getExec(),
-                config.getTools().isRestrictToWorkspace(),
-                null,
-                defaults.getTimezone(),
-                defaults.isUnifiedSession(),
-                defaults.getDisabledSkills(),
-                defaults.getSessionTtlMinutes()
+                onExecute,
+                onNotify,
+                hb.getIntervalS(),
+                hb.isEnabled(),
+                defaults.getTimezone()
         );
     }
 }

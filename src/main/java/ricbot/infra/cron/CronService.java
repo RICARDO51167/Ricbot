@@ -12,6 +12,9 @@ import ricbot.infra.cron.CronTypes.PayloadKind;
 import ricbot.infra.cron.CronTypes.RunStatus;
 import ricbot.infra.cron.CronTypes.ScheduleKind;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -31,6 +34,8 @@ import java.util.concurrent.locks.ReentrantLock;
  * 5. 支持运行历史
  */
 public class CronService {
+
+    private static final Logger log = LoggerFactory.getLogger(CronService.class);
 
     /**
      * 单条 job 最多保留多少条运行历史
@@ -141,9 +146,6 @@ public class CronService {
                         ? ZoneId.of(schedule.getTz())
                         : ZoneId.systemDefault();
 
-                // 这里做一个简化 cron 解析器：
-                // 只支持标准 5 段 cron: min hour day month weekday
-                // 后续如果你想完全对齐 Python croniter，可以换成 cron-utils。
                 return CronExpressionUtils.nextExecutionMillis(expr, zone, nowMs);
             } catch (Exception e) {
                 return null;
@@ -402,31 +404,27 @@ public class CronService {
      * 对应 Python: async _on_timer()
      */
     private void onTimer() {
-        loadStore();
-        if (store == null) {
-            armTimer();
-            return;
-        }
+        long nowMs = nowMs();
+        List<CronJob> dueJobs = new ArrayList<>();
 
-        timerActive = true;
-        try {
-            long now = nowMs();
-            List<CronJob> dueJobs = new ArrayList<>();
-
+        synchronized (this) {
             for (CronJob job : store.getJobs()) {
-                Long nextRun = job.getState().getNextRunAtMs();
-                if (job.isEnabled() && nextRun != null && now >= nextRun) {
-                    dueJobs.add(job);
+                if (job.isEnabled() && job.getState().getNextRunAtMs() != null) {
+                    // 允许 500ms 的容差，避免调度延迟导致错过
+                    if (job.getState().getNextRunAtMs() <= nowMs + 500) {
+                        dueJobs.add(job);
+                    }
                 }
             }
+        }
 
+        if (!dueJobs.isEmpty()) {
+            System.out.println("Cron found " + dueJobs.size() + " due jobs at " + nowMs);
             for (CronJob job : dueJobs) {
                 executeJob(job);
             }
-
+            recomputeNextRuns();
             saveStore();
-        } finally {
-            timerActive = false;
         }
 
         armTimer();
@@ -848,132 +846,4 @@ public class CronService {
     }
 
     public static final UnchangedSentinel UNCHANGED = new UnchangedSentinel();
-
-    // =========================================================
-    // Minimal cron parser helper
-    // =========================================================
-
-    /**
-     * 这是一个轻量 cron 解析器，只支持 5 段标准 cron。
-     * 用来替代 Python 里的 croniter。
-     *
-     * 支持：
-     * minute hour day month weekday
-     *
-     * 不追求完全 croniter 兼容，但足够覆盖常见场景。
-     */
-    public static final class CronExpressionUtils {
-
-        private CronExpressionUtils() {
-        }
-
-        public static Long nextExecutionMillis(String expr, ZoneId zone, long nowMs) {
-            String[] parts = expr.trim().split("\\s+");
-            if (parts.length != 5) {
-                throw new IllegalArgumentException("Unsupported cron expression: " + expr);
-            }
-
-            CronField minutes = CronField.parse(parts[0], 0, 59);
-            CronField hours = CronField.parse(parts[1], 0, 23);
-            CronField days = CronField.parse(parts[2], 1, 31);
-            CronField months = CronField.parse(parts[3], 1, 12);
-            CronField weekdays = CronField.parse(parts[4], 0, 6);
-
-            ZonedDateTime time = Instant.ofEpochMilli(nowMs).atZone(zone)
-                    .withSecond(0).withNano(0)
-                    .plusMinutes(1);
-
-            // 最多向后找 5 年，避免死循环
-            for (int i = 0; i < 60 * 24 * 366 * 5; i++) {
-                int minute = time.getMinute();
-                int hour = time.getHour();
-                int day = time.getDayOfMonth();
-                int month = time.getMonthValue();
-                int weekday = time.getDayOfWeek().getValue() % 7; // Sunday -> 0
-
-                if (minutes.matches(minute)
-                        && hours.matches(hour)
-                        && days.matches(day)
-                        && months.matches(month)
-                        && weekdays.matches(weekday)) {
-                    return time.toInstant().toEpochMilli();
-                }
-
-                time = time.plusMinutes(1);
-            }
-
-            return null;
-        }
-
-        private static final class CronField {
-            private final boolean any;
-            private final Set<Integer> values;
-
-            private CronField(boolean any, Set<Integer> values) {
-                this.any = any;
-                this.values = values;
-            }
-
-            static CronField parse(String raw, int min, int max) {
-                raw = raw.trim();
-                if ("*".equals(raw)) {
-                    return new CronField(true, Collections.emptySet());
-                }
-
-                Set<Integer> values = new LinkedHashSet<>();
-                String[] segments = raw.split(",");
-
-                for (String seg : segments) {
-                    seg = seg.trim();
-
-                    if (seg.contains("/")) {
-                        String[] stepParts = seg.split("/", 2);
-                        String base = stepParts[0];
-                        int step = Integer.parseInt(stepParts[1]);
-
-                        int rangeStart = min;
-                        int rangeEnd = max;
-
-                        if (!"*".equals(base)) {
-                            if (base.contains("-")) {
-                                String[] range = base.split("-", 2);
-                                rangeStart = Integer.parseInt(range[0]);
-                                rangeEnd = Integer.parseInt(range[1]);
-                            } else {
-                                rangeStart = Integer.parseInt(base);
-                                rangeEnd = max;
-                            }
-                        }
-
-                        for (int v = rangeStart; v <= rangeEnd; v += step) {
-                            if (v >= min && v <= max) {
-                                values.add(v);
-                            }
-                        }
-                    } else if (seg.contains("-")) {
-                        String[] range = seg.split("-", 2);
-                        int start = Integer.parseInt(range[0]);
-                        int end = Integer.parseInt(range[1]);
-                        for (int v = start; v <= end; v++) {
-                            if (v >= min && v <= max) {
-                                values.add(v);
-                            }
-                        }
-                    } else {
-                        int v = Integer.parseInt(seg);
-                        if (v < min || v > max) {
-                            throw new IllegalArgumentException("cron field out of range: " + raw);
-                        }
-                        values.add(v);
-                    }
-                }
-
-                return new CronField(false, values);
-            }
-
-            boolean matches(int value) {
-                return any || values.contains(value);
-            }
-        }
-    }
 }

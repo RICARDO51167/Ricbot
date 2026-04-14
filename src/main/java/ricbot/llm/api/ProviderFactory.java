@@ -1,30 +1,19 @@
 package ricbot.llm.api;
 
 import ricbot.infra.config.Config;
+import ricbot.llm.anthropic.AnthropicProvider;
+import ricbot.llm.azure.AzureOpenAIProvider;
 
 import java.util.Map;
 
 /**
  * Provider 工厂类
- *
- * 主要目标：
- * 1. 根据 Config + ProviderSpec 创建具体 Provider
- * 2. 统一 openai_compat / anthropic / azure_openai / openai_codex / github_copilot
- * 3. 兼容默认模型、api_base、extra_headers 等配置
  */
 public final class ProviderFactory {
 
     private ProviderFactory() {
     }
 
-    /**
-     * 主入口。
-     *
-     * 对应 Python 里:
-     * - _make_provider(config)
-     * - config.get_provider_name(model)
-     * - registry.find_by_name(...)
-     */
     public static LLMProvider makeProvider(Config config) {
         if (config == null) {
             throw new IllegalArgumentException("Config must not be null");
@@ -48,9 +37,10 @@ public final class ProviderFactory {
 
         return switch (backend) {
             case "openai_compat" -> buildOpenAICompatProvider(spec, model, apiKey, apiBase, extraHeaders);
+            case "anthropic" -> new AnthropicProvider(apiKey, apiBase, model, extraHeaders);
+            case "azure_openai" -> new AzureOpenAIProvider(apiKey, apiBase, model);
             default -> throw new IllegalStateException(
-                    "Provider backend '" + backend + "' is not enabled in the minimal runnable build. " +
-                            "Use an OpenAI-compatible backend (openai_compat) first."
+                    "Provider backend '" + backend + "' is not supported yet."
             );
         };
     }

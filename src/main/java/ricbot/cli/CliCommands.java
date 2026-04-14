@@ -9,8 +9,19 @@ import ricbot.core.message.OutboundMessage; // 导出现站消息类
 import ricbot.infra.config.Config; // 导入配置类
 import ricbot.infra.config.ConfigLoader; // 导入配置加载器
 import ricbot.infra.config.RuntimePaths; // 导入运行时路径工具类
-import ricbot.llm.api.ProviderRegistry;
-import ricbot.llm.api.ProviderSpec;
+import ricbot.infra.heartbeat.HeartbeatService;
+import ricbot.transport.api.NanobotApiServer;
+import ricbot.llm.api.ProviderRegistry; // 导入提供商注册表类
+import ricbot.llm.api.ProviderSpec; // 导入提供商规范类
+import ricbot.transport.channel.ChannelManager;
+import ricbot.tool.api.ToolRegistry;
+import ricbot.tool.filesystem.EditFileTool;
+import ricbot.tool.filesystem.ListDirTool;
+import ricbot.tool.filesystem.ReadFileTool;
+import ricbot.tool.filesystem.WriteFileTool;
+import ricbot.tool.process.ExecTool;
+import ricbot.tool.search.GlobTool;
+import ricbot.tool.search.GrepTool;
 
 import java.nio.file.Path; // 导入 Path 类，用于文件路径操作
 import java.util.*; // 导入 Java 集合框架
@@ -57,8 +68,10 @@ public final class CliCommands {
             case "--version", "-v" -> printVersion(); // 版本命令
             case "onboard" -> onboard(argv.subList(1, argv.size())); // onboarding 命令，传递剩余参数
             case "agent" -> agent(argv.subList(1, argv.size())); // agent 命令，传递剩余参数
+            case "serve" -> serve(argv.subList(1, argv.size())); // serve 命令，启动多渠道服务
             case "status" -> status(); // 状态命令
             case "provider" -> provider(argv.subList(1, argv.size())); // 提供商管理命令，传递剩余参数
+            case "tools" -> tools(argv.subList(1, argv.size()));
             default -> { // 未知命令
                 System.out.println("Unknown command: " + cmd); // 打印未知命令提示
                 printHelp(); // 打印帮助信息
@@ -145,7 +158,7 @@ public final class CliCommands {
         }
 
         Config config = loadRuntimeConfig(configPath, workspace); // 加载运行时配置
-        Config resolvedConfig = resolveAndPrintEffectiveConfig(configPath, config);
+        Config resolvedConfig = resolveAndPrintEffectiveConfig(configPath, config); // 解析并打印生效的配置
 
         MessageBus bus = new MessageBus(); // 创建消息总线实例
         var provider = BOOTSTRAPPER.createProvider(resolvedConfig); // 创建 LLM 提供商实例
@@ -270,6 +283,82 @@ public final class CliCommands {
         executor.shutdownNow(); // 立即关闭线程池
     }
 
+    /**
+     * 运行 Ricbot 服务模式，启动所有已配置的渠道（飞书、钉钉、企微、WebSocket 等）。
+     *
+     * @param args 命令行参数，支持 --config, --workspace
+     * @throws Exception 执行过程中可能抛出的异常
+     */
+    private static void serve(List<String> args) throws Exception {
+        String configPath = optionValue(args, "--config", "-c");
+        String workspace = optionValue(args, "--workspace", "-w");
+
+        Config config = loadRuntimeConfig(configPath, workspace);
+        Config resolvedConfig = resolveAndPrintEffectiveConfig(configPath, config);
+
+        MessageBus bus = BOOTSTRAPPER.createBus();
+        var provider = BOOTSTRAPPER.createProvider(resolvedConfig);
+
+        AgentLoop agentLoop = BOOTSTRAPPER.createAgentLoop(resolvedConfig, bus, provider);
+        ChannelManager channelManager = BOOTSTRAPPER.createChannelManager(resolvedConfig, bus);
+
+        HeartbeatService heartbeat = BOOTSTRAPPER.createHeartbeatService(
+                resolvedConfig,
+                provider,
+                (tasks) -> {
+                    System.out.println("Heartbeat executing tasks: " + tasks);
+                    OutboundMessage out = agentLoop.processDirect(tasks, "heartbeat:default", "system", "heartbeat");
+                    return out != null ? out.getContent() : null;
+                },
+                (response) -> {
+                    System.out.println("Heartbeat result: " + response);
+                    // 这里可以按需分发给特定渠道，或者通过 bus 发布
+                    OutboundMessage out = new OutboundMessage();
+                    out.setChannel("system");
+                    out.setChatId("heartbeat");
+                    out.setContent(response);
+                    bus.publishOutbound(out);
+                }
+        );
+
+        System.out.println("Starting Ricbot service...");
+        
+        // 启动 Agent 循环
+        agentLoop.start();
+        
+        // 启动所有渠道
+        channelManager.startAll();
+
+        // 启动心跳服务
+        heartbeat.start();
+
+        // 启动 OpenAI 兼容 API 服务
+        Config.GatewayConfig gateway = resolvedConfig.getGateway();
+        var apiServer = NanobotApiServer.createAndStart(
+                gateway.getPort(),
+                agentLoop,
+                resolvedConfig.getAgents().getDefaults().getModel(),
+                120_000L
+        );
+        System.out.println("OpenAI-compatible API server started on port " + gateway.getPort());
+
+        System.out.println("Ricbot is running. Press Ctrl+C to stop.");
+
+        // 注册钩子，确保优雅退出
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            System.out.println("\nShutting down...");
+            apiServer.stop(1);
+            heartbeat.stop();
+            channelManager.stopAll();
+            agentLoop.stop();
+        }));
+
+        // 阻塞主线程，保持服务运行
+        while (true) {
+            Thread.sleep(1000);
+        }
+    }
+
     // =========================================================
     // status
     // =========================================================
@@ -286,6 +375,78 @@ public final class CliCommands {
         System.out.println("Config: " + configPath + (configPath.toFile().exists() ? " ✓" : " ✗")); // 打印配置状态
         System.out.println("Workspace: " + workspace + (workspace.toFile().exists() ? " ✓" : " ✗")); // 打印工作空间状态
         System.out.println("Model: " + config.getAgents().getDefaults().getModel()); // 打印默认模型
+    }
+
+    private static void tools(List<String> args) {
+        String configPath = optionValue(args, "--config", "-c");
+        String workspaceOverride = optionValue(args, "--workspace", "-w");
+
+        Config config = loadRuntimeConfig(configPath, workspaceOverride);
+        Config resolved = config;
+        boolean envResolved = false;
+        try {
+            resolved = ConfigLoader.resolveConfigEnvVars(config);
+            envResolved = true;
+        } catch (Exception ignored) {
+        }
+
+        Path workspace = resolved.getWorkspacePath();
+        boolean restrictToWorkspace = resolved.getTools().isRestrictToWorkspace();
+        Config.ExecToolConfig execConfig = resolved.getTools().getExec() != null ? resolved.getTools().getExec() : new Config.ExecToolConfig();
+
+        Path allowedDir = (restrictToWorkspace || execConfig.isSandbox()) ? workspace : null;
+
+        ToolRegistry registry = new ToolRegistry();
+        registry.register(new ReadFileTool(workspace, allowedDir, List.of()));
+        registry.register(new ListDirTool(workspace, allowedDir));
+        registry.register(new WriteFileTool(workspace, allowedDir));
+        registry.register(new EditFileTool(workspace, allowedDir));
+        registry.register(new GlobTool(workspace, allowedDir));
+        registry.register(new GrepTool(workspace, allowedDir));
+        if (execConfig.isEnable()) {
+            registry.register(new ExecTool(
+                    execConfig.getTimeout(),
+                    workspace.toString(),
+                    null,
+                    null,
+                    restrictToWorkspace,
+                    execConfig.isSandbox() ? "sandbox" : "",
+                    execConfig.getPathAppend(),
+                    execConfig.getAllowedEnvKeys()
+            ));
+        }
+
+        System.out.println("ricbot Tools");
+        System.out.println("Workspace: " + workspace);
+        System.out.println("restrictToWorkspace: " + restrictToWorkspace);
+        System.out.println("Allowed base dir: " + (allowedDir != null ? allowedDir : "(unrestricted)"));
+        System.out.println("exec: enable=" + execConfig.isEnable()
+                + ", sandbox=" + execConfig.isSandbox()
+                + ", timeout=" + execConfig.getTimeout()
+                + ", allowed_env_keys=" + (execConfig.getAllowedEnvKeys() != null ? execConfig.getAllowedEnvKeys().size() : 0));
+        System.out.println("config env resolved: " + envResolved);
+        System.out.println();
+        System.out.println("Enabled tools:");
+
+        List<String> names = new ArrayList<>(registry.toolNames());
+        names.sort(String::compareTo);
+        for (String name : names) {
+            var tool = registry.get(name);
+            if (tool == null) {
+                continue;
+            }
+            String flags = "";
+            if (tool.isReadOnly()) {
+                flags = flags.isEmpty() ? "(read-only" : flags + ", read-only";
+            }
+            if (tool.isExclusive()) {
+                flags = flags.isEmpty() ? "(exclusive" : flags + ", exclusive";
+            }
+            if (!flags.isEmpty()) {
+                flags = flags + ")";
+            }
+            System.out.println("  - " + tool.getName() + " — " + tool.getDescription() + (flags.isEmpty() ? "" : " " + flags));
+        }
     }
 
     // =========================================================
@@ -353,57 +514,58 @@ public final class CliCommands {
      * @throws IllegalArgumentException 如果 API Key 包含未解析的占位符
      */
     private static Config resolveAndPrintEffectiveConfig(String configPath, Config config) {
-        Path resolvedPath = configPath != null && !configPath.isBlank()
+        Path resolvedPath = configPath != null && !configPath.isBlank() // 计算解析后的配置路径：如果 configPath 不为空，则规范化为绝对路径，否则使用默认配置路径
                 ? Path.of(configPath).toAbsolutePath().normalize()
                 : ConfigLoader.getConfigPath();
 
-        String rawModel = config.getAgents().getDefaults().getModel();
-        String rawProviderName = config.getProviderName(rawModel);
-        Config.ProviderConfig rawPc = config.getProvider(rawModel);
-        String rawApiKey = rawPc != null ? rawPc.getApiKey() : null;
+        String rawModel = config.getAgents().getDefaults().getModel(); // 获取原始模型名称
+        String rawProviderName = config.getProviderName(rawModel); // 获取原始提供商名称
+        Config.ProviderConfig rawPc = config.getProvider(rawModel); // 获取原始提供商配置
+        String rawApiKey = rawPc != null ? rawPc.getApiKey() : null; // 获取原始 API Key
 
-        Config resolved = config;
-        boolean envResolved = false;
+        Config resolved = config; // 声明解析后的配置对象，初始化为原始配置
+        boolean envResolved = false; // 标记环境变量是否已解析
         try {
-            resolved = ConfigLoader.resolveConfigEnvVars(config);
-            envResolved = true;
+            resolved = ConfigLoader.resolveConfigEnvVars(config); // 尝试解析配置中的环境变量
+            envResolved = true; // 标记解析成功
         } catch (Exception ignored) {
+            // 忽略解析异常，保持原配置
         }
 
-        String model = resolved.getAgents().getDefaults().getModel();
-        String providerName = resolved.getProviderName(model);
-        ProviderSpec spec = ProviderRegistry.findByName(providerName);
-        String backend = spec != null ? String.valueOf(spec.getBackend()) : "<unresolved>";
-        String apiBase = resolved.getApiBase(model);
+        String model = resolved.getAgents().getDefaults().getModel(); // 获取解析后的模型名称
+        String providerName = resolved.getProviderName(model); // 获取解析后的提供商名称
+        ProviderSpec spec = ProviderRegistry.findByName(providerName); // 查找提供商规范
+        String backend = spec != null ? String.valueOf(spec.getBackend()) : "<unresolved>"; // 获取后端类型，若未找到则标记为未解析
+        String apiBase = resolved.getApiBase(model); // 获取 API 基础 URL
 
-        Config.ProviderConfig pc = resolved.getProvider(model);
-        String providerConfigKey = providerName;
-        if (!"openai".equalsIgnoreCase(providerName) && pc == resolved.getProviders().getOpenai()) {
+        Config.ProviderConfig pc = resolved.getProvider(model); // 获取解析后的提供商配置
+        String providerConfigKey = providerName; // 初始化提供商配置键
+        if (!"openai".equalsIgnoreCase(providerName) && pc == resolved.getProviders().getOpenai()) { // 特殊处理 OpenAI 配置键
             providerConfigKey = "openai";
         }
-        String apiKey = pc != null ? pc.getApiKey() : null;
-        boolean hasKey = apiKey != null && !apiKey.isBlank();
-        boolean looksLikePlaceholder = hasKey && apiKey.contains("${") && apiKey.contains("}");
-        boolean keyResolved = hasKey && !looksLikePlaceholder;
-        boolean rawLookedLikePlaceholder = rawApiKey != null && rawApiKey.contains("${") && rawApiKey.contains("}");
-        boolean envReplaced = rawLookedLikePlaceholder && keyResolved && envResolved;
+        String apiKey = pc != null ? pc.getApiKey() : null; // 获取解析后的 API Key
+        boolean hasKey = apiKey != null && !apiKey.isBlank(); // 检查是否存在 API Key
+        boolean looksLikePlaceholder = hasKey && apiKey.contains("${") && apiKey.contains("}"); // 检查 API Key 是否看起来像未解析的占位符
+        boolean keyResolved = hasKey && !looksLikePlaceholder; // 检查 API Key 是否已解析
+        boolean rawLookedLikePlaceholder = rawApiKey != null && rawApiKey.contains("${") && rawApiKey.contains("}"); // 检查原始 API Key 是否看起来像占位符
+        boolean envReplaced = rawLookedLikePlaceholder && keyResolved && envResolved; // 检查环境变量是否被替换
 
-        System.err.println("ricbot config path: " + resolvedPath);
-        System.err.println("ricbot config loaded: " + java.nio.file.Files.exists(resolvedPath));
-        System.err.println("ricbot effective model: " + model);
-        System.err.println("ricbot effective provider: " + providerName + " (backend=" + backend + ")");
-        System.err.println("ricbot provider config key: " + providerConfigKey);
-        System.err.println("ricbot effective api_base: " + (apiBase != null ? apiBase : ""));
-        System.err.println("ricbot api_key present: " + hasKey);
-        System.err.println("ricbot api_key env replaced: " + envReplaced);
+        System.err.println("ricbot config path: " + resolvedPath); // 打印配置路径
+        System.err.println("ricbot config loaded: " + java.nio.file.Files.exists(resolvedPath)); // 打印配置文件是否存在
+        System.err.println("ricbot effective model: " + model); // 打印生效的模型
+        System.err.println("ricbot effective provider: " + providerName + " (backend=" + backend + ")"); // 打印生效的提供商及后端
+        System.err.println("ricbot provider config key: " + providerConfigKey); // 打印提供商配置键
+        System.err.println("ricbot effective api_base: " + (apiBase != null ? apiBase : "")); // 打印生效的 API Base
+        System.err.println("ricbot api_key present: " + hasKey); // 打印 API Key 是否存在
+        System.err.println("ricbot api_key env replaced: " + envReplaced); // 打印 API Key 环境变量是否被替换
 
-        if (looksLikePlaceholder) {
-            throw new IllegalArgumentException(
+        if (looksLikePlaceholder) { // 如果 API Key 仍包含未解析的占位符
+            throw new IllegalArgumentException( // 抛出异常
                     "api_key contains an unresolved placeholder. Set the environment variable or put a literal api_key in the config."
             );
         }
 
-        return resolved;
+        return resolved; // 返回解析后的配置
     }
 
     private static OutboundMessage runSingleMessageViaBus(
@@ -481,9 +643,11 @@ public final class CliCommands {
         System.out.println("ricbot"); // 打印名称
         System.out.println("Commands:"); // 打印命令标题
         System.out.println("  onboard"); // 打印 onboard 命令
-        System.out.println("  agent"); // 打印 agent 命令
-        System.out.println("  status"); // 打印 status 命令
+        System.out.println("  agent      Run agent in interactive mode or handle a single message");
+        System.out.println("  serve      Start multi-channel service (Feishu, DingTalk, Wecom, etc.)");
+        System.out.println("  status     Show ricbot status");
         System.out.println("  provider"); // 打印 provider 命令
+        System.out.println("  tools");
     }
 
     /**

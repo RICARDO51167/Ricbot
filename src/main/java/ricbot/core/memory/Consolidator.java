@@ -1,10 +1,15 @@
 package ricbot.core.memory;
 
+import ricbot.infra.template.PromptTemplates;
+import ricbot.llm.api.LLMProvider;
+import ricbot.llm.api.LLMResponse;
 import ricbot.core.session.Session;
 import ricbot.core.session.SessionManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -34,7 +39,7 @@ public class Consolidator {
     /**
      * LLM 提供者对象
      */
-    private final Object provider;
+    private final LLMProvider provider;
     /**
      * 使用的模型名称
      */
@@ -47,14 +52,7 @@ public class Consolidator {
      * 上下文窗口最大 Token 数
      */
     private final Integer contextWindowTokens;
-    /**
-     * 构建消息列表的方法引用或对象
-     */
-    private final Object buildMessages;
-    /**
-     * 获取工具定义的方法引用或对象
-     */
-    private final Object getToolDefinitions;
+
     /**
      * 最大完成 Token 数，用于预留响应空间
      */
@@ -73,18 +71,14 @@ public class Consolidator {
      * @param model               模型名称
      * @param sessions            会话管理器
      * @param contextWindowTokens 上下文窗口大小
-     * @param buildMessages       构建消息的对象
-     * @param getToolDefinitions  获取工具定义的对象
      * @param maxCompletionTokens 最大生成 Token 数
      */
     public Consolidator(
             MemoryStore store,
-            Object provider,
+            LLMProvider provider,
             String model,
             SessionManager sessions,
             Integer contextWindowTokens,
-            Object buildMessages,
-            Object getToolDefinitions,
             int maxCompletionTokens
     ) {
         this.store = store;
@@ -92,8 +86,6 @@ public class Consolidator {
         this.model = model;
         this.sessions = sessions;
         this.contextWindowTokens = contextWindowTokens;
-        this.buildMessages = buildMessages;
-        this.getToolDefinitions = getToolDefinitions;
         this.maxCompletionTokens = maxCompletionTokens;
     }
 
@@ -115,12 +107,38 @@ public class Consolidator {
      * @return 归档摘要字符串，如果发生异常并回退到原始存储则返回 null
      */
     public String archive(List<Map<String, Object>> messages) {
+        if (messages == null || messages.isEmpty()) {
+            return null;
+        }
+
         try {
-            String summary = "Archived " + messages.size() + " messages";
-            store.appendHistory(summary);
-            return summary;
+            StringBuilder conversation = new StringBuilder();
+            for (Map<String, Object> msg : messages) {
+                String role = (String) msg.get("role");
+                String content = (String) msg.get("content");
+                conversation.append(role).append(": ").append(content).append("\n");
+            }
+
+            Map<String, Object> kwargs = new HashMap<>();
+            kwargs.put("conversation", conversation.toString());
+            String prompt = PromptTemplates.renderTemplate("agent/consolidator_archive.md", true, kwargs);
+
+            List<Map<String, Object>> promptMessages = new ArrayList<>();
+            Map<String, Object> systemMsg = new HashMap<>();
+            systemMsg.put("role", "system");
+            systemMsg.put("content", prompt);
+            promptMessages.add(systemMsg);
+
+            LLMResponse response = provider.chat(promptMessages, List.of(), model, null, null, null, null);
+            String summary = response.getContent();
+
+            if (summary != null && !summary.isBlank() && !summary.contains("(nothing)")) {
+                store.appendHistory(summary);
+                return summary;
+            }
+            return "(nothing)";
         } catch (Exception e) {
-            log.warn("Consolidation failed, raw-dumping to history");
+            log.warn("Consolidation failed, raw-dumping to history: {}", e.getMessage());
             store.rawArchive(messages);
             return null;
         }
@@ -150,6 +168,9 @@ public class Consolidator {
                 return;
             }
 
+            log.info("Starting consolidation for session {}, estimated tokens: {}, budget: {}", 
+                    session.getKey(), estimated, budget);
+
             // 执行多轮整合，直到估算值降低到安全范围或达到最大轮数
             for (int round = 0; round < MAX_CONSOLIDATION_ROUNDS; round++) {
                 // 如果估算值已降至预算的一半以下，停止整合
@@ -157,6 +178,7 @@ public class Consolidator {
 
                 // 确定本次整合的消息片段范围
                 int start = session.getLastConsolidated();
+                // 每次整合 10 条消息
                 int end = Math.min(session.getMessages().size(), start + 10);
                 
                 // 如果没有更多消息可整合，退出

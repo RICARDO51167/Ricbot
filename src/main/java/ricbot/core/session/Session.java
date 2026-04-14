@@ -22,6 +22,24 @@ public class Session {
         this.key = key;
     }
 
+    public Session(String key, List<Map<String, Object>> messages, Instant createdAt, Instant updatedAt, Map<String, Object> metadata, int lastConsolidated) {
+        this.key = key;
+        this.messages = messages != null ? messages : new ArrayList<>();
+        this.createdAt = createdAt != null ? createdAt : Instant.now();
+        this.updatedAt = updatedAt != null ? updatedAt : Instant.now();
+        this.metadata = metadata != null ? metadata : new HashMap<>();
+        this.lastConsolidated = lastConsolidated;
+    }
+
+    public Instant getCreatedAt() {
+        return createdAt;
+    }
+
+    public Session setCreatedAt(Instant createdAt) {
+        this.createdAt = createdAt;
+        return this;
+    }
+
     public String getKey() {
         return key;
     }
@@ -90,6 +108,13 @@ public class Session {
         updatedAt = Instant.now();
     }
 
+    public List<Map<String, Object>> getMessagesFromLastConsolidated() {
+        if (lastConsolidated >= messages.size()) {
+            return new ArrayList<>();
+        }
+        return new ArrayList<>(messages.subList(lastConsolidated, messages.size()));
+    }
+
     /**
      * 对齐你前面 heartbeat 场景里保留少量历史的需求。
      */
@@ -106,15 +131,5 @@ public class Session {
             }
             updatedAt = Instant.now();
         }
-    }
-
-    public Instant getCreatedAt() {
-        return createdAt;
-    }
-
-    public Session setCreatedAt(Instant createdAt) {
-        this.createdAt = createdAt != null ? createdAt : Instant.now();
-        metadata.put("created_at", this.createdAt);
-        return this;
     }
 }

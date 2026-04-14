@@ -133,7 +133,7 @@ public class OpenAICodexProvider extends LLMProvider {
     ) throws Exception {
         LLMResponse response = callCodex(messages, tools, model, reasoningEffort, toolChoice, onDelta);
         if (onEnd != null) {
-            onEnd.onEnd(false);
+            onEnd.handle(response);
         }
         return response;
     }

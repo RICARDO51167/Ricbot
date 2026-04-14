@@ -195,7 +195,16 @@ public class ChannelManager {
      * 这里保留一个可扩展点；你前面如果已经有 RestartUtils，可直接替换。
      */
     private void notifyRestartDoneIfNeeded() {
-        // TODO: 若你已有 restart 环境变量逻辑，可在这里接入
+        RestartNotice notice = RestartUtils.consumeRestartNoticeFromEnv();
+        if (notice == null) return;
+
+        OutboundMessage msg = new OutboundMessage();
+        msg.setChannel(notice.channel());
+        msg.setChatId(notice.chatId());
+        msg.setContent(RestartUtils.formatRestartCompletedMessage(notice.startedAtRaw()));
+
+        // 通过 bus 发送
+        bus.sendOutbound(msg);
     }
 
     /**

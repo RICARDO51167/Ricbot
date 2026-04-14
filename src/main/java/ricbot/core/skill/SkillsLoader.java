@@ -124,6 +124,19 @@ public class SkillsLoader {
         return String.join("\n", lines);
     }
 
+    public String getSkillsContext() {
+        List<Map<String, String>> skills = listSkills(true);
+        if (skills.isEmpty()) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append("Available Skills:\n");
+        for (Map<String, String> skill : skills) {
+            sb.append("- ").append(skill.get("name")).append("\n");
+        }
+        return sb.toString();
+    }
+
     private String stripFrontmatter(String content) {
         return STRIP_SKILL_FRONTMATTER.matcher(content).replaceFirst("");
     }

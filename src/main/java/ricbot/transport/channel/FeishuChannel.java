@@ -1,98 +1,28 @@
 package ricbot.transport.channel;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import ricbot.core.message.MessageBus;
 import ricbot.core.message.OutboundMessage;
 
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
 
 /**
  * 飞书 / Lark 渠道实现。
- *
- * 主要目标：
- * 1. 通过长连接接收入站消息
- * 2. 支持普通文本、post、interactive card
- * 3. 支持 streaming card 更新
- * 4. 解析复杂消息内容（share card / post / interactive）
  */
 public class FeishuChannel extends BaseChannel {
 
-    public static class FeishuConfig {
-        private boolean enabled = false;
-        private String appId = "";
-        private String appSecret = "";
-        private String encryptKey = "";
-        private String verificationToken = "";
-        private List<String> allowFrom = new ArrayList<>();
-        private String reactEmoji = "THUMBSUP";
-        private String doneEmoji;
-        private String toolHintPrefix = "🔧";
-        private String groupPolicy = "mention";
-        private boolean replyToMessage = false;
-        private boolean streaming = true;
-        private String domain = "feishu";
-
-        public boolean isEnabled() { return enabled; }
-        public void setEnabled(boolean enabled) { this.enabled = enabled; }
-
-        public String getAppId() { return appId; }
-        public void setAppId(String appId) { this.appId = appId; }
-
-        public String getAppSecret() { return appSecret; }
-        public void setAppSecret(String appSecret) { this.appSecret = appSecret; }
-
-        public String getEncryptKey() { return encryptKey; }
-        public void setEncryptKey(String encryptKey) { this.encryptKey = encryptKey; }
-
-        public String getVerificationToken() { return verificationToken; }
-        public void setVerificationToken(String verificationToken) { this.verificationToken = verificationToken; }
-
-        public List<String> getAllowFrom() { return allowFrom; }
-        public void setAllowFrom(List<String> allowFrom) { this.allowFrom = allowFrom; }
-
-        public String getReactEmoji() { return reactEmoji; }
-        public void setReactEmoji(String reactEmoji) { this.reactEmoji = reactEmoji; }
-
-        public String getDoneEmoji() { return doneEmoji; }
-        public void setDoneEmoji(String doneEmoji) { this.doneEmoji = doneEmoji; }
-
-        public String getToolHintPrefix() { return toolHintPrefix; }
-        public void setToolHintPrefix(String toolHintPrefix) { this.toolHintPrefix = toolHintPrefix; }
-
-        public String getGroupPolicy() { return groupPolicy; }
-        public void setGroupPolicy(String groupPolicy) { this.groupPolicy = groupPolicy; }
-
-        public boolean isReplyToMessage() { return replyToMessage; }
-        public void setReplyToMessage(boolean replyToMessage) { this.replyToMessage = replyToMessage; }
-
-        public boolean isStreaming() { return streaming; }
-        public void setStreaming(boolean streaming) { this.streaming = streaming; }
-
-        public String getDomain() { return domain; }
-        public void setDomain(String domain) { this.domain = domain; }
-    }
-
-    public static class FeishuStreamBuf {
-        private String text = "";
-        private String cardId;
-        private int sequence = 0;
-        private long lastEditMillis = 0;
-
-        public String getText() { return text; }
-        public void setText(String text) { this.text = text; }
-
-        public String getCardId() { return cardId; }
-        public void setCardId(String cardId) { this.cardId = cardId; }
-
-        public int getSequence() { return sequence; }
-        public void setSequence(int sequence) { this.sequence = sequence; }
-
-        public long getLastEditMillis() { return lastEditMillis; }
-        public void setLastEditMillis(long lastEditMillis) { this.lastEditMillis = lastEditMillis; }
-    }
-
+    private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final long STREAM_EDIT_INTERVAL_MS = 500;
+    private static final int TEXT_MAX_LEN = 200;
+    private static final int POST_MAX_LEN = 2000;
 
     private static final Pattern COMPLEX_MD_RE = Pattern.compile("```|^#{1,6}\\s+|^\\|.+\\|.*\\n\\s*\\|[-:\\s|]+\\|", Pattern.MULTILINE);
     private static final Pattern SIMPLE_MD_RE = Pattern.compile("\\*\\*.+?\\*\\*|__.+?__|~~.+?~~", Pattern.DOTALL);
@@ -100,163 +30,183 @@ public class FeishuChannel extends BaseChannel {
     private static final Pattern LIST_RE = Pattern.compile("^[\\s]*[-*+]\\s+", Pattern.MULTILINE);
     private static final Pattern OLIST_RE = Pattern.compile("^[\\s]*\\d+\\.\\s+", Pattern.MULTILINE);
 
-    private static final int TEXT_MAX_LEN = 200;
-    private static final int POST_MAX_LEN = 2000;
-
     private final FeishuConfig config;
-    private Object client;
-    private Object wsClient;
-    private String botOpenId;
+    private final HttpClient httpClient;
+    private String accessToken;
+    private long accessTokenExpiry;
 
     private final Map<String, FeishuStreamBuf> streamBufs = new ConcurrentHashMap<>();
-    private final LinkedHashMap<String, Void> processedMessageIds = new LinkedHashMap<>();
 
     public FeishuChannel(Object config, MessageBus bus) {
         super(config, bus);
         this.name = "feishu";
         this.displayName = "Feishu";
-        this.config = (config instanceof FeishuConfig c) ? c : new FeishuConfig();
+        this.config = convertConfig(config);
+        this.httpClient = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(15))
+                .build();
+    }
+
+    private FeishuConfig convertConfig(Object raw) {
+        if (raw instanceof FeishuConfig c) return c;
+        if (raw instanceof Map<?, ?> m) {
+            FeishuConfig c = new FeishuConfig();
+            c.setEnabled(Boolean.TRUE.equals(m.get("enabled")));
+            c.setAppId((String) m.get("app_id"));
+            c.setAppSecret((String) m.get("app_secret"));
+            c.setAllowFrom((List<String>) m.get("allow_from"));
+            return c;
+        }
+        return new FeishuConfig();
     }
 
     @Override
     public void start() throws Exception {
-        if (config.getAppId() == null || config.getAppId().isBlank()
-                || config.getAppSecret() == null || config.getAppSecret().isBlank()) {
-            System.err.println("Feishu app_id and app_secret not configured");
+        if (config.getAppId() == null || config.getAppId().isBlank()) {
             return;
         }
-
         running = true;
-
-        // TODO:
-        // 1. 初始化飞书 Client
-        // 2. 初始化 WebSocket 长连接
-        // 3. 注册消息事件回调
-        // 4. 启动接收循环
-
-        System.out.println("Feishu bot started");
+        System.out.println("Feishu channel started (HTTP only mode)");
     }
 
     @Override
     public void stop() throws Exception {
         running = false;
-
-        // TODO: 关闭 ws client / sdk client
         streamBufs.clear();
-    }
-
-    public void send(OutboundMessage msg) throws Exception {
-        String content = msg.getContent() != null ? msg.getContent() : "";
-        String format = detectMsgFormat(content);
-
-        // TODO:
-        // 1. text -> 纯文本消息
-        // 2. post -> 富文本 post
-        // 3. interactive -> card
-        // 4. 如果 msg.replyTo 需要引用消息，则补 reply 上下文
-
-        System.out.println("Feishu send [" + format + "] -> " + msg.getChatId() + ": " + content);
-    }
-
-    @Override
-    public void sendDelta(String chatId, String delta, Map<String, Object> metadata) throws Exception {
-        FeishuStreamBuf buf = streamBufs.computeIfAbsent(chatId, k -> new FeishuStreamBuf());
-        buf.setText(buf.getText() + (delta != null ? delta : ""));
-
-        if (buf.getText().isBlank()) {
-            return;
-        }
-
-        boolean streamEnd = metadata != null && Boolean.TRUE.equals(metadata.get("_stream_end"));
-        long now = System.currentTimeMillis();
-
-        if (streamEnd) {
-            finalizeStream(chatId, buf);
-            return;
-        }
-
-        if (buf.getCardId() == null) {
-            // TODO: 首次发送 interactive card，保存 cardId
-            buf.setCardId("TODO_CARD_ID");
-            buf.setLastEditMillis(now);
-            return;
-        }
-
-        if ((now - buf.getLastEditMillis()) < STREAM_EDIT_INTERVAL_MS) {
-            return;
-        }
-
-        // TODO: 调 CardKit / 消息更新接口做 streaming update
-        buf.setSequence(buf.getSequence() + 1);
-        buf.setLastEditMillis(now);
-    }
-
-    private void finalizeStream(String chatId, FeishuStreamBuf buf) {
-        // TODO: 提交最终 streaming card 内容
-        streamBufs.remove(chatId);
-    }
-
-    /**
-     * 智能判断使用 text / post / interactive 哪种消息格式。
-     */
-    public String detectMsgFormat(String content) {
-        String stripped = content == null ? "" : content.strip();
-
-        if (COMPLEX_MD_RE.matcher(stripped).find()) {
-            return "interactive";
-        }
-        if (stripped.length() > POST_MAX_LEN) {
-            return "interactive";
-        }
-        if (SIMPLE_MD_RE.matcher(stripped).find()) {
-            return "interactive";
-        }
-        if (LIST_RE.matcher(stripped).find() || OLIST_RE.matcher(stripped).find()) {
-            return "interactive";
-        }
-        if (MD_LINK_RE.matcher(stripped).find()) {
-            return "post";
-        }
-        if (stripped.length() <= TEXT_MAX_LEN) {
-            return "text";
-        }
-        return "post";
-    }
-
-    /**
-     * Markdown -> post message JSON 的简化转换。
-     */
-    public String markdownToPost(String content) {
-        // TODO: 把 markdown 转成飞书 post 结构 JSON
-        return content;
-    }
-
-    /**
-     * 处理飞书入站消息。
-     */
-    public void onInboundMessage(
-            String senderId,
-            String chatId,
-            String content,
-            List<String> media,
-            Map<String, Object> metadata
-    ) throws Exception {
-        handleMessage(senderId, chatId, content, media, metadata);
-    }
-
-    /**
-     * 从 interactive/share/post 卡片中提取可读文本。
-     */
-    public String extractStructuredContent(Map<String, Object> contentJson, String msgType) {
-        // TODO:
-        // 1. interactive -> 提取文本、按钮、链接
-        // 2. post -> 提取段落、图片 key
-        // 3. share_chat / share_user / merge_forward 等做可读降级
-        return "[" + msgType + "]";
     }
 
     @Override
     public List<String> getAllowFrom() {
         return config.getAllowFrom();
+    }
+
+    @Override
+    public void send(OutboundMessage msg) throws Exception {
+        String token = getAccessToken();
+        String chatId = msg.getChatId();
+        String content = msg.getContent() != null ? msg.getContent() : "";
+        String format = detectMsgFormat(content);
+
+        Map<String, Object> body = new HashMap<>();
+        body.put("receive_id", chatId);
+        body.put("msg_type", format.equals("interactive") ? "interactive" : (format.equals("post") ? "post" : "text"));
+
+        if (format.equals("interactive")) {
+            body.put("content", MAPPER.writeValueAsString(buildCard(content)));
+        } else if (format.equals("post")) {
+            body.put("content", MAPPER.writeValueAsString(buildPost(content)));
+        } else {
+            body.put("content", MAPPER.writeValueAsString(Map.of("text", content)));
+        }
+
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create("https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id"))
+                .header("Authorization", "Bearer " + token)
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(MAPPER.writeValueAsString(body)))
+                .build();
+
+        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        if (response.statusCode() != 200) {
+            System.err.println("Failed to send Feishu message: " + response.body());
+        }
+    }
+
+    private String getAccessToken() throws Exception {
+        if (accessToken != null && System.currentTimeMillis() < accessTokenExpiry) {
+            return accessToken;
+        }
+
+        Map<String, String> body = new HashMap<>();
+        body.put("app_id", config.getAppId());
+        body.put("app_secret", config.getAppSecret());
+
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create("https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(MAPPER.writeValueAsString(body)))
+                .build();
+
+        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        Map<String, Object> map = MAPPER.readValue(response.body(), new TypeReference<>() {});
+        
+        if ((Integer) map.get("code") == 0) {
+            accessToken = (String) map.get("tenant_access_token");
+            accessTokenExpiry = System.currentTimeMillis() + ((Integer) map.get("expire") - 60) * 1000L;
+            return accessToken;
+        }
+        throw new RuntimeException("Failed to get Feishu access token: " + response.body());
+    }
+
+    private Map<String, Object> buildCard(String content) {
+        Map<String, Object> card = new HashMap<>();
+        Map<String, Object> config = new HashMap<>();
+        config.put("wide_screen_mode", true);
+        card.put("config", config);
+
+        Map<String, Object> header = new HashMap<>();
+        header.put("template", "blue");
+        header.put("title", Map.of("tag", "plain_text", "content", "Ricbot Response"));
+        card.put("header", header);
+
+        List<Map<String, Object>> elements = new ArrayList<>();
+        elements.add(Map.of("tag", "markdown", "content", content));
+        card.put("elements", elements);
+
+        return card;
+    }
+
+    private Map<String, Object> buildPost(String content) {
+        Map<String, Object> post = new HashMap<>();
+        Map<String, Object> zhCn = new HashMap<>();
+        zhCn.put("title", "Ricbot Response");
+        
+        List<List<Map<String, Object>>> contentList = new ArrayList<>();
+        List<Map<String, Object>> line = new ArrayList<>();
+        line.add(Map.of("tag", "text", "text", content));
+        contentList.add(line);
+        
+        zhCn.put("content", contentList);
+        post.put("zh_cn", zhCn);
+        return post;
+    }
+
+    public String detectMsgFormat(String content) {
+        String stripped = content == null ? "" : content.strip();
+        if (COMPLEX_MD_RE.matcher(stripped).find()) return "interactive";
+        if (stripped.length() > POST_MAX_LEN) return "interactive";
+        if (SIMPLE_MD_RE.matcher(stripped).find()) return "interactive";
+        if (LIST_RE.matcher(stripped).find() || OLIST_RE.matcher(stripped).find()) return "interactive";
+        if (MD_LINK_RE.matcher(stripped).find()) return "post";
+        if (stripped.length() <= TEXT_MAX_LEN) return "text";
+        return "post";
+    }
+
+    public static class FeishuConfig {
+        private boolean enabled = false;
+        private String appId = "";
+        private String appSecret = "";
+        private List<String> allowFrom = new ArrayList<>();
+
+        public boolean isEnabled() { return enabled; }
+        public void setEnabled(boolean enabled) { this.enabled = enabled; }
+        public String getAppId() { return appId; }
+        public void setAppId(String appId) { this.appId = appId; }
+        public String getAppSecret() { return appSecret; }
+        public void setAppSecret(String appSecret) { this.appSecret = appSecret; }
+        public List<String> getAllowFrom() { return allowFrom; }
+        public void setAllowFrom(List<String> allowFrom) { this.allowFrom = allowFrom; }
+    }
+
+    public static class FeishuStreamBuf {
+        private String text = "";
+        private String cardId;
+        private long lastEditMillis = 0;
+        public String getText() { return text; }
+        public void setText(String text) { this.text = text; }
+        public String getCardId() { return cardId; }
+        public void setCardId(String cardId) { this.cardId = cardId; }
+        public long getLastEditMillis() { return lastEditMillis; }
+        public void setLastEditMillis(long lastEditMillis) { this.lastEditMillis = lastEditMillis; }
     }
 }

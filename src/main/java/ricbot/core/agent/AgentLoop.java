@@ -1,12 +1,28 @@
 package ricbot.core.agent;
 
+import ricbot.core.mcp.MCPLoader;
+import ricbot.core.skill.SkillsLoader;
+import ricbot.infra.cron.CronService;
+import ricbot.infra.cron.CronTypes.CronJob;
+import ricbot.tool.web.WebFetchTool;
+import ricbot.tool.web.WebSearchTool;
+import ricbot.core.memory.Consolidator;
+import ricbot.core.memory.Dream;
+import ricbot.core.memory.MemoryStore;
+import ricbot.core.subagent.SubagentManager;
 import ricbot.core.hook.AgentHook;
 import ricbot.core.hook.AgentHookContext;
-import ricbot.tool.api.Tool;
 import ricbot.tool.api.ToolRegistry;
+import ricbot.tool.cron.CronTool;
+import ricbot.tool.filesystem.EditFileTool;
 import ricbot.tool.filesystem.ListDirTool;
+import ricbot.tool.filesystem.NotebookEditTool;
 import ricbot.tool.filesystem.ReadFileTool;
+import ricbot.tool.filesystem.WriteFileTool;
 import ricbot.tool.process.ExecTool;
+import ricbot.tool.process.SpawnTool;
+import ricbot.tool.search.GlobTool;
+import ricbot.tool.search.GrepTool;
 import ricbot.core.message.InboundMessage;
 import ricbot.core.message.MessageBus;
 import ricbot.core.message.OutboundMessage;
@@ -29,35 +45,13 @@ import java.util.concurrent.*;
 
 /**
  * Agent 主循环：ricbot 的核心调度引擎。
- *
- * 主要职责：
- * 1. 从 MessageBus 中消费用户消息
- * 2. 构建上下文与历史消息
- * 3. 调用 AgentRunner 执行“大模型 + 工具调用”循环
- * 4. 将结果保存到会话中
- * 5. 将响应重新发布到 MessageBus
- *
- * 说明：
- * - 这是按当前已经补过的 Java 类对齐后的“可编译主干版”
- * - 暂时移除了尚未补齐的 Notebook / Cron / MCP / CommandRouter 依赖
  */
 public class AgentLoop {
 
     private static final Logger log = LoggerFactory.getLogger(AgentLoop.class);
 
-    /**
-     * 统一会话模式下使用的固定 session key。
-     */
     public static final String UNIFIED_SESSION_KEY = "unified:default";
-
-    /**
-     * Session.metadata 中保存运行时 checkpoint 的 key。
-     */
     private static final String RUNTIME_CHECKPOINT_KEY = "runtime_checkpoint";
-
-    /**
-     * Session.metadata 中表示“用户消息已提前持久化，但本轮还未完整结束”的标记。
-     */
     private static final String PENDING_USER_TURN_KEY = "pending_user_turn";
 
     private final MessageBus bus;
@@ -72,53 +66,30 @@ public class AgentLoop {
 
     private final Config.WebToolsConfig webConfig;
     private final Config.ExecToolConfig execConfig;
+    private final Map<String, Object> mcpServers;
     private final boolean restrictToWorkspace;
     private final boolean unifiedSession;
 
     private final ContextBuilder contextBuilder;
     private final SessionManager sessionManager;
+    private final MemoryStore memoryStore;
+    private final Consolidator consolidator;
+    private final Dream dream;
+    private final SubagentManager subagents;
+    private final SkillsLoader skillsLoader;
+    private final CronService cronService;
     private final ToolRegistry tools;
     private final AgentRunner runner;
 
-    /**
-     * session 级串行锁：同一 session 串行，不同 session 可并发。
-     */
     private final ConcurrentMap<String, Object> sessionLocks = new ConcurrentHashMap<>();
-
-    /**
-     * 当前活动任务，便于 /stop 取消。
-     */
     private final ConcurrentMap<String, List<Future<?>>> activeTasks = new ConcurrentHashMap<>();
-
-    /**
-     * 并发门控。null 表示不限流。
-     */
     private final Semaphore concurrencyGate;
-
-    /**
-     * 线程池：用于异步分发 message 处理任务。
-     */
     private final ExecutorService executor;
+    private final ScheduledExecutorService scheduler;
 
     private volatile boolean running = false;
-
-    /**
-     * 可选扩展 hooks
-     */
     private List<AgentHook> extraHooks = new ArrayList<>();
 
-    // ---------------------------------------------------------------------
-    // Constructors
-    // ---------------------------------------------------------------------
-
-    /**
-     * 这个构造器是为了对齐 CLI 等调用点的参数形态。
-     * 里面有些参数当前版本先收下但不一定全部使用，比如：
-     * - providerRetryMode
-     * - mcpServers
-     * - disabledSkills
-     * - sessionTtlMinutes
-     */
     public AgentLoop(
             MessageBus bus,
             LLMProvider provider,
@@ -131,6 +102,7 @@ public class AgentLoop {
             String providerRetryMode,
             Config.WebToolsConfig webConfig,
             Config.ExecToolConfig execConfig,
+            Map<String, Object> mcpServers,
             boolean restrictToWorkspace,
             SessionManager sessionManager,
             String timezone,
@@ -152,11 +124,41 @@ public class AgentLoop {
 
         this.webConfig = webConfig != null ? webConfig : new Config.WebToolsConfig();
         this.execConfig = execConfig != null ? execConfig : new Config.ExecToolConfig();
+        this.mcpServers = mcpServers != null ? mcpServers : Collections.emptyMap();
         this.restrictToWorkspace = restrictToWorkspace;
         this.unifiedSession = unifiedSession;
 
         this.contextBuilder = new ContextBuilder(this.workspace, timezone, disabledSkills);
         this.sessionManager = sessionManager != null ? sessionManager : new SessionManager(this.workspace);
+        this.memoryStore = new MemoryStore(this.workspace);
+        this.consolidator = new Consolidator(
+                this.memoryStore,
+                this.provider,
+                this.model,
+                this.sessionManager,
+                this.contextWindowTokens,
+                4096 // maxCompletionTokens placeholder
+        );
+        this.dream = new Dream(this.workspace, this.provider, this.model, this.memoryStore);
+        this.subagents = new SubagentManager(
+                this.provider,
+                this.workspace,
+                this.bus,
+                this.maxToolResultChars,
+                this.model,
+                this.webConfig,
+                this.execConfig,
+                this.restrictToWorkspace,
+                disabledSkills
+        );
+        this.skillsLoader = new SkillsLoader(
+                this.workspace,
+                null, // builtinDir will be resolved automatically
+                disabledSkills != null ? new HashSet<>(disabledSkills) : new HashSet<>()
+        );
+        this.cronService = new CronService(workspace.resolve(".ricbot").resolve("cron").resolve("store.json"));
+        this.cronService.setOnJob(this::handleCronJob);
+
         this.tools = new ToolRegistry();
         this.runner = new AgentRunner(provider);
 
@@ -164,6 +166,7 @@ public class AgentLoop {
         this.concurrencyGate = maxConcurrent > 0 ? new Semaphore(maxConcurrent) : null;
 
         this.executor = Executors.newCachedThreadPool();
+        this.scheduler = Executors.newSingleThreadScheduledExecutor();
 
         registerDefaultTools();
     }
@@ -183,6 +186,13 @@ public class AgentLoop {
         // filesystem
         tools.register(new ReadFileTool(workspace, allowedDir, List.of()));
         tools.register(new ListDirTool(workspace, allowedDir));
+        tools.register(new WriteFileTool(workspace, allowedDir));
+        tools.register(new EditFileTool(workspace, allowedDir));
+        tools.register(new NotebookEditTool(workspace, allowedDir, List.of()));
+
+        // search
+        tools.register(new GlobTool(workspace, allowedDir));
+        tools.register(new GrepTool(workspace, allowedDir));
 
         // shell
         if (execConfig.isEnable()) {
@@ -196,9 +206,32 @@ public class AgentLoop {
                     execConfig.getPathAppend(),
                     execConfig.getAllowedEnvKeys()
             ));
+            tools.register(new SpawnTool(subagents));
         }
 
-        // web/mcp/cron/search tools are intentionally not part of the minimal runnable build
+        // cron
+        if (cronService != null) {
+            tools.register(new CronTool(cronService, contextBuilder.getTimezone()));
+        }
+
+        // web
+        if (webConfig.isEnable()) {
+            tools.register(new WebFetchTool(
+                    webConfig.getMaxChars(),
+                    webConfig.getProxy()
+            ));
+            tools.register(new WebSearchTool(
+                    webConfig.getSearch(),
+                    webConfig.getProxy()
+            ));
+        }
+
+        // mcp
+        if (mcpServers != null && !mcpServers.isEmpty()) {
+            new MCPLoader(tools, mcpServers).load();
+        }
+
+        // cron tools are intentionally not part of the minimal runnable build
     }
 
     // ---------------------------------------------------------------------
@@ -210,9 +243,42 @@ public class AgentLoop {
      *
      * Java 版采用 while + 阻塞消费的方式持续运行。
      */
+    private String handleCronJob(CronJob job) {
+        log.info("Cron executing: {}", job.getName());
+        InboundMessage msg = new InboundMessage();
+        msg.setChannel(job.getPayload().getChannel() != null ? job.getPayload().getChannel() : "system");
+        msg.setChatId(job.getPayload().getTo() != null ? job.getPayload().getTo() : "cron");
+        msg.setContent(job.getPayload().getMessage());
+        msg.setSenderId("cron");
+        
+        // 标记这是一个 cron 任务
+        msg.getMetadata().put("_cron_job_id", job.getId());
+        msg.getMetadata().put("_cron_job_name", job.getName());
+        msg.getMetadata().put("_deliver", job.getPayload().isDeliver());
+
+        // 分发任务
+        executor.submit(() -> dispatch(msg));
+        return "Task dispatched";
+    }
+
+    public void start() {
+        this.running = true;
+        this.cronService.start();
+        new Thread(this::run, "agent-loop").start();
+    }
+
     public void run() {
         this.running = true;
         log.info("Agent loop started");
+
+        // Start Dream consolidation task in background every 15 minutes
+        scheduler.scheduleWithFixedDelay(() -> {
+            try {
+                dream.run();
+            } catch (Exception e) {
+                log.error("Error in background Dream task", e);
+            }
+        }, 15, 15, TimeUnit.MINUTES);
 
         while (running) {
             try {
@@ -261,9 +327,16 @@ public class AgentLoop {
 
     public void stop() {
         this.running = false;
+        this.cronService.stop();
         executor.shutdownNow();
+        scheduler.shutdownNow();
         log.info("Agent loop stopping");
     }
+
+    public Dream getDream() { return dream; }
+    public SubagentManager getSubagents() { return subagents; }
+    public SessionManager getSessions() { return sessionManager; }
+    public Consolidator getConsolidator() { return consolidator; }
 
     // ---------------------------------------------------------------------
     // Dispatch / processing
@@ -323,6 +396,9 @@ public class AgentLoop {
 
         Session session = sessionManager.getOrCreate(sessionKey);
 
+        // 归档旧消息
+        consolidator.maybeConsolidateByTokens(session);
+
         restoreRuntimeCheckpoint(session);
         restorePendingUserTurn(session);
 
@@ -351,6 +427,10 @@ public class AgentLoop {
 
         setToolContext(msg.getChannel(), msg.getChatId(), messageIdOf(msg));
 
+        String memoryContext = memoryStore.getMemoryContext();
+        String skillsContext = skillsLoader.getSkillsContext();
+        String combinedContext = (memoryContext != null ? memoryContext : "") + "\n" + (skillsContext != null ? skillsContext : "");
+
         List<Map<String, Object>> history = session.getHistory(historyWindowAsMessages());
         List<Map<String, Object>> initialMessages = contextBuilder.buildMessages(
                 history,
@@ -358,7 +438,7 @@ public class AgentLoop {
                 msg.getMedia(),
                 msg.getChannel(),
                 msg.getChatId(),
-                null,
+                combinedContext,
                 "user"
         );
 
@@ -488,7 +568,6 @@ public class AgentLoop {
         msg.setSenderId("user");
         msg.setChatId(chatId);
         msg.setContent(content);
-        msg.setTimestamp(LocalDateTime.from(Instant.now()));
         msg.setMedia(new ArrayList<>());
         msg.setMetadata(new HashMap<>());
         msg.setSessionKeyOverride(sessionKey);

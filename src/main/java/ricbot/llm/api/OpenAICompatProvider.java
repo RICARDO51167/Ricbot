@@ -183,6 +183,57 @@ public class OpenAICompatProvider extends LLMProvider {
                 .setUsage(usage);
     }
 
+    @Override
+    public LLMResponse chatStream(
+            List<Map<String, Object>> messages,
+            List<Map<String, Object>> tools,
+            String model,
+            Integer maxTokens,
+            Double temperature,
+            String reasoningEffort,
+            Object toolChoice,
+            StreamDeltaHandler onDelta,
+            StreamEndHandler onEnd
+    ) throws Exception {
+        String effectiveModel = model != null && !model.isBlank()
+                ? model
+                : (this.model != null && !this.model.isBlank() ? this.model : this.defaultModel);
+
+        String base = effectiveApiBase();
+        List<Map<String, Object>> cleanMessages = sanitizeEmptyContent(messages);
+
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("model", stripModelPrefixIfNeeded(effectiveModel));
+        payload.put("messages", cleanMessages);
+        payload.put("stream", true);
+
+        if (tools != null && !tools.isEmpty()) {
+            payload.put("tools", tools);
+        }
+        if (toolChoice != null) {
+            payload.put("tool_choice", toolChoice);
+        }
+
+        Integer finalMaxTokens = maxTokens != null ? maxTokens : generation.getMaxTokens();
+        if (finalMaxTokens != null && finalMaxTokens > 0) {
+            payload.put("max_tokens", finalMaxTokens);
+        }
+
+        Double finalTemp = temperature != null ? temperature : generation.getTemperature();
+        payload.put("temperature", finalTemp);
+
+        String json = MAPPER.writeValueAsString(payload);
+        HttpRequest request = buildRequest(base, json);
+
+        HttpResponse<java.util.stream.Stream<String>> response = client.send(request, HttpResponse.BodyHandlers.ofLines());
+
+        if (response.statusCode() != 200) {
+            throw new RuntimeException("OpenAI-compatible Stream Error: " + response.statusCode());
+        }
+
+        return OpenAIResponsesSupport.consumeSSE(response.body(), onDelta, onEnd);
+    }
+
     private HttpRequest buildRequest(String base, String json) {
         String url = joinUrl(base, "/chat/completions");
 
@@ -361,13 +412,6 @@ public class OpenAICompatProvider extends LLMProvider {
             return "timeout";
         }
         return "connection";
-    }
-
-    private static String abbreviate(String s, int max) {
-        if (s == null) {
-            return "";
-        }
-        return s.length() <= max ? s : s.substring(0, max) + "...";
     }
 
     private static void debugPrintRequest(HttpRequest request) {

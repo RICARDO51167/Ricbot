@@ -2,6 +2,7 @@ package ricbot.llm.openai;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import ricbot.llm.api.LLMProvider;
 import ricbot.llm.api.LLMResponse;
 import ricbot.llm.api.ToolCallRequest;
 
@@ -96,7 +97,7 @@ public final class ResponsesParsing {
      */
     public static SseConsumeResult consumeSse(
             InputStream inputStream,
-            ContentDeltaHandler onContentDelta
+            LLMProvider.StreamDeltaHandler onContentDelta
     ) throws Exception {
         StringBuilder content = new StringBuilder();
         List<ToolCallRequest> toolCalls = new ArrayList<>();
@@ -131,7 +132,7 @@ public final class ResponsesParsing {
                 }
                 content.append(deltaText);
                 if (onContentDelta != null && !deltaText.isEmpty()) {
-                    onContentDelta.onDelta(deltaText);
+                    onContentDelta.handle(deltaText);
                 }
             }
 
@@ -315,7 +316,7 @@ public final class ResponsesParsing {
      */
     public static SdkStreamConsumeResult consumeSdkStream(
             Iterable<?> stream,
-            ContentDeltaHandler onContentDelta
+            LLMProvider.StreamDeltaHandler onContentDelta
     ) throws Exception {
         StringBuilder content = new StringBuilder();
         List<ToolCallRequest> toolCalls = new ArrayList<>();
@@ -360,7 +361,7 @@ public final class ResponsesParsing {
 
                 content.append(deltaText);
                 if (onContentDelta != null && !deltaText.isEmpty()) {
-                    onContentDelta.onDelta(deltaText);
+                    onContentDelta.handle(deltaText);
                 }
             }
 
@@ -588,10 +589,6 @@ public final class ResponsesParsing {
     // =========================================================
     // DTOs / interfaces
     // =========================================================
-
-    public interface ContentDeltaHandler {
-        void onDelta(String delta) throws Exception;
-    }
 
     public record SseConsumeResult(
             String content,

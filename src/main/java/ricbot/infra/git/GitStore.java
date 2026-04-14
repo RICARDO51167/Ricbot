@@ -1,6 +1,10 @@
 package ricbot.infra.git;
 
 
+import org.eclipse.jgit.api.Git;
+import org.eclipse.jgit.api.Status;
+import org.eclipse.jgit.revwalk.RevCommit;
+
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;

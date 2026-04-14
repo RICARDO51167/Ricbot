@@ -88,14 +88,13 @@ public final class ChannelRegistry {
     private static Map<String, Class<? extends BaseChannel>> builtinChannels() {
         Map<String, Class<? extends BaseChannel>> map = new LinkedHashMap<>();
 
-        // TODO: 把你真正写好的渠道类放进来
-        // map.put("discord", DiscordChannel.class);
-        // map.put("dingtalk", DingTalkChannel.class);
-        // map.put("email", EmailChannel.class);
-        // map.put("feishu", FeishuChannel.class);
-        // map.put("matrix", MatrixChannel.class);
-        // map.put("mochat", MochatChannel.class);
-        // map.put("qq", QQChannel.class);
+        map.put("feishu", FeishuChannel.class);
+        map.put("dingtalk", DingTalkChannel.class);
+        map.put("wecom", WecomChannel.class);
+        map.put("qq", QQChannel.class);
+        map.put("weixin", WeixinChannel.class);
+        map.put("email", EmailChannel.class);
+        map.put("websocket", WebSocketChannel.class);
 
         return map;
     }

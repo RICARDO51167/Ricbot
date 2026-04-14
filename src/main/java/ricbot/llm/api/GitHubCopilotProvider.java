@@ -17,14 +17,10 @@ public class GitHubCopilotProvider extends OpenAICompatProvider {
         super(
                 "no-key",
                 GitHubCopilotAuth.DEFAULT_COPILOT_BASE_URL,
-                defaultModel != null ? defaultModel : "github-copilot/gpt-4.1"
+                defaultModel != null ? defaultModel : "github-copilot/gpt-4.1",
+                null,
+                ProviderRegistry.findByName("github_copilot")
         );
-
-        setExtraHeaders(java.util.Map.of(
-                "Editor-Version", GitHubCopilotAuth.EDITOR_VERSION,
-                "Editor-Plugin-Version", GitHubCopilotAuth.EDITOR_PLUGIN_VERSION,
-                "User-Agent", GitHubCopilotAuth.USER_AGENT
-        ));
     }
 
     /**
@@ -108,7 +104,7 @@ public class GitHubCopilotProvider extends OpenAICompatProvider {
     }
 
     @Override
-    public oldricbot.providers.base.LLMResponse chatStream(
+    public LLMResponse chatStream(
             java.util.List<java.util.Map<String, Object>> messages,
             java.util.List<java.util.Map<String, Object>> tools,
             String model,
@@ -116,8 +112,8 @@ public class GitHubCopilotProvider extends OpenAICompatProvider {
             Double temperature,
             String reasoningEffort,
             Object toolChoice,
-            oldricbot.providers.base.LLMProvider.StreamDeltaHandler onDelta,
-            oldricbot.providers.base.LLMProvider.StreamEndHandler onEnd
+            StreamDeltaHandler onDelta,
+            StreamEndHandler onEnd
     ) throws Exception {
         refreshClientApiKey();
         return super.chatStream(messages, tools, model, maxTokens, temperature, reasoningEffort, toolChoice, onDelta, onEnd);

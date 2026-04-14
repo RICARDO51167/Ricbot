@@ -1,5 +1,6 @@
 package ricbot.core.agent;
 
+import ricbot.infra.template.PromptTemplates;
 import java.nio.file.Path;
 import java.time.ZonedDateTime;
 import java.util.*;
@@ -72,10 +73,6 @@ public class ContextBuilder {
         // current user/runtime message
         if (currentMessage != null) {
             String runtime = buildRuntimeContext(channel, chatId, timezone);
-            if (sessionSummary != null && !sessionSummary.isBlank()) {
-                runtime += "\nSession summary:\n" + sessionSummary;
-            }
-
             String combined = runtime + "\n\n" + currentMessage;
 
             Map<String, Object> current = new LinkedHashMap<>();
@@ -176,18 +173,11 @@ public class ContextBuilder {
     }
 
     private String buildSystemPrompt(String sessionSummary) {
-        StringBuilder sb = new StringBuilder();
-        sb.append("You are ricbot, a lightweight AI assistant.\n");
-        sb.append("Workspace: ").append(workspace != null ? workspace.toAbsolutePath().normalize() : "").append("\n");
-        sb.append("Be accurate, concise, and use tools when needed.\n");
+        Map<String, Object> kwargs = new HashMap<>();
+        kwargs.put("workspace", workspace != null ? workspace.toAbsolutePath().normalize().toString() : "");
+        kwargs.put("disabled_skills", (disabledSkills == null || disabledSkills.isEmpty()) ? "" : String.join(", ", disabledSkills));
+        kwargs.put("session_summary", (sessionSummary == null) ? "" : sessionSummary);
 
-        if (disabledSkills != null && !disabledSkills.isEmpty()) {
-            sb.append("Disabled skills: ").append(String.join(", ", disabledSkills)).append("\n");
-        }
-        if (sessionSummary != null && !sessionSummary.isBlank()) {
-            sb.append("\nSession summary:\n").append(sessionSummary).append("\n");
-        }
-
-        return sb.toString().trim();
+        return PromptTemplates.renderTemplate("agent/identity.md", true, kwargs);
     }
 }

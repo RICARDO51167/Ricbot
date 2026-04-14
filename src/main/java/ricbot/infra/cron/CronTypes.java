@@ -198,8 +198,8 @@ public final class CronTypes {
 
             CronSchedule s = new CronSchedule();
             s.setKind(ScheduleKind.fromValue(string(map.get("kind"))));
-            s.setAtMs(longValue(map.get("atMs")));
-            s.setEveryMs(longValue(map.get("everyMs")));
+            s.setAtMs(longValue(map.get("at_ms") != null ? map.get("at_ms") : map.get("atMs")));
+            s.setEveryMs(longValue(map.get("every_ms") != null ? map.get("every_ms") : map.get("everyMs")));
             s.setExpr(string(map.get("expr")));
             s.setTz(string(map.get("tz")));
             return s;
@@ -378,9 +378,9 @@ public final class CronTypes {
                 return null;
             }
             return new CronRunRecord(
-                    longValue(map.get("runAtMs")) != null ? longValue(map.get("runAtMs")) : 0L,
+                    longValue(map.get("run_at_ms") != null ? map.get("run_at_ms") : map.get("runAtMs")) != null ? longValue(map.get("run_at_ms") != null ? map.get("run_at_ms") : map.get("runAtMs")) : 0L,
                     RunStatus.fromValue(string(map.get("status"))),
-                    longValue(map.get("durationMs")) != null ? longValue(map.get("durationMs")) : 0L,
+                    longValue(map.get("duration_ms") != null ? map.get("duration_ms") : map.get("durationMs")) != null ? longValue(map.get("duration_ms") != null ? map.get("duration_ms") : map.get("durationMs")) : 0L,
                     string(map.get("error"))
             );
         }
@@ -475,12 +475,12 @@ public final class CronTypes {
                 return s;
             }
 
-            s.setNextRunAtMs(longValue(map.get("nextRunAtMs")));
-            s.setLastRunAtMs(longValue(map.get("lastRunAtMs")));
-            s.setLastStatus(RunStatus.fromValue(string(map.get("lastStatus"))));
-            s.setLastError(string(map.get("lastError")));
+            s.setNextRunAtMs(longValue(map.get("next_run_at_ms") != null ? map.get("next_run_at_ms") : map.get("nextRunAtMs")));
+            s.setLastRunAtMs(longValue(map.get("last_run_at_ms") != null ? map.get("last_run_at_ms") : map.get("lastRunAtMs")));
+            s.setLastStatus(RunStatus.fromValue(string(map.get("last_status") != null ? map.get("last_status") : map.get("lastStatus"))));
+            s.setLastError(string(map.get("last_error") != null ? map.get("last_error") : map.get("lastError")));
 
-            Object historyObj = map.get("runHistory");
+            Object historyObj = map.get("run_history") != null ? map.get("run_history") : map.get("runHistory");
             List<CronRunRecord> history = new ArrayList<>();
             if (historyObj instanceof List<?> list) {
                 for (Object item : list) {
@@ -652,9 +652,9 @@ public final class CronTypes {
                 job.setState(new CronJobState());
             }
 
-            job.setCreatedAtMs(longValue(map.get("createdAtMs")) != null ? longValue(map.get("createdAtMs")) : 0L);
-            job.setUpdatedAtMs(longValue(map.get("updatedAtMs")) != null ? longValue(map.get("updatedAtMs")) : 0L);
-            job.setDeleteAfterRun(bool(map.get("deleteAfterRun")));
+            job.setCreatedAtMs(longValue(map.get("created_at_ms") != null ? map.get("created_at_ms") : map.get("createdAtMs")) != null ? longValue(map.get("created_at_ms") != null ? map.get("created_at_ms") : map.get("createdAtMs")) : 0L);
+            job.setUpdatedAtMs(longValue(map.get("updated_at_ms") != null ? map.get("updated_at_ms") : map.get("updatedAtMs")) != null ? longValue(map.get("updated_at_ms") != null ? map.get("updated_at_ms") : map.get("updatedAtMs")) : 0L);
+            job.setDeleteAfterRun(bool(map.get("delete_after_run") != null ? map.get("delete_after_run") : map.get("deleteAfterRun")));
 
             return job;
         }

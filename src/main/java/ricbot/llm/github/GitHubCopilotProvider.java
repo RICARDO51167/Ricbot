@@ -3,6 +3,8 @@ package ricbot.llm.github;
 
 import ricbot.llm.api.GitHubCopilotAuth;
 import ricbot.llm.api.LLMResponse;
+import ricbot.llm.api.OpenAICompatProvider;
+import ricbot.llm.api.ProviderRegistry;
 
 /**
  * 对应 Python: GitHubCopilotProvider
@@ -20,14 +22,10 @@ public class GitHubCopilotProvider extends OpenAICompatProvider {
         super(
                 "no-key",
                 ricbot.llm.api.GitHubCopilotAuth.DEFAULT_COPILOT_BASE_URL,
-                defaultModel != null ? defaultModel : "github-copilot/gpt-4.1"
+                defaultModel != null ? defaultModel : "github-copilot/gpt-4.1",
+                null,
+                ProviderRegistry.findByName("github_copilot")
         );
-
-        setExtraHeaders(java.util.Map.of(
-                "Editor-Version", ricbot.llm.api.GitHubCopilotAuth.EDITOR_VERSION,
-                "Editor-Plugin-Version", ricbot.llm.api.GitHubCopilotAuth.EDITOR_PLUGIN_VERSION,
-                "User-Agent", ricbot.llm.api.GitHubCopilotAuth.USER_AGENT
-        ));
     }
 
     /**
@@ -111,7 +109,7 @@ public class GitHubCopilotProvider extends OpenAICompatProvider {
     }
 
     @Override
-    public oldricbot.providers.base.LLMResponse chatStream(
+    public LLMResponse chatStream(
             java.util.List<java.util.Map<String, Object>> messages,
             java.util.List<java.util.Map<String, Object>> tools,
             String model,
@@ -119,8 +117,8 @@ public class GitHubCopilotProvider extends OpenAICompatProvider {
             Double temperature,
             String reasoningEffort,
             Object toolChoice,
-            oldricbot.providers.base.LLMProvider.StreamDeltaHandler onDelta,
-            oldricbot.providers.base.LLMProvider.StreamEndHandler onEnd
+            ricbot.llm.api.LLMProvider.StreamDeltaHandler onDelta,
+            ricbot.llm.api.LLMProvider.StreamEndHandler onEnd
     ) throws Exception {
         refreshClientApiKey();
         return super.chatStream(messages, tools, model, maxTokens, temperature, reasoningEffort, toolChoice, onDelta, onEnd);

@@ -22,4 +22,11 @@ if [ -z "${JAR:-}" ] || [ ! -f "$JAR" ]; then
   exit 1
 fi
 
-exec java -jar "$JAR" "$@"
+while true; do
+  java -jar "$JAR" "$@"
+  EXIT_CODE=$?
+  if [ $EXIT_CODE -ne 100 ]; then
+    exit $EXIT_CODE
+  fi
+  echo "Restarting ricbot..."
+done

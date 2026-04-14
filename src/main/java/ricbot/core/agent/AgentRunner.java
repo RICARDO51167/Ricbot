@@ -89,7 +89,7 @@ public class AgentRunner {
                                         .setIteration(finalIteration1)
                                         .setSessionKey(spec.getSessionKey());
                                 if (hook != null) {
-                                    safeHook(() -> hook.onStreamEnd(streamCtx, resuming), hook);
+                                    safeHook(() -> hook.onStreamEnd(streamCtx, resuming.hasToolCalls()), hook);
                                 }
                             }
                     );
@@ -232,7 +232,10 @@ public class AgentRunner {
         List<Map<String, Object>> results = new ArrayList<>();
 
         for (ToolCallRequest toolCall : toolCalls) {
-            results.add(executeSingleTool(tools, toolCall, toolsUsed, toolEvents, spec));
+            ToolExecution out = executeSingleTool(tools, toolCall, spec);
+            toolsUsed.add(out.name());
+            toolEvents.add(out.event());
+            results.add(out.toolMsg());
         }
 
         return results;
@@ -247,15 +250,18 @@ public class AgentRunner {
     ) throws Exception {
         ExecutorService executor = Executors.newFixedThreadPool(Math.max(1, Math.min(toolCalls.size(), 4)));
         try {
-            List<Future<Map<String, Object>>> futures = new ArrayList<>();
+            List<Future<ToolExecution>> futures = new ArrayList<>();
 
             for (ToolCallRequest toolCall : toolCalls) {
-                futures.add(executor.submit(() -> executeSingleTool(tools, toolCall, toolsUsed, toolEvents, spec)));
+                futures.add(executor.submit(() -> executeSingleTool(tools, toolCall, spec)));
             }
 
             List<Map<String, Object>> results = new ArrayList<>();
-            for (Future<Map<String, Object>> future : futures) {
-                results.add(future.get());
+            for (Future<ToolExecution> future : futures) {
+                ToolExecution out = future.get();
+                toolsUsed.add(out.name());
+                toolEvents.add(out.event());
+                results.add(out.toolMsg());
             }
             return results;
         } finally {
@@ -263,15 +269,8 @@ public class AgentRunner {
         }
     }
 
-    private Map<String, Object> executeSingleTool(
-            ToolRegistry tools,
-            ToolCallRequest toolCall,
-            List<String> toolsUsed,
-            List<Map<String, Object>> toolEvents,
-            AgentRunSpec spec
-    ) {
+    private ToolExecution executeSingleTool(ToolRegistry tools, ToolCallRequest toolCall, AgentRunSpec spec) {
         String toolName = toolCall.getName();
-        toolsUsed.add(toolName);
 
         Object result;
         String status = "ok";
@@ -296,7 +295,6 @@ public class AgentRunner {
         event.put("name", toolName);
         event.put("status", status);
         event.put("detail", detail);
-        toolEvents.add(event);
 
         Map<String, Object> toolMsg = new LinkedHashMap<>();
         toolMsg.put("role", "tool");
@@ -304,7 +302,7 @@ public class AgentRunner {
         toolMsg.put("name", toolName);
         toolMsg.put("content", truncateToolResult(result, spec.getMaxToolResultChars()));
 
-        return toolMsg;
+        return new ToolExecution(toolName, toolMsg, event);
     }
 
     private Object truncateToolResult(Object value, int maxChars) {
@@ -334,6 +332,8 @@ public class AgentRunner {
             }
         }
     }
+
+    private record ToolExecution(String name, Map<String, Object> toolMsg, Map<String, Object> event) {}
 
     @FunctionalInterface
     private interface ThrowingRunnable {

@@ -5,7 +5,7 @@ import ricbot.core.session.Session;
 import ricbot.core.session.SessionManager;
 
 import java.time.Duration;
-import java.time.LocalDateTime;
+import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Consumer;
@@ -40,16 +40,16 @@ public class AutoCompact {
         this.ttlMinutes = sessionTtlMinutes;
     }
 
-    public boolean isExpired(LocalDateTime ts, LocalDateTime now) {
+    public boolean isExpired(Instant ts, Instant now) {
         if (ttlMinutes <= 0 || ts == null) {
             return false;
         }
-        LocalDateTime ref = now != null ? now : LocalDateTime.now();
+        Instant ref = now != null ? now : Instant.now();
         return Duration.between(ts, ref).toMinutes() >= ttlMinutes;
     }
 
-    public String formatSummary(String text, LocalDateTime lastActive) {
-        long idleMin = Duration.between(lastActive, LocalDateTime.now()).toMinutes();
+    public String formatSummary(String text, Instant lastActive) {
+        long idleMin = Duration.between(lastActive, Instant.now()).toMinutes();
         return "Inactive for " + idleMin + " minutes.\nPrevious conversation summary: " + text;
     }
 
@@ -95,7 +95,7 @@ public class AutoCompact {
             Consumer<CompletableFuture<Void>> scheduleBackground,
             Collection<String> activeSessionKeys
     ) {
-        LocalDateTime now = LocalDateTime.now();
+        Instant now = Instant.now();
 
         for (Map<String, Object> info : sessions.listSessions()) {
             String key = String.valueOf(info.getOrDefault("key", ""));
@@ -109,10 +109,10 @@ public class AutoCompact {
                 continue;
             }
 
-            LocalDateTime updatedAt = null;
+            Instant updatedAt = null;
             Object updatedObj = info.get("updated_at");
             if (updatedObj instanceof String s && !s.isBlank()) {
-                updatedAt = LocalDateTime.parse(s);
+                updatedAt = Instant.parse(s);
             }
 
             if (isExpired(updatedAt, now)) {
@@ -137,12 +137,12 @@ public class AutoCompact {
             List<Map<String, Object>> keptMsgs = split.kept();
 
             if (archiveMsgs.isEmpty() && keptMsgs.isEmpty()) {
-                session.setUpdatedAt(LocalDateTime.now());
+                session.setUpdatedAt(Instant.now());
                 sessions.save(session);
                 return;
             }
 
-            LocalDateTime lastActive = session.getUpdatedAt();
+            Instant lastActive = session.getUpdatedAt();
             String summary = "";
 
             if (!archiveMsgs.isEmpty()) {
@@ -166,7 +166,7 @@ public class AutoCompact {
 
             session.setMessages(merged);
             session.setLastConsolidated(prefix.size());
-            session.setUpdatedAt(LocalDateTime.now());
+            session.setUpdatedAt(Instant.now());
 
             sessions.save(session);
         } finally {
@@ -182,7 +182,7 @@ public class AutoCompact {
         Object ts = session.getMetadata().get("_last_summary_time");
 
         if (txt instanceof String summaryText && ts instanceof String timeText) {
-            LocalDateTime lastActive = LocalDateTime.parse(timeText);
+            Instant lastActive = Instant.parse(timeText);
             return new PreparedSession(session, formatSummary(summaryText, lastActive));
         }
 
@@ -194,12 +194,12 @@ public class AutoCompact {
         return new PreparedSession(session, null);
     }
 
+    public record SummaryRecord(String text, Instant lastActive) {}
+
+    public record PreparedSession(Session session, String summary) {}
+
     public record SplitResult(
             List<Map<String, Object>> archiveable,
             List<Map<String, Object>> kept
     ) {}
-
-    public record SummaryRecord(String text, LocalDateTime lastActive) {}
-
-    public record PreparedSession(Session session, String summary) {}
 }

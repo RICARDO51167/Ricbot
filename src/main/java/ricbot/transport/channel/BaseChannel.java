@@ -1,139 +1,157 @@
 package ricbot.transport.channel;
 
 import ricbot.core.message.MessageBus;
-import ricbot.infra.config.Config;
+import ricbot.core.message.OutboundMessage;
 import ricbot.llm.api.GroqTranscriptionProvider;
 import ricbot.llm.api.OpenAITranscriptionProvider;
 import ricbot.llm.api.TranscriptionProvider;
 
 import java.nio.file.Path;
-import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
  * Channel 抽象基类
- *
- * 主要目标：
- * 1. 作为所有聊天渠道的统一父类
- * 2. 持有 channel config 和 MessageBus
- * 3. 提供语音转写辅助逻辑
- *
- * 你后面像：
- * - TelegramChannel
- * - DiscordChannel
- * - SlackChannel
- * - WeixinChannel
- *
- * 都可以继承这个类。
  */
 public abstract class BaseChannel {
 
     /**
      * 渠道配置
      */
-    protected final Map<String, Object> channelConfig;
-
-    /**
-     * 全局 Config
-     */
-    protected final Config config;
+    protected final Object channelConfig;
 
     /**
      * 消息总线
      */
     protected final MessageBus bus;
 
+    protected String name;
+    protected String displayName;
+    protected boolean running = false;
+    protected String transcriptionProvider;
+    protected String transcriptionApiKey;
+
     protected BaseChannel(
-            Map<String, Object> channelConfig,
-            Config config,
+            Object channelConfig,
             MessageBus bus
     ) {
-        this.channelConfig = channelConfig != null ? channelConfig : Collections.emptyMap();
-        this.config = config;
+        this.channelConfig = channelConfig;
         this.bus = bus;
     }
 
-    /**
-     * 渠道显示名
-     */
-    public abstract String getDisplayName();
+    public String getName() {
+        return name;
+    }
 
-    /**
-     * 渠道内部名，如 telegram / discord / weixin
-     */
-    public abstract String getChannelName();
+    public String getDisplayName() {
+        return displayName;
+    }
 
-    /**
-     * 启动渠道
-     */
+    public boolean isRunning() {
+        return running;
+    }
+
     public abstract void start() throws Exception;
 
-    /**
-     * 停止渠道
-     */
     public abstract void stop() throws Exception;
 
-    /**
-     * 是否启用
-     *
-     * 对应 Python 里 config.channels.xxx.enabled 判断
-     */
-    public boolean isEnabled() {
-        Object enabled = channelConfig.get("enabled");
-        return enabled instanceof Boolean b && b;
+    public abstract List<String> getAllowFrom();
+
+    public void setTranscriptionProvider(String provider) {
+        this.transcriptionProvider = provider;
+    }
+
+    public void setTranscriptionApiKey(String apiKey) {
+        this.transcriptionApiKey = apiKey;
+    }
+
+    protected String getStringConfig(String key) {
+        if (channelConfig instanceof Map<?, ?> m) {
+            Object v = m.get(key);
+            return v != null ? String.valueOf(v) : null;
+        }
+        return null;
     }
 
     /**
-     * 登录流程占位。
-     *
-     * 对应 Python 里不同渠道可能有 login(force=False)
+     * 处理入站消息。
      */
-    public boolean login(boolean force) throws Exception {
-        return true;
+    protected void onMessage(
+            String content,
+            String chatId,
+            String senderId,
+            String senderName,
+            Map<String, Object> metadata
+    ) {
+        try {
+            ricbot.core.message.InboundMessage msg = new ricbot.core.message.InboundMessage();
+            msg.setChannel(getName());
+            msg.setChatId(chatId);
+            msg.setSenderId(senderId);
+            msg.setContent(content);
+            msg.setTimestamp(java.time.LocalDateTime.now());
+            
+            if (metadata == null) metadata = new HashMap<>();
+            metadata.put("sender_name", senderName);
+            msg.setMetadata(metadata);
+            
+            bus.publishInbound(msg);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } catch (Exception e) {
+            System.err.println("Error processing message from " + getName() + ": " + e.getMessage());
+        }
     }
 
     /**
-     * 读取渠道配置项
+     * 处理入站消息 (legacy)。
      */
-    public String getStringConfig(String key) {
-        Object value = channelConfig.get(key);
-        return value != null ? String.valueOf(value) : null;
+    protected void handleMessage(
+            String senderId,
+            String chatId,
+            String content,
+            List<String> media,
+            Map<String, Object> metadata
+    ) throws Exception {
+        handleMessage(senderId, chatId, content, media, metadata, null);
     }
 
-    public boolean getBooleanConfig(String key, boolean defaultValue) {
-        Object value = channelConfig.get(key);
-        if (value instanceof Boolean b) {
-            return b;
-        }
-        if (value != null) {
-            return Boolean.parseBoolean(String.valueOf(value));
-        }
-        return defaultValue;
+    /**
+     * 处理入站消息 (带 sessionKeyOverride)。
+     */
+    protected void handleMessage(
+            String senderId,
+            String chatId,
+            String content,
+            List<String> media,
+            Map<String, Object> metadata,
+            String sessionKeyOverride
+    ) throws Exception {
+        ricbot.core.message.InboundMessage msg = new ricbot.core.message.InboundMessage();
+        msg.setChannel(getName());
+        msg.setSenderId(senderId);
+        msg.setChatId(chatId);
+        msg.setContent(content);
+        msg.setMedia(media);
+        msg.setMetadata(metadata);
+        msg.setSessionKeyOverride(sessionKeyOverride);
+        bus.publishInbound(msg);
     }
 
-    public int getIntConfig(String key, int defaultValue) {
-        Object value = channelConfig.get(key);
-        if (value instanceof Number n) {
-            return n.intValue();
-        }
-        if (value != null) {
-            try {
-                return Integer.parseInt(String.valueOf(value));
-            } catch (Exception ignored) {
-            }
-        }
-        return defaultValue;
+    /**
+     * 发送增量。
+     */
+    public void sendDelta(String chatId, String delta, Map<String, Object> metadata) throws Exception {
+        // 默认不支持流式，子类可重写
     }
+
+    public abstract void send(OutboundMessage msg) throws Exception;
 
     // =========================================================
     // Audio transcription
     // =========================================================
 
-    /**
-     * 语音转写主入口
-     *
-     * 对应你前面 Python transcription.py 的 provider 选择逻辑。
-     */
     public String transcribeAudio(Path filePath) {
         if (filePath == null) {
             return "";
@@ -143,44 +161,20 @@ public abstract class BaseChannel {
         TranscriptionProvider provider = buildTranscriptionProvider(providerName);
 
         if (provider == null) {
-            System.err.println("No transcription provider available for channel: " + getChannelName());
+            System.err.println("No transcription provider available for channel: " + getName());
             return "";
         }
 
         return provider.transcribe(filePath);
     }
 
-    /**
-     * 决定当前使用哪个语音转写 provider。
-     *
-     * 优先级：
-     * 1. channel 自己配置 transcriptionProvider
-     * 2. 全局 channels.transcriptionProvider
-     * 3. 默认 groq
-     */
     protected String resolveTranscriptionProviderName() {
-        String local = getStringConfig("transcriptionProvider");
-        if (local != null && !local.isBlank()) {
-            return local;
+        if (transcriptionProvider != null && !transcriptionProvider.isBlank()) {
+            return transcriptionProvider;
         }
-
-        if (config != null && config.getChannels() != null) {
-            String global = config.getChannels().getTranscriptionProvider();
-            if (global != null && !global.isBlank()) {
-                return global;
-            }
-        }
-
         return "groq";
     }
 
-    /**
-     * 根据 provider 名称实例化具体转写 provider。
-     *
-     * 当前支持：
-     * - groq
-     * - openai
-     */
     protected TranscriptionProvider buildTranscriptionProvider(String providerName) {
         String name = providerName != null
                 ? providerName.trim().toLowerCase(java.util.Locale.ROOT)
@@ -188,51 +182,15 @@ public abstract class BaseChannel {
 
         return switch (name) {
             case "openai", "whisper", "openai_whisper" ->
-                    new OpenAITranscriptionProvider(resolveOpenAITranscriptionApiKey());
+                    new OpenAITranscriptionProvider(transcriptionApiKey);
 
             case "groq", "groq_whisper" ->
-                    new GroqTranscriptionProvider(resolveGroqTranscriptionApiKey());
+                    new GroqTranscriptionProvider(transcriptionApiKey);
 
             default -> {
                 System.err.println("Unsupported transcription provider: " + providerName + ", fallback to groq");
-                yield new GroqTranscriptionProvider(resolveGroqTranscriptionApiKey());
+                yield new GroqTranscriptionProvider(transcriptionApiKey);
             }
         };
-    }
-
-    /**
-     * 优先从 Config.providers.openai 取 key，没有再走环境变量。
-     */
-    protected String resolveOpenAITranscriptionApiKey() {
-        try {
-            if (config != null
-                    && config.getProviders() != null
-                    && config.getProviders().getOpenai() != null) {
-                String key = config.getProviders().getOpenai().getApiKey();
-                if (key != null && !key.isBlank()) {
-                    return key;
-                }
-            }
-        } catch (Exception ignored) {
-        }
-        return System.getenv("OPENAI_API_KEY");
-    }
-
-    /**
-     * 优先从 Config.providers.groq 取 key，没有再走环境变量。
-     */
-    protected String resolveGroqTranscriptionApiKey() {
-        try {
-            if (config != null
-                    && config.getProviders() != null
-                    && config.getProviders().getGroq() != null) {
-                String key = config.getProviders().getGroq().getApiKey();
-                if (key != null && !key.isBlank()) {
-                    return key;
-                }
-            }
-        } catch (Exception ignored) {
-        }
-        return System.getenv("GROQ_API_KEY");
     }
 }

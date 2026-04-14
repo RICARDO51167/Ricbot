@@ -1,117 +1,36 @@
 package ricbot.llm.azure;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import ricbot.llm.api.LLMProvider;
 import ricbot.llm.api.LLMResponse;
-import ricbot.llm.openai.OpenAIResponsesSupport;
+import ricbot.llm.api.ToolCallRequest;
 
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.time.Duration;
 import java.util.*;
 
 /**
  * 对应 Python: AzureOpenAIProvider
- *
- * 主要目标：
- * 1. 适配 Azure OpenAI Responses API
- * 2. 构建请求 body
- * 3. 兼容 reasoning / tools / tool_choice
  */
 public class AzureOpenAIProvider extends LLMProvider {
 
-    private final Map<String, String> defaultHeaders = new LinkedHashMap<>();
-
-    /**
-     * 这里你后面可以替换成真正 SDK client
-     */
-    private Object client;
+    private final HttpClient client;
+    private final String apiVersion;
 
     public AzureOpenAIProvider(String apiKey, String apiBase, String defaultModel) {
+        this(apiKey, apiBase, defaultModel, "2024-02-15-preview");
+    }
+
+    public AzureOpenAIProvider(String apiKey, String apiBase, String defaultModel, String apiVersion) {
         super(apiKey, apiBase);
-        this.defaultModel = defaultModel != null ? defaultModel : "gpt-5.2-chat";
-
-        if (apiKey == null || apiKey.isBlank()) {
-            throw new IllegalArgumentException("Azure OpenAI api_key is required");
-        }
-        if (apiBase == null || apiBase.isBlank()) {
-            throw new IllegalArgumentException("Azure OpenAI api_base is required");
-        }
-
-        if (!apiBase.endsWith("/")) {
-            apiBase += "/";
-        }
-        this.apiBase = apiBase;
-        this.defaultHeaders.put("x-session-affinity", UUID.randomUUID().toString().replace("-", ""));
-
-        // TODO:
-        // 这里后面替换成真正 Azure/OpenAI Java SDK client
-        this.client = new Object();
-    }
-
-    /**
-     * 对应 Python: _supports_temperature(...)
-     */
-    public static boolean supportsTemperature(String deploymentName, String reasoningEffort) {
-        if (reasoningEffort != null && !reasoningEffort.isBlank()) {
-            return false;
-        }
-        String name = deploymentName != null ? deploymentName.toLowerCase(Locale.ROOT) : "";
-        return !(name.contains("gpt-5") || name.contains("o1") || name.contains("o3") || name.contains("o4"));
-    }
-
-    /**
-     * 对应 Python: _build_body(...)
-     */
-    public Map<String, Object> buildBody(
-            List<Map<String, Object>> messages,
-            List<Map<String, Object>> tools,
-            String model,
-            int maxTokens,
-            double temperature,
-            String reasoningEffort,
-            Object toolChoice
-    ) {
-        String deployment = (model != null && !model.isBlank()) ? model : defaultModel;
-
-        // TODO:
-        // convert_messages(...) 你后面可以单独抽一个 OpenAIResponsesSupport.java
-        Map<String, Object> converted = OpenAIResponsesSupport.convertMessages(sanitizeEmptyContent(messages));
-        Object instructions = converted.get("instructions");
-        Object inputItems = converted.get("input");
-
-        Map<String, Object> body = new LinkedHashMap<>();
-        body.put("model", deployment);
-        body.put("instructions", instructions != null ? instructions : null);
-        body.put("input", inputItems);
-        body.put("max_output_tokens", Math.max(1, maxTokens));
-        body.put("store", false);
-        body.put("stream", false);
-
-        if (supportsTemperature(deployment, reasoningEffort)) {
-            body.put("temperature", temperature);
-        }
-
-        if (reasoningEffort != null && !reasoningEffort.isBlank()) {
-            body.put("reasoning", Map.of("effort", reasoningEffort));
-            body.put("include", List.of("reasoning.encrypted_content"));
-        }
-
-        if (tools != null && !tools.isEmpty()) {
-            body.put("tools", OpenAIResponsesSupport.convertTools(tools));
-            body.put("tool_choice", toolChoice != null ? toolChoice : "auto");
-        }
-
-        return body;
-    }
-
-    /**
-     * 对应 Python: _handle_error(e)
-     */
-    public static LLMResponse handleError(Exception e) {
-        String msg = "Error calling Azure OpenAI: " + e.getMessage();
-        Double retryAfter = extractRetryAfter(msg);
-
-        return new LLMResponse()
-                .setContent(msg)
-                .setFinishReason("error")
-                .setRetryAfter(retryAfter);
+        this.defaultModel = defaultModel != null ? defaultModel : "gpt-4";
+        this.apiVersion = apiVersion;
+        this.client = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(20))
+                .build();
     }
 
     @Override
@@ -123,30 +42,80 @@ public class AzureOpenAIProvider extends LLMProvider {
             Double temperature,
             String reasoningEffort,
             Object toolChoice
-    ) {
-        int finalMaxTokens = maxTokens != null ? maxTokens : generation.getMaxTokens();
-        double finalTemperature = temperature != null ? temperature : generation.getTemperature();
-        String finalReasoning = reasoningEffort != null ? reasoningEffort : generation.getReasoningEffort();
-
-        Map<String, Object> body = buildBody(
-                messages,
-                tools,
-                model,
-                finalMaxTokens,
-                finalTemperature,
-                finalReasoning,
-                toolChoice
-        );
-
-        try {
-            // TODO:
-            // 这里后续替换成真正 SDK:
-            // response = client.responses.create(**body)
-            Object rawResponse = AzureSdkShim.responsesCreate(client, body);
-            return OpenAIResponsesSupport.parseResponseOutput(rawResponse);
-        } catch (Exception e) {
-            return handleError(e);
+    ) throws Exception {
+        String deployment = (model != null && !model.isBlank()) ? model : defaultModel;
+        
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("messages", sanitizeEmptyContent(messages));
+        if (tools != null && !tools.isEmpty()) {
+            body.put("tools", tools);
+            body.put("tool_choice", toolChoice != null ? toolChoice : "auto");
         }
+        body.put("max_tokens", maxTokens != null ? maxTokens : generation.getMaxTokens());
+        body.put("temperature", temperature != null ? temperature : generation.getTemperature());
+
+        String json = MAPPER.writeValueAsString(body);
+        
+        // Azure URL format: {apiBase}/openai/deployments/{deployment}/chat/completions?api-version={apiVersion}
+        String baseUrl = apiBase.endsWith("/") ? apiBase : apiBase + "/";
+        String url = baseUrl + "openai/deployments/" + deployment + "/chat/completions?api-version=" + apiVersion;
+
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(url))
+                .header("Content-Type", "application/json")
+                .header("api-key", apiKey)
+                .POST(HttpRequest.BodyPublishers.ofString(json))
+                .build();
+
+        HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+
+        if (response.statusCode() != 200) {
+            return new LLMResponse()
+                    .setFinishReason("error")
+                    .setContent("Azure OpenAI error: " + response.statusCode() + " " + response.body());
+        }
+
+        return parseAzureResponse(response.body());
+    }
+
+    @SuppressWarnings("unchecked")
+    private LLMResponse parseAzureResponse(String json) throws Exception {
+        Map<String, Object> map = MAPPER.readValue(json, new TypeReference<>() {});
+        List<Map<String, Object>> choices = (List<Map<String, Object>>) map.get("choices");
+        if (choices == null || choices.isEmpty()) {
+            return new LLMResponse().setFinishReason("error").setContent("Empty choices from Azure OpenAI");
+        }
+
+        Map<String, Object> first = choices.get(0);
+        Map<String, Object> message = (Map<String, Object>) first.get("message");
+        String content = (String) message.get("content");
+        String finishReason = (String) first.get("finish_reason");
+
+        List<ToolCallRequest> toolCalls = new ArrayList<>();
+        List<Map<String, Object>> tcRaw = (List<Map<String, Object>>) message.get("tool_calls");
+        if (tcRaw != null) {
+            for (Map<String, Object> tc : tcRaw) {
+                String id = (String) tc.get("id");
+                Map<String, Object> func = (Map<String, Object>) tc.get("function");
+                String name = (String) func.get("name");
+                String argsJson = (String) func.get("arguments");
+                Map<String, Object> args = MAPPER.readValue(argsJson, new TypeReference<>() {});
+                toolCalls.add(new ToolCallRequest(id, name, args));
+            }
+        }
+
+        Map<String, Object> usageRaw = (Map<String, Object>) map.get("usage");
+        Map<String, Integer> usage = new HashMap<>();
+        if (usageRaw != null) {
+            usage.put("prompt_tokens", (Integer) usageRaw.get("prompt_tokens"));
+            usage.put("completion_tokens", (Integer) usageRaw.get("completion_tokens"));
+        }
+
+        return new LLMResponse()
+                .setContent(content)
+                .setToolCalls(toolCalls)
+                .setFinishReason(finishReason)
+                .setUsage(usage);
     }
 
     @Override
@@ -160,27 +129,38 @@ public class AzureOpenAIProvider extends LLMProvider {
             Object toolChoice,
             StreamDeltaHandler onDelta,
             StreamEndHandler onEnd
-    ) {
-        int finalMaxTokens = maxTokens != null ? maxTokens : generation.getMaxTokens();
-        double finalTemperature = temperature != null ? temperature : generation.getTemperature();
-        String finalReasoning = reasoningEffort != null ? reasoningEffort : generation.getReasoningEffort();
+    ) throws Exception {
+        String deployment = (model != null && !model.isBlank()) ? model : defaultModel;
 
-        Map<String, Object> body = buildBody(
-                messages,
-                tools,
-                model,
-                finalMaxTokens,
-                finalTemperature,
-                finalReasoning,
-                toolChoice
-        );
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("messages", sanitizeEmptyContent(messages));
         body.put("stream", true);
-
-        try {
-            Object stream = AzureSdkShim.responsesStream(client, body);
-            return OpenAIResponsesSupport.consumeSdkStream(stream, onDelta, onEnd);
-        } catch (Exception e) {
-            return handleError(e);
+        if (tools != null && !tools.isEmpty()) {
+            body.put("tools", tools);
+            body.put("tool_choice", toolChoice != null ? toolChoice : "auto");
         }
+        body.put("max_tokens", maxTokens != null ? maxTokens : generation.getMaxTokens());
+        body.put("temperature", temperature != null ? temperature : generation.getTemperature());
+
+        String json = MAPPER.writeValueAsString(body);
+
+        // Azure URL format: {apiBase}/openai/deployments/{deployment}/chat/completions?api-version={apiVersion}
+        String baseUrl = apiBase.endsWith("/") ? apiBase : apiBase + "/";
+        String url = baseUrl + "openai/deployments/" + deployment + "/chat/completions?api-version=" + apiVersion;
+
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(url))
+                .header("Content-Type", "application/json")
+                .header("api-key", apiKey)
+                .POST(HttpRequest.BodyPublishers.ofString(json))
+                .build();
+
+        HttpResponse<java.util.stream.Stream<String>> response = client.send(request, HttpResponse.BodyHandlers.ofLines());
+
+        if (response.statusCode() != 200) {
+            throw new RuntimeException("Azure OpenAI Stream Error: " + response.statusCode());
+        }
+
+        return ricbot.llm.api.OpenAIResponsesSupport.consumeSSE(response.body(), onDelta, onEnd);
     }
 }

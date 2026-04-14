@@ -2,6 +2,8 @@ package ricbot.infra.heartbeat;
 
 
 import ricbot.llm.api.LLMProvider;
+import ricbot.llm.api.LLMResponse;
+import ricbot.llm.api.ToolCallRequest;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -12,20 +14,9 @@ import java.util.*;
 import java.util.concurrent.*;
 
 /**
- * 对应 Python: HeartbeatService
+ * HeartbeatService：后台活跃度检测与自动任务触发。
  *
- * 主要目标：
- * 1. 周期性唤醒 agent，检查是否有待执行任务
- * 2. 先做“决策阶段”：
- *    - 读取 HEARTBEAT.md
- *    - 调用 LLM，通过一个虚拟 tool 决定 skip / run
- * 3. 再做“执行阶段”：
- *    - 如果需要执行，则把任务摘要交给 onExecute 回调
- * 4. 执行完成后：
- *    - 再通过 evaluateResponse 判断是否应该通知用户
- *    - 如果应该通知，则调用 onNotify
- *
- * 对应 Python 文件: service(1).py
+ * 对应 Python heartbeat.py
  */
 public class HeartbeatService {
 
@@ -410,6 +401,22 @@ public class HeartbeatService {
             ProviderResponse r = new ProviderResponse();
 
             if (raw == null) {
+                return r;
+            }
+
+            if (raw instanceof LLMResponse lr) {
+                r.setHasToolCalls(lr.hasToolCalls());
+                if (lr.getToolCalls() != null) {
+                    List<Map<String, Object>> calls = new ArrayList<>();
+                    for (ToolCallRequest tc : lr.getToolCalls()) {
+                        Map<String, Object> m = new HashMap<>();
+                        m.put("id", tc.getId());
+                        m.put("name", tc.getName());
+                        m.put("arguments", tc.getArguments());
+                        calls.add(m);
+                    }
+                    r.setToolCalls(calls);
+                }
                 return r;
             }
 

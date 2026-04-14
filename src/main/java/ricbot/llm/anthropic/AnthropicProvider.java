@@ -1,20 +1,22 @@
 package ricbot.llm.anthropic;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import ricbot.llm.api.LLMProvider;
 import ricbot.llm.api.LLMResponse;
+import ricbot.llm.api.ToolCallRequest;
 
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.security.SecureRandom;
+import java.time.Duration;
 import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
  * 对应 Python: AnthropicProvider
- *
- * 主要目标：
- * 1. 使用 Anthropic Messages API
- * 2. 把 OpenAI 风格 message/tool schema 转成 Anthropic 风格
- * 3. 支持 thinking blocks / tool_use / tool_result / image block
  */
 public class AnthropicProvider extends LLMProvider {
 
@@ -22,7 +24,7 @@ public class AnthropicProvider extends LLMProvider {
     private static final SecureRandom RANDOM = new SecureRandom();
 
     private final Map<String, String> extraHeaders;
-    private Object client;
+    private final HttpClient client;
 
     public AnthropicProvider(
             String apiKey,
@@ -31,12 +33,11 @@ public class AnthropicProvider extends LLMProvider {
             Map<String, String> extraHeaders
     ) {
         super(apiKey, apiBase);
-        this.defaultModel = defaultModel != null ? defaultModel : "claude-sonnet-4-20250514";
-        this.extraHeaders = extraHeaders != null ? extraHeaders : new LinkedHashMap<>();
-
-        // TODO:
-        // 这里后面替换成真正 Anthropic Java SDK client
-        this.client = new Object();
+        this.defaultModel = defaultModel != null ? defaultModel : "claude-3-5-sonnet-20240620";
+        this.extraHeaders = extraHeaders != null ? new LinkedHashMap<>(extraHeaders) : new LinkedHashMap<>();
+        this.client = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(20))
+                .build();
     }
 
     private static String genToolId() {
@@ -47,32 +48,6 @@ public class AnthropicProvider extends LLMProvider {
         return sb.toString();
     }
 
-    /**
-     * 对应 Python: _handle_error(...)
-     */
-    public static LLMResponse handleError(Exception e) {
-        String msg = "Error calling LLM: " + e.getMessage();
-        Double retryAfter = extractRetryAfter(msg);
-
-        String errorName = e.getClass().getSimpleName().toLowerCase(Locale.ROOT);
-        String errorKind = null;
-        if (errorName.contains("timeout")) {
-            errorKind = "timeout";
-        } else if (errorName.contains("connection")) {
-            errorKind = "connection";
-        }
-
-        return new LLMResponse()
-                .setContent(msg)
-                .setFinishReason("error")
-                .setRetryAfter(retryAfter)
-                .setErrorKind(errorKind)
-                .setErrorRetryAfterS(retryAfter);
-    }
-
-    /**
-     * 对应 Python: _strip_prefix(model)
-     */
     public static String stripPrefix(String model) {
         if (model != null && model.startsWith("anthropic/")) {
             return model.substring("anthropic/".length());
@@ -80,16 +55,9 @@ public class AnthropicProvider extends LLMProvider {
         return model;
     }
 
-    /**
-     * 对应 Python: _convert_messages(...)
-     *
-     * 返回:
-     * - system
-     * - anthropic_messages
-     */
     @SuppressWarnings("unchecked")
     public ConvertedAnthropicMessages convertMessages(List<Map<String, Object>> messages) {
-        Object system = "";
+        Object system = null;
         List<Map<String, Object>> raw = new ArrayList<>();
 
         for (Map<String, Object> msg : messages) {
@@ -97,17 +65,12 @@ public class AnthropicProvider extends LLMProvider {
             Object content = msg.get("content");
 
             if ("system".equals(role)) {
-                if (content instanceof String || content instanceof List<?>) {
-                    system = content;
-                } else {
-                    system = content != null ? String.valueOf(content) : "";
-                }
+                system = content;
                 continue;
             }
 
             if ("tool".equals(role)) {
                 Map<String, Object> block = toolResultBlock(msg);
-
                 if (!raw.isEmpty() && "user".equals(raw.get(raw.size() - 1).get("role"))) {
                     Object prevContent = raw.get(raw.size() - 1).get("content");
                     if (prevContent instanceof List<?> prevList) {
@@ -146,59 +109,22 @@ public class AnthropicProvider extends LLMProvider {
         return new ConvertedAnthropicMessages(system, mergeConsecutive(raw));
     }
 
-    /**
-     * 对应 Python: _tool_result_block(msg)
-     */
     public static Map<String, Object> toolResultBlock(Map<String, Object> msg) {
         Object content = msg.get("content");
-
         Map<String, Object> block = new LinkedHashMap<>();
         block.put("type", "tool_result");
         block.put("tool_use_id", msg.getOrDefault("tool_call_id", ""));
-
-        if (content instanceof String || content instanceof List<?>) {
-            block.put("content", content);
-        } else {
-            block.put("content", content != null ? String.valueOf(content) : "");
-        }
-
+        block.put("content", content != null ? content : "");
         return block;
     }
 
-    /**
-     * 对应 Python: _assistant_blocks(msg)
-     */
     @SuppressWarnings("unchecked")
     public static List<Map<String, Object>> assistantBlocks(Map<String, Object> msg) {
         List<Map<String, Object>> blocks = new ArrayList<>();
         Object content = msg.get("content");
 
-        Object thinkingBlocksObj = msg.get("thinking_blocks");
-        if (thinkingBlocksObj instanceof List<?> tbList) {
-            for (Object tb : tbList) {
-                if (tb instanceof Map<?, ?> rawTb) {
-                    Map<String, Object> map = (Map<String, Object>) rawTb;
-                    if ("thinking".equals(map.get("type"))) {
-                        Map<String, Object> block = new LinkedHashMap<>();
-                        block.put("type", "thinking");
-                        block.put("thinking", map.getOrDefault("thinking", ""));
-                        block.put("signature", map.getOrDefault("signature", ""));
-                        blocks.add(block);
-                    }
-                }
-            }
-        }
-
         if (content instanceof String s && !s.isBlank()) {
             blocks.add(new LinkedHashMap<>(Map.of("type", "text", "text", s)));
-        } else if (content instanceof List<?> list) {
-            for (Object item : list) {
-                if (item instanceof Map<?, ?> rawItem) {
-                    blocks.add(new LinkedHashMap<>((Map<String, Object>) rawItem));
-                } else {
-                    blocks.add(new LinkedHashMap<>(Map.of("type", "text", "text", String.valueOf(item))));
-                }
-            }
         }
 
         Object toolCallsObj = msg.get("tool_calls");
@@ -206,19 +132,16 @@ public class AnthropicProvider extends LLMProvider {
             for (Object tc : toolCalls) {
                 if (!(tc instanceof Map<?, ?> rawTc)) continue;
                 Map<String, Object> tcMap = (Map<String, Object>) rawTc;
-                Map<String, Object> func = tcMap.get("function") instanceof Map<?, ?> fm
-                        ? (Map<String, Object>) fm
-                        : Collections.emptyMap();
+                Map<String, Object> func = (Map<String, Object>) tcMap.getOrDefault("function", Collections.emptyMap());
 
-                Object args = func.getOrDefault("arguments", "{}");
-                Map<String, Object> input = new LinkedHashMap<>();
+                Map<String, Object> input = new HashMap<>();
+                Object args = func.get("arguments");
                 if (args instanceof String s) {
                     try {
-                        input = MAPPER.readValue(s, new com.fasterxml.jackson.core.type.TypeReference<>() {});
-                    } catch (Exception ignored) {
-                    }
+                        input = MAPPER.readValue(s, new TypeReference<>() {});
+                    } catch (Exception ignored) {}
                 } else if (args instanceof Map<?, ?> m) {
-                    input = new LinkedHashMap<>((Map<String, Object>) m);
+                    input = (Map<String, Object>) m;
                 }
 
                 Map<String, Object> block = new LinkedHashMap<>();
@@ -231,147 +154,51 @@ public class AnthropicProvider extends LLMProvider {
         }
 
         if (blocks.isEmpty()) {
-            blocks.add(new LinkedHashMap<>(Map.of("type", "text", "text", "")));
+            blocks.add(Map.of("type", "text", "text", ""));
         }
-
         return blocks;
     }
 
-    /**
-     * 对应 Python: _convert_user_content(content)
-     */
     @SuppressWarnings("unchecked")
     public Object convertUserContent(Object content) {
         if (content instanceof String || content == null) {
-            return content != null ? content : "(empty)";
+            return content != null ? content : "";
         }
         if (!(content instanceof List<?> list)) {
             return String.valueOf(content);
         }
-
-        List<Map<String, Object>> result = new ArrayList<>();
-        for (Object item : list) {
-            if (!(item instanceof Map<?, ?> raw)) {
-                result.add(new LinkedHashMap<>(Map.of("type", "text", "text", String.valueOf(item))));
-                continue;
-            }
-
-            Map<String, Object> dict = (Map<String, Object>) raw;
-            if ("image_url".equals(dict.get("type"))) {
-                Map<String, Object> converted = convertImageBlock(dict);
-                if (converted != null) {
-                    result.add(converted);
-                }
-                continue;
-            }
-            result.add(new LinkedHashMap<>(dict));
-        }
-
-        return result.isEmpty() ? "(empty)" : result;
+        return list;
     }
 
-    /**
-     * 对应 Python: _convert_image_block(block)
-     */
-    @SuppressWarnings("unchecked")
-    public static Map<String, Object> convertImageBlock(Map<String, Object> block) {
-        Object imageUrlObj = block.get("image_url");
-        if (!(imageUrlObj instanceof Map<?, ?> raw)) {
-            return null;
-        }
-
-        String url = String.valueOf(((Map<String, Object>) raw).getOrDefault("url", ""));
-        if (url.isBlank()) {
-            return null;
-        }
-
-        Matcher m = Pattern.compile("^data:(image/\\w+);base64,(.+)$", Pattern.DOTALL).matcher(url);
-        if (m.find()) {
-            return new LinkedHashMap<>(Map.of(
-                    "type", "image",
-                    "source", Map.of(
-                            "type", "base64",
-                            "media_type", m.group(1),
-                            "data", m.group(2)
-                    )
-            ));
-        }
-
-        return new LinkedHashMap<>(Map.of(
-                "type", "image",
-                "source", Map.of(
-                        "type", "url",
-                        "url", url
-                )
-        ));
-    }
-
-    /**
-     * 对应 Python: _merge_consecutive(msgs)
-     */
     @SuppressWarnings("unchecked")
     public static List<Map<String, Object>> mergeConsecutive(List<Map<String, Object>> msgs) {
         List<Map<String, Object>> merged = new ArrayList<>();
-
         for (Map<String, Object> msg : msgs) {
             if (!merged.isEmpty() && Objects.equals(merged.get(merged.size() - 1).get("role"), msg.get("role"))) {
                 Object prevC = merged.get(merged.size() - 1).get("content");
                 Object curC = msg.get("content");
 
-                List<Object> prevList;
-                if (prevC instanceof String s) {
-                    prevList = new ArrayList<>(List.of(Map.of("type", "text", "text", s)));
-                } else if (prevC instanceof List<?> list) {
-                    prevList = new ArrayList<>((List<Object>) list);
-                } else {
-                    prevList = new ArrayList<>();
-                }
-
-                List<Object> curList;
-                if (curC instanceof String s) {
-                    curList = new ArrayList<>(List.of(Map.of("type", "text", "text", s)));
-                } else if (curC instanceof List<?> list) {
-                    curList = new ArrayList<>((List<Object>) list);
-                } else {
-                    curList = new ArrayList<>();
-                }
-
+                List<Object> prevList = (prevC instanceof List<?> l) ? new ArrayList<>(l) : new ArrayList<>(List.of(Map.of("type", "text", "text", prevC)));
+                List<Object> curList = (curC instanceof List<?> l) ? new ArrayList<>(l) : new ArrayList<>(List.of(Map.of("type", "text", "text", curC)));
                 prevList.addAll(curList);
                 merged.get(merged.size() - 1).put("content", prevList);
             } else {
                 merged.add(new LinkedHashMap<>(msg));
             }
         }
-
         return merged;
     }
 
-    /**
-     * 对应 Python: _convert_tools(tools)
-     */
     @SuppressWarnings("unchecked")
     public static List<Map<String, Object>> convertTools(List<Map<String, Object>> tools) {
-        if (tools == null || tools.isEmpty()) {
-            return null;
-        }
-
+        if (tools == null) return null;
         List<Map<String, Object>> result = new ArrayList<>();
         for (Map<String, Object> tool : tools) {
-            Map<String, Object> func = tool.get("function") instanceof Map<?, ?> fm
-                    ? (Map<String, Object>) fm
-                    : tool;
-
+            Map<String, Object> func = (Map<String, Object>) tool.getOrDefault("function", tool);
             Map<String, Object> entry = new LinkedHashMap<>();
-            entry.put("name", func.getOrDefault("name", ""));
-            entry.put("input_schema", func.getOrDefault("parameters", Map.of("type", "object", "properties", Map.of())));
-
-            Object desc = func.get("description");
-            if (desc != null && !String.valueOf(desc).isBlank()) {
-                entry.put("description", desc);
-            }
-            if (tool.containsKey("cache_control")) {
-                entry.put("cache_control", tool.get("cache_control"));
-            }
+            entry.put("name", func.get("name"));
+            entry.put("description", func.get("description"));
+            entry.put("input_schema", func.get("parameters"));
             result.add(entry);
         }
         return result;
@@ -386,34 +213,82 @@ public class AnthropicProvider extends LLMProvider {
             Double temperature,
             String reasoningEffort,
             Object toolChoice
-    ) {
-        try {
-            ConvertedAnthropicMessages converted = convertMessages(messages);
-            String finalModel = stripPrefix(model != null ? model : defaultModel);
+    ) throws Exception {
+        ConvertedAnthropicMessages converted = convertMessages(messages);
+        String finalModel = stripPrefix(model != null ? model : defaultModel);
 
-            Map<String, Object> body = new LinkedHashMap<>();
-            body.put("model", finalModel);
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("model", finalModel);
+        if (converted.system() != null) {
             body.put("system", converted.system());
-            body.put("messages", converted.messages());
-            body.put("max_tokens", maxTokens != null ? maxTokens : generation.getMaxTokens());
-
-            if (tools != null && !tools.isEmpty()) {
-                body.put("tools", convertTools(tools));
-            }
-            if (reasoningEffort != null && !reasoningEffort.isBlank()) {
-                body.put("thinking", Map.of("type", "enabled", "budget_tokens", 2048));
-            }
-
-            // TODO:
-            // 替换成真正 Anthropic SDK messages.create(...)
-            Object raw = AnthropicSdkShim.messagesCreate(client, body);
-
-            // TODO:
-            // 这里后续你可以单独抽一个 AnthropicResponseParser
-            return AnthropicResponseParser.parse(raw);
-        } catch (Exception e) {
-            return handleError(e);
         }
+        body.put("messages", converted.messages());
+        body.put("max_tokens", maxTokens != null ? maxTokens : generation.getMaxTokens());
+
+        if (tools != null && !tools.isEmpty()) {
+            body.put("tools", convertTools(tools));
+        }
+
+        String json = MAPPER.writeValueAsString(body);
+        String url = (apiBase != null && !apiBase.isBlank()) ? apiBase : "https://api.anthropic.com/v1/messages";
+        
+        HttpRequest.Builder rb = HttpRequest.newBuilder()
+                .uri(URI.create(url))
+                .header("Content-Type", "application/json")
+                .header("x-api-key", apiKey)
+                .header("anthropic-version", "2023-06-01")
+                .POST(HttpRequest.BodyPublishers.ofString(json));
+
+        for (Map.Entry<String, String> e : extraHeaders.entrySet()) {
+            rb.header(e.getKey(), e.getValue());
+        }
+
+        HttpResponse<String> response = client.send(rb.build(), HttpResponse.BodyHandlers.ofString());
+        
+        if (response.statusCode() != 200) {
+            return new LLMResponse()
+                    .setFinishReason("error")
+                    .setContent("Anthropic API error: " + response.statusCode() + " " + response.body());
+        }
+
+        return parseAnthropicResponse(response.body());
+    }
+
+    @SuppressWarnings("unchecked")
+    private LLMResponse parseAnthropicResponse(String json) throws Exception {
+        Map<String, Object> map = MAPPER.readValue(json, new TypeReference<>() {});
+        
+        StringBuilder content = new StringBuilder();
+        List<ToolCallRequest> toolCalls = new ArrayList<>();
+        
+        List<Map<String, Object>> contentList = (List<Map<String, Object>>) map.get("content");
+        if (contentList != null) {
+            for (Map<String, Object> block : contentList) {
+                String type = (String) block.get("type");
+                if ("text".equals(type)) {
+                    content.append((String) block.get("text"));
+                } else if ("tool_use".equals(type)) {
+                    String id = (String) block.get("id");
+                    String name = (String) block.get("name");
+                    Map<String, Object> input = (Map<String, Object>) block.get("input");
+                    toolCalls.add(new ToolCallRequest(id, name, input));
+                }
+            }
+        }
+
+        String stopReason = (String) map.get("stop_reason");
+        Map<String, Object> usageRaw = (Map<String, Object>) map.get("usage");
+        Map<String, Integer> usage = new HashMap<>();
+        if (usageRaw != null) {
+            usage.put("prompt_tokens", (Integer) usageRaw.get("input_tokens"));
+            usage.put("completion_tokens", (Integer) usageRaw.get("output_tokens"));
+        }
+
+        return new LLMResponse()
+                .setContent(content.toString())
+                .setToolCalls(toolCalls)
+                .setFinishReason(stopReason)
+                .setUsage(usage);
     }
 
     @Override
@@ -434,7 +309,9 @@ public class AnthropicProvider extends LLMProvider {
 
             Map<String, Object> body = new LinkedHashMap<>();
             body.put("model", finalModel);
-            body.put("system", converted.system());
+            if (converted.system() != null) {
+                body.put("system", converted.system());
+            }
             body.put("messages", converted.messages());
             body.put("max_tokens", maxTokens != null ? maxTokens : generation.getMaxTokens());
             body.put("stream", true);
@@ -443,13 +320,72 @@ public class AnthropicProvider extends LLMProvider {
                 body.put("tools", convertTools(tools));
             }
 
-            Object stream = AnthropicSdkShim.messagesStream(client, body);
-            return AnthropicResponseParser.consumeStream(stream, onDelta, onEnd);
+            String json = MAPPER.writeValueAsString(body);
+            String url = (apiBase != null && !apiBase.isBlank()) ? apiBase : "https://api.anthropic.com/v1/messages";
+
+            HttpRequest.Builder rb = HttpRequest.newBuilder()
+                    .uri(URI.create(url))
+                    .header("Content-Type", "application/json")
+                    .header("x-api-key", apiKey)
+                    .header("anthropic-version", "2023-06-01")
+                    .POST(HttpRequest.BodyPublishers.ofString(json));
+
+            for (Map.Entry<String, String> e : extraHeaders.entrySet()) {
+                rb.header(e.getKey(), e.getValue());
+            }
+
+            HttpResponse<java.util.stream.Stream<String>> response = client.send(rb.build(), HttpResponse.BodyHandlers.ofLines());
+
+            if (response.statusCode() != 200) {
+                throw new RuntimeException("Anthropic Stream Error: " + response.statusCode());
+            }
+
+            StringBuilder fullContent = new StringBuilder();
+            List<ToolCallRequest> toolCalls = new ArrayList<>();
+            Map<String, Integer> usage = new HashMap<>();
+
+            response.body().forEach(line -> {
+                if (line.startsWith("data: ")) {
+                    String data = line.substring(6).trim();
+                    if ("[DONE]".equals(data)) return;
+                    try {
+                        Map<String, Object> event = MAPPER.readValue(data, new TypeReference<>() {});
+                        String type = (String) event.get("type");
+
+                        if ("content_block_delta".equals(type)) {
+                            Map<String, Object> delta = (Map<String, Object>) event.get("delta");
+                            if ("text_delta".equals(delta.get("type"))) {
+                                String text = (String) delta.get("text");
+                                fullContent.append(text);
+                                if (onDelta != null) onDelta.handle(text);
+                            }
+                        } else if ("message_delta".equals(type)) {
+                            Map<String, Object> usageRaw = (Map<String, Object>) event.get("usage");
+                            if (usageRaw != null) {
+                                usage.put("completion_tokens", (Integer) usageRaw.get("output_tokens"));
+                            }
+                        } else if ("message_start".equals(type)) {
+                            Map<String, Object> msg = (Map<String, Object>) event.get("message");
+                            Map<String, Object> usageRaw = (Map<String, Object>) msg.get("usage");
+                            if (usageRaw != null) {
+                                usage.put("prompt_tokens", (Integer) usageRaw.get("input_tokens"));
+                            }
+                        }
+                    } catch (Exception ignored) {}
+                }
+            });
+
+            LLMResponse finalResp = new LLMResponse()
+                    .setContent(fullContent.toString())
+                    .setUsage(usage);
+            
+            if (onEnd != null) onEnd.handle(finalResp);
+            return finalResp;
+
         } catch (Exception e) {
-            return handleError(e);
+            throw new RuntimeException(e);
         }
     }
 
-    public record ConvertedAnthropicMessages(Object system, List<Map<String, Object>> messages) {
-    }
+    public record ConvertedAnthropicMessages(Object system, List<Map<String, Object>> messages) {}
 }

@@ -15,10 +15,7 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
+import java.util.concurrent.*;
 import java.util.concurrent.locks.ReentrantLock;
 
 /**
@@ -328,10 +325,7 @@ public class NanobotApiServer {
                                         userContent,
                                         sessionKey,
                                         "api",
-                                        API_CHAT_ID,
-                                        null,
-                                        null,
-                                        null
+                                        API_CHAT_ID
                                 ),
                                 appContext.getRequestTimeoutMillis()
                         );
@@ -347,10 +341,7 @@ public class NanobotApiServer {
                                             userContent,
                                             sessionKey,
                                             "api",
-                                            API_CHAT_ID,
-                                            null,
-                                            null,
-                                            null
+                                            API_CHAT_ID
                                     ),
                                     appContext.getRequestTimeoutMillis()
                             );

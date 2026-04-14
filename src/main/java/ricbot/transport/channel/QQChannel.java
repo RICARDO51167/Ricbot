@@ -1,6 +1,7 @@
 package ricbot.transport.channel;
 
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import ricbot.core.message.MessageBus;
 import ricbot.core.message.OutboundMessage;
 
@@ -9,10 +10,11 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.net.http.WebSocket;
 import java.nio.file.*;
 import java.time.Duration;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.*;
 import java.util.regex.Pattern;
 
 /**
@@ -166,14 +168,282 @@ public class QQChannel extends BaseChannel {
 
         running = true;
 
-        // TODO: 在这里接入真正的 Java QQ SDK
-        // 当前保留一个可注入 client 的模式
         if (client == null) {
-            throw new IllegalStateException("QQBotClient not injected");
+            // Instantiate default client if none provided
+            this.client = new DefaultQQBotClient(httpClient);
         }
 
         client.start(config.getAppId(), config.getSecret(), this::onMessage);
         System.out.println("QQ bot started");
+    }
+
+    // =========================================================
+    // Default implementation of QQBotClient
+    // =========================================================
+
+    public static class DefaultQQBotClient implements QQBotClient {
+        private final HttpClient httpClient;
+        private final ObjectMapper mapper = new ObjectMapper();
+        private String appId;
+        private String secret;
+        private String accessToken;
+        private long accessTokenExpiry;
+        private QQEventListener listener;
+        private WebSocket webSocket;
+        private ScheduledExecutorService heartbeatScheduler;
+        private volatile int lastSSeq = 0;
+
+        public DefaultQQBotClient(HttpClient httpClient) {
+            this.httpClient = httpClient;
+        }
+
+        @Override
+        public void start(String appId, String secret, QQEventListener listener) throws Exception {
+            this.appId = appId;
+            this.secret = secret;
+            this.listener = listener;
+            refreshAccessToken();
+            connectGateway();
+        }
+
+        private void connectGateway() throws Exception {
+            HttpRequest request = HttpRequest.newBuilder(URI.create("https://api.sgroup.qq.com/gateway"))
+                    .header("Authorization", "QQBot " + getAccessToken())
+                    .GET().build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() != 200) {
+                throw new IOException("Failed to get QQ Gateway: " + response.body());
+            }
+
+            Map<String, Object> data = mapper.readValue(response.body(), Map.class);
+            String wssUrl = (String) data.get("url");
+            
+            this.webSocket = httpClient.newWebSocketBuilder()
+                    .buildAsync(URI.create(wssUrl), new QqWsListener()).join();
+        }
+
+        private class QqWsListener implements WebSocket.Listener {
+            private final StringBuilder buffer = new StringBuilder();
+
+            @Override
+            public void onOpen(WebSocket webSocket) {
+                System.out.println("QQ WebSocket connected");
+                webSocket.request(1);
+            }
+
+            @Override
+            public CompletionStage<?> onText(WebSocket webSocket, CharSequence data, boolean last) {
+                buffer.append(data);
+                if (last) {
+                    try {
+                        handleMessage(buffer.toString());
+                    } catch (Exception e) {
+                        e.printStackTrace();
+                    }
+                    buffer.setLength(0);
+                }
+                webSocket.request(1);
+                return null;
+            }
+
+            @Override
+            public CompletionStage<?> onClose(WebSocket webSocket, int statusCode, String reason) {
+                System.out.println("QQ WebSocket closed: " + statusCode + " " + reason);
+                stopHeartbeat();
+                // Attempt reconnect
+                try {
+                    Thread.sleep(3000);
+                    connectGateway();
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+                return null;
+            }
+
+            @Override
+            public void onError(WebSocket webSocket, Throwable error) {
+                System.err.println("QQ WebSocket error: " + error.getMessage());
+                stopHeartbeat();
+            }
+
+            private void handleMessage(String json) throws Exception {
+                Map<String, Object> msg = mapper.readValue(json, Map.class);
+                Integer op = (Integer) msg.get("op");
+                
+                if (msg.containsKey("s") && msg.get("s") != null) {
+                    lastSSeq = (Integer) msg.get("s");
+                }
+
+                if (op == null) return;
+
+                switch (op) {
+                    case 10: // Hello
+                        Map<String, Object> d = (Map<String, Object>) msg.get("d");
+                        int interval = (Integer) d.get("heartbeat_interval");
+                        startHeartbeat(interval);
+                        identify();
+                        break;
+                    case 0: // Dispatch
+                        String t = (String) msg.get("t");
+                        Map<String, Object> eventData = (Map<String, Object>) msg.get("d");
+                        if ("READY".equals(t)) {
+                            System.out.println("QQ Bot is READY.");
+                        } else if (t != null && t.endsWith("MESSAGE_CREATE")) {
+                            processInboundMessage(eventData);
+                        }
+                        break;
+                    case 7: // Reconnect
+                    case 9: // Invalid Session
+                        webSocket.abort(); // Will trigger onClose and reconnect
+                        break;
+                }
+            }
+        }
+
+        private void startHeartbeat(int interval) {
+            stopHeartbeat();
+            heartbeatScheduler = Executors.newSingleThreadScheduledExecutor();
+            heartbeatScheduler.scheduleAtFixedRate(() -> {
+                try {
+                    Map<String, Object> beat = new HashMap<>();
+                    beat.put("op", 1);
+                    beat.put("d", lastSSeq > 0 ? lastSSeq : null);
+                    
+                    String json = mapper.writeValueAsString(beat);
+                    if (webSocket != null && !webSocket.isInputClosed()) {
+                        webSocket.sendText(json, true).join();
+                    }
+                } catch (Exception e) {
+                    System.err.println("Failed to send QQ heartbeat");
+                }
+            }, interval, interval, TimeUnit.MILLISECONDS);
+        }
+
+        private void stopHeartbeat() {
+            if (heartbeatScheduler != null) {
+                heartbeatScheduler.shutdownNow();
+                heartbeatScheduler = null;
+            }
+        }
+
+        private void identify() throws Exception {
+            Map<String, Object> identify = new HashMap<>();
+            identify.put("op", 2);
+            
+            Map<String, Object> d = new HashMap<>();
+            d.put("token", "QQBot " + getAccessToken());
+            d.put("intents", 33554432 | 1073741824 | 1); // C2C & Group & Guilds
+            identify.put("d", d);
+            
+            webSocket.sendText(mapper.writeValueAsString(identify), true).join();
+        }
+
+        private void processInboundMessage(Map<String, Object> data) {
+            if (listener == null) return;
+
+            boolean isGroup = data.containsKey("group_id");
+            String chatId = isGroup ? (String) data.get("group_id") : null;
+            
+            Map<String, Object> author = (Map<String, Object>) data.get("author");
+            String userId = author != null ? (String) author.get("id") : null;
+            
+            if (!isGroup && chatId == null) {
+                chatId = userId; // For C2C, fallback to user ID
+            }
+
+            String msgId = (String) data.get("id");
+            String content = (String) data.get("content");
+            
+            List<QQAttachment> atts = new ArrayList<>();
+            List<Map<String, Object>> attachments = (List<Map<String, Object>>) data.get("attachments");
+            if (attachments != null) {
+                for (Map<String, Object> a : attachments) {
+                    String url = (String) a.get("url");
+                    if (url != null && url.startsWith("//")) url = "https:" + url;
+                    else if (url != null && !url.startsWith("http")) url = "https://" + url;
+                    
+                    atts.add(new QQAttachment(url, (String) a.get("filename"), (String) a.get("content_type")));
+                }
+            }
+
+            final String fChatId = chatId;
+            final String fUserId = userId;
+            
+            listener.onMessage(new QQInboundMessage() {
+                public String id() { return msgId; }
+                public String content() { return content; }
+                public boolean isGroup() { return isGroup; }
+                public String chatId() { return fChatId; }
+                public String userId() { return fUserId; }
+                public List<QQAttachment> attachments() { return atts; }
+            });
+        }
+
+        @Override
+        public void close() throws Exception {
+            stopHeartbeat();
+            if (webSocket != null) {
+                webSocket.sendClose(WebSocket.NORMAL_CLOSURE, "Stopping").join();
+            }
+        }
+
+        @Override
+        public Object uploadFile(String chatId, boolean isGroup, int fileType, String base64Data, String fileName) throws Exception {
+            // In real SDK, this would call /v2/groups/{group_id}/files or /v2/users/{user_id}/files
+            return null;
+        }
+
+        @Override
+        public void sendText(String chatId, boolean isGroup, String msgId, String content, String format) throws Exception {
+            String token = getAccessToken();
+            String url = isGroup ? "https://api.sgroup.qq.com/v2/groups/" + chatId + "/messages" 
+                                 : "https://api.sgroup.qq.com/v2/users/" + chatId + "/messages";
+            
+            Map<String, Object> body = new HashMap<>();
+            body.put("content", content);
+            body.put("msg_type", 0); // 0 is text
+            body.put("msg_id", msgId);
+
+            HttpRequest request = HttpRequest.newBuilder(URI.create(url))
+                    .header("Authorization", "QQBot " + token)
+                    .header("X-Union-Appid", appId)
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString(new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(body)))
+                    .build();
+
+            httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        }
+
+        @Override
+        public void sendMediaText(String chatId, boolean isGroup, String msgId, Object mediaPayload) throws Exception {
+            // Similar to sendText but with media payload
+        }
+
+        private String getAccessToken() throws Exception {
+            if (accessToken != null && System.currentTimeMillis() < accessTokenExpiry) {
+                return accessToken;
+            }
+            refreshAccessToken();
+            return accessToken;
+        }
+
+        private synchronized void refreshAccessToken() throws Exception {
+            Map<String, String> body = Map.of(
+                    "appId", appId,
+                    "clientSecret", secret
+            );
+            HttpRequest request = HttpRequest.newBuilder(URI.create("https://bots.qq.com/app/getAppAccessToken"))
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString(new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(body)))
+                    .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            Map<String, Object> data = new com.fasterxml.jackson.databind.ObjectMapper().readValue(response.body(), Map.class);
+            this.accessToken = (String) data.get("access_token");
+            int expires = (int) data.get("expires_in");
+            this.accessTokenExpiry = System.currentTimeMillis() + (expires - 60) * 1000L;
+        }
     }
 
     @Override

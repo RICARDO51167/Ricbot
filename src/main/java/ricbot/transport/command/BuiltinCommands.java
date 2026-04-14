@@ -1,8 +1,11 @@
 package ricbot.transport.command;
 
+import ricbot.core.memory.Consolidator;
 import ricbot.core.message.InboundMessage;
 import ricbot.core.message.OutboundMessage;
+import ricbot.core.message.MessageBus;
 import ricbot.core.session.Session;
+import ricbot.core.session.SessionManager;
 
 import java.lang.reflect.Method;
 import java.time.Instant;
@@ -10,23 +13,9 @@ import java.util.*;
 import java.util.concurrent.CompletableFuture;
 
 /**
- * 对应 Python: builtin.py
- *
- * 主要目标：
- * 1. 提供内置 slash command 处理器
- * 2. 负责注册这些命令到 CommandRouter
- *
- * 内置命令包括：
- * - /stop
- * - /restart
- * - /status
- * - /new
- * - /dream
- * - /dream-log
- * - /dream-restore
- * - /help
+ * 内置 Slash Commands 处理器。
  */
-public final class BuiltinCommands {
+public class BuiltinCommands {
 
     private BuiltinCommands() {
     }
@@ -132,15 +121,20 @@ public final class BuiltinCommands {
         return CompletableFuture.supplyAsync(() -> {
             InboundMessage msg = ctx.getMsg();
 
-            // TODO:
-            // 这里后续你可以对接真正的 Java 进程重启逻辑
-            // 例如 ProcessBuilder 重启当前 jar / main class
-
             OutboundMessage out = new OutboundMessage();
             out.setChannel(msg.getChannel());
             out.setChatId(msg.getChatId());
             out.setContent("Restarting...");
             out.setMetadata(msg.getMetadata() != null ? new HashMap<>(msg.getMetadata()) : new HashMap<>());
+            
+            // Give some time for the message to be published
+            CompletableFuture.runAsync(() -> {
+                try {
+                    Thread.sleep(1000);
+                    System.exit(100);
+                } catch (Exception ignored) {}
+            });
+
             return out;
         });
     }
@@ -227,13 +221,13 @@ public final class BuiltinCommands {
                     Object sessionsManager = invokeNoArg(loop, "getSessions");
                     if (sessionsManager != null) {
                         invokeOneArg(sessionsManager, "save", session);
-                        invokeOneArg(sessionsManager, "invalidate", session.getKey());
                     }
 
-                    // TODO:
-                    // 如果你后面把 consolidator.archive(snapshot) 补上，这里可以继续接
                     if (snapshot != null && !snapshot.isEmpty()) {
-                        // reserve background archive hook
+                        Object consolidator = invokeNoArg(loop, "getConsolidator");
+                        if (consolidator != null) {
+                            invokeOneArg(consolidator, "archive", snapshot);
+                        }
                     }
                 } catch (Exception ignored) {
                 }

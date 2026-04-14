@@ -1,8 +1,12 @@
 package ricbot.tool.api;
 
+import ricbot.tool.filesystem.EditFileTool;
 import ricbot.tool.filesystem.ListDirTool;
 import ricbot.tool.filesystem.ReadFileTool;
+import ricbot.tool.filesystem.WriteFileTool;
 import ricbot.tool.process.ExecTool;
+import ricbot.tool.search.GlobTool;
+import ricbot.tool.search.GrepTool;
 import java.util.*;
 
 public class ToolRegistry {
@@ -59,20 +63,20 @@ public class ToolRegistry {
     }
 
     public PrepareResult prepareCall(String name, Object rawParams) {
-        if (!(rawParams instanceof Map<?, ?>) && ("read_file".equals(name) || "list_dir".equals(name) || "exec".equals(name))) {
+        Tool tool = tools.get(name);
+        if (tool == null) {
+            return new PrepareResult(null, rawParams,
+                    "Error: Tool '" + name + "' not found. Available: " + String.join(", ", toolNames()));
+        }
+
+        if (!(rawParams instanceof Map<?, ?>)) {
             return new PrepareResult(
-                    null,
+                    tool,
                     rawParams,
                     "Error: Tool '" + name + "' parameters must be a JSON object, got "
                             + (rawParams == null ? "null" : rawParams.getClass().getSimpleName())
                             + ". Use named parameters: tool_name(param1=\"value1\", param2=\"value2\")"
             );
-        }
-
-        Tool tool = tools.get(name);
-        if (tool == null) {
-            return new PrepareResult(null, rawParams,
-                    "Error: Tool '" + name + "' not found. Available: " + String.join(", ", toolNames()));
         }
 
         @SuppressWarnings("unchecked")
@@ -127,6 +131,31 @@ public class ToolRegistry {
                         (String) params.get("command"),
                         (String) params.get("working_dir"),
                         (Integer) params.get("timeout")
+                );
+            } else if (tool instanceof GlobTool t) {
+                result = t.execute(
+                        (String) params.get("pattern"),
+                        (String) params.get("base_dir")
+                );
+            } else if (tool instanceof GrepTool t) {
+                result = t.execute(
+                        (String) params.get("pattern"),
+                        (String) params.get("base_dir"),
+                        (String) params.get("file_glob"),
+                        (Boolean) params.get("ignore_case"),
+                        (Integer) params.get("max_results")
+                );
+            } else if (tool instanceof WriteFileTool t) {
+                result = t.execute(
+                        (String) params.get("path"),
+                        (String) params.get("content")
+                );
+            } else if (tool instanceof EditFileTool t) {
+                result = t.execute(
+                        (String) params.get("path"),
+                        (String) params.get("old_text"),
+                        (String) params.get("new_text"),
+                        (Boolean) params.get("replace_all")
                 );
             } else {
                 result = "Error: Tool '" + name + "' is registered but not dispatchable yet.";

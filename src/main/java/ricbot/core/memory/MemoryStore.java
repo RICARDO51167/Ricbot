@@ -76,6 +76,24 @@ public class MemoryStore {
     public String readSoul() { return readFile(soulFile); }
     public String readUser() { return readFile(userFile); }
 
+    public String getMemoryMd() { return readMemory(); }
+    public String getUserMd() { return readUser(); }
+    public String getSoulMd() { return readSoul(); }
+
+    public void updateMemoryMd(String content) throws IOException { Files.writeString(memoryFile, content); }
+    public void updateUserMd(String content) throws IOException { Files.writeString(userFile, content); }
+    public void updateSoulMd(String content) throws IOException { Files.writeString(soulFile, content); }
+
+    public List<Map<String, Object>> getUnprocessedHistory() {
+        int since = getLastDreamCursor();
+        return readUnprocessedHistory(since);
+    }
+
+    public void markHistoryAsProcessed(int count) {
+        int current = getLastDreamCursor();
+        setLastDreamCursor(current + count);
+    }
+
     public String getMemoryContext() {
         String memory = readMemory();
         return memory == null ? "" : memory;
@@ -89,7 +107,7 @@ public class MemoryStore {
                     + ",\"timestamp\":\"" + LocalDateTime.now()
                     + "\",\"content\":" + jsonEscape(content) + "}\n";
             Files.writeString(historyFile, line, StandardOpenOption.CREATE, StandardOpenOption.APPEND);
-            cursorFile.writeString(String.valueOf(nextCursor));
+            Files.writeString(cursorFile, String.valueOf(nextCursor));
         } catch (IOException e) {
             throw new RuntimeException(e);
         }

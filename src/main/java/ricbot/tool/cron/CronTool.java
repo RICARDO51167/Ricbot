@@ -98,6 +98,21 @@ public class CronTool extends Tool {
         }
     }
 
+    @Override
+    public String execute(Map<String, Object> params) throws Exception {
+        String action = (String) params.get("action");
+        String name = (String) params.get("name");
+        String jobId = (String) params.get("job_id");
+        String message = (String) params.get("message");
+        String scheduleType = (String) params.get("schedule_type");
+        Long atMs = params.get("at_ms") instanceof Number n ? n.longValue() : null;
+        Long everyMs = params.get("every_ms") instanceof Number n ? n.longValue() : null;
+        String cronExpr = (String) params.get("cron_expr");
+        Boolean deliver = (Boolean) params.get("deliver");
+
+        return execute(action, name, jobId, message, scheduleType, atMs, everyMs, cronExpr, deliver);
+    }
+
     /**
      * 执行 cron 相关操作
      *

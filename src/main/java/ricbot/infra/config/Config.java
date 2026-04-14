@@ -3,6 +3,13 @@ package ricbot.infra.config;
 
 import ricbot.llm.api.ProviderRegistry;
 import ricbot.llm.api.ProviderSpec;
+import ricbot.transport.channel.DingTalkChannel;
+import ricbot.transport.channel.FeishuChannel;
+import ricbot.transport.channel.WecomChannel;
+import ricbot.transport.channel.QQChannel;
+import ricbot.transport.channel.WeixinChannel;
+import ricbot.transport.channel.EmailChannel;
+import ricbot.transport.channel.WebSocketChannel;
 
 import java.nio.file.Path;
 import java.util.*;
@@ -681,9 +688,76 @@ public class Config {
         }
     }
 
+    public static class MCPServerConfig {
+        private String type = "stdio"; // stdio or sse
+        private String url; // for sse
+        private String command;
+        private List<String> args = new ArrayList<>();
+        private Map<String, String> env = new HashMap<>();
+        private List<String> enabledTools = new ArrayList<>();
+        private int toolTimeout = 60;
+
+        public String getType() {
+            return type;
+        }
+
+        public void setType(String type) {
+            this.type = type;
+        }
+
+        public String getUrl() {
+            return url;
+        }
+
+        public void setUrl(String url) {
+            this.url = url;
+        }
+
+        public String getCommand() {
+            return command;
+        }
+
+        public void setCommand(String command) {
+            this.command = command;
+        }
+
+        public List<String> getArgs() {
+            return args;
+        }
+
+        public void setArgs(List<String> args) {
+            this.args = args != null ? args : new ArrayList<>();
+        }
+
+        public Map<String, String> getEnv() {
+            return env;
+        }
+
+        public void setEnv(Map<String, String> env) {
+            this.env = env != null ? env : new HashMap<>();
+        }
+
+        public List<String> getEnabledTools() {
+            return enabledTools;
+        }
+
+        public void setEnabledTools(List<String> enabledTools) {
+            this.enabledTools = enabledTools != null ? enabledTools : new ArrayList<>();
+        }
+
+        public int getToolTimeout() {
+            return toolTimeout;
+        }
+
+        public void setToolTimeout(int toolTimeout) {
+            this.toolTimeout = toolTimeout;
+        }
+    }
+
     public static class WebToolsConfig {
         private boolean enable = true;
         private String proxy;
+        private int maxChars = 50000;
         private WebSearchConfig search = new WebSearchConfig();
 
         public boolean isEnable() {
@@ -700,6 +774,14 @@ public class Config {
 
         public void setProxy(String proxy) {
             this.proxy = proxy;
+        }
+
+        public int getMaxChars() {
+            return maxChars;
+        }
+
+        public void setMaxChars(int maxChars) {
+            this.maxChars = maxChars;
         }
 
         public WebSearchConfig getSearch() {
@@ -819,6 +901,15 @@ public class Config {
         private boolean sendProgress = true;
         private boolean sendToolHints = true;
         private String transcriptionProvider = "groq";
+        private int sendMaxRetries = 3;
+
+        private FeishuChannel.FeishuConfig feishu = new FeishuChannel.FeishuConfig();
+        private DingTalkChannel.DingTalkConfig dingtalk = new DingTalkChannel.DingTalkConfig();
+        private WecomChannel.WecomConfig wecom = new WecomChannel.WecomConfig();
+        private QQChannel.QQConfig qq = new QQChannel.QQConfig();
+        private WeixinChannel.WeixinConfig weixin = new WeixinChannel.WeixinConfig();
+        private EmailChannel.EmailConfig email = new EmailChannel.EmailConfig();
+        private WebSocketChannel.WebSocketConfig websocket = new WebSocketChannel.WebSocketConfig();
 
         public boolean isSendProgress() {
             return sendProgress;
@@ -842,6 +933,60 @@ public class Config {
 
         public void setTranscriptionProvider(String transcriptionProvider) {
             this.transcriptionProvider = transcriptionProvider;
+        }
+
+        public int getSendMaxRetries() {
+            return sendMaxRetries;
+        }
+
+        public void setSendMaxRetries(int sendMaxRetries) {
+            this.sendMaxRetries = sendMaxRetries;
+        }
+
+        public FeishuChannel.FeishuConfig getFeishu() { return feishu; }
+        public void setFeishu(FeishuChannel.FeishuConfig feishu) { this.feishu = feishu; }
+
+        public DingTalkChannel.DingTalkConfig getDingtalk() { return dingtalk; }
+        public void setDingtalk(DingTalkChannel.DingTalkConfig dingtalk) { this.dingtalk = dingtalk; }
+
+        public WecomChannel.WecomConfig getWecom() { return wecom; }
+        public void setWecom(WecomChannel.WecomConfig wecom) { this.wecom = wecom; }
+
+        public QQChannel.QQConfig getQq() { return qq; }
+        public void setQq(QQChannel.QQConfig qq) { this.qq = qq; }
+
+        public WeixinChannel.WeixinConfig getWeixin() { return weixin; }
+        public void setWeixin(WeixinChannel.WeixinConfig weixin) { this.weixin = weixin; }
+
+        public EmailChannel.EmailConfig getEmail() { return email; }
+        public void setEmail(EmailChannel.EmailConfig email) { this.email = email; }
+
+        public WebSocketChannel.WebSocketConfig getWebsocket() { return websocket; }
+        public void setWebsocket(WebSocketChannel.WebSocketConfig websocket) { this.websocket = websocket; }
+
+        public Object getSection(String name) {
+            return switch (name.toLowerCase(Locale.ROOT)) {
+                case "feishu" -> feishu;
+                case "dingtalk" -> dingtalk;
+                case "wecom" -> wecom;
+                case "qq" -> qq;
+                case "weixin" -> weixin;
+                case "email" -> email;
+                case "websocket" -> websocket;
+                default -> null;
+            };
+        }
+
+        public boolean isEnabled(String name) {
+            Object section = getSection(name);
+            if (section instanceof FeishuChannel.FeishuConfig c) return c.isEnabled();
+            if (section instanceof DingTalkChannel.DingTalkConfig c) return c.isEnabled();
+            if (section instanceof WecomChannel.WecomConfig c) return c.isEnabled();
+            if (section instanceof QQChannel.QQConfig c) return c.isEnabled();
+            if (section instanceof WeixinChannel.WeixinConfig c) return c.isEnabled();
+            if (section instanceof EmailChannel.EmailConfig c) return c.isEnabled();
+            if (section instanceof WebSocketChannel.WebSocketConfig c) return c.isEnabled();
+            return false;
         }
     }
 

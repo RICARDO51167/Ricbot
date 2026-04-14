@@ -167,4 +167,12 @@ public class MessageBus {
     public InboundMessage consumeInbound(int i, TimeUnit timeUnit) throws InterruptedException {
         return inbound.poll(i, timeUnit);
     }
+
+    public void sendOutbound(OutboundMessage msg) {
+        outbound.offer(msg);
+    }
+
+    public OutboundMessage pollOutboundNow() {
+        return outbound.poll();
+    }
 }
