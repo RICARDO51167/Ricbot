@@ -1466,21 +1466,7 @@ gateway.port
 5. 增加 Web 控制台或管理页
 6. 增加更细粒度的 Tool 权限策略与审计
 
-## 13. 适合写进简历 / 面试怎么介绍
-
-可以这样提炼项目亮点：
-
-- 工程价值：不是单次 LLM 调用 Demo，而是具备多入口、多工具、多会话、多渠道的 Agent Runtime
-- 架构亮点：通过 `MessageBus + AgentLoop + ToolRegistry + ProviderFactory + MCPLoader` 将主链路与外部依赖解耦
-- 可扩展性：Provider、Tool、MCP、Channel、Skill 都可独立扩展
-- 稳定性与安全性：具备 SSRF 防护、路径越界保护、命令安全过滤、超时控制、重试/熔断
-- 与普通 Demo 的区别：包含会话落盘、长期记忆、Dream、Cron、子代理、OpenAI 兼容 API 与多渠道接入
-
-一句话面试版介绍：
-
-> 这是一个用 Java 17 实现的工程化智能 Agent 系统骨架，我重点做的是统一消息主链路、Tool/MCP/Channel 扩展机制，以及会话与长期记忆的运行时管理。
-
-## 14. License / Contributing
+## 13. License / Contributing
 
 ### License
 
