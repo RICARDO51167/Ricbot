@@ -1,37 +1,37 @@
-Update memory files based on the analysis below.
-- [FILE] entries: add the described content to the appropriate file
-- [FILE-REMOVE] entries: delete the corresponding content from memory files
-- [SKILL] entries: create a new skill under skills/<name>/SKILL.md using write_file
+根据下面的分析更新记忆文件。
+- [FILE] 条目：将描述的内容添加到对应文件
+- [FILE-REMOVE] 条目：从记忆文件中删除对应内容
+- [SKILL] 条目：使用 write_file 在 skills/<name>/SKILL.md 下创建新技能
 
-## File paths (relative to workspace root)
+## 文件路径（相对于工作区根目录）
 - SOUL.md
 - USER.md
 - memory/MEMORY.md
-- skills/<name>/SKILL.md (for [SKILL] entries only)
+- skills/<name>/SKILL.md（仅用于 [SKILL] 条目）
 
-Do NOT guess paths.
+不要猜测路径。
 
-## Editing rules
-- Edit directly — file contents provided below, no read_file needed
-- Use exact text as old_text, include surrounding blank lines for unique match
-- Batch changes to the same file into one edit_file call
-- For deletions: section header + all bullets as old_text, new_text empty
-- Surgical edits only — never rewrite entire files
-- If nothing to update, stop without calling tools
+## 编辑规则
+- 直接编辑——下方已提供文件内容，无需再 read_file
+- old_text 必须使用完全一致的原文，并包含前后空行以确保唯一匹配
+- 同一文件的多处修改合并到一次 edit_file 调用
+- 删除时：将“章节标题 + 所有条目”作为 old_text，new_text 置空
+- 只做外科手术式修改——不要重写整个文件
+- 若无需更新，直接停止，不要调用工具
 
-## Skill creation rules (for [SKILL] entries)
-- Use write_file to create skills/<name>/SKILL.md
-- Before writing, read_file `{{ skill_creator_path }}` for format reference (frontmatter structure, naming conventions, quality standards)
-- **Dedup check**: read existing skills listed below to verify the new skill is not functionally redundant. Skip creation if an existing skill already covers the same workflow.
-- Include YAML frontmatter with name and description fields
-- Keep SKILL.md under 2000 words — concise and actionable
-- Include: when to use, steps, output format, at least one example
-- Do NOT overwrite existing skills — skip if the skill directory already exists
-- Reference specific tools the agent has access to (read_file, write_file, exec, web_search, etc.)
-- Skills are instruction sets, not code — do not include implementation code
+## 技能创建规则（用于 [SKILL] 条目）
+- 使用 write_file 创建 skills/<name>/SKILL.md
+- 写入前先 read_file `{{ skill_creator_path }}` 参考格式（frontmatter 结构、命名规范、质量标准）
+- **去重检查**：读取下方列出的已有技能，确认新技能在功能上不重复。若已有技能覆盖同一工作流则跳过创建。
+- 包含 YAML frontmatter，至少包含 name 与 description 字段
+- SKILL.md 控制在 2000 词以内——简洁、可执行
+- 必须包含：适用场景、步骤、输出格式、至少一个示例
+- 不要覆盖已有技能——若技能目录已存在则跳过
+- 引用代理可用的具体工具（read_file、write_file、exec、web_search 等）
+- 技能是“操作指令集”，不是代码——不要包含实现代码
 
-## Quality
-- Every line must carry standalone value
-- Concise bullets under clear headers
-- When reducing (not deleting): keep essential facts, drop verbose details
-- If uncertain whether to delete, keep but add "(verify currency)"
+## 质量要求
+- 每一行都应具备独立价值
+- 清晰标题下使用简洁要点
+- 需要精简（而不是删除）时：保留关键事实，去掉冗长细节
+- 不确定是否该删时：先保留，但加上“（待核实是否仍有效）”

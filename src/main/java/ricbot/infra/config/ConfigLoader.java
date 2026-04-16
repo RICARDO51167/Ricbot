@@ -119,8 +119,8 @@ public final class ConfigLoader {
                 config = mapToConfig(raw);
             } catch (Exception e) {
                 // 打印错误信息，表示加载失败
-                System.err.println("Failed to load config from " + path + ": " + e.getMessage());
-                System.err.println("Using default configuration.");
+                System.err.println("从 " + path + " 加载配置失败：" + e.getMessage());
+                System.err.println("将使用默认配置。");
             }
         }
 
@@ -156,7 +156,7 @@ public final class ConfigLoader {
             MAPPER.writerWithDefaultPrettyPrinter().writeValue(path.toFile(), configToMap(config));
         } catch (IOException e) {
             // 如果发生 IO 异常，抛出运行时异常
-            throw new RuntimeException("Failed to save config to " + path, e);
+            throw new RuntimeException("保存配置失败：" + path, e);
         }
     }
 
@@ -199,7 +199,7 @@ public final class ConfigLoader {
                 // 如果环境变量未设置，抛出异常
                 if (value == null) {
                     throw new IllegalArgumentException(
-                            "Environment variable '" + name + "' referenced in config is not set"
+                            "配置引用的环境变量 '" + name + "' 未设置"
                     );
                 }
                 // 替换占位符，使用 quoteReplacement 防止特殊字符干扰
@@ -343,7 +343,7 @@ public final class ConfigLoader {
         // 遍历所有 provider
         for (String name : providers.keySet()) {
             // 获取对应的 ProviderConfig 对象，如果不存在则跳过
-            Config.ProviderConfig pc = config.getProviders().get(name);
+            Config.ProviderConfig pc = config.getProviders().getOrCreate(name);
             if (pc == null) {
                 continue;
             }
@@ -367,7 +367,9 @@ public final class ConfigLoader {
         // 设置 SSRF 白名单
         config.getTools().setSsrfWhitelist(stringList(tools.get("ssrf_whitelist")));
         // 设置 MCP 服务器配置
-        config.getTools().setMcpServers(asMap(tools.get("mcp_servers")));
+        config.getTools().setMcpServers(asMap(
+                tools.containsKey("mcp_servers") ? tools.get("mcp_servers") : tools.get("mcpServers")
+        ));
 
         // 处理 web 工具配置
         Map<String, Object> web = asMap(tools.get("web"));
@@ -407,6 +409,51 @@ public final class ConfigLoader {
                 channels.get("transcription_provider"),
                 config.getChannels().getTranscriptionProvider()
         ));
+
+        Map<String, Object> qq = asMap(channels.get("qq"));
+        var qqc = config.getChannels().getQq();
+        qqc.setEnabled(booleanValue(qq.get("enabled"), qqc.isEnabled()));
+        qqc.setAppId(string(qq.get("app_id"), string(qq.get("appId"), qqc.getAppId())));
+        qqc.setSecret(string(qq.get("secret"), qqc.getSecret()));
+        qqc.setAllowFrom(stringList(qq.containsKey("allow_from") ? qq.get("allow_from") : qq.get("allowFrom")));
+        qqc.setMsgFormat(string(qq.get("msg_format"), string(qq.get("msgFormat"), qqc.getMsgFormat())));
+        qqc.setAckMessage(string(qq.get("ack_message"), string(qq.get("ackMessage"), qqc.getAckMessage())));
+        qqc.setMediaDir(string(qq.get("media_dir"), string(qq.get("mediaDir"), qqc.getMediaDir())));
+        qqc.setDownloadChunkSize(intValue(qq.get("download_chunk_size"), intValue(qq.get("downloadChunkSize"), qqc.getDownloadChunkSize())));
+        qqc.setDownloadMaxBytes(longValue(qq.get("download_max_bytes"), longValue(qq.get("downloadMaxBytes"), qqc.getDownloadMaxBytes())));
+
+        Map<String, Object> weixin = asMap(channels.get("weixin"));
+        var wc2c = config.getChannels().getWeixin();
+        wc2c.setEnabled(booleanValue(weixin.get("enabled"), wc2c.isEnabled()));
+        wc2c.setAllowFrom(stringList(weixin.containsKey("allow_from") ? weixin.get("allow_from") : weixin.get("allowFrom")));
+        wc2c.setBaseUrl(string(weixin.get("base_url"), string(weixin.get("baseUrl"), wc2c.getBaseUrl())));
+        wc2c.setCdnBaseUrl(string(weixin.get("cdn_base_url"), string(weixin.get("cdnBaseUrl"), wc2c.getCdnBaseUrl())));
+        wc2c.setRouteTag(string(weixin.get("route_tag"), string(weixin.get("routeTag"), wc2c.getRouteTag())));
+        wc2c.setToken(string(weixin.get("token"), wc2c.getToken()));
+        wc2c.setStateDir(string(weixin.get("state_dir"), string(weixin.get("stateDir"), wc2c.getStateDir())));
+        wc2c.setPollTimeout(intValue(weixin.get("poll_timeout"), intValue(weixin.get("pollTimeout"), wc2c.getPollTimeout())));
+
+        Map<String, Object> websocket = asMap(channels.get("websocket"));
+        var wsch = config.getChannels().getWebsocket();
+        wsch.setEnabled(booleanValue(websocket.get("enabled"), wsch.isEnabled()));
+        wsch.setHost(string(websocket.get("host"), wsch.getHost()));
+        wsch.setPort(intValue(websocket.get("port"), wsch.getPort()));
+        wsch.setPath(string(websocket.get("path"), wsch.getPath()));
+        wsch.setToken(string(websocket.get("token"), wsch.getToken()));
+        wsch.setTokenIssuePath(string(websocket.get("token_issue_path"), string(websocket.get("tokenIssuePath"), wsch.getTokenIssuePath())));
+        wsch.setTokenIssueSecret(string(websocket.get("token_issue_secret"), string(websocket.get("tokenIssueSecret"), wsch.getTokenIssueSecret())));
+        wsch.setTokenTtlS(intValue(websocket.get("token_ttl_s"), intValue(websocket.get("tokenTtlS"), wsch.getTokenTtlS())));
+        wsch.setWebsocketRequiresToken(booleanValue(
+                websocket.get("websocket_requires_token"),
+                booleanValue(websocket.get("websocketRequiresToken"), wsch.isWebsocketRequiresToken())
+        ));
+        wsch.setAllowFrom(stringList(websocket.containsKey("allow_from") ? websocket.get("allow_from") : websocket.get("allowFrom")));
+        wsch.setStreaming(booleanValue(websocket.get("streaming"), wsch.isStreaming()));
+        wsch.setMaxMessageBytes(intValue(websocket.get("max_message_bytes"), intValue(websocket.get("maxMessageBytes"), wsch.getMaxMessageBytes())));
+        wsch.setPingIntervalS(doubleValue(websocket.get("ping_interval_s"), doubleValue(websocket.get("pingIntervalS"), wsch.getPingIntervalS())));
+        wsch.setPingTimeoutS(doubleValue(websocket.get("ping_timeout_s"), doubleValue(websocket.get("pingTimeoutS"), wsch.getPingTimeoutS())));
+        wsch.setSslCertfile(string(websocket.get("ssl_certfile"), string(websocket.get("sslCertfile"), wsch.getSslCertfile())));
+        wsch.setSslKeyfile(string(websocket.get("ssl_keyfile"), string(websocket.get("sslKeyfile"), wsch.getSslKeyfile())));
 
         // --- 处理 gateway 部分 ---
         Map<String, Object> gateway = asMap(data.get("gateway"));
@@ -522,6 +569,49 @@ public final class ConfigLoader {
         channels.put("send_progress", config.getChannels().isSendProgress());
         channels.put("send_tool_hints", config.getChannels().isSendToolHints());
         channels.put("transcription_provider", config.getChannels().getTranscriptionProvider());
+
+        Map<String, Object> qq = new LinkedHashMap<>();
+        qq.put("enabled", config.getChannels().getQq().isEnabled());
+        qq.put("app_id", config.getChannels().getQq().getAppId());
+        qq.put("secret", config.getChannels().getQq().getSecret());
+        qq.put("allow_from", config.getChannels().getQq().getAllowFrom());
+        qq.put("msg_format", config.getChannels().getQq().getMsgFormat());
+        qq.put("ack_message", config.getChannels().getQq().getAckMessage());
+        qq.put("media_dir", config.getChannels().getQq().getMediaDir());
+        qq.put("download_chunk_size", config.getChannels().getQq().getDownloadChunkSize());
+        qq.put("download_max_bytes", config.getChannels().getQq().getDownloadMaxBytes());
+        channels.put("qq", qq);
+
+        Map<String, Object> weixin = new LinkedHashMap<>();
+        weixin.put("enabled", config.getChannels().getWeixin().isEnabled());
+        weixin.put("allow_from", config.getChannels().getWeixin().getAllowFrom());
+        weixin.put("base_url", config.getChannels().getWeixin().getBaseUrl());
+        weixin.put("cdn_base_url", config.getChannels().getWeixin().getCdnBaseUrl());
+        weixin.put("route_tag", config.getChannels().getWeixin().getRouteTag());
+        weixin.put("token", config.getChannels().getWeixin().getToken());
+        weixin.put("state_dir", config.getChannels().getWeixin().getStateDir());
+        weixin.put("poll_timeout", config.getChannels().getWeixin().getPollTimeout());
+        channels.put("weixin", weixin);
+
+        Map<String, Object> websocket = new LinkedHashMap<>();
+        websocket.put("enabled", config.getChannels().getWebsocket().isEnabled());
+        websocket.put("host", config.getChannels().getWebsocket().getHost());
+        websocket.put("port", config.getChannels().getWebsocket().getPort());
+        websocket.put("path", config.getChannels().getWebsocket().getPath());
+        websocket.put("token", config.getChannels().getWebsocket().getToken());
+        websocket.put("token_issue_path", config.getChannels().getWebsocket().getTokenIssuePath());
+        websocket.put("token_issue_secret", config.getChannels().getWebsocket().getTokenIssueSecret());
+        websocket.put("token_ttl_s", config.getChannels().getWebsocket().getTokenTtlS());
+        websocket.put("websocket_requires_token", config.getChannels().getWebsocket().isWebsocketRequiresToken());
+        websocket.put("allow_from", config.getChannels().getWebsocket().getAllowFrom());
+        websocket.put("streaming", config.getChannels().getWebsocket().isStreaming());
+        websocket.put("max_message_bytes", config.getChannels().getWebsocket().getMaxMessageBytes());
+        websocket.put("ping_interval_s", config.getChannels().getWebsocket().getPingIntervalS());
+        websocket.put("ping_timeout_s", config.getChannels().getWebsocket().getPingTimeoutS());
+        websocket.put("ssl_certfile", config.getChannels().getWebsocket().getSslCertfile());
+        websocket.put("ssl_keyfile", config.getChannels().getWebsocket().getSslKeyfile());
+        channels.put("websocket", websocket);
+
         root.put("channels", channels);
 
         // --- 构建 gateway 部分 ---
@@ -610,7 +700,41 @@ public final class ConfigLoader {
      * @return 字符串
      */
     private static String string(Object o, String def) {
-        return o != null ? String.valueOf(o) : def;
+        if (o == null) {
+            return def;
+        }
+        String s = String.valueOf(o);
+        s = normalizeQuoted(s);
+        return s.isBlank() ? def : s;
+    }
+
+    private static String normalizeQuoted(String raw) {
+        if (raw == null) {
+            return "";
+        }
+        String s = normalizeWhitespace(raw);
+        if (s.length() >= 2) {
+            char first = s.charAt(0);
+            char last = s.charAt(s.length() - 1);
+            if ((first == '`' && last == '`') || (first == '"' && last == '"') || (first == '\'' && last == '\'')) {
+                s = s.substring(1, s.length() - 1).trim();
+            }
+        }
+        if (s.length() >= 2 && s.charAt(0) == '`' && s.charAt(s.length() - 1) == '`') {
+            s = s.substring(1, s.length() - 1).trim();
+        }
+        return normalizeWhitespace(s);
+    }
+
+    private static String normalizeWhitespace(String raw) {
+        if (raw == null) {
+            return "";
+        }
+        String s = raw
+                .replace('\u00A0', ' ')
+                .replace("\u200B", "")
+                .replace("\uFEFF", "");
+        return s.trim();
     }
 
     /**
@@ -623,6 +747,15 @@ public final class ConfigLoader {
     private static int intValue(Object o, int def) {
         if (o instanceof Number n) return n.intValue();
         try { return o != null ? Integer.parseInt(String.valueOf(o)) : def; } catch (Exception e) { return def; }
+    }
+
+    private static long longValue(Object o, long def) {
+        if (o instanceof Number n) return n.longValue();
+        try {
+            return o != null ? Long.parseLong(String.valueOf(o)) : def;
+        } catch (Exception e) {
+            return def;
+        }
     }
 
     /**

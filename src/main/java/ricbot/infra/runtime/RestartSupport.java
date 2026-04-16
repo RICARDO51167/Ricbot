@@ -9,6 +9,10 @@ public final class RestartSupport {
     public static final String RESTART_NOTIFY_CHAT_ID_ENV = "RICBOT_RESTART_NOTIFY_CHAT_ID";
     public static final String RESTART_STARTED_AT_ENV = "RICBOT_RESTART_STARTED_AT";
 
+    public static final String LEGACY_RESTART_NOTIFY_CHANNEL_ENV = "RICBOT_RESTART_CHANNEL";
+    public static final String LEGACY_RESTART_NOTIFY_CHAT_ID_ENV = "RICBOT_RESTART_CHAT_ID";
+    public static final String LEGACY_RESTART_STARTED_AT_ENV = "RICBOT_RESTART_AT";
+
     /**
      * Java 无法安全修改当前进程真正的 OS env，这里用进程内覆盖层模拟。
      */
@@ -29,19 +33,29 @@ public final class RestartSupport {
             } catch (Exception ignored) {
             }
         }
-        return "Restart completed" + suffix + ".";
+        return "重启完成" + suffix + "。";
     }
 
     public static void setRestartNoticeToEnv(String channel, String chatId) {
         ENV_OVERLAY.put(RESTART_NOTIFY_CHANNEL_ENV, channel);
         ENV_OVERLAY.put(RESTART_NOTIFY_CHAT_ID_ENV, chatId);
         ENV_OVERLAY.put(RESTART_STARTED_AT_ENV, String.valueOf(System.currentTimeMillis() / 1000.0));
+
+        ENV_OVERLAY.put(LEGACY_RESTART_NOTIFY_CHANNEL_ENV, channel);
+        ENV_OVERLAY.put(LEGACY_RESTART_NOTIFY_CHAT_ID_ENV, chatId);
+        ENV_OVERLAY.put(LEGACY_RESTART_STARTED_AT_ENV, ENV_OVERLAY.get(RESTART_STARTED_AT_ENV));
     }
 
     public static RestartNotice consumeRestartNoticeFromEnv() {
         String channel = pop(RESTART_NOTIFY_CHANNEL_ENV);
         String chatId = pop(RESTART_NOTIFY_CHAT_ID_ENV);
         String startedAtRaw = pop(RESTART_STARTED_AT_ENV);
+
+        if (isBlank(channel) || isBlank(chatId)) {
+            channel = pop(LEGACY_RESTART_NOTIFY_CHANNEL_ENV);
+            chatId = pop(LEGACY_RESTART_NOTIFY_CHAT_ID_ENV);
+            startedAtRaw = pop(LEGACY_RESTART_STARTED_AT_ENV);
+        }
 
         if (isBlank(channel) || isBlank(chatId)) {
             return null;

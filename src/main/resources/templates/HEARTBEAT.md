@@ -1,16 +1,15 @@
-# Heartbeat Tasks
+# 心跳任务
 
-This file is checked every 30 minutes by your oldricbot agent.
-Add tasks below that you want the agent to work on periodically.
+ricbot 会每 30 分钟检查一次本文件。
+在下方添加你希望代理定期执行的任务。
 
-If this file has no tasks (only headers and comments), the agent will skip the heartbeat.
+如果本文件没有任务内容（只有标题与注释），代理会跳过心跳检查。
 
-## Active Tasks
+## 进行中的任务
 
-<!-- Add your periodic tasks below this line -->
+<!-- 在此行下方添加你的周期性任务 -->
 
 
-## Completed
+## 已完成
 
-<!-- Move completed tasks here or delete them -->
-
+<!-- 将已完成任务移动到这里，或直接删除 -->

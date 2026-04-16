@@ -58,7 +58,7 @@ public class ListDirTool extends Tool {
      */
     @Override
     public String getDescription() {
-        return "List files and directories under a directory.";
+        return "列出某个目录下的文件与子目录。";
     }
 
     /**
@@ -79,7 +79,7 @@ public class ListDirTool extends Tool {
     @Override
     public List<ToolParam> getParams() {
         return List.of(
-                ToolParam.of("path", "string", "Directory path", false).setDefaultValue(".")
+                ToolParam.of("path", "string", "目录路径", false).setDefaultValue(".")
         );
     }
 
@@ -96,16 +96,16 @@ public class ListDirTool extends Tool {
             FileToolSupport.ensureAllowed(dir, allowedDir, List.of());
 
             if (!Files.exists(dir)) {
-                return "Error: directory does not exist: " + dir;
+                return "错误：目录不存在：" + dir;
             }
             if (!Files.isDirectory(dir)) {
-                return "Error: path is not a directory: " + dir;
+                return "错误：该路径不是目录：" + dir;
             }
 
             List<Path> items = FileToolSupport.listDir(dir);
             return FileToolSupport.formatDirList(dir, items);
         } catch (Exception e) {
-            return "Error: " + e.getMessage();
+            return "错误：" + e.getMessage();
         }
     }
 }

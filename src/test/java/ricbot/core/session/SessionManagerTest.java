@@ -2,6 +2,8 @@ package ricbot.core.session;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import ricbot.domain.session.Session;
+import ricbot.domain.session.SessionManager;
 
 import java.nio.file.Files;
 import java.nio.file.Path;

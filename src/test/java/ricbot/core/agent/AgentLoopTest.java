@@ -2,18 +2,20 @@ package ricbot.core.agent;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import ricbot.core.message.InboundMessage;
-import ricbot.core.message.MessageBus;
-import ricbot.core.message.OutboundMessage;
-import ricbot.core.session.SessionManager;
+import ricbot.domain.agent.AgentLoop;
+import ricbot.domain.message.InboundMessage;
+import ricbot.domain.message.MessageBus;
+import ricbot.domain.message.OutboundMessage;
+import ricbot.domain.session.SessionManager;
 import ricbot.infra.config.Config;
-import ricbot.llm.api.LLMProvider;
-import ricbot.llm.api.LLMResponse;
+import ricbot.integration.llm.api.LLMProvider;
+import ricbot.integration.llm.api.LLMResponse;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -50,6 +52,8 @@ public class AgentLoopTest {
         // 配置执行工具，设置为禁用状态
         Config.ExecToolConfig exec = new Config.ExecToolConfig();
         exec.setEnable(false);
+        Config.DreamConfig dreamConfig = new Config.DreamConfig();
+        dreamConfig.setEnabled(false);
 
         // 初始化 AgentLoop，传入各种配置参数
         AgentLoop loop = new AgentLoop(
@@ -70,7 +74,8 @@ public class AgentLoopTest {
                 "UTC",              // 时区
                 false,              // 统一会话
                 List.of(),          // 禁用技能
-                0                   // 会话 TTL
+                0,                  // 会话 TTL
+                dreamConfig         // Dream 配置
         );
 
         // 使用 start() 启动 AgentLoop（会自动启动 cronService 等）
@@ -99,5 +104,72 @@ public class AgentLoopTest {
             loop.stop();
         }
     }
-}
 
+    @Test
+    void slashCommands_areRoutedWithoutInvokingProvider(@TempDir Path workspace) throws Exception {
+        MessageBus bus = new MessageBus();
+        SessionManager sessionManager = new SessionManager(workspace);
+        AtomicInteger modelCalls = new AtomicInteger(0);
+
+        LLMProvider provider = new LLMProvider("k", "http://localhost") {
+            @Override
+            public LLMResponse chat(
+                    List<Map<String, Object>> messages,
+                    List<Map<String, Object>> tools,
+                    String model,
+                    Integer maxTokens,
+                    Double temperature,
+                    String reasoningEffort,
+                    Object toolChoice
+            ) {
+                modelCalls.incrementAndGet();
+                return new LLMResponse().setContent("pong").setFinishReason("stop");
+            }
+        };
+
+        Config.WebToolsConfig web = new Config.WebToolsConfig();
+        web.setEnable(false);
+        Config.ExecToolConfig exec = new Config.ExecToolConfig();
+        exec.setEnable(false);
+        Config.DreamConfig dreamConfig = new Config.DreamConfig();
+        dreamConfig.setEnabled(false);
+
+        AgentLoop loop = new AgentLoop(
+                bus,
+                provider,
+                workspace,
+                "gpt-4o-mini",
+                5,
+                2000,
+                50,
+                10_000,
+                "standard",
+                web,
+                exec,
+                Map.of(),
+                true,
+                sessionManager,
+                "UTC",
+                false,
+                List.of(),
+                0,
+                dreamConfig
+        );
+
+        OutboundMessage help = loop.processDirect("/help", "cli:direct");
+        assertTrue(help.getContent().contains("ricbot 命令"));
+        assertEquals(0, modelCalls.get());
+
+        OutboundMessage dream = loop.processDirect("/dream", "cli:direct");
+        assertTrue(dream.getContent().contains("未启用"));
+        assertEquals(0, modelCalls.get());
+
+        loop.processDirect("hello", "cli:direct");
+        assertEquals(1, modelCalls.get());
+        assertFalse(sessionManager.getOrCreate("cli:direct").getMessages().isEmpty());
+
+        OutboundMessage reset = loop.processDirect("/new", "cli:direct");
+        assertEquals("已开始新的会话。", reset.getContent());
+        assertTrue(sessionManager.getOrCreate("cli:direct").getMessages().isEmpty());
+    }
+}

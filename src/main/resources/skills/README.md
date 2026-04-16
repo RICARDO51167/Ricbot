@@ -1,31 +1,31 @@
-# oldricbot Skills
+# ricbot 技能
 
-This directory contains built-in skills that extend oldricbot's capabilities.
+本目录包含用于扩展 ricbot 能力的内置技能。
 
-## Skill Format
+## 技能格式
 
-Each skill is a directory containing a `SKILL.md` file with:
-- YAML frontmatter (name, description, metadata)
-- Markdown instructions for the agent
+每个技能都是一个目录，其中包含 `SKILL.md` 文件，内容包括：
+- YAML frontmatter（name、description、metadata 等）
+- 面向代理的 Markdown 操作指令
 
-When skills reference large local documentation or logs, prefer oldricbot's built-in
-`grep` / `glob` tools to narrow the search space before loading full files.
-Use `grep(output_mode="count")` / `files_with_matches` for broad searches first,
-use `head_limit` / `offset` to page through large result sets,
-and `glob(entry_type="dirs")` when discovering directory structure matters.
+当技能需要引用较大的本地文档或日志时，优先使用 ricbot 内置的
+`grep` / `glob` 工具先缩小搜索范围，再读取完整文件。
+大范围搜索先用 `grep(output_mode="count")` / `files_with_matches`，
+对大结果集用 `head_limit` / `offset` 分页，
+当需要发现目录结构时使用 `glob(entry_type="dirs")`。
 
-## Attribution
+## 致谢
 
-These skills are adapted from [OpenClaw](https://github.com/openclaw/openclaw)'s skill system.
-The skill format and metadata structure follow OpenClaw's conventions to maintain compatibility.
+这些技能改编自 [OpenClaw](https://github.com/openclaw/openclaw) 的技能系统。
+技能格式与元数据结构遵循 OpenClaw 的约定，以保持兼容性。
 
-## Available Skills
+## 可用技能
 
 | Skill | Description |
 |-------|-------------|
-| `github` | Interact with GitHub using the `gh` CLI |
-| `weather` | Get weather info using wttr.in and Open-Meteo |
-| `summarize` | Summarize URLs, files, and YouTube videos |
-| `tmux` | Remote-control tmux sessions |
-| `clawhub` | Search and install skills from ClawHub registry |
-| `skill-creator` | Create new skills |
+| `github` | 使用 `gh` CLI 与 GitHub 交互 |
+| `weather` | 通过 wttr.in 与 Open-Meteo 获取天气信息 |
+| `summarize` | 总结 URL、文件与 YouTube 视频 |
+| `tmux` | 远程控制 tmux 会话 |
+| `clawhub` | 从 ClawHub 注册表搜索与安装技能 |
+| `skill-creator` | 创建新技能 |

@@ -30,26 +30,15 @@ public abstract class Tool {
      * 子类按需覆盖；默认无参。
      */
     public List<ToolParam> getParams() {
+        // 返回一个不可变的空列表，表示默认没有参数
         return List.of();
-    }
-
-    @SuppressWarnings("unchecked")
-    public Map<String, Object> getParameters() {
-        Map<String, Object> schema = toSchema();
-        Object fnObj = schema.get("function");
-        if (fnObj instanceof Map<?, ?> fn) {
-            Object paramsObj = fn.get("parameters");
-            if (paramsObj instanceof Map<?, ?> params) {
-                return new LinkedHashMap<>((Map<String, Object>) params);
-            }
-        }
-        return Map.of("type", "object", "properties", Map.of());
     }
 
     /**
      * 是否只读工具
      */
     public boolean isReadOnly() {
+        // 默认不是只读工具，子类可重写
         return false;
     }
 
@@ -59,6 +48,7 @@ public abstract class Tool {
      * 例如 exec 这类工具通常更适合串行执行。
      */
     public boolean isExclusive() {
+        // 默认不独占执行，子类可重写
         return false;
     }
 
@@ -69,6 +59,7 @@ public abstract class Tool {
      * 你后续如果需要更复杂的 cast，可以在子类重写。
      */
     public Map<String, Object> castParams(Map<String, Object> params) {
+        // 如果传入参数为 null，则返回一个新的空的 LinkedHashMap，否则原样返回
         return params != null ? params : new LinkedHashMap<>();
     }
 
@@ -78,27 +69,38 @@ public abstract class Tool {
      * 返回错误列表；为空表示通过。
      */
     public List<String> validateParams(Map<String, Object> params) {
+        // 初始化错误列表
         List<String> errors = new ArrayList<>();
+        // 如果传入参数为 null，则使用空 Map，否则使用传入的参数
         Map<String, Object> actual = params != null ? params : Collections.emptyMap();
 
+        // 遍历所有定义的参数
         for (ToolParam param : getParams()) {
+            // 检查必填参数是否存在
             if (param.isRequired() && !actual.containsKey(param.getName())) {
-                errors.add("missing required parameter '" + param.getName() + "'");
+                // 如果必填参数缺失，添加错误信息并跳过当前参数的后续检查
+                errors.add("缺少必填参数 '" + param.getName() + "'");
                 continue;
             }
 
+            // 如果参数不存在且非必填，则跳过
             if (!actual.containsKey(param.getName())) {
                 continue;
             }
 
+            // 获取参数的实际值
             Object value = actual.get(param.getName());
+            // 获取参数的预期类型
             String expectedType = param.getType();
 
+            // 检查实际值的类型是否与预期类型匹配
             if (!ToolParam.typeMatches(expectedType, value)) {
-                errors.add("parameter '" + param.getName() + "' should be of type " + expectedType);
+                // 如果类型不匹配，添加错误信息
+                errors.add("参数 '" + param.getName() + "' 的类型应为 " + expectedType);
             }
         }
 
+        // 返回错误列表，如果没有错误则列表为空
         return errors;
     }
 
@@ -108,36 +110,54 @@ public abstract class Tool {
      * 对应 Python: to_schema()
      */
     public Map<String, Object> toSchema() {
+        // 初始化属性映射
         Map<String, Object> properties = new LinkedHashMap<>();
+        // 初始化必填参数列表
         List<String> required = new ArrayList<>();
 
+        // 遍历所有参数，构建属性和必填列表
         for (ToolParam param : getParams()) {
+            // 将参数的 schema 添加到属性映射中
             properties.put(param.getName(), param.toSchema());
+            // 如果参数是必填的，添加到必填列表
             if (param.isRequired()) {
                 required.add(param.getName());
             }
         }
 
+        // 构建 parameters 对象
         Map<String, Object> parameters = new LinkedHashMap<>();
-        parameters.put("type", "object");
-        parameters.put("properties", properties);
+        parameters.put("type", "object"); // 参数类型为对象
+        parameters.put("properties", properties); // 设置属性定义
+        // 如果有必填参数，则添加 required 字段
         if (!required.isEmpty()) {
             parameters.put("required", required);
         }
 
+        // 构建 function 对象
         Map<String, Object> function = new LinkedHashMap<>();
-        function.put("name", getName());
-        function.put("description", getDescription());
-        function.put("parameters", parameters);
+        function.put("name", getName()); // 设置函数名
+        function.put("description", getDescription()); // 设置函数描述
+        function.put("parameters", parameters); // 设置参数定义
 
+        // 构建最终的 schema 对象
         Map<String, Object> schema = new LinkedHashMap<>();
-        schema.put("type", "function");
-        schema.put("function", function);
+        schema.put("type", "function"); // 类型为 function
+        schema.put("function", function); // 设置 function 详情
 
+        // 返回生成的 schema
         return schema;
     }
 
+    /**
+     * 执行工具的具体逻辑
+     *
+     * @param params 执行参数
+     * @return 执行结果
+     * @throws Exception 执行异常
+     */
     public Object execute(Map<String, Object> params) throws Exception {
-        throw new UnsupportedOperationException("Tool '" + getName() + "' does not implement execute(Map).");
+        // 默认抛出异常，强制子类实现具体的执行逻辑
+        throw new UnsupportedOperationException("工具 '" + getName() + "' 未实现 execute(Map) 方法。");
     }
 }

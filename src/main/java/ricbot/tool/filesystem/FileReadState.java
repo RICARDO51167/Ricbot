@@ -222,7 +222,7 @@ public final class FileReadState {
         Path p = path.toAbsolutePath().normalize();
         ReadState entry = STATE.get(normalize(p));
         if (entry == null) {
-            return "Warning: file has not been read yet. Read it first to verify content before editing.";
+            return "警告：文件尚未被读取。请先读取文件以在编辑前验证内容。";
         }
 
         try {
@@ -242,7 +242,7 @@ public final class FileReadState {
                     return null;
                 }
                 // 内容确实发生了变化
-                return "Warning: file has been modified since last read. Re-read to verify content before editing.";
+                return "警告：文件自上次读取后已被修改。请重新读取以在编辑前验证内容。";
             }
         } catch (IOException ignored) {
             // 发生 IO 错误时，保守起见返回 null，允许继续（或者可以根据策略返回警告）

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Minimal validator for nanobot skill folders.
+用于 nanobot 技能目录的最小校验器。
 """
 
 import re
@@ -88,68 +88,68 @@ def _load_frontmatter(frontmatter_text: str) -> tuple[Optional[dict], Optional[s
         try:
             frontmatter = yaml.safe_load(frontmatter_text)
         except yaml.YAMLError as exc:
-            return None, f"Invalid YAML in frontmatter: {exc}"
+            return None, f"frontmatter 中的 YAML 无效：{exc}"
         if not isinstance(frontmatter, dict):
-            return None, "Frontmatter must be a YAML dictionary"
+            return None, "Frontmatter 必须是 YAML 字典"
         return frontmatter, None
 
     frontmatter = _parse_simple_frontmatter(frontmatter_text)
     if frontmatter is None:
-        return None, "Invalid YAML in frontmatter: unsupported syntax without PyYAML installed"
+        return None, "frontmatter 中的 YAML 无效：未安装 PyYAML 时不支持该语法"
     return frontmatter, None
 
 
 def _validate_skill_name(name: str, folder_name: str) -> Optional[str]:
     if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", name):
         return (
-            f"Name '{name}' should be hyphen-case "
-            "(lowercase letters, digits, and single hyphens only)"
+            f"名称 '{name}' 应为 hyphen-case "
+            "（仅允许小写字母、数字与单个连字符）"
         )
     if len(name) > MAX_SKILL_NAME_LENGTH:
         return (
-            f"Name is too long ({len(name)} characters). "
-            f"Maximum is {MAX_SKILL_NAME_LENGTH} characters."
+            f"名称过长（{len(name)} 字符）。"
+            f"最大长度为 {MAX_SKILL_NAME_LENGTH} 字符。"
         )
     if name != folder_name:
-        return f"Skill name '{name}' must match directory name '{folder_name}'"
+        return f"技能名 '{name}' 必须与目录名 '{folder_name}' 一致"
     return None
 
 
 def _validate_description(description: str) -> Optional[str]:
     trimmed = description.strip()
     if not trimmed:
-        return "Description cannot be empty"
+        return "description 不能为空"
     lowered = trimmed.lower()
     if any(marker in lowered for marker in PLACEHOLDER_MARKERS):
-        return "Description still contains TODO placeholder text"
+        return "description 仍包含 TODO 占位文本"
     if "<" in trimmed or ">" in trimmed:
-        return "Description cannot contain angle brackets (< or >)"
+        return "description 不能包含尖括号（< 或 >）"
     if len(trimmed) > 1024:
-        return f"Description is too long ({len(trimmed)} characters). Maximum is 1024 characters."
+        return f"description 过长（{len(trimmed)} 字符）。最大长度为 1024 字符。"
     return None
 
 
 def validate_skill(skill_path):
-    """Validate a skill folder structure and required frontmatter."""
+    """校验技能目录结构与必需 frontmatter。"""
     skill_path = Path(skill_path).resolve()
 
     if not skill_path.exists():
-        return False, f"Skill folder not found: {skill_path}"
+        return False, f"未找到技能目录：{skill_path}"
     if not skill_path.is_dir():
-        return False, f"Path is not a directory: {skill_path}"
+        return False, f"路径不是目录：{skill_path}"
 
     skill_md = skill_path / "SKILL.md"
     if not skill_md.exists():
-        return False, "SKILL.md not found"
+        return False, "未找到 SKILL.md"
 
     try:
         content = skill_md.read_text(encoding="utf-8")
     except OSError as exc:
-        return False, f"Could not read SKILL.md: {exc}"
+        return False, f"无法读取 SKILL.md：{exc}"
 
     frontmatter_text = _extract_frontmatter(content)
     if frontmatter_text is None:
-        return False, "Invalid frontmatter format"
+        return False, "frontmatter 格式无效"
 
     frontmatter, error = _load_frontmatter(frontmatter_text)
     if error:
@@ -161,31 +161,31 @@ def validate_skill(skill_path):
         unexpected = ", ".join(unexpected_keys)
         return (
             False,
-            f"Unexpected key(s) in SKILL.md frontmatter: {unexpected}. Allowed properties are: {allowed}",
+            f"SKILL.md frontmatter 中存在不允许的键：{unexpected}。允许的属性包括：{allowed}",
         )
 
     if "name" not in frontmatter:
-        return False, "Missing 'name' in frontmatter"
+        return False, "frontmatter 中缺少 'name'"
     if "description" not in frontmatter:
-        return False, "Missing 'description' in frontmatter"
+        return False, "frontmatter 中缺少 'description'"
 
     name = frontmatter["name"]
     if not isinstance(name, str):
-        return False, f"Name must be a string, got {type(name).__name__}"
+        return False, f"name 必须是字符串，实际为 {type(name).__name__}"
     name_error = _validate_skill_name(name.strip(), skill_path.name)
     if name_error:
         return False, name_error
 
     description = frontmatter["description"]
     if not isinstance(description, str):
-        return False, f"Description must be a string, got {type(description).__name__}"
+        return False, f"description 必须是字符串，实际为 {type(description).__name__}"
     description_error = _validate_description(description)
     if description_error:
         return False, description_error
 
     always = frontmatter.get("always")
     if always is not None and not isinstance(always, bool):
-        return False, f"'always' must be a boolean, got {type(always).__name__}"
+        return False, f"'always' 必须是布尔值，实际为 {type(always).__name__}"
 
     for child in skill_path.iterdir():
         if child.name == "SKILL.md":
@@ -196,16 +196,16 @@ def validate_skill(skill_path):
             continue
         return (
             False,
-            f"Unexpected file or directory in skill root: {child.name}. "
-            "Only SKILL.md, scripts/, references/, and assets/ are allowed.",
+            f"技能根目录中存在不允许的文件或目录：{child.name}。"
+            "只允许 SKILL.md、scripts/、references/、assets/。",
         )
 
-    return True, "Skill is valid!"
+    return True, "技能结构有效！"
 
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
-        print("Usage: python quick_validate.py <skill_directory>")
+        print("用法：python quick_validate.py <skill_directory>")
         sys.exit(1)
 
     valid, message = validate_skill(sys.argv[1])

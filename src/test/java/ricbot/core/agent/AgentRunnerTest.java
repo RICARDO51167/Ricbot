@@ -2,9 +2,13 @@ package ricbot.core.agent;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import ricbot.llm.api.LLMProvider;
-import ricbot.llm.api.LLMResponse;
-import ricbot.llm.api.ToolCallRequest;
+import ricbot.domain.agent.AgentRunResult;
+import ricbot.domain.agent.AgentRunSpec;
+import ricbot.domain.agent.AgentRunner;
+import ricbot.integration.llm.api.LLMProvider;
+import ricbot.integration.llm.api.LLMResponse;
+import ricbot.integration.llm.api.OpenAIResponsesSupport;
+import ricbot.integration.llm.api.ToolCallRequest;
 import ricbot.tool.api.ToolRegistry;
 import ricbot.tool.filesystem.ReadFileTool;
 
@@ -13,6 +17,7 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -163,5 +168,21 @@ public class AgentRunnerTest {
         assertEquals(2, result.getToolsUsed().size());
         // 验证有两个工具事件
         assertEquals(2, result.getToolEvents().size());
+    }
+
+    @Test
+    void openaiSse_toolCalls_areParsed() throws Exception {
+        Stream<String> lines = Stream.of(
+                "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"list_dir\",\"arguments\":\"{\\\"path\\\":\\\".\\\"}\"}}]}}]}",
+                "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}",
+                "data: [DONE]"
+        );
+
+        LLMResponse res = OpenAIResponsesSupport.consumeSSE(lines, delta -> {}, r -> {});
+        assertEquals("tool_calls", res.getFinishReason());
+        assertNotNull(res.getToolCalls());
+        assertEquals(1, res.getToolCalls().size());
+        assertEquals("list_dir", res.getToolCalls().get(0).getName());
+        assertEquals(".", String.valueOf(res.getToolCalls().get(0).getArguments().get("path")));
     }
 }

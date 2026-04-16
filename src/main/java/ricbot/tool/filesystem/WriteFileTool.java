@@ -56,7 +56,7 @@ public class WriteFileTool extends Tool {
      */
     @Override
     public String getDescription() {
-        return "Write content to a file, replacing existing content.";
+        return "将内容写入文件（覆盖已有内容）。";
     }
 
     /**
@@ -67,8 +67,8 @@ public class WriteFileTool extends Tool {
     @Override
     public List<ToolParam> getParams() {
         return List.of(
-                ToolParam.of("path", "string", "Path to write", true),
-                ToolParam.of("content", "string", "File content", true)
+                ToolParam.of("path", "string", "要写入的文件路径", true),
+                ToolParam.of("content", "string", "文件内容", true)
         );
     }
 
@@ -91,9 +91,9 @@ public class WriteFileTool extends Tool {
             // 记录写入状态，以便后续读取操作能感知到变更
             FileReadState.recordWrite(target);
 
-            return "File written: " + target;
+            return "文件已写入：" + target;
         } catch (Exception e) {
-            return "Error: " + e.getMessage();
+            return "错误：" + e.getMessage();
         }
     }
 }

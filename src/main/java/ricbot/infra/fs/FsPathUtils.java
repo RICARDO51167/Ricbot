@@ -9,6 +9,7 @@ import java.util.List;
  */
 public final class FsPathUtils {
 
+    // 私有构造函数，防止实例化
     private FsPathUtils() {
     }
 
@@ -36,24 +37,31 @@ public final class FsPathUtils {
             Path allowedDir,
             List<Path> extraAllowedDirs
     ) {
+        // 第一步：扩展用户主目录符号 "~"
         Path p = expandUser(path);
 
+        // 第二步：如果路径不是绝对路径且提供了工作空间，则基于工作空间解析
         if (!p.isAbsolute() && workspace != null) {
             p = workspace.resolve(p);
         }
 
+        // 第三步：转换为绝对路径并进行标准化处理（消除 "." 和 ".."）
         Path resolved = p.toAbsolutePath().normalize();
 
+        // 第四步：安全检查，验证路径是否在允许的目录范围内
         if (allowedDir != null) {
+            // 检查是否在主允许目录下，或者在额外允许的目录列表中
             if (!isUnder(resolved, allowedDir)
                     && (extraAllowedDirs == null
                     || extraAllowedDirs.stream().noneMatch(dir -> isUnder(resolved, dir)))) {
+                // 如果都不满足，抛出安全异常
                 throw new SecurityException(
                         "Path " + path + " is outside allowed directory " + allowedDir
                 );
             }
         }
 
+        // 返回解析并校验后的路径
         return resolved;
     }
 
@@ -67,8 +75,11 @@ public final class FsPathUtils {
      * @return 如果 path 位于 directory 下则返回 true，否则返回 false
      */
     public static boolean isUnder(Path path, Path directory) {
+        // 将待检查路径转换为绝对路径并标准化
         Path normalizedPath = path.toAbsolutePath().normalize();
+        // 将基准目录转换为绝对路径并标准化
         Path normalizedDir = directory.toAbsolutePath().normalize();
+        // 判断标准化后的路径是否以标准化后的目录开头
         return normalizedPath.startsWith(normalizedDir);
     }
 
@@ -82,10 +93,14 @@ public final class FsPathUtils {
      * @return 扩展后的路径对象
      */
     public static Path expandUser(String raw) {
+        // 检查路径是否以 "~" 开头
         if (raw.startsWith("~")) {
+            // 获取系统用户主目录
             String home = System.getProperty("user.home");
+            // 拼接用户主目录和剩余路径部分
             return Paths.get(home + raw.substring(1));
         }
+        // 如果不是以 "~" 开头，直接创建路径对象
         return Paths.get(raw);
     }
 }

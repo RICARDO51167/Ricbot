@@ -54,7 +54,7 @@ public class ReadFileTool extends Tool {
 
     @Override
     public String getDescription() {
-        return "Read a text file. Supports line slicing with offset (1-based) and optional limit.";
+        return "读取文本文件。支持按行切片读取：offset（从 1 开始）与可选的 limit。";
     }
 
     @Override
@@ -65,9 +65,9 @@ public class ReadFileTool extends Tool {
     @Override
     public List<ToolParam> getParams() {
         return List.of(
-                ToolParam.of("path", "string", "Path to the file", true),
-                ToolParam.of("offset", "integer", "1-based starting line number", false).setDefaultValue(1),
-                ToolParam.of("limit", "integer", "Optional maximum number of lines to read", false)
+                ToolParam.of("path", "string", "文件路径", true),
+                ToolParam.of("offset", "integer", "起始行号（从 1 开始）", false).setDefaultValue(1),
+                ToolParam.of("limit", "integer", "可选：最大读取行数", false)
         );
     }
 
@@ -94,13 +94,13 @@ public class ReadFileTool extends Tool {
 
             // 基础文件状态检查
             if (!Files.exists(target)) {
-                return "Error: file does not exist: " + target;
+                return "错误：文件不存在：" + target;
             }
             if (Files.isDirectory(target)) {
-                return "Error: path is a directory, not a file: " + target;
+                return "错误：该路径是目录而非文件：" + target;
             }
             if (FileToolSupport.isBinary(target)) {
-                return "Error: file appears to be binary and cannot be read as text.";
+                return "错误：该文件疑似为二进制文件，无法按文本读取。";
             }
 
             // 处理默认偏移量
@@ -108,7 +108,7 @@ public class ReadFileTool extends Tool {
 
             // 检查文件是否自上次读取以来未发生变化，以优化 Token 使用
             if (FileReadState.isUnchanged(target, off, limit)) {
-                return "File unchanged since last read.\n\n" +
+                return "文件自上次读取后未发生变化。\n\n" +
                         FileToolSupport.sliceLines(FileToolSupport.readText(target), off, limit);
             }
 
@@ -119,7 +119,7 @@ public class ReadFileTool extends Tool {
             // 返回切片后的内容
             return FileToolSupport.sliceLines(content, off, limit);
         } catch (Exception e) {
-            return "Error: " + e.getMessage();
+            return "错误：" + e.getMessage();
         }
     }
 }

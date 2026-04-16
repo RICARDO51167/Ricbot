@@ -1,17 +1,17 @@
 {
   "agents": {
     "defaults": {
-      "workspace": ".",
+      "workspace": "./workspace",
       "model": "qwen-plus",
-      "max_tool_iterations": 6,
+      "max_tool_iterations": 20,
       "max_tool_result_chars": 10000,
       "unified_session": false,
-      "timezone": "UTC"
+      "timezone": "Asia/Shanghai"
     }
   },
   "providers": {
     "openai": {
-      "api_key": "sk-ba3dc05a544b4914b3f2cca24bcdf45d",
+      "api_key": "${RICBOT_API_KEY}",
       "api_base": "https://dashscope.aliyuncs.com/compatible-mode/v1",
       "extra_headers": {}
     }

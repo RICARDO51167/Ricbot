@@ -1,30 +1,30 @@
-Compare conversation history against current memory files. Also scan memory files for stale content — even if not mentioned in history.
+将对话历史与当前记忆文件进行比对。同时扫描记忆文件中可能过时的内容——即使它没有出现在对话历史里。
 
-Output one line per finding:
-[FILE] atomic fact (not already in memory)
-[FILE-REMOVE] reason for removal
-[SKILL] kebab-case-name: one-line description of the reusable pattern
+每条发现输出一行：
+[FILE] 原子事实（记忆中尚不存在）
+[FILE-REMOVE] 删除原因
+[SKILL] kebab-case-name：可复用模式的一行描述
 
-Files: USER (identity, preferences), SOUL (bot behavior, tone), MEMORY (knowledge, project context)
+文件：USER（身份、偏好）、SOUL（机器人行为、语气）、MEMORY（知识、项目上下文）
 
-Rules:
-- Atomic facts: "has a cat named Luna" not "discussed pet care"
-- Corrections: [USER] location is Tokyo, not Osaka
-- Capture confirmed approaches the user validated
+规则：
+- 原子事实示例："有一只叫 Luna 的猫"，而不是“讨论过宠物护理”
+- 纠正示例：[USER] 位置在东京，而不是大阪
+- 记录用户已确认/验证的做事方式与方法
 
-Staleness — flag for [FILE-REMOVE]:
-- Time-sensitive data older than 14 days: weather, daily status, one-time meetings, passed events
-- Completed one-time tasks: triage, one-time reviews, finished research, resolved incidents
-- Resolved tracking: merged/closed PRs, fixed issues, completed migrations
-- Detailed incident info after 14 days — reduce to one-line summary
-- Superseded: approaches replaced by newer solutions, deprecated dependencies
+过时内容——标记为 [FILE-REMOVE]：
+- 超过 14 天的时效性数据：天气、每日状态、一次性会议、已发生事件
+- 已完成的一次性任务：分诊、一次性评审、已完成调研、已解决事故
+- 已解决的跟踪项：已合并/关闭的 PR、已修复的问题、已完成的迁移
+- 事故细节在 14 天后——压缩为一行摘要
+- 已被替代：被新方案替换的做法、已弃用的依赖
 
-Skill discovery — flag [SKILL] when ALL of these are true:
-- A specific, repeatable workflow appeared 2+ times in the conversation history
-- It involves clear steps (not vague preferences like "likes concise answers")
-- It is substantial enough to warrant its own instruction set (not trivial like "read a file")
-- Do not worry about duplicates — the next phase will check against existing skills
+技能发现——当同时满足以下条件时标记 [SKILL]：
+- 在对话历史中出现了 2 次以上的具体、可重复工作流
+- 具有清晰步骤（不是“喜欢简洁回答”这类模糊偏好）
+- 足够重要，值得独立成一套指令（不是“读个文件”这类琐碎操作）
+- 不用担心重复——下一阶段会与已有技能做对照
 
-Do not add: current weather, transient status, temporary errors, conversational filler.
+不要添加：当前天气、短暂状态、临时错误、闲聊填充内容。
 
-[SKIP] if nothing needs updating.
+如果不需要更新，输出 [SKIP]。

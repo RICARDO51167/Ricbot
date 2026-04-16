@@ -3,18 +3,40 @@ set -eu
 
 BASE_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 
+JAR=""
 if [ -n "${RICBOT_JAR:-}" ] && [ -f "${RICBOT_JAR:-}" ]; then
   JAR="$RICBOT_JAR"
-else
-  JAR=""
-  if [ -d "$BASE_DIR/target" ]; then
-    JAR=$(ls -t "$BASE_DIR"/target/Ricbot-*.jar 2>/dev/null | head -n 1 || true)
+elif [ -d "$BASE_DIR/target" ]; then
+  JAR=$(ls -t "$BASE_DIR"/target/Ricbot-*.jar 2>/dev/null | head -n 1 || true)
+fi
+
+NEED_REBUILD=0
+if [ -n "${JAR:-}" ] && [ -f "$JAR" ]; then
+  SHOULD_CHECK_REBUILD=0
+  if [ -z "${RICBOT_JAR:-}" ]; then
+    SHOULD_CHECK_REBUILD=1
+  else
+    case "$JAR" in
+      "$BASE_DIR"/target/*) SHOULD_CHECK_REBUILD=1 ;;
+    esac
   fi
 
-  if [ -z "${JAR:-}" ]; then
-    sh "$BASE_DIR/mvnw" -q package
-    JAR=$(ls -t "$BASE_DIR"/target/Ricbot-*.jar 2>/dev/null | head -n 1 || true)
+  if [ "$SHOULD_CHECK_REBUILD" -eq 1 ]; then
+    if [ -n "$(find "$BASE_DIR/src/main" "$BASE_DIR/pom.xml" -type f -newer "$JAR" -print -quit 2>/dev/null || true)" ]; then
+      NEED_REBUILD=1
+    fi
   fi
+else
+  NEED_REBUILD=1
+fi
+
+if [ "$NEED_REBUILD" -eq 1 ]; then
+  if [ -f "$BASE_DIR/mvnw" ]; then
+    sh "$BASE_DIR/mvnw" -q -DskipTests package
+  else
+    mvn -q -DskipTests package
+  fi
+  JAR=$(ls -t "$BASE_DIR"/target/Ricbot-*.jar 2>/dev/null | head -n 1 || true)
 fi
 
 if [ -z "${JAR:-}" ] || [ ! -f "$JAR" ]; then

@@ -2,10 +2,6 @@ package ricbot.infra.cron;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import ricbot.infra.cron.CronTypes.CronJob;
-import ricbot.infra.cron.CronTypes.CronPayload;
-import ricbot.infra.cron.CronTypes.CronSchedule;
-import ricbot.infra.cron.CronTypes.ScheduleKind;
 
 import java.nio.file.Path;
 import java.util.concurrent.CountDownLatch;

@@ -1,12 +1,10 @@
 package ricbot.transport.channel;
 
 import org.junit.jupiter.api.Test;
-import ricbot.core.message.MessageBus;
-import ricbot.infra.config.Config;
+import ricbot.domain.message.MessageBus;
+import ricbot.integration.channel.WebSocketChannel;
 
 import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.*;
-import static org.mockito.Mockito.*;
 
 public class WebSocketChannelTest {
 
@@ -44,5 +42,41 @@ public class WebSocketChannelTest {
         
         channel.stop();
         assertTrue(stopCalled[0], "Server.stop should be called");
+    }
+
+    @Test
+    void startStop_areIdempotent() throws Exception {
+        MessageBus bus = new MessageBus();
+        WebSocketChannel.WebSocketConfig config = new WebSocketChannel.WebSocketConfig();
+        config.setEnabled(true);
+        config.setPort(0);
+        config.setPath("ws");
+
+        final int[] startCount = {0};
+        final int[] stopCount = {0};
+
+        WebSocketChannel.WsServer mockServer = new WebSocketChannel.WsServer() {
+            @Override
+            public void start(String host, int port, String path, WebSocketChannel.WsServerListener listener) {
+                startCount[0]++;
+                assertEquals("/ws", path);
+            }
+
+            @Override
+            public void stop() {
+                stopCount[0]++;
+            }
+        };
+
+        WebSocketChannel channel = new WebSocketChannel(config, bus);
+        channel.setServer(mockServer);
+
+        channel.start();
+        channel.start();
+        assertEquals(1, startCount[0]);
+
+        channel.stop();
+        channel.stop();
+        assertEquals(1, stopCount[0]);
     }
 }

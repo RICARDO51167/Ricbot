@@ -58,7 +58,7 @@ public class EditFileTool extends Tool {
      */
     @Override
     public String getDescription() {
-        return "Edit a text file by replacing old_text with new_text. Read the file first before editing.";
+        return "通过用 new_text 替换 old_text 来编辑文本文件。编辑前必须先读取文件。";
     }
 
     /**
@@ -69,10 +69,10 @@ public class EditFileTool extends Tool {
     @Override
     public List<ToolParam> getParams() {
         return List.of(
-                ToolParam.of("path", "string", "Path of file to edit", true),
-                ToolParam.of("old_text", "string", "Text to replace", true),
-                ToolParam.of("new_text", "string", "Replacement text", true),
-                ToolParam.of("replace_all", "boolean", "Whether to replace all matches", false).setDefaultValue(false)
+                ToolParam.of("path", "string", "要编辑的文件路径", true),
+                ToolParam.of("old_text", "string", "要被替换的文本", true),
+                ToolParam.of("new_text", "string", "替换后的文本", true),
+                ToolParam.of("replace_all", "boolean", "是否替换所有匹配项", false).setDefaultValue(false)
         );
     }
 
@@ -101,13 +101,13 @@ public class EditFileTool extends Tool {
 
             // 2. 基础文件状态检查
             if (!Files.exists(target)) {
-                return "Error: file does not exist: " + target;
+                return "错误：文件不存在：" + target;
             }
             if (Files.isDirectory(target)) {
-                return "Error: path is a directory, not a file: " + target;
+                return "错误：该路径是目录而非文件：" + target;
             }
             if (FileToolSupport.isBinary(target)) {
-                return "Error: file appears to be binary and cannot be edited as text.";
+                return "错误：该文件疑似为二进制文件，无法按文本编辑。";
             }
 
             // 3. 检查 read-before-edit 约束
@@ -119,7 +119,7 @@ public class EditFileTool extends Tool {
             // 4. 读取文件内容
             String content = FileToolSupport.readText(target);
             if (oldText == null || oldText.isEmpty()) {
-                return "Error: old_text must not be empty.";
+                return "错误：待替换文本不能为空。";
             }
 
             // 5. 准备替换逻辑
@@ -128,7 +128,7 @@ public class EditFileTool extends Tool {
 
             // 检查旧文本是否存在
             if (!content.contains(oldText)) {
-                return "Error: old_text not found in file.";
+                return "错误：在文件中未找到待替换文本。";
             }
 
             // 执行替换
@@ -147,9 +147,9 @@ public class EditFileTool extends Tool {
             FileToolSupport.writeText(target, updated);
             FileReadState.recordWrite(target);
 
-            return "File edited successfully: " + target;
+            return "Success: edited file " + target;
         } catch (Exception e) {
-            return "Error: " + e.getMessage();
+            return "错误：" + e.getMessage();
         }
     }
 }

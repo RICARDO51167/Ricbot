@@ -1,53 +1,53 @@
 ---
 name: clawhub
-description: Search and install agent skills from ClawHub, the public skill registry.
+description: 从公共技能注册表 ClawHub 搜索并安装代理技能。
 homepage: https://clawhub.ai
-metadata: {"oldricbot":{"emoji":"🦞"}}
+metadata: {"ricbot":{"emoji":"🦞"}}
 ---
 
 # ClawHub
 
-Public skill registry for AI agents. Search by natural language (vector search).
+面向 AI 代理的公共技能注册表。支持用自然语言搜索（向量检索）。
 
-## When to use
+## 何时使用
 
-Use this skill when the user asks any of:
-- "find a skill for …"
-- "search for skills"
-- "install a skill"
-- "what skills are available?"
-- "update my skills"
+当用户提出以下任意需求时使用本技能：
+- “帮我找一个用于……的技能”
+- “搜索技能”
+- “安装一个技能”
+- “有哪些可用技能？”
+- “更新我的技能”
 
-## Search
+## 搜索
 
 ```bash
 npx --yes clawhub@latest search "web scraping" --limit 5
 ```
 
-## Install
+## 安装
 
 ```bash
-npx --yes clawhub@latest install <slug> --workdir ~/.oldricbot/workspace
+npx --yes clawhub@latest install <slug> --workdir ~/.ricbot/workspace
 ```
 
-Replace `<slug>` with the skill name from search results. This places the skill into `~/.oldricbot/workspace/skills/`, where oldricbot loads workspace skills from. Always include `--workdir`.
+将 `<slug>` 替换为搜索结果中的技能名称。该命令会把技能安装到 `~/.ricbot/workspace/skills/`（ricbot 从这里加载工作区技能）。务必带上 `--workdir`。
 
-## Update
+## 更新
 
 ```bash
-npx --yes clawhub@latest update --all --workdir ~/.oldricbot/workspace
+npx --yes clawhub@latest update --all --workdir ~/.ricbot/workspace
 ```
 
-## List installed
+## 列出已安装
 
 ```bash
-npx --yes clawhub@latest list --workdir ~/.oldricbot/workspace
+npx --yes clawhub@latest list --workdir ~/.ricbot/workspace
 ```
 
-## Notes
+## 注意事项
 
-- Requires Node.js (`npx` comes with it).
-- No API key needed for search and install.
-- Login (`npx --yes clawhub@latest login`) is only required for publishing.
-- `--workdir ~/.oldricbot/workspace` is critical — without it, skills install to the current directory instead of the oldricbot workspace.
-- After install, remind the user to start a new session to load the skill.
+- 需要 Node.js（自带 `npx`）。
+- 搜索与安装不需要 API key。
+- 登录（`npx --yes clawhub@latest login`）仅在发布技能时需要。
+- `--workdir ~/.ricbot/workspace` 非常关键——不带它会把技能装到当前目录，而不是 ricbot 的工作区。
+- 安装后提醒用户开启新会话以加载技能。

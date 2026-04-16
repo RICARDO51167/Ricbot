@@ -3,18 +3,18 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: wait-for-text.sh -t target -p pattern [options]
+用法：wait-for-text.sh -t target -p pattern [options]
 
-Poll a tmux pane for text and exit when found.
+轮询某个 tmux 窗格的输出，找到匹配文本后退出。
 
-Options:
-  -t, --target    tmux target (session:window.pane), required
-  -p, --pattern   regex pattern to look for, required
-  -F, --fixed     treat pattern as a fixed string (grep -F)
-  -T, --timeout   seconds to wait (integer, default: 15)
-  -i, --interval  poll interval in seconds (default: 0.5)
-  -l, --lines     number of history lines to inspect (integer, default: 1000)
-  -h, --help      show this help
+选项：
+  -t, --target    tmux 目标（session:window.pane），必填
+  -p, --pattern   要匹配的正则表达式，必填
+  -F, --fixed     将 pattern 视为固定字符串（grep -F）
+  -T, --timeout   等待秒数（整数，默认：15）
+  -i, --interval  轮询间隔秒数（默认：0.5）
+  -l, --lines     检查的历史行数（整数，默认：1000）
+  -h, --help      显示本帮助
 USAGE
 }
 
@@ -34,28 +34,28 @@ while [[ $# -gt 0 ]]; do
     -i|--interval) interval="${2-}"; shift 2 ;;
     -l|--lines)    lines="${2-}"; shift 2 ;;
     -h|--help)     usage; exit 0 ;;
-    *) echo "Unknown option: $1" >&2; usage; exit 1 ;;
+    *) echo "未知选项：$1" >&2; usage; exit 1 ;;
   esac
 done
 
 if [[ -z "$target" || -z "$pattern" ]]; then
-  echo "target and pattern are required" >&2
+  echo "必须提供 target 与 pattern" >&2
   usage
   exit 1
 fi
 
 if ! [[ "$timeout" =~ ^[0-9]+$ ]]; then
-  echo "timeout must be an integer number of seconds" >&2
+  echo "timeout 必须是整数秒数" >&2
   exit 1
 fi
 
 if ! [[ "$lines" =~ ^[0-9]+$ ]]; then
-  echo "lines must be an integer" >&2
+  echo "lines 必须是整数" >&2
   exit 1
 fi
 
 if ! command -v tmux >/dev/null 2>&1; then
-  echo "tmux not found in PATH" >&2
+  echo "PATH 中未找到 tmux" >&2
   exit 1
 fi
 
@@ -73,8 +73,8 @@ while true; do
 
   now=$(date +%s)
   if (( now >= deadline )); then
-    echo "Timed out after ${timeout}s waiting for pattern: $pattern" >&2
-    echo "Last ${lines} lines from $target:" >&2
+    echo "等待 pattern 超时（${timeout} 秒）：$pattern" >&2
+    echo "$target 的最后 ${lines} 行：" >&2
     printf '%s\n' "$pane_text" >&2
     exit 1
   fi

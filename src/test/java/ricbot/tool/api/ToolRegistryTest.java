@@ -46,8 +46,6 @@ public class ToolRegistryTest {
         // 注册执行命令工具
         registry.register(new ExecTool(5, workspace.toString(), null, null, true, "", "", List.of()));
 
-        // 断言注册表中存在 "list_dir" 工具
-        assertTrue(registry.has("list_dir"));
         // 断言可以获取到 "read_file" 工具实例
         assertNotNull(registry.get("read_file"));
 
