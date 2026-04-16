@@ -27,6 +27,7 @@ import ricbot.tool.search.GrepTool;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.Console;
 import java.nio.file.Path; // 导入 Path 类，用于文件路径操作
 import java.nio.file.Files;
 import java.util.*; // 导入 Java 集合框架
@@ -630,29 +631,118 @@ public final class CliCommands {
             return; // 退出方法
         }
 
-        String sub = args.get(0); // 获取子命令
+        Path configPath = null;
+        List<String> normalized = new ArrayList<>();
+        for (int i = 0; i < args.size(); i++) {
+            String arg = args.get(i);
+            if (("--config".equals(arg) || "-c".equals(arg)) && i + 1 < args.size()) {
+                configPath = Path.of(args.get(i + 1)).toAbsolutePath().normalize();
+                i++;
+                continue;
+            }
+            normalized.add(arg);
+        }
+
+        if (normalized.isEmpty()) {
+            System.out.println("用法：provider login <provider> [api_key] [api_base] [--config path]");
+            return;
+        }
+
+        String sub = normalized.get(0); // 获取子命令
         if (!"login".equals(sub)) { // 如果不是 login 子命令
             System.out.println("未知的 provider 子命令：" + sub); // 打印未知子命令提示
             return; // 退出方法
         }
 
-        if (args.size() < 2) { // 如果缺少提供商名称
-            System.out.println("用法：provider login <provider>"); // 打印用法提示
+        if (normalized.size() < 2) { // 如果缺少提供商名称
+            System.out.println("用法：provider login <provider> [api_key] [api_base] [--config path]"); // 打印用法提示
             return; // 退出方法
         }
 
-        String provider = args.get(1); // 获取提供商名称
-        providerLogin(provider); // 执行登录逻辑
+        String provider = normalized.get(1); // 获取提供商名称
+        String apiKey = normalized.size() >= 3 ? normalized.get(2) : null;
+        String apiBase = normalized.size() >= 4 ? normalized.get(3) : null;
+        providerLogin(provider, apiKey, apiBase, configPath); // 执行登录逻辑
     }
 
     /**
-     * 处理特定提供商的 OAuth 登录逻辑占位。
+     * 为支持 API Key 的 provider 写入配置；OAuth provider 给出明确提示。
      *
      * @param provider 提供商名称
      */
-    private static void providerLogin(String provider) {
-        System.out.println("Provider '" + provider + "' 的 OAuth 登录流程需要按 provider 具体实现。"); // 打印提示信息
-        System.out.println("这是 Java 版本的占位实现，对应 Python 的 provider_login()。"); // 打印占位提示
+    private static void providerLogin(String provider, String apiKey, String apiBase, Path configPath) {
+        ProviderSpec spec = ProviderRegistry.findByName(provider);
+        if (spec == null) {
+            System.out.println("未知 provider：" + provider);
+            return;
+        }
+
+        if (spec.isOauth()) {
+            System.out.println("Provider '" + provider + "' 依赖 OAuth/浏览器登录。");
+            System.out.println("当前 Java 版本尚未内置该 provider 的 OAuth 流程；如你已经拿到可用 token，可直接写入对应 provider 配置。");
+            return;
+        }
+
+        String resolvedKey = apiKey;
+        if ((resolvedKey == null || resolvedKey.isBlank()) && spec.getEnvKey() != null && !spec.getEnvKey().isBlank()) {
+            resolvedKey = System.getenv(spec.getEnvKey());
+        }
+        if (resolvedKey == null || resolvedKey.isBlank()) {
+            resolvedKey = readSecret("请输入 " + provider + " 的 API Key: ");
+        }
+        if (resolvedKey == null || resolvedKey.isBlank()) {
+            System.out.println("未提供 API Key，已取消。");
+            return;
+        }
+
+        Config config = ConfigLoader.loadConfig(configPath);
+        Config.ProviderConfig providerConfig = config.getProviders().getOrCreate(spec.getName());
+        providerConfig.setApiKey(resolvedKey);
+
+        String resolvedBase = apiBase;
+        if ((resolvedBase == null || resolvedBase.isBlank())
+                && (providerConfig.getApiBase() == null || providerConfig.getApiBase().isBlank())
+                && spec.getDefaultApiBase() != null
+                && !spec.getDefaultApiBase().isBlank()) {
+            resolvedBase = spec.getDefaultApiBase();
+        }
+        if (resolvedBase != null && !resolvedBase.isBlank()) {
+            providerConfig.setApiBase(resolvedBase);
+        }
+
+        config.getProviders().put(spec.getName(), providerConfig);
+        Path target = configPath != null ? configPath : ConfigLoader.getConfigPath();
+        ConfigLoader.saveConfig(config, target);
+
+        System.out.println("已写入 provider 配置：");
+        System.out.println("  provider = " + spec.getName());
+        System.out.println("  config   = " + target);
+        if (providerConfig.getApiBase() != null && !providerConfig.getApiBase().isBlank()) {
+            System.out.println("  api_base = " + providerConfig.getApiBase());
+        }
+        if (spec.getEnvKey() != null && !spec.getEnvKey().isBlank()) {
+            System.out.println("提示：你也可以改用环境变量 " + spec.getEnvKey() + " 管理密钥。");
+        }
+    }
+
+    private static String readSecret(String prompt) {
+        try {
+            Console console = System.console();
+            if (console != null) {
+                char[] secret = console.readPassword("%s", prompt);
+                return secret != null ? new String(secret).trim() : null;
+            }
+        } catch (Exception ignored) {
+        }
+
+        System.out.print(prompt);
+        try {
+            Scanner scanner = new Scanner(System.in);
+            String line = scanner.nextLine();
+            return line != null ? line.trim() : null;
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     // =========================================================

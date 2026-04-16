@@ -6,18 +6,23 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
 import ricbot.domain.agent.AgentLoop;
+import ricbot.domain.hook.AgentHook;
+import ricbot.domain.hook.AgentHookContext;
 import ricbot.domain.message.OutboundMessage;
 import ricbot.domain.session.Session;
 
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.io.OutputStreamWriter;
+import java.io.Writer;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * OpenAI 兼容 HTTP API 服务。
@@ -267,15 +272,6 @@ public class RicbotApiServer {
 
             Object stream = body.get("stream");
             boolean streamEnabled = Boolean.TRUE.equals(stream);
-            if (streamEnabled) {
-                writeErrorJson(
-                        exchange,
-                        400,
-                        "当前版本不支持实时流式输出，请将 stream 设为 false。",
-                        "invalid_request_error"
-                );
-                return;
-            }
 
             ParsedMessages parsed;
             try {
@@ -307,6 +303,11 @@ public class RicbotApiServer {
             try {
                 sessionLock.lock();
                 try {
+                    if (streamEnabled) {
+                        handleStreaming(exchange, parsed, sessionKey, modelName);
+                        return;
+                    }
+
                     String responseText;
 
                     try {
@@ -372,6 +373,69 @@ public class RicbotApiServer {
             } catch (Exception e) {
                 e.printStackTrace();
                 writeErrorJson(exchange, 500, "服务器内部错误", "internal_error");
+            }
+        }
+
+        private void handleStreaming(HttpExchange exchange, ParsedMessages parsed, String sessionKey, String modelName) throws IOException {
+            Headers headers = exchange.getResponseHeaders();
+            headers.set("Content-Type", "text/event-stream; charset=utf-8");
+            headers.set("Cache-Control", "no-cache");
+            headers.set("Connection", "keep-alive");
+            exchange.sendResponseHeaders(200, 0);
+
+            try (OutputStream os = exchange.getResponseBody();
+                 Writer writer = new OutputStreamWriter(os, StandardCharsets.UTF_8)) {
+                String streamId = "chatcmpl-" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
+                AtomicBoolean wroteRole = new AtomicBoolean(false);
+                AtomicBoolean wroteStop = new AtomicBoolean(false);
+
+                if (parsed.shouldSyncHistory()) {
+                    Session session = appContext.getAgentLoop().getSessions().getOrCreate(sessionKey);
+                    session.setMessages(parsed.history());
+                    appContext.getAgentLoop().getSessions().save(session);
+                }
+
+                AgentHook streamHook = new AgentHook(true) {
+                    @Override
+                    public boolean wantsStreaming() {
+                        return true;
+                    }
+
+                    @Override
+                    public void onStream(AgentHookContext context, String delta) throws Exception {
+                        ensureRoleChunk(writer, streamId, modelName, wroteRole);
+                        writeSse(writer, streamChunk(streamId, modelName, delta, null));
+                    }
+
+                    @Override
+                    public void onStreamEnd(AgentHookContext context, boolean resuming) throws Exception {
+                        if (resuming) {
+                            return;
+                        }
+                        ensureRoleChunk(writer, streamId, modelName, wroteRole);
+                        if (wroteStop.compareAndSet(false, true)) {
+                            writeSse(writer, streamChunk(streamId, modelName, "", "stop"));
+                        }
+                    }
+                };
+
+                appContext.getAgentLoop().processDirect(
+                        parsed.currentUserContent(),
+                        sessionKey,
+                        "api",
+                        API_CHAT_ID,
+                        Map.of("_wants_stream", true),
+                        List.of(streamHook)
+                );
+
+                ensureRoleChunk(writer, streamId, modelName, wroteRole);
+                if (wroteStop.compareAndSet(false, true)) {
+                    writeSse(writer, streamChunk(streamId, modelName, "", "stop"));
+                }
+                writer.write("data: [DONE]\n\n");
+                writer.flush();
+            } catch (Exception e) {
+                throw new IOException("streaming chat failed", e);
             }
         }
     }
@@ -449,6 +513,55 @@ public class RicbotApiServer {
     }
 
     private record ParsedMessages(String currentUserContent, List<Map<String, Object>> history, boolean shouldSyncHistory) {
+    }
+
+    public static Map<String, Object> streamChunk(String id, String model, String deltaContent, String finishReason) {
+        Map<String, Object> delta = new LinkedHashMap<>();
+        if (deltaContent != null && !deltaContent.isEmpty()) {
+            delta.put("content", deltaContent);
+        }
+
+        Map<String, Object> choice = new LinkedHashMap<>();
+        choice.put("index", 0);
+        choice.put("delta", delta);
+        choice.put("finish_reason", finishReason);
+
+        Map<String, Object> chunk = new LinkedHashMap<>();
+        chunk.put("id", id);
+        chunk.put("object", "chat.completion.chunk");
+        chunk.put("created", Instant.now().getEpochSecond());
+        chunk.put("model", model);
+        chunk.put("choices", List.of(choice));
+        return chunk;
+    }
+
+    public static Map<String, Object> streamRoleChunk(String id, String model) {
+        Map<String, Object> delta = new LinkedHashMap<>();
+        delta.put("role", "assistant");
+
+        Map<String, Object> choice = new LinkedHashMap<>();
+        choice.put("index", 0);
+        choice.put("delta", delta);
+        choice.put("finish_reason", null);
+
+        Map<String, Object> chunk = new LinkedHashMap<>();
+        chunk.put("id", id);
+        chunk.put("object", "chat.completion.chunk");
+        chunk.put("created", Instant.now().getEpochSecond());
+        chunk.put("model", model);
+        chunk.put("choices", List.of(choice));
+        return chunk;
+    }
+
+    private static void ensureRoleChunk(Writer writer, String id, String model, AtomicBoolean wroteRole) throws IOException {
+        if (wroteRole.compareAndSet(false, true)) {
+            writeSse(writer, streamRoleChunk(id, model));
+        }
+    }
+
+    private static void writeSse(Writer writer, Object payload) throws IOException {
+        writer.write("data: " + MAPPER.writeValueAsString(payload) + "\n\n");
+        writer.flush();
     }
 
     private static ParsedMessages parseMessages(List<Object> rawMessages) {

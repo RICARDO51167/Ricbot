@@ -4,10 +4,19 @@ package ricbot.infra.git;
 import org.eclipse.jgit.api.Git;
 // 导入 JGit 的状态检查类，用于判断工作区是否有变更
 import org.eclipse.jgit.api.Status;
+import org.eclipse.jgit.diff.DiffEntry;
+import org.eclipse.jgit.diff.DiffFormatter;
+import org.eclipse.jgit.lib.ObjectId;
+import org.eclipse.jgit.lib.ObjectReader;
+import org.eclipse.jgit.lib.Repository;
 // 导入 JGit 的提交对象类，用于获取提交详情
 import org.eclipse.jgit.revwalk.RevCommit;
+import org.eclipse.jgit.revwalk.RevWalk;
+import org.eclipse.jgit.treewalk.CanonicalTreeParser;
 
 // 导入 Java NIO 文件操作工具类
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 // 导入 Java NIO 路径类
 import java.nio.file.Path;
@@ -19,8 +28,10 @@ import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 // 导入动态数组列表类
 import java.util.ArrayList;
+import java.util.HashSet;
 // 导入列表接口类
 import java.util.List;
+import java.util.Set;
 
 /**
  * GitStore 类用于管理基于 Git 的存储操作。
@@ -222,9 +233,73 @@ public class GitStore {
      * @return 差异字符串，当前为占位实现
      */
     public String diffCommits(String sha1, String sha2) {
-        // 当前先保留占位实现
-        // 你后面如果要我，我可以把 JGit diff 也补完整
-        return "";
+        if (!isInitialized() || sha1 == null || sha1.isBlank() || sha2 == null || sha2.isBlank()) {
+            return "";
+        }
+
+        try (Git git = Git.open(workspace.toFile())) {
+            Repository repo = git.getRepository();
+            ObjectId oldId = repo.resolve(sha1);
+            ObjectId newId = repo.resolve(sha2);
+            if (oldId == null || newId == null) {
+                return "";
+            }
+
+            try (RevWalk walk = new RevWalk(repo);
+                 ObjectReader reader = repo.newObjectReader();
+                 ByteArrayOutputStream out = new ByteArrayOutputStream();
+                 DiffFormatter formatter = new DiffFormatter(out)) {
+
+                RevCommit oldCommit = walk.parseCommit(oldId);
+                RevCommit newCommit = walk.parseCommit(newId);
+
+                CanonicalTreeParser oldTree = new CanonicalTreeParser();
+                oldTree.reset(reader, oldCommit.getTree());
+                CanonicalTreeParser newTree = new CanonicalTreeParser();
+                newTree.reset(reader, newCommit.getTree());
+
+                formatter.setRepository(repo);
+                formatter.setDetectRenames(true);
+
+                List<DiffEntry> filtered = filterTrackedDiffs(formatter.scan(oldTree, newTree));
+                if (filtered.isEmpty()) {
+                    return "";
+                }
+
+                for (DiffEntry diff : filtered) {
+                    formatter.format(diff);
+                }
+                return out.toString(StandardCharsets.UTF_8).trim();
+            }
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    private List<DiffEntry> filterTrackedDiffs(List<DiffEntry> diffs) {
+        if (diffs == null || diffs.isEmpty()) {
+            return List.of();
+        }
+        if (trackedFiles == null || trackedFiles.isEmpty()) {
+            return diffs;
+        }
+
+        Set<String> tracked = new HashSet<>();
+        for (String rel : trackedFiles) {
+            if (rel != null && !rel.isBlank()) {
+                tracked.add(rel.replace("\\", "/"));
+            }
+        }
+
+        List<DiffEntry> filtered = new ArrayList<>();
+        for (DiffEntry diff : diffs) {
+            String oldPath = diff.getOldPath() != null ? diff.getOldPath().replace("\\", "/") : "";
+            String newPath = diff.getNewPath() != null ? diff.getNewPath().replace("\\", "/") : "";
+            if (tracked.contains(oldPath) || tracked.contains(newPath)) {
+                filtered.add(diff);
+            }
+        }
+        return filtered;
     }
 
     /**

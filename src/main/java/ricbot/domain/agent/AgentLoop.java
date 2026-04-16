@@ -2,7 +2,6 @@ package ricbot.domain.agent;
 
 import ricbot.domain.skill.SkillsLoader;
 import ricbot.domain.skill.SkillRouter;
-import ricbot.domain.skill.SkillRoutingContext;
 import ricbot.infra.cron.CronService;
 import ricbot.infra.cron.CronTypes.CronJob;
 import ricbot.tool.web.WebFetchTool;
@@ -12,7 +11,6 @@ import ricbot.domain.memory.Dream;
 import ricbot.domain.memory.MemoryStore;
 import ricbot.domain.subagent.SubagentManager;
 import ricbot.domain.hook.AgentHook;
-import ricbot.domain.hook.AgentHookContext;
 import ricbot.tool.api.ToolRegistry;
 import ricbot.tool.cron.CronTool;
 import ricbot.tool.filesystem.EditFileTool;
@@ -31,17 +29,12 @@ import ricbot.domain.message.MessageBus;
 import ricbot.domain.message.OutboundMessage;
 import ricbot.infra.config.Config;
 import ricbot.integration.llm.api.LLMProvider;
-import ricbot.integration.llm.api.ToolCallRequest;
 import ricbot.domain.session.Session;
 import ricbot.domain.session.SessionManager;
-import ricbot.infra.common.HelperUtils;
-import ricbot.infra.runtime.RuntimeUtils;
-import ricbot.infra.template.ToolHintFormatter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.nio.file.Path;
-import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
@@ -58,10 +51,6 @@ public class AgentLoop {
 
     /** 统一会话的默认键值，当启用统一会话模式时使用 */
     public static final String UNIFIED_SESSION_KEY = "unified:default";
-    /** 会话元数据中用于存储运行时检查点的键 */
-    private static final String RUNTIME_CHECKPOINT_KEY = "runtime_checkpoint";
-    /** 会话元数据中用于标记待处理用户轮次的键 */
-    private static final String PENDING_USER_TURN_KEY = "pending_user_turn";
 
     /** 消息总线，用于接收入站消息和发送出站消息 */
     private final MessageBus bus;
@@ -122,6 +111,16 @@ public class AgentLoop {
     private final ToolRegistry tools;
     /** Agent 运行器，负责执行具体的 LLM 交互循环 */
     private final AgentRunner runner;
+    /** Hook 工厂，负责组合请求级 Hook */
+    private final AgentHookFactory hookFactory;
+    /** 会话准备服务 */
+    private final SessionPreparationService sessionPreparationService;
+    /** 上下文组装服务 */
+    private final AgentContextService agentContextService;
+    /** 执行服务 */
+    private final AgentExecutionService agentExecutionService;
+    /** 持久化服务 */
+    private final SessionPersistenceService sessionPersistenceService;
     /** MCP 兼容加载器（统一 MCP 装配路径） */
     private final MCPLoader mcpLoader;
     /** 命令路由器，统一 slash 命令入口 */
@@ -143,7 +142,7 @@ public class AgentLoop {
     private final AtomicBoolean backgroundStarted = new AtomicBoolean(false);
     private final AtomicBoolean loopThreadStarted = new AtomicBoolean(false);
     /** 额外的 Agent 钩子列表 */
-    private List<AgentHook> extraHooks = new ArrayList<>();
+    private final List<AgentHook> extraHooks = new ArrayList<>();
 
     /**
      * 构造 AgentLoop 实例。
@@ -268,6 +267,31 @@ public class AgentLoop {
         // 初始化工具注册表和运行器
         this.tools = new ToolRegistry();
         this.runner = new AgentRunner(provider);
+        this.hookFactory = new AgentHookFactory(this.bus, this::setToolContext);
+        this.sessionPreparationService = new SessionPreparationService(this.sessionManager, this.autoCompact, this.consolidator);
+        this.agentContextService = new AgentContextService(
+                this.workspace,
+                this.contextBuilder,
+                this.memoryStore,
+                this.skillsLoader,
+                this.skillRouter,
+                this.tools,
+                this.hookFactory,
+                this::setToolContext,
+                this.extraHooks
+        );
+        this.agentExecutionService = new AgentExecutionService(
+                this.runner,
+                this.tools,
+                this.workspace,
+                this.model,
+                this.maxIterations,
+                this.maxToolResultChars,
+                this.providerRetryMode,
+                this.contextWindowTokens,
+                this.contextBlockLimit
+        );
+        this.sessionPersistenceService = new SessionPersistenceService(this.sessionManager, this.maxToolResultChars);
         this.mcpLoader = new MCPLoader(this.tools, this.mcpServers);
         this.commandRouter = new CommandRouter();
 
@@ -536,7 +560,7 @@ public class AgentLoop {
         synchronized (lock) {
             try {
                 // 处理消息并获取响应
-                OutboundMessage response = processMessage(msg, sessionKey);
+                OutboundMessage response = processMessage(msg, sessionKey, List.of());
                 if (response != null) {
                     // 如果响应不为空，发布出站消息
                     bus.publishOutbound(response);
@@ -581,170 +605,40 @@ public class AgentLoop {
      * @return 出站消息响应
      * @throws Exception 处理过程中可能抛出的异常
      */
-    private OutboundMessage processMessage(InboundMessage msg, String sessionKey) throws Exception {
-        // 如果是系统消息，委托给专门的处理方法
+    private OutboundMessage processMessage(InboundMessage msg, String sessionKey, List<AgentHook> requestHooks) throws Exception {
         if ("system".equals(msg.getChannel())) {
             return processSystemMessage(msg);
         }
 
-        // 生成消息内容预览，用于日志记录
         String preview = msg.getContent() != null && msg.getContent().length() > 80
                 ? msg.getContent().substring(0, 80) + "..."
                 : String.valueOf(msg.getContent());
         log.info("处理来自 {}:{} 的消息: {}", msg.getChannel(), msg.getSenderId(), preview);
 
-        // 获取或创建会话对象
-        Session baseSession = sessionManager.getOrCreate(sessionKey);
-        AutoCompact.PreparedSession prepared = autoCompact.prepareSession(baseSession, sessionKey);
-        String summaryContext = prepared != null ? prepared.summary() : null;
-        Session session = prepared != null ? prepared.session() : baseSession;
-
-        // 根据需要归档旧消息，以优化上下文窗口
-        consolidator.maybeConsolidateByTokens(session);
-
-        // 恢复之前的运行时检查点（如果有）
-        restoreRuntimeCheckpoint(session);
-        // 恢复待处理的用户轮次标记（如果有）
-        restorePendingUserTurn(session);
-
-        // 处理斜杠命令（统一路由）
-        String raw = trim(msg.getContent());
-        if (raw != null && raw.startsWith("/")) {
-            OutboundMessage commandOut = dispatchCommand(msg, session, sessionKey, raw, false);
-            if (commandOut != null) {
-                return commandOut;
-            }
-        }
-
-        // 设置工具执行上下文
-        setToolContext(msg.getChannel(), msg.getChatId(), messageIdOf(msg));
-
-        // 获取记忆上下文
-        String memoryContext = memoryStore.getMemoryContext();
-        // 获取技能上下文
-        String skillsContext = skillsLoader.getSkillsContext();
-        // 根据当前上下文选择并渲染合适的技能
-        SkillRouter.SelectionResult selected = skillRouter.selectAndRender(new SkillRoutingContext(
-                workspace,
-                msg.getChannel(),
-                msg.getChatId(),
-                msg.getContent(),
-                tools.toolNames(),
-                msg.getMetadata(),
-                Map.of()
-        ));
-
-        // 组合所有上下文信息
-        String combinedContext = (memoryContext != null ? memoryContext : "")
-                + "\n" + (skillsContext != null ? skillsContext : "")
-                + (summaryContext != null && !summaryContext.isBlank()
-                ? "\n" + summaryContext
-                : "")
-                + (selected.renderedContext() != null && !selected.renderedContext().isBlank()
-                ? "\n" + selected.renderedContext()
-                : "");
-
-        // 获取会话历史消息窗口
-        List<Map<String, Object>> history = session.getHistory(historyWindowAsMessages());
-        // 构建发送给 LLM 的初始消息列表
-        List<Map<String, Object>> initialMessages = contextBuilder.buildMessages(
-                history,
-                msg.getContent(),
-                msg.getMedia(),
-                msg.getChannel(),
-                msg.getChatId(),
-                combinedContext,
-                "user"
+        PreparedSessionContext prepared = sessionPreparationService.prepareInteractiveTurn(
+                msg,
+                sessionKey,
+                (commandMessage, session, key, raw) -> dispatchCommand(commandMessage, session, key, raw, false)
         );
-
-        // 提前持久化用户消息，防止后续处理崩溃导致消息丢失
-        boolean userPersistedEarly = false;
-        if (msg.getContent() != null && !msg.getContent().isBlank()) {
-            session.addMessage("user", msg.getContent());
-            markPendingUserTurn(session);
-            sessionManager.save(session);
-            userPersistedEarly = true;
+        if (prepared.immediateResponse() != null) {
+            return prepared.immediateResponse();
         }
 
-        // 构建 Agent 运行钩子，用于处理流式输出等事件
-        AgentHook hook = buildLoopHook(msg);
+        PreparedSessionContext persisted = sessionPreparationService.persistUserTurnIfNeeded(prepared, msg);
+        AgentRequestContext request = agentContextService.buildInteractiveRequest(
+                msg,
+                persisted,
+                requestHooks,
+                historyWindowAsMessages()
+        );
+        ExecutionOutcome outcome = agentExecutionService.executeInteractive(
+                request,
+                payload -> storeRuntimeCheckpoint(request.session(), payload)
+        );
+        PersistenceResult persistence = sessionPersistenceService.persistInteractiveTurn(request, outcome);
 
-        // 构建 Agent 运行规格
-        AgentRunSpec spec = new AgentRunSpec()
-                .setInitialMessages(initialMessages)
-                .setTools(tools)
-                .setModel(model)
-                .setMaxIterations(maxIterations)
-                .setMaxToolResultChars(maxToolResultChars)
-                .setHook(hook)
-                .setProviderRetryMode(providerRetryMode)
-                .setErrorMessage("抱歉，调用模型时遇到错误。")
-                .setMaxIterationsMessage("我已达到最大迭代次数（agents.defaults.max_tool_iterations=" + maxIterations + "），但仍未完成任务。可尝试提高该值（例如 12 或 16）后重试。")
-                .setConcurrentTools(true)
-                .setWorkspace(workspace)
-                .setSessionKey(session.getKey())
-                .setContextWindowTokens(contextWindowTokens)
-                .setContextBlockLimit(contextBlockLimit)
-                .setCheckpointCallback(payload -> setRuntimeCheckpoint(session, payload));
-
-        // 执行 Agent 运行循环
-        AgentRunResult runResult = runner.run(spec);
-        if (hook == null || !hook.wantsStreaming()) {
-            if ("tool_loop".equals(runResult.getStopReason()) || "tool_error_loop".equals(runResult.getStopReason())) {
-                int bumped = Math.min(30, Math.max(maxIterations + 6, maxIterations * 2));
-                if (bumped > maxIterations) {
-                    AgentRunSpec retrySpec = new AgentRunSpec()
-                            .setInitialMessages(runResult.getMessages())
-                            .setTools(tools)
-                            .setModel(model)
-                            .setMaxIterations(bumped)
-                            .setMaxToolResultChars(maxToolResultChars)
-                            .setHook(hook)
-                            .setProviderRetryMode(providerRetryMode)
-                            .setErrorMessage("抱歉，调用模型时遇到错误。")
-                            .setMaxIterationsMessage("我已达到最大迭代次数（agents.defaults.max_tool_iterations=" + bumped + "），但仍未完成任务。可尝试继续提高该值后重试。")
-                            .setConcurrentTools(true)
-                            .setWorkspace(workspace)
-                            .setSessionKey(session.getKey())
-                            .setContextWindowTokens(contextWindowTokens)
-                            .setContextBlockLimit(contextBlockLimit)
-                            .setCheckpointCallback(payload -> setRuntimeCheckpoint(session, payload));
-                    runResult = runner.run(retrySpec);
-                }
-            }
-        }
-
-        // 获取最终回复内容
-        String finalContent = runResult.getFinalContent();
-        // 如果内容为空，使用默认空响应消息
-        if (RuntimeUtils.isBlankText(finalContent)) {
-            finalContent = RuntimeUtils.EMPTY_FINAL_RESPONSE_MESSAGE;
-        }
-
-        // 计算保存消息时需要跳过的数量（包括历史消息和提前持久化的用户消息）
-        int saveSkip = 1 + history.size() + (userPersistedEarly ? 1 : 0);
-        // 保存本轮对话产生的新消息到会话
-        saveTurn(session, runResult.getMessages(), saveSkip);
-
-        // 清除待处理用户轮次标记
-        clearPendingUserTurn(session);
-        // 清除运行时检查点
-        clearRuntimeCheckpoint(session);
-        // 成功完成一轮后清除中断原因
-        session.getMetadata().remove("_last_interrupt_reason");
-        // 保存会话状态
-        sessionManager.save(session);
-
-        // 记录回复日志
-        log.info("回复给 {}:{}: {}", msg.getChannel(), msg.getSenderId(), abbreviate(finalContent, 120));
-
-        // 构建出站消息
-        OutboundMessage out = new OutboundMessage();
-        out.setChannel(msg.getChannel());
-        out.setChatId(msg.getChatId());
-        out.setContent(finalContent);
-        out.setMetadata(msg.getMetadata() != null ? new HashMap<>(msg.getMetadata()) : new HashMap<>());
-        return out;
+        log.info("回复给 {}:{}: {}", msg.getChannel(), msg.getSenderId(), abbreviate(outcome.finalContent(), 120));
+        return persistence.outboundMessage();
     }
 
     /**
@@ -755,7 +649,6 @@ public class AgentLoop {
      * @throws Exception 处理过程中可能抛出的异常
      */
     private OutboundMessage processSystemMessage(InboundMessage msg) throws Exception {
-        // 解析 chatId 以提取通道和实际聊天ID
         String[] parts = msg.getChatId() != null && msg.getChatId().contains(":")
                 ? msg.getChatId().split(":", 2)
                 : new String[]{"cli", msg.getChatId()};
@@ -763,72 +656,18 @@ public class AgentLoop {
         String channel = parts[0];
         String chatId = parts[1];
         String key = channel + ":" + chatId;
-
-        // 获取或创建会话
-        Session session = sessionManager.getOrCreate(key);
-
-        // 恢复运行时检查点
-        restoreRuntimeCheckpoint(session);
-        // 恢复待处理用户轮次
-        restorePendingUserTurn(session);
-
-        // 设置工具上下文
-        setToolContext(channel, chatId, messageIdOf(msg));
-
-        // 确定当前消息的角色：如果是子代理发送则视为助手，否则视为用户
         String currentRole = "subagent".equals(msg.getSenderId()) ? "assistant" : "user";
-
-        // 获取会话历史
-        List<Map<String, Object>> history = session.getHistory(historyWindowAsMessages());
-        // 构建消息列表
-        List<Map<String, Object>> messages = contextBuilder.buildMessages(
-                history,
-                msg.getContent(),
-                null,
+        PreparedSessionContext prepared = sessionPreparationService.prepareSystemTurn(key);
+        AgentRequestContext request = agentContextService.buildSystemRequest(
+                msg,
+                prepared,
                 channel,
                 chatId,
-                null,
-                currentRole
+                currentRole,
+                historyWindowAsMessages()
         );
-
-        // 构建 Agent 运行规格
-        AgentRunSpec spec = new AgentRunSpec()
-                .setInitialMessages(messages)
-                .setTools(tools)
-                .setModel(model)
-                .setMaxIterations(maxIterations)
-                .setMaxToolResultChars(maxToolResultChars)
-                .setProviderRetryMode(providerRetryMode)
-                .setMaxIterationsMessage("我已达到最大迭代次数（agents.defaults.max_tool_iterations=" + maxIterations + "），但仍未完成任务。可尝试提高该值（例如 12 或 16）后重试。")
-                .setWorkspace(workspace)
-                .setSessionKey(session.getKey())
-                .setContextWindowTokens(contextWindowTokens)
-                .setContextBlockLimit(contextBlockLimit);
-
-        // 执行 Agent 运行
-        AgentRunResult runResult = runner.run(spec);
-
-        // 保存新生成的消息
-        saveTurn(session, runResult.getMessages(), 1 + history.size());
-        // 清除运行时检查点
-        clearRuntimeCheckpoint(session);
-        // 成功完成一轮后清除中断原因
-        session.getMetadata().remove("_last_interrupt_reason");
-        // 保存会话
-        sessionManager.save(session);
-
-        // 构建出站消息
-        OutboundMessage out = new OutboundMessage();
-        out.setChannel(channel);
-        out.setChatId(chatId);
-        // 如果内容为空，使用默认完成消息
-        out.setContent(
-                RuntimeUtils.isBlankText(runResult.getFinalContent())
-                        ? "后台任务已完成。"
-                        : runResult.getFinalContent()
-        );
-        out.setMetadata(new HashMap<>());
-        return out;
+        ExecutionOutcome outcome = agentExecutionService.executeSystem(request);
+        return sessionPersistenceService.persistSystemTurn(msg, channel, chatId, request, outcome).outboundMessage();
     }
 
     /**
@@ -848,6 +687,17 @@ public class AgentLoop {
             String channel,
             String chatId
     ) throws Exception {
+        return processDirect(content, sessionKey, channel, chatId, Map.of(), List.of());
+    }
+
+    public OutboundMessage processDirect(
+            String content,
+            String sessionKey,
+            String channel,
+            String chatId,
+            Map<String, Object> metadata,
+            List<AgentHook> requestHooks
+    ) throws Exception {
         // 创建一个新的入站消息对象
         InboundMessage msg = new InboundMessage();
         // 设置通信渠道
@@ -860,13 +710,16 @@ public class AgentLoop {
         msg.setContent(content);
         // 初始化媒体列表为空列表
         msg.setMedia(new ArrayList<>());
-        // 初始化元数据为空 Map
-        msg.setMetadata(new HashMap<>());
+        // 初始化元数据
+        msg.setMetadata(metadata != null ? new HashMap<>(metadata) : new HashMap<>());
         // 设置会话键覆盖值，确保使用指定的 sessionKey
         msg.setSessionKeyOverride(sessionKey);
 
-        // 调用核心消息处理方法，并返回结果
-        return processMessage(msg, effectiveSessionKey(msg));
+        String effectiveKey = effectiveSessionKey(msg);
+        Object lock = sessionLocks.computeIfAbsent(effectiveKey, key -> new Object());
+        synchronized (lock) {
+            return processMessage(msg, effectiveKey, requestHooks != null ? requestHooks : List.of());
+        }
     }
 
     /**
@@ -1103,226 +956,6 @@ public class AgentLoop {
         return CompletableFuture.completedFuture(out);
     }
 
-    // ---------------------------------------------------------------------
-    // Hook / helpers (钩子与辅助方法)
-    // ---------------------------------------------------------------------
-
-    /**
-     * 构建 Agent 运行循环所需的钩子（Hook）。
-     * 该钩子负责处理流式输出、工具执行前后的状态更新以及最终内容的清理。
-     *
-     * @param msg 当前处理的入站消息
-     * @return 配置好的 AgentHook 实例
-     */
-    private AgentHook buildLoopHook(InboundMessage msg) {
-        AgentHook baseHook = new AgentHook(true) {
-            // 用于累积流式输出的缓冲区
-            private final StringBuilder streamBuf = new StringBuilder();
-
-            /**
-             * 判断当前请求是否需要流式输出。
-             * 检查消息元数据中的 "_wants_stream" 标志。
-             *
-             * @return 如果需要流式输出则返回 true
-             */
-            @Override
-            public boolean wantsStreaming() {
-                // 从元数据中获取流式标志
-                Object wants = msg.getMetadata() != null ? msg.getMetadata().get("_wants_stream") : null;
-                // 只有当标志存在且为 Boolean true 时才返回 true
-                return wants instanceof Boolean b && b;
-            }
-
-            /**
-             * 处理流式输出的增量片段。
-             * 去除思考过程标记后，将新增的有效内容发布到总线。
-             *
-             * @param context 钩子上下文
-             * @param delta   本次接收到的文本增量
-             */
-            @Override
-            public void onStream(AgentHookContext context, String delta) {
-                // 获取缓冲区当前内容并去除思考标记
-                String prevClean = HelperUtils.stripThink(streamBuf.toString());
-                // 将新增量追加到缓冲区
-                streamBuf.append(delta);
-                // 获取更新后的缓冲区内容并去除思考标记
-                String newClean = HelperUtils.stripThink(streamBuf.toString());
-
-                // 计算本次新增的有效内容
-                // 如果新长度大于等于旧长度，截取差异部分；否则直接使用新内容（防止异常情况）
-                String incremental = newClean.length() >= prevClean.length()
-                        ? newClean.substring(prevClean.length())
-                        : newClean;
-
-                // 如果存在非空的有效增量
-                if (!incremental.isBlank()) {
-                    // 构建出站消息
-                    OutboundMessage out = new OutboundMessage();
-                    out.setChannel(msg.getChannel());
-                    out.setChatId(msg.getChatId());
-                    out.setContent(incremental);
-
-                    // 复制元数据并添加流式标记
-                    Map<String, Object> meta = msg.getMetadata() != null ? new HashMap<>(msg.getMetadata()) : new HashMap<>();
-                    meta.put("_stream_delta", true);
-                    out.setMetadata(meta);
-
-                    try {
-                        // 发布增量消息
-                        bus.publishOutbound(out);
-                    } catch (Exception e) {
-                        log.debug("发布流式增量失败: channel={}, chatId={}", msg.getChannel(), msg.getChatId(), e);
-                    }
-                }
-            }
-
-            /**
-             * 处理流式输出结束事件。
-             * 发送一个空内容消息作为结束标记，并清空缓冲区。
-             *
-             * @param context 钩子上下文
-             * @param resuming 是否处于恢复状态
-             */
-            @Override
-            public void onStreamEnd(AgentHookContext context, boolean resuming) {
-                // 构建结束标记消息
-                OutboundMessage out = new OutboundMessage();
-                out.setChannel(msg.getChannel());
-                out.setChatId(msg.getChatId());
-                out.setContent(""); // 空内容表示流结束
-
-                // 设置元数据标记
-                Map<String, Object> meta = msg.getMetadata() != null ? new HashMap<>(msg.getMetadata()) : new HashMap<>();
-                meta.put("_stream_end", true);
-                meta.put("_resuming", resuming);
-                out.setMetadata(meta);
-
-                try {
-                    // 发布结束消息
-                    bus.publishOutbound(out);
-                } catch (Exception e) {
-                    log.debug("发布流式结束标记失败: channel={}, chatId={}", msg.getChannel(), msg.getChatId(), e);
-                }
-
-                // 清空流式缓冲区，为下一次请求做准备
-                streamBuf.setLength(0);
-            }
-
-            /**
-             * 在工具执行之前触发的回调。
-             * 用于发布思考过程或工具调用提示作为进度更新。
-             *
-             * @param context 钩子上下文，包含当前的响应和工具调用信息
-             */
-            @Override
-            public void beforeExecuteTools(AgentHookContext context) {
-                // 如果不启用流式输出，且存在助手响应，则发布思考内容作为进度
-                if (!wantsStreaming() && context.getResponse() != null) {
-                    // 去除思考标记
-                    String thought = stripThink(context.getResponse().getContent());
-                    // 如果思考内容非空，发布进度消息
-                    if (!thought.isBlank()) {
-                        publishProgress(msg, thought, false);
-                    }
-                }
-
-                // 生成工具调用提示字符串
-                String toolHint = stripThink(toolHint(context.getToolCalls()));
-                // 如果提示非空，发布进度消息，标记为工具提示
-                if (!toolHint.isBlank()) {
-                    publishProgress(msg, toolHint, true);
-                }
-
-                // 设置工具执行的上下文信息
-                setToolContext(msg.getChannel(), msg.getChatId(), messageIdOf(msg));
-            }
-
-            /**
-             * 每次 LLM 迭代结束后触发的回调。
-             * 用于记录 Token 使用情况等调试信息。
-             *
-             * @param context 钩子上下文，包含用量统计
-             */
-            @Override
-            public void afterIteration(AgentHookContext context) {
-                // 获取 Token 用量统计
-                Map<String, Integer> usage = context.getUsage();
-                // 如果用量信息存在且非空
-                if (usage != null && !usage.isEmpty()) {
-                    // 记录调试日志，显示提示词、完成和总 Token 数
-                    log.debug(
-                            "LLM 用量: 提示词={} 完成={} 总计={}",
-                            usage.getOrDefault("prompt_tokens", 0),
-                            usage.getOrDefault("completion_tokens", 0),
-                            usage.getOrDefault("total_tokens", 0)
-                    );
-                }
-            }
-
-            /**
-             * 在返回最终内容之前进行清理。
-             * 主要作用是去除内容中的思考过程标记。
-             *
-             * @param context 钩子上下文
-             * @param content 原始内容
-             * @return 清理后的内容
-             */
-            @Override
-            public String finalizeContent(AgentHookContext context, String content) {
-                // 去除思考标记并返回
-                return stripThink(content);
-            }
-        };
-
-        if (extraHooks == null || extraHooks.isEmpty()) {
-            return baseHook;
-        }
-
-        List<AgentHook> hooks = new ArrayList<>();
-        hooks.add(baseHook);
-        for (AgentHook hook : extraHooks) {
-            if (hook != null) {
-                hooks.add(hook);
-            }
-        }
-        return hooks.size() == 1 ? baseHook : new AgentHook.CompositeHook(hooks);
-    }
-
-    /**
-     * 发布进度消息到总线。
-     *
-     * @param msg      原始入站消息，用于获取通道和会话ID
-     * @param content  进度内容
-     * @param toolHint 是否为工具调用提示
-     */
-    private void publishProgress(InboundMessage msg, String content, boolean toolHint) {
-        // 创建出站消息对象
-        OutboundMessage out = new OutboundMessage();
-        // 设置通道
-        out.setChannel(msg.getChannel());
-        // 设置聊天ID
-        out.setChatId(msg.getChatId());
-        // 设置内容
-        out.setContent(content);
-
-        // 复制元数据，如果为空则创建新的 HashMap
-        Map<String, Object> meta = msg.getMetadata() != null ? new HashMap<>(msg.getMetadata()) : new HashMap<>();
-        // 标记为进度消息
-        meta.put("_progress", true);
-        // 标记是否为工具提示
-        meta.put("_tool_hint", toolHint);
-        // 设置元数据
-        out.setMetadata(meta);
-
-        try {
-            // 发布出站消息
-            bus.publishOutbound(out);
-        } catch (Exception e) {
-            log.debug("发布进度消息失败: channel={}, chatId={}", msg.getChannel(), msg.getChatId(), e);
-        }
-    }
-
     /**
      * 计算有效的会话键。
      *
@@ -1380,265 +1013,8 @@ public class AgentLoop {
         }
     }
 
-    /**
-     * 去除思考过程标记。
-     *
-     * @param text 原始文本
-     * @return 处理后的文本
-     */
-    private String stripThink(String text) {
-        // 使用 HelperUtils 去除思考标记，如果文本为空则传入空字符串
-        return HelperUtils.stripThink(text != null ? text : "");
-    }
-
-    /**
-     * 生成工具调用提示。
-     *
-     * @param toolCalls 工具调用请求列表
-     * @return 格式化后的工具提示字符串
-     */
-    private String toolHint(List<ToolCallRequest> toolCalls) {
-        // 使用 ToolHintFormatter 格式化提示
-        return ToolHintFormatter.formatToolHints(toolCalls);
-    }
-
-    // ---------------------------------------------------------------------
-    // Session persistence helpers
-    // ---------------------------------------------------------------------
-
-    /**
-     * 保存一轮对话消息到会话中。
-     *
-     * @param session  会话对象
-     * @param messages 消息列表
-     * @param skip     跳过前 N 条消息
-     */
-    private void saveTurn(Session session, List<Map<String, Object>> messages, int skip) {
-        // 如果消息列表为空或为 null，直接返回
-        if (messages == null || messages.isEmpty()) {
-            return;
-        }
-
-        // 计算起始索引，确保不越界
-        int start = Math.max(0, Math.min(skip, messages.size()));
-
-        // 遍历需要保存的消息
-        for (int i = start; i < messages.size(); i++) {
-            Map<String, Object> entry = normalizeTurnEntry(messages.get(i));
-            if (entry == null) {
-                continue;
-            }
-            // 将消息添加到会话中
-            session.getMessages().add(entry);
-        }
-
-        // 更新会话的最后更新时间
-        session.setUpdatedAt(Instant.now());
-    }
-
-    private Map<String, Object> normalizeTurnEntry(Map<String, Object> raw) {
-        if (raw == null) {
-            return null;
-        }
-
-        Map<String, Object> entry = new LinkedHashMap<>(raw);
-        Object role = entry.get("role");
-        Object content = entry.get("content");
-
-        if ("assistant".equals(role) && (content == null || String.valueOf(content).isBlank()) && !entry.containsKey("tool_calls")) {
-            return null;
-        }
-
-        if ("tool".equals(role) && content instanceof String s && s.length() > maxToolResultChars) {
-            entry.put("content", HelperUtils.truncateText(s, maxToolResultChars));
-            content = entry.get("content");
-        }
-
-        if ("user".equals(role) && content instanceof String s && s.startsWith(ContextBuilder.RUNTIME_CONTEXT_TAG)) {
-            String endMarker = ContextBuilder.RUNTIME_CONTEXT_END;
-            int endPos = s.indexOf(endMarker);
-            if (endPos >= 0) {
-                String after = s.substring(endPos + endMarker.length()).stripLeading();
-                if (after.isBlank()) {
-                    return null;
-                }
-                entry.put("content", after);
-            }
-        }
-
-        entry.putIfAbsent("timestamp", Instant.now().toString());
-        return entry;
-    }
-
-    /**
-     * 设置运行时检查点。
-     *
-     * @param session 会话对象
-     * @param payload 检查点数据
-     */
-    private void setRuntimeCheckpoint(Session session, Map<String, Object> payload) {
-        // 将检查点数据存入会话元数据
-        session.getMetadata().put(RUNTIME_CHECKPOINT_KEY, payload);
-        // 保存会话
-        sessionManager.save(session);
-    }
-
-    /**
-     * 清除运行时检查点。
-     *
-     * @param session 会话对象
-     */
-    private void clearRuntimeCheckpoint(Session session) {
-        // 从会话元数据中移除检查点
-        session.getMetadata().remove(RUNTIME_CHECKPOINT_KEY);
-    }
-
-    /**
-     * 标记待处理的用户轮次。
-     *
-     * @param session 会话对象
-     */
-    private void markPendingUserTurn(Session session) {
-        // 在会话元数据中标记
-        session.getMetadata().put(PENDING_USER_TURN_KEY, true);
-    }
-
-    /**
-     * 清除待处理的用户轮次标记。
-     *
-     * @param session 会话对象
-     */
-    private void clearPendingUserTurn(Session session) {
-        // 从会话元数据中移除标记
-        session.getMetadata().remove(PENDING_USER_TURN_KEY);
-    }
-
-    /**
-     * 恢复运行时检查点。
-     *
-     * @param session 会话对象
-     */
-    @SuppressWarnings("unchecked")
-    private void restoreRuntimeCheckpoint(Session session) {
-        // 获取原始检查点数据
-        Object raw = session.getMetadata().get(RUNTIME_CHECKPOINT_KEY);
-        // 如果数据不是 Map 类型，直接返回
-        if (!(raw instanceof Map<?, ?> rawMap)) {
-            return;
-        }
-
-        // 转换为 Map
-        Map<String, Object> checkpoint = (Map<String, Object>) rawMap;
-        // 获取助手消息
-        Object assistantMessage = checkpoint.get("assistant_message");
-        // 获取已完成的工具结果
-        Object completedToolResults = checkpoint.get("completed_tool_results");
-        // 获取待处理的工具调用
-        Object pendingToolCalls = checkpoint.get("pending_tool_calls");
-
-        // 如果存在助手消息，添加到会话历史
-        if (assistantMessage instanceof Map<?, ?> a) {
-            session.getMessages().add(new LinkedHashMap<>((Map<String, Object>) a));
-        }
-
-        // 如果存在已完成的工具结果，逐个添加到会话历史
-        if (completedToolResults instanceof List<?> list) {
-            for (Object item : list) {
-                if (item instanceof Map<?, ?> m) {
-                    session.getMessages().add(new LinkedHashMap<>((Map<String, Object>) m));
-                }
-            }
-        }
-
-        // 如果存在待处理的工具调用，生成错误消息并添加到会话历史
-        if (pendingToolCalls instanceof List<?> list) {
-            for (Object item : list) {
-                if (item instanceof Map<?, ?> toolCall) {
-                    // 获取函数信息
-                    Map<String, Object> fn = toolCall.get("function") instanceof Map<?, ?> f
-                            ? (Map<String, Object>) f
-                            : new LinkedHashMap<>();
-
-                    // 创建工具响应消息
-                    Map<String, Object> toolMsg = new LinkedHashMap<>();
-                    toolMsg.put("role", "tool");
-                    toolMsg.put("tool_call_id", toolCall.get("id"));
-                    toolMsg.put("name", fn.getOrDefault("name", "tool"));
-                    toolMsg.put("content", interruptedToolMessage(checkpoint, session));
-                    toolMsg.put("timestamp", Instant.now().toString());
-                    session.getMessages().add(toolMsg);
-                }
-            }
-        }
-
-        // 清除待处理用户轮次标记
-        clearPendingUserTurn(session);
-        // 清除运行时检查点
-        clearRuntimeCheckpoint(session);
-        // 保存会话
-        sessionManager.save(session);
-    }
-
-    private String interruptedToolMessage(Map<String, Object> checkpoint, Session session) {
-        String reason = null;
-        Object cpReason = checkpoint.get("interruption_reason");
-        if (cpReason instanceof String s && !s.isBlank()) {
-            reason = s;
-        }
-        if (reason == null) {
-            Object sessionReason = session.getMetadata().get("_last_interrupt_reason");
-            if (sessionReason instanceof String s && !s.isBlank()) {
-                reason = s;
-            }
-        }
-        if (reason == null) {
-            reason = "interrupted";
-        }
-
-        return switch (reason) {
-            case "manual_stop" -> "错误：任务在该工具执行完成前被手动停止。";
-            case "shutdown" -> "错误：任务在该工具执行完成前因服务关闭而中断。";
-            case "timeout" -> "错误：任务在该工具执行完成前因超时而中断。";
-            default -> "错误：任务在该工具执行完成前被中断。";
-        };
-    }
-
-    /**
-     * 恢复待处理的用户轮次。
-     *
-     * @param session 会话对象
-     */
-    private void restorePendingUserTurn(Session session) {
-        // 获取标记
-        Object flag = session.getMetadata().get(PENDING_USER_TURN_KEY);
-        // 如果标记不存在或不为 true，直接返回
-        if (!(flag instanceof Boolean b) || !b) {
-            return;
-        }
-
-        // 获取会话消息列表
-        List<Map<String, Object>> messages = session.getMessages();
-        // 如果消息列表不为空
-        if (!messages.isEmpty()) {
-            // 获取最后一条消息
-            Map<String, Object> last = messages.get(messages.size() - 1);
-            // 如果最后一条消息是用户消息
-            if ("user".equals(last.get("role"))) {
-                // 创建一条助手错误消息
-                Map<String, Object> assistant = new LinkedHashMap<>();
-                assistant.put("role", "assistant");
-                assistant.put("content", "错误：任务在生成回复前被中断。");
-                assistant.put("timestamp", Instant.now().toString());
-                // 添加到消息列表
-                messages.add(assistant);
-                // 更新会话时间
-                session.setUpdatedAt(Instant.now());
-            }
-        }
-
-        // 清除待处理用户轮次标记
-        clearPendingUserTurn(session);
-        // 保存会话
+    private void storeRuntimeCheckpoint(Session session, Map<String, Object> payload) {
+        session.getMetadata().put(SessionRuntimeKeys.RUNTIME_CHECKPOINT_KEY, payload);
         sessionManager.save(session);
     }
 
@@ -1659,23 +1035,6 @@ public class AgentLoop {
         }
         // 限制在 20 到 200 之间
         return Math.min(200, Math.max(20, contextWindowTokens / 500));
-    }
-
-    /**
-     * 从消息元数据中获取消息 ID。
-     *
-     * @param msg 入站消息
-     * @return 消息 ID，如果不存在则返回 null
-     */
-    private String messageIdOf(InboundMessage msg) {
-        // 如果元数据为空，返回 null
-        if (msg.getMetadata() == null) {
-            return null;
-        }
-        // 获取 message_id
-        Object v = msg.getMetadata().get("message_id");
-        // 如果存在则转为字符串，否则返回 null
-        return v != null ? String.valueOf(v) : null;
     }
 
     /**
@@ -1754,6 +1113,9 @@ public class AgentLoop {
      * @param extraHooks 钩子列表
      */
     public void setExtraHooks(List<AgentHook> extraHooks) {
-        this.extraHooks = extraHooks != null ? extraHooks : new ArrayList<>();
+        this.extraHooks.clear();
+        if (extraHooks != null) {
+            this.extraHooks.addAll(extraHooks);
+        }
     }
 }

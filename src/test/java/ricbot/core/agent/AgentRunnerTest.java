@@ -9,6 +9,8 @@ import ricbot.integration.llm.api.LLMProvider;
 import ricbot.integration.llm.api.LLMResponse;
 import ricbot.integration.llm.api.OpenAIResponsesSupport;
 import ricbot.integration.llm.api.ToolCallRequest;
+import ricbot.tool.api.Tool;
+import ricbot.tool.api.ToolParam;
 import ricbot.tool.api.ToolRegistry;
 import ricbot.tool.filesystem.ReadFileTool;
 
@@ -184,5 +186,120 @@ public class AgentRunnerTest {
         assertEquals(1, res.getToolCalls().size());
         assertEquals("list_dir", res.getToolCalls().get(0).getName());
         assertEquals(".", String.valueOf(res.getToolCalls().get(0).getArguments().get("path")));
+    }
+
+    @Test
+    void runner_stopsImmediately_whenToolErrorIsFatal() throws Exception {
+        ToolRegistry tools = new ToolRegistry();
+        tools.register(new Tool() {
+            @Override
+            public String getName() {
+                return "explode";
+            }
+
+            @Override
+            public String getDescription() {
+                return "Always fails";
+            }
+
+            @Override
+            public List<ToolParam> getParams() {
+                return List.of(new ToolParam("input", "string", "input", false));
+            }
+
+            @Override
+            public Object execute(Map<String, Object> params) {
+                return Map.of("ok", false, "error", "boom");
+            }
+        });
+
+        AtomicInteger calls = new AtomicInteger(0);
+        LLMProvider provider = new LLMProvider("k", "http://localhost") {
+            @Override
+            public LLMResponse chat(
+                    List<Map<String, Object>> messages,
+                    List<Map<String, Object>> toolsDef,
+                    String model,
+                    Integer maxTokens,
+                    Double temperature,
+                    String reasoningEffort,
+                    Object toolChoice
+            ) {
+                assertEquals(1, calls.incrementAndGet());
+                return new LLMResponse()
+                        .setContent("")
+                        .setToolCalls(List.of(new ToolCallRequest("call_1", "explode", Map.of("input", "x"))))
+                        .setFinishReason("tool_calls");
+            }
+        };
+
+        AgentRunner runner = new AgentRunner(provider);
+        AgentRunResult result = runner.run(new AgentRunSpec()
+                .setInitialMessages(List.of(Map.of("role", "user", "content", "go")))
+                .setTools(tools)
+                .setModel("gpt-4o-mini")
+                .setMaxIterations(3)
+                .setFailOnToolError(true)
+                .setErrorMessage("tool failed"));
+
+        assertEquals("tool failed", result.getFinalContent());
+        assertEquals("tool_error", result.getStopReason());
+        assertEquals(1, calls.get());
+        assertEquals("error", result.getToolEvents().get(0).get("status"));
+    }
+
+    @Test
+    void runner_truncatesOversizedToolResults(@TempDir Path workspace) throws Exception {
+        ToolRegistry tools = new ToolRegistry();
+        tools.register(new ReadFileTool(workspace, workspace, List.of()));
+        Files.writeString(workspace.resolve("large.txt"), "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ");
+
+        AtomicInteger calls = new AtomicInteger(0);
+        LLMProvider provider = new LLMProvider("k", "http://localhost") {
+            @Override
+            public LLMResponse chat(
+                    List<Map<String, Object>> messages,
+                    List<Map<String, Object>> toolsDef,
+                    String model,
+                    Integer maxTokens,
+                    Double temperature,
+                    String reasoningEffort,
+                    Object toolChoice
+            ) {
+                int n = calls.incrementAndGet();
+                if (n == 1) {
+                    return new LLMResponse()
+                            .setContent("")
+                            .setToolCalls(List.of(new ToolCallRequest("call_1", "read_file", Map.of(
+                                    "path", "large.txt",
+                                    "offset", 1,
+                                    "limit", 200
+                            ))))
+                            .setFinishReason("tool_calls");
+                }
+
+                Map<String, Object> toolMessage = messages.stream()
+                        .filter(m -> "tool".equals(String.valueOf(m.get("role"))))
+                        .findFirst()
+                        .orElseThrow();
+                String content = String.valueOf(toolMessage.get("content"));
+                assertTrue(content.contains("\"truncated\":true"), content);
+                assertTrue(content.contains("\"preview\""), content);
+
+                return new LLMResponse().setContent("ok").setFinishReason("stop");
+            }
+        };
+
+        AgentRunner runner = new AgentRunner(provider);
+        AgentRunResult result = runner.run(new AgentRunSpec()
+                .setInitialMessages(List.of(Map.of("role", "user", "content", "read")))
+                .setTools(tools)
+                .setModel("gpt-4o-mini")
+                .setMaxIterations(3)
+                .setMaxToolResultChars(20)
+                .setConcurrentTools(false));
+
+        assertEquals("ok", result.getFinalContent());
+        assertEquals(2, calls.get());
     }
 }

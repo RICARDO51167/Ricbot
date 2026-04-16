@@ -1,1660 +1,1510 @@
-# ricbot 项目总文档（架构与使用指南 / ARCHITECTURE_AND_USAGE）
-
-> 项目：ricbot  
-> 定位：具备 CLI、AgentLoop、LLM Provider、多工具调用、Session、Memory、Skill、Subagent、MCP、Web/API、Channel、多种基础设施能力的智能 Agent 系统  
-> 语言/构建：Java 17 + Maven（shade 打包可执行 fat-jar）  
-> 适用读者：第一次接触的开发者 / 维护者 / 交接与汇报 / 面试讲解
-
----
-
-## 目录
-
-1. [项目简介](#1-项目简介)
-2. [项目整体架构](#2-项目整体架构)
-3. [项目主链路](#3-项目主链路)
-4. [目录结构详解](#4-目录结构详解)
-5. [核心模块详解](#5-核心模块详解)
-6. [配置系统详解](#6-配置系统详解)
-7. [启动与使用方式](#7-启动与使用方式)
-8. [OpenAI 兼容 API 使用说明](#8-openai-兼容-api-使用说明)
-9. [Session / Memory / Cron / Heartbeat 的运行机制](#9-session--memory--cron--heartbeat-的运行机制)
-10. [安全与稳定性设计](#10-安全与稳定性设计)
-11. [已完成能力与未完成能力](#11-当前项目的已完成能力与未完成能力)
-12. [后续优化建议](#12-后续优化建议)
-13. [给新开发者的阅读顺序建议](#13-给新开发者的阅读顺序建议)
-
----
-
-## 1. 项目简介
-
-### 1.1 ricbot 是什么
-
-ricbot 是一个“可运行的智能 Agent 系统骨架 + 已落地的关键主链路”，目标是在一个统一框架下完成：
-
-- 多入口接入：CLI、HTTP(OpenAI 兼容)、多种即时通讯 Channel（飞书/钉钉/企微/微信/QQ/Email/WebSocket 等）。
-- 统一中枢：用 MessageBus 解耦“输入接入”和“Agent 核心处理”。
-- AgentLoop：核心调度引擎，负责 Session、Memory、Skills、Tools、Cron、Subagent、MCP 等协作。
-- LLM Provider：抽象多家模型（OpenAI 兼容、Anthropic、Azure OpenAI），并提供标准重试框架。
-- Tools：以 OpenAI function-calling schema 暴露工具；支持文件系统、搜索、进程执行、Web 抓取/搜索、Cron、Subagent spawn、MCP 工具桥接。
-- Session：会话落盘与并发锁保证，同会话串行处理、支持中断恢复（checkpoint）。
-- Memory：包含长期记忆文件（MEMORY.md/USER.md/SOUL.md）、归档 history.jsonl、Dream 长期整理与 Git 版本化。
-- MCP：Model Context Protocol 的最小可用接入（stdio / sse），把 MCP tool/resource/prompt 包装成 ricbot 工具。
-
-入口类与关键代码参考：
-- [RicbotApplication.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/app/bootstrap/RicbotApplication.java)（程序入口：直接转到 CLI）
-- [CliCommands.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/app/cli/CliCommands.java)
-- [AgentLoop.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/domain/agent/AgentLoop.java)
-- [RicbotApiServer.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/integration/api/RicbotApiServer.java)
-
-### 1.2 解决什么问题
-
-ricbot 解决的是“把大模型能力做成可工程化、可扩展、可接入生产环境形态”的系统化问题：
-
-- 把输入（来自 CLI/API/IM）统一转换成可处理的 InboundMessage。
-- 把 Agent 的执行变成可观测、可中断、可恢复、可持久化的循环（AgentRunner + Hook + checkpoint + Session）。
-- 把外部能力（文件/命令/网络/MCP）变成可控、可限制、可审计的 Tools。
-- 把长期偏好与人格等沉淀到 Memory，并通过 Dream 反复更新、可回滚（GitStore）。
-
-### 1.3 核心能力清单（按系统视角）
-
-- **AgentLoop 主循环与调度**：并发门控、会话锁、后台任务（Dream、Cron、AutoCompact）。
-- **工具调用**：ToolRegistry 统一注册、schema 导出、参数校验、并发执行与结果结构化封装。
-- **多渠道**：ChannelManager 统一启动、出站消息派发、发送重试、流式增量合并。
-- **OpenAI 兼容 API**：/v1/chat/completions /v1/models /health，带 session_id 会话隔离。
-- **长期记忆与归档**：Consolidator（会话归档到 history.jsonl）、Dream（更新 MEMORY/USER/SOUL 并 Git 提交）。
-- **Subagent**：SpawnTool + SubagentManager，后台执行并把结果回灌主链路。
-- **MCP**：MCPLoader + MCPAdapters + MCPTransportFactory，把 MCP server 的能力挂为工具。
-- **安全**：SSRF 防护（NetworkSecurity）、路径越界防护（FileToolSupport/ExecTool）、重试与熔断（RetryUtils/CircuitBreaker）。
-
-### 1.4 成熟度评估（诚实描述）
-
-结论：**“可运行骨架 + 主链路可用 + 多模块已落地，但存在明显的占位/半成品点”**。
-
-已经较完整可用的部分：
-- CLI 入口、AgentLoop 主链路、Session 落盘、ToolRegistry/工具调用循环、Web/Exec/FS/搜索工具、安全防护、CronService/CronTool、Dream/GitStore、OpenAI 兼容 API（非流式）。
-
-明显的占位/未完全闭环点：
-- API server 明确不支持 stream（/v1/chat/completions 里直接拒绝 stream=true）。
-- MCP 的 streamableHttp 传输未实现；stdio/sse 可用但仍属于“轻量实现/适配层”。
-- ExecTool 的 sandbox 选项在当前版本是“开启即拒绝执行”（不是真正隔离沙箱）。
-- DreamConfig（agents.defaults.dream）存在，但 AgentLoop 实际是固定每 15 分钟跑一次 Dream，并未读取该配置进行启停/调度。
-- Provider 的 OAuth login 在 CLI 中是占位实现（provider login 只打印提示）。
-- GitStore.diffCommits 是占位实现（返回空字符串）。
-
----
-
-## 2. 项目整体架构
-
-ricbot 的包结构更接近“分层 + 领域模块拼装”的风格。你可以用如下分层来理解依赖方向：
-
-### 2.1 分层与依赖方向
-┌──────────────────────────────────────────────────────────┐
-│ app（应用层）                                             │
-│  - CLI/Bootstrap：组装 Config/Provider/AgentLoop/Channel   │
-└───────────────┬──────────────────────────────────────────┘
-│ 只依赖 domain / infra / integration / tool
-┌───────────────▼──────────────────────────────────────────┐
-│ domain（核心域）                                          │
-│  - AgentLoop/Runner/ContextBuilder                         │
-│  - Session/Message/Memory/Skill/Subagent                    │
-└───────────────┬──────────────────────────────────────────┘
-│ 依赖 infra（通用能力）+ integration（外部对接）+ tool（工具）
-┌───────────────▼──────────────────────────────────────────┐
-│ infra（基础设施）                                         │
-│  - config/cron/fs/git/heartbeat/runtime/security/template   │
-│  - retry/circuit breaker 等                                 │
-└───────────────┬──────────────────────────────────────────┘
-│
-┌───────────────▼──────────────────────────────────────────┐
-│ integration（集成层）                                     │
-│  - llm providers（OpenAICompat/Anthropic/Azure）            │
-│  - api（OpenAI 兼容 HTTP server）                           │
-│  - channel（IM/WebSocket 等）                               │
-│  - mcp（MCP 适配与传输）                                   │
-└───────────────┬──────────────────────────────────────────┘
-│
-┌───────────────▼──────────────────────────────────────────┐
-│ tool（工具层）                                            │
-│  - Tool 抽象/ToolRegistry                                  │
-│  - filesystem/process/search/web/cron/mcp wrappers          │
-└──────────────────────────────────────────────────────────┘
-
-核心依赖原则（从代码现状归纳）：
-- **app 负责“组装”**，不要放业务逻辑。例：[Bootstrapper.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/app/bootstrap/Bootstrapper.java) 创建 Provider/AgentLoop/ChannelManager/HeartbeatService。
-- **domain 负责“主链路与领域对象”**，例如 AgentLoop 内部组合 Session/Memory/Skills/Tools/Cron/Subagent。
-- **infra 负责“跨领域的基础能力”**：配置、路径、安全、模板、cron 计算、重试、熔断。
-- **integration 负责“外部协议与第三方系统适配”**：LLM 提供商、MCP、HTTP API、各种 Channel。
-- **tool 负责“被 LLM 调用的可执行能力”**，它既是 domain 的“插件”也是 integration 的“桥”。
-
----
-
-## 3. 项目主链路
-
-这一节把“用户输入进入系统后怎么流转”讲透，并覆盖 CLI / API / Channel 三种入口如何汇聚到 AgentLoop，再经 AgentRunner/LLMProvider/Tools 输出结果。
-
-### 3.1 主链路总览（文本链路图）
-[用户输入]
-│
-├─ CLI: ricbot agent/serve → CliCommands.publishInbound(...)
-│
-├─ API: POST /v1/chat/completions → RicbotApiServer → AgentLoop.processDirect(...)
-│
-└─ Channel: BaseChannel.handleMessage/publishEvent → MessageBus.publishInbound(...)
-│
-▼
-MessageBus(inbound queue)
-│  AgentLoop.run() consumeInbound()
-▼
-AgentLoop.dispatch()
-│  session lock + concurrency gate
-▼
-AgentLoop.processMessage()
-│
-├─ SessionManager.getOrCreate + AutoCompact.prepareSession
-├─ Consolidator.maybeConsolidateByTokens(session)
-├─ restoreRuntimeCheckpoint / restorePendingUserTurn
-├─ CommandRouter（/stop /new /dream...）
-├─ ContextBuilder.buildMessages(history + runtime + templates)
-├─ MemoryStore.getMemoryContext()
-├─ SkillsLoader.getSkillsContext()
-├─ SkillRouter.selectAndRender(...)
-└─ AgentRunner.run(spec)
-│
-├─ LLMProvider.chat / chatWithRetry / chatStream
-├─ tool_calls → ToolRegistry.execute(...) (并发/串行)
-├─ Hook（流式增量、工具提示、checkpoint）
-└─ 迭代直到 finish 或 maxIterations
-│
-├─ saveTurn(session, newMessages)
-├─ clear checkpoint/pending flags
-└─ SessionManager.save(session)
-│
-▼
-OutboundMessage（content + metadata）
-│
-├─ CLI：CliCommands.pollOutbound(...) 渲染输出
-└─ ChannelManager.dispatchOutboundLoop → channel.send/sendDelta
-
-相关实现：
-- Agent 主循环：[AgentLoop.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/domain/agent/AgentLoop.java)
-- Runner 工具循环：[AgentRunner.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/domain/agent/AgentRunner.java)
-- MessageBus：[MessageBus.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/domain/message/MessageBus.java)
-- API server：[RicbotApiServer.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/integration/api/RicbotApiServer.java)
-- Channel 出站分发：[ChannelManager.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/integration/channel/ChannelManager.java)
-
-### 3.2 CLI 入口如何进入主链路
-
-CLI 主入口是 [CliCommands.main](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/app/cli/CliCommands.java)，核心流程：
-
-1. **loadRuntimeConfig + resolveAndPrintEffectiveConfig**
-    - 支持 `--config/-c` 指定配置路径；支持 `--workspace/-w` 覆盖工作区。
-    - 解析 `${ENV}` 占位符（如果缺失会抛出异常，尤其是 API Key）。
-    - 打印生效 model/provider/api_base/key 是否解析（写到 stderr）。
-
-2. **Bootstrapper 组装核心组件**
-    - provider = ProviderFactory.makeProvider(config)
-    - agentLoop = new AgentLoop(...)
-
-3. **单条消息模式（--message）**
-    - 构造 InboundMessage，设置 `_wants_stream=true`，发布到 bus。
-    - CLI 轮询 outbound：识别 `_stream_delta`/`_stream_end`/`_streamed`/`_progress` 等元数据并渲染。
-
-4. **交互模式（无 --message）**
-    - agentLoop.start() 后循环读取 stdin。
-    - 每条输入发布 inbound，持续 poll outbound 输出。
-
-CLI 的“流式输出”并不是 API 的 HTTP stream，而是 **AgentLoop Hook 把 LLM stream delta 转成 outbound delta 消息**，CLI/Channel 再负责渲染/发送。
-
-### 3.3 API 入口如何进入主链路
-
-API 入口是 [RicbotApiServer](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/integration/api/RicbotApiServer.java)，它本质上是“OpenAI 风格协议 → AgentLoop.processDirect 的同步调用桥”。
-
-核心特点：
-- 只支持：
-    - `POST /v1/chat/completions`
-    - `GET /v1/models`
-    - `GET /health`
-- **明确不支持 stream**：如果请求体 `stream: true`，直接返回 400。
-- 对外“模型名”是固定的：启动时传入 `modelName`，请求里的 `model` 必须等于它，否则 400。
-- `session_id` 会映射为 `sessionKey = "api:" + session_id`，用于会话隔离。
-- 使用 `ReentrantLock` 做 API 层的 session 锁，避免同一 session 并发写 session 文件造成乱序。
-
-对接主链路方式：
-- 解析 OpenAI messages → 提取最后 user 内容作为当前输入
-- 如 messages 包含历史（或包含非 user role），可选择把 history 写入 Session（shouldSyncHistory）
-- 然后调用：`agentLoop.processDirect(userContent, sessionKey, "api", API_CHAT_ID)`
-- 返回内容包装成 OpenAI chat completion 响应体
-
-### 3.4 Channel 入口如何进入主链路
-
-Channel 入口由 BaseChannel 抽象统一规范（参考 [BaseChannel.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/integration/channel/BaseChannel.java)）：
-
-- Channel 收到外部消息后调用 `handleMessage(...)` 或 `publishEvent(ChannelEvent)`。
-- 这两者最终都会构造 `InboundMessage`，并 `bus.publishInbound(msg)`。
-- ChannelEvent（如 IncomingMessageEvent/CommandEvent）统一转换为 InboundMessage，并带 `_event_type/_event_id` 等 metadata（参考 [ChannelEvent.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/integration/channel/event/ChannelEvent.java)）。
-
-出站链路由 ChannelManager 统一消费 bus.outbound 并发送：
-- 合并连续 `_stream_delta`（减少刷屏）
-- 根据配置选择是否发送 `_progress` 和 `_tool_hint`
-- 重试发送（1s/2s/4s，次数由 config 控制）
-
-### 3.5 AgentLoop / ContextBuilder / AgentRunner / LLMProvider / ToolRegistry 如何协作
-
-用一次完整回合来解释各模块职责边界：
-
-1. **AgentLoop 负责“编排”**
-    - 选择会话键、加会话锁（同会话串行）
-    - SessionManager 取 session
-    - Consolidator/AutoCompact 做会话裁剪与归档
-    - Memory/Skill 构建额外上下文
-    - 调用 ContextBuilder 拼装 messages
-    - 构建 AgentRunSpec 并交给 AgentRunner
-
-2. **ContextBuilder 负责“把系统 prompt + runtime context + history + current user message 组装成 LLM messages”**
-    - runtime context 使用 `[RUNTIME_CONTEXT] ... [/RUNTIME_CONTEXT]` 标记
-    - system prompt 默认来自模板 `templates/agent/identity.md`（见 [PromptTemplates.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/infra/template/PromptTemplates.java)）
-    - 支持 media（图片）转成 OpenAI content blocks（data URL 内联，限制 2MB）
-    - 对 tool message 的“合法起点”有校验逻辑，避免 tool_call_id 不匹配
-
-3. **AgentRunner 负责“LLM ↔ Tools 的迭代循环”**
-    - 每轮调用 provider.chat / chatWithRetry / chatStream
-    - 若 LLM 返回 tool_calls：执行 ToolRegistry.execute
-        - 可并发执行（spec.concurrentTools=true 时用线程池）
-    - 把 tool 执行结果封成 role=tool 的 message，加入 messages
-    - 支持 hook：beforeIteration/afterIteration/beforeExecuteTools/onStream/onStreamEnd/finalizeContent
-    - 达到 maxIterations 输出 maxIterationsMessage（并对原因做分类）
-
-4. **LLMProvider 负责“对接具体模型与错误重试策略”**
-    - 基类提供 retry 框架、错误类型识别、sanitizeEmptyContent 等
-    - OpenAICompatProvider 支持 /chat/completions 和流式 SSE 消费（但仍依赖对端是否标准实现）
-
-5. **ToolRegistry 负责“工具注册 + schema 输出 + 参数校验 + 执行”**
-    - 把 Tool 转成 OpenAI function schema
-    - prepareCall 校验参数是否 object，是否缺必填
-    - execute 对内置工具做类型分派（避免反射/兼容不同签名）
-
----
-
-## 4. 目录结构详解
-
-下面按你给出的结构逐块解释“做什么、位置、协作关系”，并尽量点名关键类。
-
-> 代码根目录：`src/main/java/ricbot`
-
-### 4.1 app
-
-#### 4.1.1 app/bootstrap
-
-职责：**启动组装层**，把配置与核心组件组装起来，尽量不含业务逻辑。
-
-- [RicbotApplication.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/app/bootstrap/RicbotApplication.java)
-    - 程序入口，当前直接委托给 CLI（这意味着“应用形态以 CLI 为主”）。
-- [Bootstrapper.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/app/bootstrap/Bootstrapper.java)
-    - loadConfig：支持 `--config` 指定配置文件、`--workspace` 覆盖
-    - createProvider：ProviderFactory.makeProvider
-    - createAgentLoop：把 config 的参数注入 AgentLoop（含工具开关、MCP server 配置、restrictToWorkspace、unifiedSession、disabledSkills、sessionTtlMinutes 等）
-    - createChannelManager / createHeartbeatService：serve 模式需要
-
-协作关系：
-- 向下依赖：infra.config（Config/ConfigLoader/RuntimePaths）、integration.llm/provider、domain.agent/MessageBus、integration.channel、infra.heartbeat
-
-#### 4.1.2 app/cli
-
-职责：**CLI 命令行产品层**，包括命令路由、交互式输入输出、onboard 向导等。
-
-- [CliCommands.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/app/cli/CliCommands.java)
-    - onboard/agent/serve/status/provider/tools
-    - agent：支持 `--message` 单次调用与交互模式；支持 `--session`；默认 session=cli:direct
-    - serve：启动 AgentLoop + ChannelManager + Heartbeat + ApiServer，并阻塞主线程
-    - tools：按“安全策略”初始化工具注册表并打印启用工具
-- OnboardWizard / StreamRenderer / CliModelHelpers（用于交互体验与输出渲染）
-
-现状提示：
-- provider login 是占位实现（打印提示，没有 OAuth 流程）。
-
-### 4.2 domain
-
-domain 是 ricbot 的“核心域”，主链路绝大多数在这里。
-
-#### 4.2.1 domain/agent
-
-职责：**Agent 执行编排 + LLM/Tools 迭代循环 + 上下文构建**。
-
-关键类：
-- [AgentLoop.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/domain/agent/AgentLoop.java)
-- [AgentRunner.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/domain/agent/AgentRunner.java)
-- [AgentRunSpec.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/domain/agent/AgentRunSpec.java)
-- [AgentRunResult.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/domain/agent/AgentRunResult.java)
-- [ContextBuilder.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/domain/agent/ContextBuilder.java)
-- AutoCompact（会话 TTL 自动归档辅助）
-
-协作关系：
-- 依赖 Session/Memory/Skill/Subagent/Message/Tool/MCP/Command/Cron/Template/Security
-
-#### 4.2.2 domain/hook
-
-职责：**可插拔的运行生命周期 Hook**，用于流式输出、工具提示、错误回调、finalize 清理等。
-
-- [AgentHook.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/domain/hook/AgentHook.java)
-- [AgentHookContext.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/domain/hook/AgentHookContext.java)
-
-#### 4.2.3 domain/memory
-
-职责：**长期记忆与会话归档**。
-
-- [MemoryStore.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/domain/memory/MemoryStore.java)
-- [Consolidator.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/domain/memory/Consolidator.java)
-- [Dream.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/domain/memory/Dream.java)
-
-#### 4.2.4 domain/message
-
-职责：**消息协议与总线**（解耦入口与核心处理）。
-
-- [InboundMessage.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/domain/message/InboundMessage.java)
-- [OutboundMessage.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/domain/message/OutboundMessage.java)
-- [MessageBus.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/domain/message/MessageBus.java)
-
-#### 4.2.5 domain/session
-
-职责：**会话对象 + 落盘管理 + 迁移兼容**。
-
-- [Session.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/domain/session/Session.java)
-- [SessionManager.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/domain/session/SessionManager.java)
-
-#### 4.2.6 domain/skill
-
-职责：**技能发现、加载、路由与渲染**。
-
-- [SkillsLoader.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/domain/skill/SkillsLoader.java)
-- [SkillRoutingContext.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/domain/skill/SkillRoutingContext.java)
-- [SkillRouter.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/domain/skill/SkillRouter.java)
-
-#### 4.2.7 domain/subagent
-
-职责：**子代理后台执行与回灌**。
-
-- [SubagentManager.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/domain/subagent/SubagentManager.java)
-
-### 4.3 infra
-
-infra 提供跨模块基础能力。
-
-#### 4.3.1 infra/common
-
-- CircuitBreaker / RetryUtils：WebFetchTool 等使用，提供熔断 + 指数退避。
-- HelperUtils：去除 think 标记、truncate、ensureDir 等杂项工具。
-
-#### 4.3.2 infra/config
-
-- [Config.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/infra/config/Config.java)：巨型配置类（如同“配置领域模型”）
-- [ConfigLoader.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/infra/config/ConfigLoader.java)：加载/保存/迁移/ENV 解析/SSRF 白名单应用
-- [RuntimePaths.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/infra/config/RuntimePaths.java)：~/.ricbot 相关运行路径
-
-#### 4.3.3 infra/cron
-
-- [CronService.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/infra/cron/CronService.java)
-- CronTypes / CronExpressionUtils：cron 表达式解析与 next run 计算（基于 cron-utils）
-
-#### 4.3.4 infra/fs
-
-- DisplayPathUtils / FsPathUtils：路径展示与规范化（配合工具提示、路径安全）
-
-#### 4.3.5 infra/git
-
-- [GitStore.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/infra/git/GitStore.java)：Dream 记忆文件版本化（注意 diffCommits 目前占位）
-
-#### 4.3.6 infra/heartbeat
-
-- [HeartbeatService.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/infra/heartbeat/HeartbeatService.java)：读取 HEARTBEAT.md → LLM 决策 → 执行 → 评估 → 通知
-
-#### 4.3.7 infra/runtime
-
-- RuntimeUtils：空响应兜底等
-- [RestartSupport.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/infra/runtime/RestartSupport.java)：重启通知 env overlay（与 bin/ricbot 脚本联动）
-
-#### 4.3.8 infra/security
-
-- [NetworkSecurity.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/infra/security/NetworkSecurity.java)：SSRF 防护与 CIDR 白名单
-
-#### 4.3.9 infra/template
-
-- [PromptTemplates.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/infra/template/PromptTemplates.java)：模板加载（classpath 优先，其次 dev 文件系统）
-- [ToolHintFormatter.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/infra/template/ToolHintFormatter.java)：把 tool_calls 格式化成“人可读的工具提示”
-
-### 4.4 integration
-
-#### 4.4.1 integration/api
-
-- [RicbotApiServer.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/integration/api/RicbotApiServer.java)
-- RuntimeConstants：空回复兜底常量等
-
-#### 4.4.2 integration/channel
-
-- [ChannelManager.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/integration/channel/ChannelManager.java)
-- [BaseChannel.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/integration/channel/BaseChannel.java)
-- ChannelRegistry：发现 channel（反射/注册表式）
-- 各渠道实现：DingTalk/Feishu/Wecom/Weixin/QQ/Email/WebSocket
-- WebSocketServer：Java-WebSocket 库封装（WebSocketChannel 可支持 sendDelta）
-
-事件模型：
-- [ChannelEvent.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/integration/channel/event/ChannelEvent.java)
-- [ChannelEventType.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/integration/channel/event/ChannelEventType.java)
-- IncomingMessageEvent / CommandEvent：统一事件载体
-
-#### 4.4.3 integration/command
-
-- CommandRouter：slash 命令分发（AgentLoop 注册 /stop /new /help /status /dream /dream-log /dream-restore 等）
-
-#### 4.4.4 integration/llm
-
-- api：LLMProvider/LLMResponse/GenerationSettings/OpenAIResponsesSupport/ToolCallRequest/TranscriptionProvider 等
-- provider：ProviderFactory/ProviderRegistry/ProviderSpec（模型→provider 推断与实例创建）
-- openai：OpenAICompatProvider/OpenAITranscriptionProvider
-- anthropic：AnthropicProvider
-- azure：AzureOpenAIProvider
-
-#### 4.4.5 integration/mcp
-
-- [MCPLoader.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/integration/mcp/MCPLoader.java)
-- [MCPAdapters.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/integration/mcp/MCPAdapters.java)
-- [MCPTransportFactory.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/integration/mcp/MCPTransportFactory.java)
-- [MCPClientSession.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/integration/mcp/MCPClientSession.java)
-- [MCPServerConnection.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/integration/mcp/MCPServerConnection.java)
-
-### 4.5 tools（代码中为 ricbot/tool）
-
-ricbot 的工具系统位于 `ricbot/tool`（注意你给的结构是 tools/，但源码包名是 `ricbot.tool.*`，这是一个“命名需统一”的点：文档/目录与包名存在复数差异）。
-
-- api：Tool / ToolParam / ToolRegistry
-- filesystem：ReadFileTool/WriteFileTool/EditFileTool/ListDirTool/NotebookEditTool/FsTool/FileToolSupport
-- process：ExecTool/SpawnTool
-- search：GlobTool/GrepTool
-- web：WebFetchTool/WebSearchTool/WebToolSupport
-- cron：CronTool
-
----
-
-## 5. 核心模块详解
-
-本节按你指定的模块清单逐一“讲清楚职责、关键数据结构、协作关系、当前现状”。
-
-### 5.1 Agent 体系
-
-#### 5.1.1 AgentLoop
-
-代码参考：[AgentLoop.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/domain/agent/AgentLoop.java)
-
-定位：**ricbot 的核心调度引擎**。你可以把它理解为“消息驱动的 Agent 运行时”。
-
-关键职责：
-1. **消费 MessageBus.inbound**：run() 循环 poll inbound。
-2. **并发治理**：
-    - 全局并发门控：`RICBOT_MAX_CONCURRENT_REQUESTS`（Semaphore）
-    - 会话串行：`sessionLocks`（每个 sessionKey 一个锁对象）
-    - 任务追踪：`activeTasks`（每会话多个 Future，用于 /stop 取消）
-3. **主流程编排**：
-    - 解析 sessionKey（支持 unifiedSession）
-    - SessionManager getOrCreate
-    - AutoCompact.prepareSession（按 TTL 做整理）
-    - Consolidator.maybeConsolidateByTokens（按 token 预算归档）
-    - restoreRuntimeCheckpoint + restorePendingUserTurn（崩溃/中断恢复）
-    - Memory + Skills 上下文拼装
-    - ContextBuilder.buildMessages（system+history+user）
-    - AgentRunner.run(spec)
-    - saveTurn + SessionManager.save
-4. **命令优先级与控制面**：
-    - CommandRouter priority：/stop 优先执行并取消任务
-    - 支持 /new /help /status /dream /dream-log /dream-restore
-    - /restart 当前禁用（返回“未启用该命令”）
-5. **后台任务**：
-    - CronService.start()
-    - Dream：固定 scheduleWithFixedDelay 每 15 分钟执行一次（注意：这不是配置驱动）
-    - AutoCompact sweep：sessionTtlMinutes>0 时每分钟扫描
-
-重要现状点（必须知道）：
-- `effectiveSessionKey` 的实现使用 `msg.getSessionKey()`；而在 InboundMessage 构造时通常设置的是 channel/chatId + override。你需要确认 InboundMessage 的 getSessionKey 逻辑（如果它内部用 channel+chatId 生成，则一致；否则可能存在“sessionKeyOverride 与 sessionKey 计算路径”的认知偏差）。在 CLI 中显式设置了 `sessionKeyOverride`，并依赖 `msg.getSessionKey()`。维护者应重点核对该模型是否符合预期。
-
-#### 5.1.2 AgentRunner
-
-代码参考：[AgentRunner.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/domain/agent/AgentRunner.java)
-
-定位：**一次 Agent 执行回合的工具循环引擎**（与 AgentLoop 的“消息驱动调度”不同，它是“LLM 工具迭代内核”）。
-
-核心行为：
-- 每轮：
-    1. beforeIteration hook
-    2. provider.chat / chatWithRetry / chatStream（是否流式由 hook.wantsStreaming 决定）
-    3. 把 assistant message（含 tool_calls）追加到 messages
-    4. 若无 tool_calls：finalizeContent → stop
-    5. 有 tool_calls：beforeExecuteTools hook → 执行工具（并发/串行）→ tool messages 追加 → afterExecuteTools hook
-    6. 可选 injectionCallback 注入额外 messages（上限每轮 MAX_INJECTIONS_PER_TURN）
-
-并发工具执行：
-- 使用共享线程池 `agent-tools-*`，按 toolCall 顺序归位结果。
-- 失败会生成 fallback tool_result。
-
-#### 5.1.3 AgentRunSpec / AgentRunResult
-
-- [AgentRunSpec.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/domain/agent/AgentRunSpec.java)
-    - 描述一次 runner.run 的所有参数：initialMessages/tools/model/maxIterations/hook/errorMessage/maxToolResultChars/concurrentTools/providerRetryMode/ checkpointCallback 等。
-- [AgentRunResult.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/domain/agent/AgentRunResult.java)
-    - 结果：finalContent/messages/toolsUsed/usage/toolEvents/stopReason/error 等。
-
-#### 5.1.4 ContextBuilder
-
-代码参考：[ContextBuilder.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/domain/agent/ContextBuilder.java)
-
-定位：**LLM messages 组装器**（偏“prompt engineering + 结构化输入组织”）。
-
-关键点：
-- system prompt：模板 `templates/agent/identity.md` + runtime context
-- runtime context：`[RUNTIME_CONTEXT]{now, timezone, channel, chat_id}[/RUNTIME_CONTEXT]`
-- history：sanitizeHistory/合法起点修正（避免 tool_call_id 未声明）
-- media：支持 image_url block（http/https/data URL 或本地文件内联 base64，限制 2MB）
-
-#### 5.1.5 AgentHook / AgentHookContext
-
-- AgentLoop.buildLoopHook 会构造一个“流式输出 hook”：
-    - onStream：把增量发布为 OutboundMessage，并加 `_stream_delta=true`
-    - onStreamEnd：发 `_stream_end=true` 的空内容结束标记
-    - beforeExecuteTools：发布 `_progress`（思考内容/工具提示）
-    - finalizeContent：stripThink（去除思考标记）
-- 这使得：
-    - CLI 可以消费 outbound 的 delta 来做“伪流式渲染”
-    - ChannelManager 可决定是否发送 progress/tool_hint
-
----
-
-### 5.2 Session / Message
-
-#### 5.2.1 InboundMessage / OutboundMessage / MessageBus
-
-- MessageBus 是两个队列：
-    - inbound：Channel/CLI → AgentLoop
-    - outbound：AgentLoop → Channel/CLI
-- 典型 metadata 约定（来自 AgentLoop hook 与 ChannelManager）：
-    - `_wants_stream`：请求是否希望流式
-    - `_stream_delta`：流式增量
-    - `_stream_end`：流式结束标记
-    - `_streamed`：本轮已完成（CLI 用于跳出等待）
-    - `_progress`：进度消息
-    - `_tool_hint`：进度消息是否为工具提示
-
-#### 5.2.2 Session / SessionManager
-
-- Session 是会话内消息列表（List<Map>）+ metadata + timestamps。
-- SessionManager 的落盘格式是 **jsonl**：
-    - 第 1 行是 metadata 行（_type=metadata，含 created_at/updated_at/message_count/metadata/last_consolidated）
-    - 后续每行是一个 message map（role/content/tool_calls/tool_call_id/name/timestamp 等）
-- 文件命名：`safeFilename(key.replace(":", "_")) + "-" + shortHash(key) + ".jsonl"`
-    - 这是为了避免 key 太长或包含危险字符，同时用 hash 规避冲突。
-- 迁移机制：支持从旧目录/旧命名迁移到新命名（resolveOrMigratePath）。
-
-并发与一致性：
-- AgentLoop 层面用 sessionLocks 保证同 session 串行处理。
-- API 层面额外用 ReentrantLock 防止并发写入（尤其当多个 HTTP 请求同 session）。
-
----
-
-### 5.3 Memory 体系
-
-#### 5.3.1 MemoryStore
-
-代码参考：[MemoryStore.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/domain/memory/MemoryStore.java)
-
-定位：**纯文件 I/O 的长期记忆层**，管理以下资产：
-
-- `workspace/memory/MEMORY.md`：长期事实/知识
-- `workspace/USER.md`：用户偏好/个人信息（注意隐私）
-- `workspace/SOUL.md`：agent 性格/原则/身份设定
-- `workspace/memory/history.jsonl`：归档/摘要/原始存档历史
-- `workspace/memory/.cursor`：history 的游标（递增）
-- `workspace/memory/.dream_cursor`：Dream 已处理到哪条历史
-- 旧版迁移：`memory/HISTORY.md` → `history.jsonl`
-
-此外，MemoryStore 内置 GitStore：
-- 追踪文件：SOUL.md / USER.md / memory/MEMORY.md
-- 用于 Dream 更新后自动提交与回滚（/dream-log /dream-restore）
-
-#### 5.3.2 Consolidator
-
-代码参考：[Consolidator.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/domain/memory/Consolidator.java)
-
-定位：**会话窗口的“压缩器/归档器”**，在上下文 token 逼近限制时，把旧消息归档到 memory/history。
-
-关键机制：
-- 估算 token：用字符统计的近似方法（ASCII/非 ASCII 不同权重），再加固定开销。
-- 预算：`contextWindowTokens - maxCompletionTokens - SAFETY_BUFFER`
-    - 当前 maxCompletionTokens 在 AgentLoop 构造 Consolidator 时写死为 4096（明显是 placeholder，应未来配置化）。
-- 归档方式：
-    - 将旧消息片段拼成 prompt，渲染 `templates/agent/consolidator_archive.md`，调用 LLM 生成摘要。
-    - 摘要写入 history.jsonl；失败时 rawArchive（把原始 messages 记录下来）。
-
-#### 5.3.3 Dream
-
-代码参考：[Dream.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/domain/memory/Dream.java)
-
-定位：**长期记忆整理器**，把 history 中新增片段融合进 MEMORY/USER/SOUL。
-
-流程：
-1. 取未处理 history（cursor > dream_cursor）
-2. 读取 MEMORY.md/USER.md/SOUL.md 当前内容
-3. 渲染 dream 模板（代码里是 `agent/dream.md`，模板资源位于 `src/main/resources/templates/agent/*`）
-4. 调用 LLM，让其输出三段：`### MEMORY.md / ### USER.md / ### SOUL.md` 的完整新内容（或输出 `(nothing)`）
-5. 写回文件
-6. 初始化 Git 仓库（如果未初始化）并 autoCommit
-7. dream_cursor 前移
-
-现状与限制：
-- Dream 的运行调度目前**由 AgentLoop 固定每 15 分钟触发**，并未读取 Config.DreamConfig 的 enabled/cron。
-- GitStore.diffCommits 目前占位，/dream-log 可用，但 show diff 的体验有限。
-
----
-
-### 5.4 Skill 体系
-
-#### 5.4.1 SkillsLoader
-
-代码参考：[SkillsLoader.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/domain/skill/SkillsLoader.java)
-
-定位：**技能发现与加载器**。
-
-技能来源：
-- workspace：`{workspace}/skills/<skillName>/SKILL.md`
-- builtin：
-    - 开发环境：`src/main/resources/skills`（DEV_BUILTIN_SKILLS_DIR）
-    - 打包运行：classpath `resources/skills`
-
-技能文档结构：
-- 支持 frontmatter（`--- ... ---`）解析为 Map<String,String>
-- body 会去掉 frontmatter 供路由/渲染
-- scan cache（2s TTL）减少频繁扫描
-
-#### 5.4.2 SkillRoutingContext / SkillRouter
-
-- SkillRoutingContext 传入：
-    - workspace/channel/chatId/message/toolNames/metadata/variables
-- SkillRouter 的策略：
-    - always=true 的技能必选
-    - 其余技能基于：priority + channel match + keyword hits + name match + tool hinted 打分
-    - 渲染时支持 `{{variable}}` 替换，并有 maxChars 预算（always 占一半预算）
-
-现状提示：
-- SkillRouter 的选择是规则打分（不是 LLM 自己“检索式选择”），优点是确定性强，缺点是需要维护关键词/权重。
-- maxSelected/maxChars 由环境变量控制：`RICBOT_SKILLS_MAX_SELECTED` / `RICBOT_SKILLS_MAX_CHARS`。
-
-技能资源参考：
-- `src/main/resources/skills/*/SKILL.md`（如 summarize/weather/cron 等）
-- `src/main/resources/templates/agent/skills_section.md` 等（用于系统 prompt 组织）
-
----
-
-### 5.5 Subagent 体系
-
-#### 5.5.1 SubagentManager
-
-代码参考：[SubagentManager.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/domain/subagent/SubagentManager.java)
-
-定位：**后台子代理任务管理器**，用于把耗时/并行任务从主对话中拆出来：
-
-- spawn(task, label, originChannel, originChatId, sessionKey)：
-    - 生成 taskId
-    - 提交到线程池（队列满会拒绝）
-    - 立即返回“已启动”提示
-- runSubagent：
-    - 构造子代理工具集（Read/Write/Edit/List/Glob/Grep/Exec，可选 Web）
-    - 渲染子代理系统提示词模板 `templates/agent/subagent_system.md`（由 PromptTemplates 渲染）
-    - runner.run(spec) 执行（maxIterations=15，failOnToolError=true）
-    - announceResult：构造 system channel 的 InboundMessage 回灌到 `originChannel:originChatId`
-
-回灌到主链路的本质：
-- 子代理并不直接“发给用户”，而是“再走一次主 AgentLoop 的 system 消息处理”，让主 agent 决定如何表达与整合。
-
-#### 5.5.2 SpawnTool
-
-- SpawnTool 是工具层包装，让 LLM 可以调用“spawn 子代理”。
-- AgentLoop 会在 exec enabled 时注册 SpawnTool，并通过 setToolContext 注入 channel/chatId，确保回灌路径正确。
-
----
-
-### 5.6 MCP 体系
-
-#### 5.6.1 MCPLoader
-
-代码参考：[MCPLoader.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/integration/mcp/MCPLoader.java)
-
-定位：**MCP 的统一装配入口**：读取 config.tools.mcp_servers → 建立连接 → 将 MCP 能力注册成工具。
-
-关键行为：
-- reloadAll：解析 raw map → disconnectAll → connectMcpServers → 注册工具
-- stop 时 close：关闭连接并 unregister 工具（按 `mcp_<server>_` 前缀）
-
-#### 5.6.2 MCPAdapters
-
-代码参考：[MCPAdapters.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/integration/mcp/MCPAdapters.java)
-
-定位：**协议适配层**，做三件事：
-1. parseMcpServers：把弱类型 Map 转成 Config.MCPServerConfig
-2. normalizeSchemaForOpenAI：把 MCP schema 规范化为 OpenAI function schema（处理 nullable/oneOf/anyOf 等）
-3. Wrapper：
-    - MCPToolWrapper：`mcp_<server>_<tool>`
-    - MCPResourceWrapper：`mcp_<server>_resource_<name>`（只读）
-    - MCPPromptWrapper：`mcp_<server>_prompt_<name>`（只读）
-
-超时与隔离：
-- wrapper 每次调用用单线程 executor + Future.get(timeout) 实现超时。
-- 这是简单可用方案，但会带来线程频繁创建的成本（未来可优化复用）。
-
-#### 5.6.3 MCPTransportFactory / MCPClientSession / MCPServerConnection
-
-- [MCPTransportFactory.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/integration/mcp/MCPTransportFactory.java)
-    - 支持：
-        - stdio（启动子进程，通过 stdin/stdout JSON-RPC）
-        - sse（实现类在同文件后半部分）
-    - **streamableHttp：明确未实现**（UnsupportedOperationException）
-- [MCPClientSession.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/integration/mcp/MCPClientSession.java) 是“占位接口”，未来换官方 SDK 时只要适配成这个接口即可。
-- [MCPServerConnection.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/integration/mcp/MCPServerConnection.java) 负责提供 session 与 close。
-
-当前限制总结：
-- 支持范围：stdio/sse（最小可用），streamableHttp 未落地。
-- 工具调用结果主要拼接 text content，对于非文本 block 是 String.valueOf，富内容结构保留有限。
-- schema 规范化较实用，但可能仍需要适配不同 MCP server 的非标准 schema。
-
----
-
-### 5.7 LLM 体系
-
-#### 5.7.1 LLMProvider / LLMResponse / GenerationSettings
-
-- [LLMProvider.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/integration/llm/api/LLMProvider.java)
-    - 抽象 chat
-    - chatWithRetry：默认 runWithRetry（内置重试延迟 1/2/4 秒，并识别 retryable status）
-    - chatStream：默认实现是不真正流式（先 chat 再一次性 onDelta），但 OpenAICompatProvider 覆盖了真正 SSE 消费
-    - sanitizeEmptyContent：清洗 message content 为空字符串/缺 text 等情况
-- GenerationSettings：temperature/maxTokens/reasoningEffort 等（供 provider 使用）
-- LLMResponse：统一承载 content/toolCalls/usage/错误信息（finishReason、errorKind、statusCode、retryAfter 等）
-
-#### 5.7.2 ProviderFactory / ProviderRegistry / ProviderSpec
-
-- [ProviderFactory.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/integration/llm/provider/ProviderFactory.java)
-    - 根据 Config + model 推断 providerName
-    - 根据 ProviderSpec.backend 创建具体 Provider（openai_compat/anthropic/azure_openai）
-- [ProviderRegistry.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/integration/llm/provider/ProviderRegistry.java)
-    - 维护 PROVIDERS 列表（openai、anthropic、dashscope、openrouter、deepseek、ollama 等）
-    - 支持 findByName/findByModelKeyword/findByKeyPrefix/findByBaseKeyword
-- ProviderSpec：描述 provider 的关键字、默认 api_base、是否 local/gateway/direct/oauth、模型 override 等
-
-#### 5.7.3 OpenAICompatProvider / AnthropicProvider / AzureOpenAIProvider
-
-- [OpenAICompatProvider.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/integration/llm/openai/OpenAICompatProvider.java)
-    - 走 `/chat/completions`
-    - 支持 stream=true，并通过 [OpenAIResponsesSupport.consumeSSE](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/integration/llm/api/OpenAIResponsesSupport.java) 消费 SSE
-    - 注意：OpenAIResponsesSupport 对 stream 中 tool_calls 的增量拼装“当前未完全实现”（代码注释明确说明）
-- AnthropicProvider / AzureOpenAIProvider：各自实现对应 API（建议维护者在扩展时对齐 LLMResponse 的工具调用语义）
-
-#### 5.7.4 Transcription Providers（Groq/OpenAI）
-
-- [GroqTranscriptionProvider.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/integration/llm/api/GroqTranscriptionProvider.java)
-- OpenAITranscriptionProvider（OpenAI whisper）
-- BaseChannel 根据 config.channels.transcription_provider 选择 provider，并由 ChannelManager 注入 apiKey/apiBase
-
-现状提示：
-- 语音转写能力依赖 Channel 侧是否真的把语音文件落地并调用 transcribeAudio（具体渠道实现需要核查）。
-
----
-
-### 5.8 Tools 体系
-
-#### 5.8.1 Tool / ToolRegistry
-
-- [Tool.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/tool/api/Tool.java)
-    - 定义工具名/描述/参数 schema/只读/独占/执行
-- [ToolRegistry.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/tool/api/ToolRegistry.java)
-    - register/unregister/get/toolNames
-    - getDefinitions：内置工具与 MCP 工具分组排序（MCP 工具名以 `mcp_` 开头）
-    - execute：对常用工具做显式分派（ReadFileTool/ListDirTool/ExecTool/GlobTool/GrepTool/WriteFileTool/EditFileTool），其余走 tool.execute
-
-#### 5.8.2 FsTool / SearchToolBase（按“类别”理解）
-
-ricbot 工具并没有显式的 FsToolBase/SearchToolBase 抽象层，而是按包分类 + FileToolSupport/WebToolSupport 公用能力来实现“工具族”。理解时建议用“类别”划分：
-
-- 文件系统类：Read/Write/Edit/List/NotebookEdit/Glob/Grep
-- 进程类：Exec/Spawn
-- Web 类：WebFetch/WebSearch
-- Cron 类：CronTool
-- MCP 类：MCPAdapters 中的 wrappers
-
-#### 5.8.3 具体工具职责
-
-文件系统：
-- ReadFileTool：读取文件（支持 offset/limit），通常会用 FileToolSupport.ensureAllowed 做路径边界校验
-- WriteFileTool：写文件（创建父目录）
-- EditFileTool：基于 old_text/new_text 替换
-- ListDirTool：列目录
-- NotebookEditTool：面向“notebook”类文件的编辑（具体实现需要进一步核查其策略）
-- GlobTool / GrepTool：搜索工具（受 allowedDir 限制）
-
-进程：
-- [ExecTool.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/tool/process/ExecTool.java)
-    - 安全 guard：
-        - denyPatterns（危险命令）
-        - allowPatterns（白名单模式，可选）
-        - SSRF：NetworkSecurity.containsInternalUrl
-        - 路径穿越/绝对路径越界（restrictToWorkspace 时）
-    - timeout 最大 600s，输出最大 10k 字符
-    - **sandbox：当前是“开启即拒绝执行”，并未实现隔离**
-- SpawnTool：启动子代理（SubagentManager.spawn）
-
-Web：
-- [WebFetchTool.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/tool/web/WebFetchTool.java)
-    - SSRF 校验
-    - 图片预探测：image/* 则返回 image blocks
-    - 优先走 Jina（r.jina.ai）抽取；失败回退简单 readability/text 抽取
-    - 内置 CircuitBreaker + RetryUtils
-- [WebSearchTool.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/tool/web/WebSearchTool.java)
-    - provider 分发（duckduckgo/tavily/searxng/jina/brave/kagi）
-    - searxng 会对 baseUrl 做 SSRF 校验
-
-Cron：
-- [CronTool.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/tool/cron/CronTool.java)
-    - add/list/remove/enable/disable/run/status
-    - setContext(channel, chatId)：AgentLoop 注入上下文，cron 的 deliver 回传依赖 payload.channel/chatId
-
----
-
-### 5.9 API / Channel / 对外接入
-
-#### 5.9.1 RicbotApiServer（命名提醒）
-
-你的清单里出现 “NanobotApiServer / RicbotApiServer”，而代码里是 `RicbotApiServer`。这属于**命名需统一**的典型点：历史迁移中 nanobot → ricbot 的残留较多（类注释里也大量出现 nanobot）。
-
-#### 5.9.2 ChannelManager / BaseChannel / 各渠道
-
-- ChannelManager：
-    - 启动所有 enabled channel
-    - 消费 outbound 并 dispatch（合并 stream delta、过滤 progress/tool_hint、发送重试）
-- BaseChannel：
-    - 统一 inbound 构造与 event 去重
-    - 统一语音转写 provider 的注入与选择
-    - sendDelta 默认空实现（不是所有渠道都支持流式）
-
-各渠道现状：
-- WebSocketChannel：相对更完整，支持 streaming outbound、token/allowFrom、token issue route（参考 [WebSocketChannel.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/integration/channel/WebSocketChannel.java)）
-- 其他 IM 渠道（飞书/钉钉/企微/微信/QQ/Email）需要结合各自实现判断完整度（配置字段/鉴权/消息回调是否齐全）。
-
-#### 5.9.3 OpenAI 兼容接口支持现状
-
-- 支持路由：
-    - `/v1/chat/completions`（非 stream）
-    - `/v1/models`
-    - `/health`
-- 限制：
-    - 不支持 stream
-    - 不支持任意 model（必须与启动时 modelName 相同）
-    - tool_calls 的透传并不对外暴露（API 只输出最终文本 content）
-    - usage 目前固定 0（未从 LLMResponse 反推）
-
----
-
-### 5.10 基础设施模块（你点名的清单逐条对齐）
-
-- Config / ConfigLoader：见第 6 节
-- RuntimePaths：~/.ricbot 路径治理
-- FsPathUtils / DisplayPathUtils：路径规范化与展示缩写
-- PromptTemplates：模板加载与变量替换
-- ToolHintFormatter：把 tool_calls 转成人类可读提示（便于 IM 渠道“思考提示”）
-- NetworkSecurity：SSRF 防护（Web/Exec/命令 URL 扫描）
-- RuntimeUtils：空回复兜底等
-- RestartSupport：重启通知 env overlay（与 bin/ricbot 的 restart loop 联动）
-- CronExpressionUtils / CronService / CronTypes：cron 存储/next run/执行/历史
-- HeartbeatService：读取 HEARTBEAT.md、LLM 决策、执行与通知
-
----
-
-## 6. 配置系统详解
-
-### 6.1 配置文件在哪里
-
-ConfigLoader 的查找优先级（见 [ConfigLoader.getConfigPath](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/infra/config/ConfigLoader.java#L52-L74)）：
-
-1. 代码中手动 set 的 currentConfigPath（CLI --config 会触发）
-2. 环境变量：`RICBOT_CONFIG`
-3. 系统属性：`-Dricbot.config=...`
-4. 默认：`~/.ricbot/config.json`
-
-仓库里还提供了示例/便捷配置：
-- `config/ricbot.config.json`（示例）
-- 根目录 `ricbot.config.json`（看起来是拷贝/备用）
-
-### 6.2 ricbot.config.json 大致负责什么（以仓库示例说明）
-
-示例文件：[config/ricbot.config.json](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/config/ricbot.config.json)
-
-它表达了三大块：
-- `agents.defaults`：workspace、model、max_tool_iterations、max_tool_result_chars、unified_session、timezone
-- `providers`：openai 的 api_key/api_base（此处用 `${RICBOT_API_KEY}` 占位符）
-- `tools`：
-    - restrictToWorkspace
-    - web.enable（示例为 false）
-    - exec.enable/timeout/sandbox/path_append/allowed_env_keys
-
-注意：Config.java 默认 model 是 gpt-4o；示例配置把 model 设为 `qwen-plus`，且 providers.openai.api_base 指向 DashScope OpenAI 兼容地址。这正体现了 ricbot 的策略：**“模型名与 provider 推断 + openai_compat 协议 + 统一工具循环”**。
-
-### 6.3 Config.java 中“大模块”的含义
-
-[Config.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/infra/config/Config.java) 顶层字段：
-
-- agents：AgentDefaults（模型/温度/maxTokens/迭代次数/上下文窗口/禁用技能/会话 TTL 等）
-- providers：各 provider 的 ProviderConfig（api_key/api_base/extra_headers）
-- tools：工具开关与策略（restrictToWorkspace、ssrf_whitelist、web/exec/mcp_servers）
-- channels：渠道配置与出站策略（send_progress/send_tool_hints/transcription_provider/各渠道 section）
-- gateway：服务端口、heartbeat 配置等
-- api：API 相关扩展配置（当前 API server 的核心参数主要由 serve() 直接传入）
-
-### 6.4 provider 如何根据 model 推断（非常关键）
-
-逻辑在 `Config.getProviderName(model)`：
-
-1. 若 model 带前缀 `provider/model`，优先用前缀识别 provider。
-    - 并支持别名（claude→anthropic，gpt→openai，copilot→github_copilot）
-2. 否则按 ProviderRegistry 的 keyword 匹配（如模型名包含 qwen/claude/gpt 等）。
-3. 否则按 providers 中配置的 apiBase 做 base keyword 猜测。
-4. 最后 fallback openai。
-
-风险点（真实工程会遇到）：
-- 聚合网关（openrouter/aihubmix/自建代理）会让 apiBase/模型名推断变得不可靠。
-- 最稳妥做法是显式指定 model 前缀：例如 `openai/gpt-4o` 或 `anthropic/claude-3-5-sonnet`。
-
-### 6.5 tools.web / tools.exec / tools.mcp_servers 如何影响行为
-
-- tools.restrictToWorkspace：
-    - 影响 AgentLoop 注册工具时的 allowedDir
-    - ExecTool 进一步限制 working_dir 越界与绝对路径访问
-- tools.web.enable：
-    - 决定 AgentLoop 是否注册 `web_fetch` / `web_search`
-- tools.exec.enable：
-    - 决定 AgentLoop 是否注册 `exec` 与 `spawn`（spawn 依赖子代理）
-- tools.exec.sandbox：
-    - 当前效果：AgentLoop 会把 sandbox 标记传给 ExecTool；ExecTool 检测到 sandbox 非空会直接拒绝执行（不是隔离）
-- tools.mcp_servers：
-    - 若非空，AgentLoop 会 `mcpLoader.load()`，并把 MCP server 的能力注册为工具
-    - server 配置字段可参考 MCPAdapters.parseMcpServers：type/url/command/args/env/enabled_tools/tool_timeout
-
-### 6.6 哪些配置已真正落地，哪些是预留（诚实清单）
-
-已落地/生效明确的：
-- agents.defaults.workspace/model/max_tool_iterations/max_tool_result_chars/unified_session/timezone/session_ttl_minutes（主要在 Bootstrapper→AgentLoop）
-- tools.restrictToWorkspace、tools.web.enable、tools.exec.enable/timeout/path_append/allowed_env_keys
-- tools.ssrf_whitelist（ConfigLoader.applySsrfWhitelist → NetworkSecurity）
-- gateway.port + gateway.heartbeat.enabled/interval_s（serve 模式启动 heartbeat 与 api server）
-
-明显预留/未完全闭环的：
-- agents.defaults.dream.*：存在配置结构，但 AgentLoop 固定每 15 分钟跑 Dream，不读取 enabled/cron。
-- tools.exec.sandbox：字段存在，但语义是“禁用执行”而非“隔离执行”。
-- tools.mcp_servers 的 typed 版本构造器存在，但主链仍主要用 Map<String,Object>（弱类型）。
-- API 的更多路由（比如 /v1/responses、/v1/audio 等）未实现。
-
----
-
-## 7. 启动与使用方式
-
-### 7.1 本地开发环境要求
-
-- Java：17（pom.xml 的 maven.compiler.release=17，见 [pom.xml](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/pom.xml#L11-L15)）
-- Maven：
-    - 推荐使用仓库自带 wrapper：`./mvnw`
-- 外部依赖（运行时）：
-    - LLM provider 的 API Key（至少一个）
-    - 若启用 WebSearch 的特定 provider（brave/tavily/kagi/jina/searxng），需对应 key/baseUrl
-    - 若启用 Channel，需要各渠道 token/secret（取决于渠道实现）
-    - 若启用 MCP stdio，需要本机可执行 MCP server command
-
-常见环境变量：
-- `RICBOT_CONFIG`：配置文件路径
-- `RICBOT_API_KEY`：示例配置里的 `${RICBOT_API_KEY}`（对应 openai provider）
-- `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `DASHSCOPE_API_KEY` 等（取决于你配置用哪个 provider）
-- `RICBOT_MAX_CONCURRENT_REQUESTS`：AgentLoop 并发上限（默认 3）
-- `RICBOT_SKILLS_MAX_SELECTED` / `RICBOT_SKILLS_MAX_CHARS`：技能路由限制
-
-### 7.2 启动方式
-
-#### 7.2.1 命令行启动（推荐）
-
-使用脚本（macOS/Linux）：
-- [bin/ricbot](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/bin/ricbot)
-
-它会：
-1. 尝试从 `target/Ricbot-*.jar` 找最新 jar
-2. 若没有则 `./mvnw -q package` 构建
-3. `java -jar` 运行
-4. 若进程退出码为 100，会自动重启（与 RestartSupport 的设计意图联动）
-
-常用命令：
-```bash
-# 查看帮助
-./bin/ricbot
-
-# 查看版本
-./bin/ricbot --version
-
-# 查看状态（读取默认配置路径）
-./bin/ricbot status
-
-# 使用示例配置运行一次对话
-export RICBOT_API_KEY="YOUR_KEY"
-./bin/ricbot agent --config config/ricbot.config.json --workspace . --message "你是谁？"
+# Ricbot
+
+> 一个基于 Java 17 的可运行智能 Agent 系统骨架，打通了 CLI、OpenAI 兼容 API、多渠道接入、工具调用、会话持久化、长期记忆、Cron、MCP 与子代理主链路。
+
+- 统一入口与统一主循环：CLI、API、Channel 最终都汇入 `AgentLoop`
+- 主链路可跑通：Provider 调用、Tool Calling、Session、Memory、Cron、Dream 均已有实现
+- 扩展点清晰：Provider、Tool、MCP、Channel、Skill 都有独立装配层
+- 不是简单 Demo：包含安全限制、流式输出、断点恢复、会话落盘、Git 化记忆管理
+
+## 2. 项目简介
+
+Ricbot 是一个面向“可工程化智能代理”的 Java 项目。它试图解决的不是单次调用大模型，而是如何把大模型能力组织成一个可持续运行、可接入多入口、可接工具、可持久化上下文、可逐步扩展的 Agent Runtime。
+
+从代码现状看，这个项目已经具备“可运行骨架 + 主链路可用 + 多扩展点开放”的特点：
+
+- 可以通过 CLI 单次调用或交互模式直接使用 Agent
+- 可以通过 `serve` 启动 OpenAI 兼容 API，并同时拉起已启用渠道
+- 可以把文件系统、命令执行、Web、Cron、MCP、Subagent 暴露给模型调用
+- 可以把会话、记忆、归档、Dream 维护在工作区内，形成长期上下文
+
+适合的场景包括：
+
+- 个人 Agent Runtime / 本地智能助手框架
+- 多渠道机器人统一内核
+- 面试或简历中的“工程化 Agent 系统”项目展示
+- 后续扩展为 Web 控制台、企业机器人、MCP Hub 的技术底座
+
+项目核心设计思路可以概括为三点：
+
+1. 所有入口先标准化为消息，再进入统一 Agent 主循环。
+2. 所有外部能力先标准化为 Tool / Provider / Channel / MCP 适配层。
+3. 所有长期状态尽量落到工作区文件中，便于调试、迁移与回溯。
+
+> 说明：仓库中仍可见部分旧命名与历史痕迹，例如注释里会出现 `nanobot`、部分测试目录仍使用 `core/transport` 命名。这些属于迁移中的遗留痕迹；当前运行时、入口类与主包名以 `ricbot` 为准。
+
+## 3. 核心能力总览
+
+以下内容按“模块 -> 能力 -> 当前状态”组织，尽量以代码事实为准。
+
+### 3.1 接入入口
+
+| 模块 | 能力 | 当前状态 | 说明 |
+| --- | --- | --- | --- |
+| CLI | `agent` 单次运行 | 已支持 | 支持 `--message/-m`、`--session/-s`、`--config/-c`、`--workspace/-w` |
+| CLI | `agent` 交互模式 | 已支持 | 无 `--message` 时进入 REPL，支持流式输出 |
+| CLI | `serve` 服务模式 | 已支持 | 会启动 `AgentLoop`、`ChannelManager`、`HeartbeatService`、OpenAI 兼容 API |
+| CLI | `status` / `tools` / `skills` / `provider login` / `onboard` | 已支持 | `provider login` 对 OAuth 型 Provider 仅给提示，不做浏览器登录 |
+| HTTP API | `POST /v1/chat/completions` | 已支持 | OpenAI 风格接口，支持 `session_id` |
+| HTTP API | `GET /v1/models` / `GET /health` | 已支持 | 便于接入客户端与健康检查 |
+| HTTP API | 流式响应 | 已支持 | 当前实现为 SSE 风格 `stream=true` |
+| 多渠道入口 | WebSocket Server | 已支持 | 内建 WebSocket 服务端，可作为桥接入口 |
+| 多渠道入口 | QQ | 已支持 | 含网关连接、文本/附件处理、出站上传 |
+| 多渠道入口 | Weixin | 已支持 | 轮询收发、状态持久化、上下文 token/typing 维护 |
+| 多渠道入口 | Email | 已支持 | IMAP 轮询 + SMTP 回复 |
+| 多渠道入口 | Feishu / DingTalk | 部分支持 | 当前偏出站 HTTP 模式，启动日志已明确标注“仅 HTTP 模式” |
+| 多渠道入口 | WeCom | 部分支持 | 出站可发；入站接收依赖外部 Webhook / WebSocket 代理 |
+
+### 3.2 Agent 运行时
+
+| 模块 | 能力 | 当前状态 | 说明 |
+| --- | --- | --- | --- |
+| `MessageBus` | 统一入站/出站消息队列 | 已支持 | 入口层与核心处理解耦 |
+| `AgentLoop` | 会话串行化、并发门控、后台任务调度 | 已支持 | 同一会话串行处理，支持全局并发限制 |
+| `AgentRunner` | LLM 调用与 Tool Calling 循环 | 已支持 | 支持串行/并发工具执行、流式回调、checkpoint |
+| `ContextBuilder` | system prompt / runtime context / history 组装 | 已支持 | 支持图片内容块，带运行时标签 |
+| `CommandRouter` | Slash 命令 | 已支持 | 当前已注册 `/new`、`/stop`、`/help`、`/status`、`/dream*` |
+| Checkpoint | 运行时断点与恢复 | 已支持 | 使用会话元数据保存工具循环中间态 |
+| 自动补救 | 工具循环超限后二次放宽重试 | 已支持 | 非流式下会对某些 `tool_loop` 场景自动扩大迭代次数重试 |
+
+### 3.3 LLM Provider
+
+| 模块 | 能力 | 当前状态 | 说明 |
+| --- | --- | --- | --- |
+| `ProviderRegistry` | 多 Provider 规格注册 | 已支持 | 包含 OpenAI、Anthropic、Azure OpenAI、DashScope、DeepSeek、OpenRouter、Ollama 等 |
+| `ProviderFactory` | 按模型推断 Provider 并实例化 | 已支持 | 默认按模型关键字 / `api_base` 进行启发式推断 |
+| `OpenAICompatProvider` | OpenAI 兼容 Chat/Stream/Tool Calls | 已支持 | 当前最完整的 Provider 实现 |
+| `AnthropicProvider` | Anthropic 调用 | 已支持 | 已接入 Provider 工厂 |
+| `AzureOpenAIProvider` | Azure OpenAI 调用 | 已支持 | 已接入 Provider 工厂 |
+| OAuth Provider | `openai_codex` / `github_copilot` 登录 | 部分支持 | 注册表有定义，但 CLI `provider login` 只提示“未内置 OAuth 流程” |
+
+### 3.4 Tool / Function Calling
+
+| 模块 | 能力 | 当前状态 | 说明 |
+| --- | --- | --- | --- |
+| `ToolRegistry` | 工具注册、Schema 导出、参数校验 | 已支持 | 内置工具与 `mcp_` 工具统一管理 |
+| 文件系统工具 | `read_file` / `list_dir` / `write_file` / `edit_file` / `notebook_edit` | 已支持 | 路径越界校验、读后编辑保护已接入 |
+| 搜索工具 | `glob` / `grep` | 已支持 | 适合代码与文档检索 |
+| 命令工具 | `exec` | 已支持 | 有超时、危险命令过滤、SSRF 检查、工作区限制 |
+| Web 工具 | `web_fetch` / `web_search` | 已支持 | 带 SSRF 防护；`web_search` 支持 DuckDuckGo、Tavily、SearXNG、Jina、Brave、Kagi |
+| 调度工具 | `cron` | 已支持 | 支持 `add/list/remove/enable/disable/run/status` |
+| 子代理工具 | `spawn` | 已支持 | 异步后台子代理，完成后回灌主流程 |
+
+### 3.5 Session / Memory / Dream / Cron / Heartbeat
+
+| 模块 | 能力 | 当前状态 | 说明 |
+| --- | --- | --- | --- |
+| `SessionManager` | 会话 JSONL 落盘 | 已支持 | 文件位于工作区 `sessions/` |
+| `Consolidator` | 上下文逼近窗口时归档旧消息 | 已支持 | 归档摘要写入 `memory/history.jsonl` |
+| `MemoryStore` | `MEMORY.md` / `USER.md` / `SOUL.md` 管理 | 已支持 | 启动时自动补种模板文件 |
+| `Dream` | 基于历史更新长期记忆 | 已支持 | 支持 `/dream`、`/dream-log`、`/dream-restore` |
+| `GitStore` | Dream 版本快照 | 已支持 | 用于记忆文件回溯与恢复 |
+| `CronService` | 定时任务调度 | 已支持 | 支持 `at/every/cron` 三类计划 |
+| `HeartbeatService` | 定期任务与通知 | 已支持 | `serve` 模式下会启动 |
+
+### 3.6 MCP 接入
+
+| 模块 | 能力 | 当前状态 | 说明 |
+| --- | --- | --- | --- |
+| `MCPLoader` | MCP server 统一加载/卸载 | 已支持 | 会在 `AgentLoop` 启动后台装载 |
+| `MCPAdapters` | MCP tool/resource/prompt 包装为 Tool | 已支持 | 命名统一为 `mcp_<server>_*` |
+| `stdio` 传输 | 本地命令型 MCP server | 已支持 | 适合本地工具进程 |
+| `sse` 传输 | SSE MCP server | 已支持 | 自动建立 SSE 监听并等待 endpoint |
+| `streamableHttp` 传输 | JSON-RPC over HTTP 风格 MCP | 部分支持 | 代码已有轻量实现，但当前没有测试覆盖，兼容性取决于服务端 |
+| `enabled_tools` 过滤 | 只暴露部分 MCP 工具 | 已支持 | 同时支持原始名与包装后名 |
+
+### 3.7 安全与稳健性
+
+| 模块 | 能力 | 当前状态 | 说明 |
+| --- | --- | --- | --- |
+| 网络安全 | SSRF / 私网目标拦截 | 已支持 | `web_*` 与 `exec` 都会复用 |
+| 文件安全 | 路径规范化、工作区限制、路径越界拦截 | 已支持 | `restrictToWorkspace` 生效 |
+| 命令安全 | 危险命令过滤、路径穿越拦截、URL 检查 | 已支持 | `exec` 默认受控 |
+| 发送稳健性 | 渠道消息重试、简单熔断 | 已支持 | Feishu/DingTalk/WeCom/QQ 等出站均有重试/熔断封装 |
+| 流式传输 | 增量消息合并 | 已支持 | `ChannelManager` 会对连续 delta 做合并 |
+| 会话隔离 | API session 锁 / 会话串行化 | 已支持 | 避免同一会话并发写入错乱 |
+
+### 3.8 当前限制与未闭环点
+
+| 模块 | 当前状态 | 说明 |
+| --- | --- | --- |
+| `api.host` / `api.port` / `api.timeout` | 当前部分支持 | 配置模型已存在，但 `serve` 现在实际使用的是 `gateway.port`，`api.*` 未真正接线到启动路径 |
+| Dream 调度配置 | 当前部分支持 | `agents.defaults.dream` 已入配置模型，但后台调度当前固定为每 15 分钟一次，不读取 `dream.cron` |
+| Feishu / DingTalk / WeCom 入站 | 当前部分支持 | 出站较完整；部分入站仍需外部代理或尚未闭环 |
+| `streamableHttp` MCP | 当前部分支持 | 已有代码，但未见测试覆盖，不应视为生产级稳定实现 |
+| 配置/注释历史包袱 | 当前存在 | 注释、默认路径、Git 提交信息中仍可见 `nanobot` 历史痕迹 |
+
+## 4. 项目架构
+
+Ricbot 的结构可以理解为“应用组装层 + 领域主链路 + 外部集成层 + 基础设施层 + 工具层”。
+
+### 4.1 分层职责
+
+- `app`
+  - 启动与命令入口层
+  - 负责装配 `Config`、`Provider`、`AgentLoop`、`ChannelManager`
+- `domain`
+  - Agent 核心主链路与领域对象
+  - 包含 `AgentLoop`、`AgentRunner`、`Session`、`Memory`、`Skill`、`Subagent`
+- `integration`
+  - 第三方协议/外部系统适配层
+  - 包含 LLM Provider、OpenAI 兼容 API、MCP、各类 Channel
+- `tool`
+  - 供模型调用的工具层
+  - 文件、搜索、命令、Web、Cron、Spawn 等都在这里
+- `infra`
+  - 通用基础设施能力
+  - 配置、安全、Cron、Git、Heartbeat、模板、重试、熔断等
+
+### 4.2 主链路
+
+```text
+用户输入
+  │
+  ├─ CLI: agent / serve
+  ├─ HTTP: /v1/chat/completions
+  └─ Channel: QQ / WebSocket / Email / Weixin / ...
+  │
+  ▼
+InboundMessage
+  │
+  ▼
+MessageBus
+  │
+  ▼
+AgentLoop
+  │  ├─ 会话锁 / 并发门控
+  │  ├─ SessionManager
+  │  ├─ Consolidator / MemoryStore / Dream
+  │  ├─ SkillsLoader / SkillRouter
+  │  ├─ ContextBuilder
+  │  └─ AgentRunner
+  │
+  ▼
+LLMProvider
+  │
+  ├─ 直接返回 assistant 内容
+  └─ 返回 tool_calls
+        │
+        ▼
+     ToolRegistry
+        │
+        ├─ builtin tools
+        └─ mcp_* tools
+        │
+        ▼
+     tool result -> 回到 AgentRunner 继续迭代
+  │
+  ▼
+OutboundMessage
+  │
+  ├─ CLI 渲染
+  ├─ API 封装为 OpenAI 风格响应 / SSE chunk
+  └─ ChannelManager 分发到各渠道
 ```
 
-#### 7.2.2 CLI agent 模式
+### 4.3 关键链路说明
 
-交互式：
-```bash
-./bin/ricbot agent --config config/ricbot.config.json --workspace . --session cli:direct
+1. 入口层先把输入转换为 `InboundMessage`。
+2. `MessageBus` 负责缓冲与解耦。
+3. `AgentLoop` 负责会话、上下文、技能、记忆、调度与工具上下文准备。
+4. `AgentRunner` 负责模型调用和工具循环。
+5. `ToolRegistry` 负责 builtin tools 与 MCP tools 的统一暴露。
+6. 结果再回到 `MessageBus` 或同步返回给 API/CLI。
+
+## 5. 目录结构说明
+
+```text
+Ricbot/
+├─ src/main/java/ricbot/
+│  ├─ app/
+│  │  ├─ bootstrap/        # 程序入口与组件装配
+│  │  └─ cli/              # CLI 命令、交互模式、onboard
+│  ├─ domain/
+│  │  ├─ agent/            # AgentLoop / AgentRunner / ContextBuilder
+│  │  ├─ message/          # InboundMessage / OutboundMessage / MessageBus
+│  │  ├─ session/          # Session / SessionManager
+│  │  ├─ memory/           # MemoryStore / Consolidator / Dream
+│  │  ├─ skill/            # SkillsLoader / SkillRouter
+│  │  └─ subagent/         # SubagentManager
+│  ├─ integration/
+│  │  ├─ api/              # OpenAI 兼容 API
+│  │  ├─ llm/              # Provider 抽象与具体实现
+│  │  ├─ mcp/              # MCP Loader / Adapter / Transport
+│  │  ├─ channel/          # QQ / 微信 / 飞书 / 邮件 / WebSocket 等
+│  │  └─ command/          # Slash 命令路由
+│  ├─ tool/
+│  │  ├─ api/              # Tool 抽象与 ToolRegistry
+│  │  ├─ filesystem/       # 文件系统工具
+│  │  ├─ process/          # exec / spawn
+│  │  ├─ search/           # glob / grep
+│  │  ├─ web/              # web_fetch / web_search
+│  │  └─ cron/             # cron tool
+│  └─ infra/
+│     ├─ config/           # 配置模型与加载器
+│     ├─ cron/             # 定时任务基础设施
+│     ├─ security/         # SSRF 与网络安全
+│     ├─ heartbeat/        # Heartbeat 服务
+│     ├─ git/              # GitStore
+│     ├─ fs/               # 路径/显示工具
+│     ├─ runtime/          # 运行时辅助
+│     └─ template/         # Prompt 模板
+├─ src/main/resources/
+│  ├─ skills/              # 内置技能
+│  └─ templates/           # Prompt 模板
+├─ src/test/java/          # 测试
+├─ config/ricbot.config.json
+├─ bin/ricbot              # Unix 启动脚本
+├─ bin/ricbot.cmd          # Windows 启动脚本
+├─ ricbot                  # 根目录包装脚本
+└─ pom.xml
 ```
 
-单次消息：
+### 重点说明
+
+- 启动层：`app/bootstrap`、`app/cli`
+- 核心逻辑：`domain/*`
+- 工具层：`tool/*`
+- 渠道层：`integration/channel/*`
+- 外部集成：`integration/api`、`integration/llm`、`integration/mcp`
+- 基础设施：`infra/*`
+
+> 测试目录里仍能看到 `core/`、`transport/` 等旧命名，这反映的是迁移过程中的历史层次，而非当前主包结构。
+
+## 6. 快速入门
+
+### 6.1 环境要求
+
+- JDK：17
+- 构建工具：Maven 3.9+，或直接使用仓库内 `mvnw`
+- 操作系统：macOS / Linux / Windows 均可，命令示例以下优先使用 Unix Shell
+- 外部依赖：
+  - 至少一个可用的 LLM Provider API Key
+  - 如需 Web 工具、MCP、渠道功能，还需要对应网络与第三方服务
+
+补充说明：
+
+- 当前仓库里 `mvnw` 可能没有执行位，保险起见建议使用 `sh ./mvnw`
+- 如果启用 `exec.sandbox=true`，还需要本机具备 `sandbox-exec` 或 `bwrap`
+
+### 6.2 获取项目
+
 ```bash
-./bin/ricbot agent --config config/ricbot.config.json --workspace . --message "帮我列出当前目录结构" 
+git clone <your-repo-url>
+cd Ricbot
+```
+
+### 6.3 配置项目
+
+#### 配置文件优先级
+
+1. CLI `--config/-c`
+2. 环境变量 `RICBOT_CONFIG`
+3. JVM 属性 `-Dricbot.config=...`
+4. 默认路径 `~/.ricbot/config.json`
+
+仓库内已提供示例配置：
+
+```text
+config/ricbot.config.json
+```
+
+#### 最小可运行配置示例
+
+```json
+{
+  "agents": {
+    "defaults": {
+      "workspace": "./workspace",
+      "model": "qwen-plus",
+      "max_tool_iterations": 20,
+      "max_tool_result_chars": 10000,
+      "timezone": "Asia/Shanghai"
+    }
+  },
+  "providers": {
+    "openai": {
+      "api_key": "${RICBOT_API_KEY}",
+      "api_base": "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    }
+  },
+  "tools": {
+    "restrictToWorkspace": true,
+    "web": {
+      "enable": false
+    },
+    "exec": {
+      "enable": true,
+      "timeout": 60,
+      "sandbox": false,
+      "allowed_env_keys": []
+    }
+  }
+}
+```
+
+#### 环境变量
+
+```bash
+export RICBOT_API_KEY="your-api-key"
 ```
 
 说明：
-- `--session` 影响会话落盘 key（CLI 默认 `cli:direct`）。
-- CLI 会请求流式输出（metadata `_wants_stream=true`），因此你可能看到工具提示/增量输出（取决于 provider 是否真正支持 stream）。
 
-#### 7.2.3 serve 模式（多渠道服务 + API + Heartbeat）
+- 配置中的 `${RICBOT_API_KEY}` 会在启动时严格解析
+- 如果引用了未设置的环境变量，启动会直接报错
+- 当前示例里虽然模型为 `qwen-plus`，但配置写在 `providers.openai` 节点下，这是一种“OpenAI 兼容网关配置方式”；Ricbot 会按模型与 `api_base` 自动推断 Provider
+
+### 6.4 启动方式
+
+#### 1. 命令行单次运行
 
 ```bash
-export RICBOT_API_KEY="YOUR_KEY"
-./bin/ricbot serve --config config/ricbot.config.json --workspace .
+sh ./mvnw -q -DskipTests package
+java -jar target/Ricbot-1.0-SNAPSHOT.jar agent \
+  -c config/ricbot.config.json \
+  -m "你好，请介绍一下你的能力"
 ```
 
-serve 会启动：
-- AgentLoop（消息处理主循环）
-- ChannelManager（启动所有 enabled channel，并派发 outbound）
-- HeartbeatService（按 interval 检查 HEARTBEAT.md）
-- RicbotApiServer（OpenAI 兼容 API，默认端口来自 config.gateway.port）
+#### 2. 命令行交互运行
 
-#### 7.2.4 打包运行（fat jar）
-
-pom.xml 使用 maven-shade-plugin 生成可执行 jar，mainClass 指向 RicbotApplication：
-- [pom.xml](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/pom.xml#L122-L149)
-
-构建：
 ```bash
-./mvnw -q package
-ls -lh target/Ricbot-*.jar
-java -jar target/Ricbot-*.jar agent --config config/ricbot.config.json --workspace . --message "hello"
+java -jar target/Ricbot-1.0-SNAPSHOT.jar agent \
+  -c config/ricbot.config.json
 ```
 
-#### 7.2.5 在 IDE 调试运行
+#### 3. `serve` 模式启动
 
-在 IntelliJ IDEA：
-- Main class：`ricbot.app.bootstrap.RicbotApplication`
-- Program arguments 示例：
-    - `agent --config config/ricbot.config.json --workspace . --message "debug test"`
-    - `serve --config config/ricbot.config.json --workspace .`
-- Environment：
-    - `RICBOT_API_KEY=...`（或你配置引用的其他 key）
+```bash
+java -jar target/Ricbot-1.0-SNAPSHOT.jar serve \
+  -c config/ricbot.config.json
+```
 
-### 7.3 常见运行场景
+#### 4. fat-jar 启动
 
-#### 7.3.1 只跑 CLI（最低依赖）
+```bash
+sh ./mvnw -q -DskipTests package
+java -jar target/Ricbot-1.0-SNAPSHOT.jar --version
+java -jar target/Ricbot-1.0-SNAPSHOT.jar agent -c config/ricbot.config.json -m "hello"
+```
 
-- 禁用 web 工具：tools.web.enable=false（示例已是 false）
-- 可禁用 exec：tools.exec.enable=false
-- 只需要 provider 能 chat 即可
+#### 5. 使用包装脚本启动
 
-#### 7.3.2 开 HTTP API 服务（OpenAI 兼容）
+```bash
+sh ./ricbot agent -c config/ricbot.config.json -m "hello"
+sh ./ricbot serve -c config/ricbot.config.json
+```
 
-- 用 serve 模式启动（它会启动 RicbotApiServer）
-- 客户端用 OpenAI SDK 之类访问：
-    - base_url：`http://localhost:<gateway.port>/v1`
-    - 注意：stream 不支持
+说明：
 
-#### 7.3.3 启用 web/exec 工具
+- `ricbot` / `bin/ricbot` 会自动检查并构建最新 fat-jar
+- Windows 可使用 `ricbot.cmd` 或 `bin/ricbot.cmd`
 
-- tools.web.enable=true
-- tools.exec.enable=true（示例为 true）
-- 安全策略：
-    - restrictToWorkspace=true（建议默认开启）
-    - 配置 ssrf_whitelist（仅当你需要访问内网资源且可控时）
+#### 6. IDE 调试启动
 
-#### 7.3.4 启用 MCP
+主类：
 
-- 在 config.tools.mcp_servers 配置 server
-- 示例（概念性，字段以 MCPAdapters.parseMcpServers 为准）：
+```text
+ricbot.app.bootstrap.RicbotApplication
+```
+
+常见启动参数：
+
+```text
+agent -c config/ricbot.config.json -m "hello"
+```
+
+或：
+
+```text
+serve -c config/ricbot.config.json
+```
+
+### 6.5 第一次运行示例
+
+#### 场景
+
+尽快验证 Ricbot 主链路是否能跑通。
+
+#### 操作
+
+```bash
+export RICBOT_API_KEY="your-api-key"
+sh ./mvnw -q -DskipTests package
+java -jar target/Ricbot-1.0-SNAPSHOT.jar agent \
+  -c config/ricbot.config.json \
+  -m "请用三句话介绍 Ricbot"
+```
+
+#### 预期结果
+
+- 终端会先输出当前生效的配置摘要，例如模型、Provider、`api_base`、是否存在 API Key
+- 随后输出 `ricbot` 的回答正文
+- 首次运行后，工作区通常会逐步生成：
+  - `workspace/memory/MEMORY.md`
+  - `workspace/USER.md`
+  - `workspace/SOUL.md`
+  - `workspace/sessions/`
+  - `workspace/.ricbot/`
+
+## 7. 详细使用教程
+
+以下内容按“场景 -> 操作 -> 结果”组织。
+
+### 7.1 CLI 模式
+
+#### 场景：执行一次 Agent 调用
+
+```bash
+java -jar target/Ricbot-1.0-SNAPSHOT.jar agent \
+  -c config/ricbot.config.json \
+  -s cli:demo \
+  -m "请列出当前项目的主要模块"
+```
+
+结果：
+
+- 使用会话 `cli:demo`
+- 执行一次完整 Agent 回合
+- 会话记录会写入工作区 `sessions/`
+
+#### 场景：进入交互模式
+
+```bash
+java -jar target/Ricbot-1.0-SNAPSHOT.jar agent \
+  -c config/ricbot.config.json \
+  -s cli:chat
+```
+
+结果：
+
+- 进入交互 REPL
+- 可直接输入 `/help`、`/status`、`/new`、`/stop`
+
+#### 场景：查看当前状态
+
+```bash
+java -jar target/Ricbot-1.0-SNAPSHOT.jar status
+```
+
+结果：
+
+- 输出配置文件是否存在
+- 输出工作区路径是否存在
+- 输出默认模型
+
+### 7.2 API 模式
+
+#### 场景：启动 OpenAI 兼容 API
+
+```bash
+java -jar target/Ricbot-1.0-SNAPSHOT.jar serve \
+  -c config/ricbot.config.json
+```
+
+结果：
+
+- 启动 AgentLoop
+- 启动已启用渠道
+- 启动 OpenAI 兼容 API
+
+#### 场景：非流式调用
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "qwen-plus",
+    "session_id": "demo-api-1",
+    "messages": [
+      {"role": "user", "content": "请介绍一下这个项目"}
+    ]
+  }'
+```
+
+结果：
+
+- 返回 OpenAI 风格 `chat.completion`
+- `session_id` 会映射到内部会话键 `api:<session_id>`
+
+#### 场景：流式调用
+
+```bash
+curl -N -X POST http://127.0.0.1:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "qwen-plus",
+    "stream": true,
+    "session_id": "demo-api-stream",
+    "messages": [
+      {"role": "user", "content": "请用要点说明 Ricbot 的架构"}
+    ]
+  }'
+```
+
+结果：
+
+- 返回 SSE 数据流
+- 最后以 `data: [DONE]` 结束
+
+注意：
+
+- 请求体里的 `model` 必须与服务当前启动模型一致，否则会返回 400
+- 当前 `serve` 实际监听端口来自 `gateway.port`
+
+### 7.3 WebSocket / Channel 模式
+
+#### 场景：把 Ricbot 当作 WebSocket 服务端
+
+配置示例：
+
+```json
+{
+  "channels": {
+    "websocket": {
+      "enabled": true,
+      "host": "127.0.0.1",
+      "port": 8765,
+      "path": "/ws",
+      "token_issue_path": "/issue-token",
+      "token_issue_secret": "demo-secret",
+      "websocket_requires_token": true,
+      "streaming": true,
+      "allow_from": ["*"]
+    }
+  }
+}
+```
+
+启动：
+
+```bash
+java -jar target/Ricbot-1.0-SNAPSHOT.jar serve -c config/ricbot.config.json
+```
+
+获取临时 token：
+
+```bash
+curl http://127.0.0.1:8765/issue-token \
+  -H "Authorization: Bearer demo-secret"
+```
+
+连接：
+
+```text
+ws://127.0.0.1:8765/ws?client_id=demo-client&token=<issued-token>
+```
+
+结果：
+
+- 连接建立后，每个 `client_id` 对应一个独立会话
+- 出站消息可按 `message` / `delta` 两种类型推送
+
+### 7.4 Tools 怎么启用
+
+#### 场景：只启用文件与命令工具
+
 ```json
 {
   "tools": {
-    "mcp_servers": {
-      "my_server": {
-        "type": "stdio",
-        "command": "node",
-        "args": ["path/to/mcp-server.js"],
-        "env": {"FOO": "bar"},
-        "enabled_tools": ["toolA", "toolB"],
-        "tool_timeout": 30
+    "restrictToWorkspace": true,
+    "web": {
+      "enable": false
+    },
+    "exec": {
+      "enable": true,
+      "timeout": 60,
+      "sandbox": false
+    }
+  }
+}
+```
+
+结果：
+
+- 内置工具至少会包含 `read_file`、`list_dir`、`write_file`、`edit_file`、`glob`、`grep`
+- `exec` 只有在 `tools.exec.enable=true` 时才会注册
+
+#### 场景：查看当前已启用工具
+
+```bash
+java -jar target/Ricbot-1.0-SNAPSHOT.jar tools \
+  --config config/ricbot.config.json
+```
+
+结果：
+
+- 输出当前工作区
+- 输出 `restrictToWorkspace` 与 `exec` 实际配置
+- 列出当前 `tools` 子命令会枚举的核心本地工具与 MCP 工具
+
+注意：
+
+- 这个子命令当前不是 `AgentLoop` 的完整运行时工具快照
+- 运行时额外注册的 `notebook_edit`、`cron`、`spawn`、`web_*` 不一定都会在这里显示
+
+### 7.5 `web` / `exec` / `mcp_servers` 怎么配置
+
+#### Web 工具
+
+```json
+{
+  "tools": {
+    "web": {
+      "enable": true,
+      "search": {
+        "provider": "duckduckgo",
+        "max_results": 5,
+        "timeout": 10
       }
     }
   }
 }
 ```
 
-#### 7.3.5 启用 channel
+结果：
 
-- 在 config.channels.<channelName>.enabled=true，并配置 allowFrom/token 等（取决于 channel 实现）
-- serve 启动后 ChannelManager 会 discoverAll 并启用对应渠道。
+- 注册 `web_fetch` 与 `web_search`
+- `web_fetch` 会做 SSRF 校验并优先尝试 Jina/可读性提取
+- `web_search` 可切换多个搜索 Provider
 
-#### 7.3.6 启用 cron/heartbeat
+补充：
 
-- cron：AgentLoop startBackgroundIfNeeded() 会启动 CronService（只要 AgentLoop start，就会 start cronService）
-- heartbeat：serve 模式会启动 HeartbeatService（取决于 gateway.heartbeat.enabled）
+- `web.max_chars` 字段在配置模型里存在，但当前 `ConfigLoader` 尚未把它从 JSON 映射回运行配置
 
-### 7.4 示例命令与使用示例（更贴近工程）
+#### Exec 工具
 
-```bash
-# 1) 用示例配置跑一次
-export RICBOT_API_KEY="..."
-./bin/ricbot agent --config config/ricbot.config.json --workspace . --message "读取 pom.xml 并总结依赖"
-
-# 2) 查看工具列表与安全限制（可用于排查“为什么 exec 不可用”）
-./bin/ricbot tools --config config/ricbot.config.json --workspace .
-
-# 3) 启动服务（API + channels + heartbeat）
-./bin/ricbot serve --config config/ricbot.config.json --workspace .
-
-# 4) 测试 API（非 stream）
-curl -s http://localhost:8080/health
-curl -s http://localhost:8080/v1/models
-
-curl -s http://localhost:8080/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "model": "qwen-plus",
-    "session_id": "demo",
-    "messages": [{"role":"user","content":"hello"}],
-    "stream": false
-  }'
-```
-
----
-
-## 8. OpenAI 兼容 API 使用说明
-
-本节以 ricbot 的实际实现为准（不是泛化的 OpenAI 标准）。
-
-实现参考：[RicbotApiServer.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/integration/api/RicbotApiServer.java)
-
-### 8.1 /health
-
-- 方法：GET
-- 响应：
-```json
-{"status":"ok"}
-```
-
-用途：探活（容器探针 / 负载均衡健康检查）。
-
-### 8.2 /v1/models
-
-- 方法：GET
-- 响应示例：
 ```json
 {
-  "object": "list",
-  "data": [
-    {"id":"qwen-plus","object":"model","created":0,"owned_by":"ricbot"}
-  ]
+  "tools": {
+    "restrictToWorkspace": true,
+    "exec": {
+      "enable": true,
+      "timeout": 60,
+      "sandbox": true,
+      "allowed_env_keys": ["PATH", "JAVA_HOME"]
+    }
+  }
 }
 ```
 
+结果：
+
+- 命令执行默认仍受工作区与安全过滤约束
+- 若 `sandbox=true`，运行时会尝试使用 `sandbox-exec` 或 `bwrap`
+
 注意：
-- 只返回“启动时传入的 modelName”（serve 里传的是 defaults.model）。
 
-### 8.3 /v1/chat/completions
-
-- 方法：POST
-- 核心限制：
-    - `stream=true` 会直接 400（当前版本不支持实时流式输出）
-    - `model` 必须等于服务启动时的 modelName，否则 400
-- ricbot 扩展字段：
-    - `session_id`：用于会话隔离；会映射为内部 `sessionKey="api:"+session_id`
-
-#### 8.3.1 请求体结构（ricbot 实际解析）
-
-ricbot 主要关注字段：
-- messages：必须是非空数组
-- model：必须匹配 modelName（若提供）
-- stream：若 true 直接报错
-- session_id：可选
-
-messages 支持 role：
-- system / user / assistant / tool
-
-tool role 支持字段：
-- tool_call_id / name / content
-
-assistant role 支持：
-- tool_calls（list），但 API 侧只是把它当历史同步的一部分，并不会对外“执行工具调用”历史；真正工具循环由 AgentLoop/AgentRunner 决定。
-
-#### 8.3.2 session_id 的作用（非常具体）
-
-- 如果你传了 `session_id="demo"`，内部会话键是 `api:demo`。
-- SessionManager 会把该 session 的 messages 落盘在 workspace/sessions 下对应文件。
-- API server 对同一 `api:demo` 会加 sessionLock，保证串行处理。
-
-典型用法：
-- 前端/业务系统把“一个用户/一个会话”映射为 session_id，即可获得上下文连续对话。
-
-#### 8.3.3 内部如何转发到 AgentLoop
-
-- parseMessages：
-    - normalized 历史 = messages（可能剥离最后 user）
-    - currentUserContent = 最后 user content（若最后不是 user，则 currentUserContent 可能为空）
-    - shouldSyncHistory：只要 messages>1 或包含非 user 角色则为 true
-- 若 shouldSyncHistory：
-    - 直接把 history 写入 session.setMessages(history) 并 save（这是“外部强同步历史”的行为）
-- 调用：
-    - `agentLoop.processDirect(userContent, sessionKey, "api", API_CHAT_ID)`
-- responseText：
-    - 若返回 OutboundMessage，则取 msg.content
-    - 为空则自动重试一次；仍为空则用兜底常量
-
-#### 8.3.4 stream 的现状（必须诚实）
-
-- API server 层：**不支持**（明确拒绝）
-- 但 Provider 层（OpenAICompatProvider）是支持真正 SSE 消费的
-- CLI 与 WebSocketChannel 有“伪流式/消息流式”能力（通过 OutboundMessage 的 delta 标记）
-- 因此：
-    - 想要流式体验：优先走 CLI 或 WebSocketChannel
-    - 若要 HTTP stream：需要对 RicbotApiServer 增加 SSE 输出并与 AgentHook/MessageBus 协作（属于未来工作）
-
-#### 8.3.5 适用场景与局限
-
-适用：
-- 业务系统希望用 OpenAI SDK 兼容协议调用 ricbot 的 agent 能力
-- 需要 session_id 管理上下文
-
-局限：
-- 不能 stream
-- 模型名固定（不是动态多模型路由）
-- usage 不准确（固定 0）
-- tool_calls 不对外暴露（只有最终文本）
-
----
-
-## 9. Session / Memory / Cron / Heartbeat 的运行机制
-
-### 9.1 Session：创建、读取、保存
-
-创建/读取：
-- AgentLoop.processMessage → `sessionManager.getOrCreate(sessionKey)`
-- SessionManager.load 会从 sessionsDir 下读取对应 jsonl
-- 若不存在则 new Session(key)
-
-保存：
-- SessionManager.save：
-    - 写 tmp 文件（.tmp）
-    - 原子 move（ATOMIC_MOVE 优先）
-    - 第一行写 metadata，然后逐行写 message JSON
-
-中断恢复机制（与 Session metadata 强相关）：
-- `pending_user_turn`：用户消息已写入 session，但 assistant 回复未完成
-    - 下次恢复时会追加一条“错误：任务在生成回复前被中断。”
-- `runtime_checkpoint`：工具调用中间态（assistant_message、completed_tool_results、pending_tool_calls）
-    - 恢复时会把 pending tool_calls 变成 tool role 的错误消息（比如“任务在该工具执行完成前被手动停止/超时/shutdown”）
-
-### 9.2 Memory：归档、Dream、版本化
-
-归档（Consolidator）：
-- 当会话 token 估算超预算：
-    - 切掉一段旧消息 → archive
-    - archive 通过 LLM 生成摘要写入 `memory/history.jsonl`
-    - 切掉的消息从 session.messages 删除，从而缩短上下文
-
-Dream：
-- 定期读取 `history.jsonl` 中 dream_cursor 之后的条目
-- 让 LLM 输出 MEMORY/USER/SOUL 的完整新内容
-- 写回并 Git 提交
-
-版本化（GitStore）：
-- Dream 第一次执行会 init git（在 workspace/.git）
-    - 注意：这个 .git 是“记忆仓库”，但它是在 workspace 根目录初始化的，需要确认你的 workspace 是否就是业务代码目录；如果是，会与业务代码 git 冲突（风险点！）。
-    - GitStore 的 .gitignore 会忽略全部文件，只保留被追踪的记忆文件和 .gitignore 本身，这是一种“把 workspace 变成记忆仓库”的做法。
-- /dream-log：显示提交列表
-- /dream-restore <sha>：checkout 受管文件并生成 revert commit
-
-维护者必须关注的风险：
-- 如果 workspace 指向一个本来就有 git 仓库的项目目录，Dream 的 GitStore.init 会失败或造成混乱。建议将 workspace 设置为专用目录，而不是源码仓库根目录。
-
-### 9.3 Cron：存储、计算 next run、执行 job
-
-CronService 存储：
-- 默认路径：`workspace/.ricbot/cron/store.json`（AgentLoop 构造）
-- action log：同目录 `action.jsonl`
-- store.json 结构包含 version/jobs（CronTypes 定义）
-
-计算 next run：
-- at：at_ms > now 才有效
-- every：now + every_ms
-- cron：CronExpressionUtils.nextExecutionMillis(expr, tz, now)
-
-执行：
-- CronService 到期触发 onJob(job)
-- AgentLoop.handleCronJob(job)：
-    - 构造 InboundMessage（channel/chatId/message）
-    - metadata 加 `_cron_job_id/_cron_job_name/_deliver`
-    - executor.submit(() -> dispatch(msg))
-
-现状提示：
-- `_deliver` 在 ChannelManager 侧并没有直接使用（是否投递可能要靠上层/渠道逻辑扩展）。目前更多是“为未来投递策略预留的 metadata”。
-
-### 9.4 Heartbeat：读取 HEARTBEAT.md、决策执行、通知
-
-HeartbeatService（serve 模式启动）：
-1. 每 interval 读取 `workspace/HEARTBEAT.md`
-2. decide：
-    - 用 LLM 调用 heartbeat 工具（HEARTBEAT_TOOL schema）
-    - tool arguments：action=skip/run，tasks=任务摘要
-3. 若 run：
-    - onExecute(tasks)：在 serve 模式中，CliCommands 传入的 onExecute 会调用 `agentLoop.processDirect(tasks, "heartbeat:default", "system", "heartbeat")`
-4. evaluate：
-    - EvaluateResponseHelper.evaluateResponse(response, tasks, provider, model)
-    - 决定是否需要通知
-5. onNotify(response)：
-    - serve 模式中会发布 outbound 到 bus，让 ChannelManager/CLI 处理
-
-现状提示：
-- Heartbeat 的“任务 DSL”来自模板 `templates/HEARTBEAT.md`（resources/templates 下有默认模板），实际规则强依赖你如何维护 HEARTBEAT.md 的内容。
-
----
-
-## 10. 安全与稳定性设计
-
-### 10.1 SSRF 防护
-
-核心实现：[NetworkSecurity.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/infra/security/NetworkSecurity.java)
-
-应用点：
-- WebFetchTool：先 validateUrlSafe（内部会调用 NetworkSecurity.validateUrlTarget/validateResolvedUrl）
-- WebSearchTool：searxng baseUrl 会做 SSRF 校验
-- ExecTool：扫描命令字符串中的 URL，只要命中内网地址就拒绝执行（containsInternalUrl）
-
-策略：
-- 默认拦截私网/回环/链路本地/CGNAT 等网段
-- 支持 `tools.ssrf_whitelist` 配置 CIDR 白名单（ConfigLoader.applySsrfWhitelist）
-
-### 10.2 路径安全校验
-
-文件工具：
-- FileToolSupport.resolvePath：相对路径基于 workspace 解析
-- FileToolSupport.ensureAllowed：限制必须在 allowedDir 或 extraAllowedDirs 下
-
-执行工具：
-- ExecTool 在 restrictToWorkspace 时：
-    - 禁止 `../` 等路径穿越
-    - 提取命令中的绝对路径，禁止超出 working_dir 与 media_dir
-
-### 10.3 Retry / CircuitBreaker
-
-- LLMProvider：内置重试（针对 408/409/429 等；并区分不可重试的 quota/billing）
-- WebFetchTool：结合 CircuitBreaker（连续失败熔断）与指数退避 RetryUtils
-
-### 10.4 LLM 重试策略
-
-- AgentRunSpec.providerRetryMode：
-    - "none/off/disabled"：直接 provider.chat
-    - 否则：provider.chatWithRetry
-- Provider 自身也可能实现更细粒度的 retry-after
-
-### 10.5 Session 锁与一致性
-
-- AgentLoop：sessionLocks（Object monitor），保证同会话串行执行，避免消息乱序与文件竞争。
-- RicbotApiServer：sessionLocks（ReentrantLock），保证同 session_id 的 HTTP 请求串行。
-
-### 10.6 API 超时控制
-
-- RicbotApiServer.runWithTimeout：每个请求用单线程 executor + Future.get(timeout) 实现超时控制
-- 超时返回 504
-
-### 10.7 MCP / Web / Exec 的风险点
-
-- MCP stdio：本质是启动子进程并执行外部 server，风险包括：
-    - command 注入/路径不可信
-    - server 行为不受控（读写文件/网络）
-- WebFetch/WebSearch：虽然有 SSRF，但仍存在：
-    - 对外网内容的 prompt 注入风险（WebFetchTool 会加 UNTRUSTED_BANNER，但最终是否被模型遵循取决于系统 prompt）
-- ExecTool：
-    - denyPatterns/allowPatterns/SSRF/path guard 能降低风险，但不能等同于真正 sandbox
-    - 当前 sandbox 配置不实现隔离，建议生产环境默认关闭 exec 或开启严格 allowPatterns
-
-### 10.8 当前不足（客观列举）
-
-- sandbox 没有真实隔离（是“拒绝执行”）
-- API server 没有 stream，且 usage 不真实
-- Dream 的 GitStore 在 workspace 根目录 init git 可能与业务代码 git 冲突（高风险）
-- MCP wrapper 每次调用创建线程池（成本与资源泄露风险需要评估）
-- 统一的审计日志/权限体系还不够体系化（目前主要靠 System.out/err + slf4j）
-
----
-
-## 11. 当前项目的已完成能力与未完成能力
-
-### 11.1 已完成/较完整
-
-- AgentLoop 主链路：MessageBus → Session/Memory/Skills/Tools → AgentRunner → Outbound
-- Tool 调用循环：并发执行、工具结果封装、hook、checkpoint
-- 会话持久化：jsonl 格式、原子写入、迁移兼容
-- Memory 基建：MEMORY/USER/SOUL + history.jsonl + cursor + Dream 更新与版本化（基础可用）
-- Cron：CronService + CronTool + AgentLoop cron job dispatch（可用）
-- WebFetch/WebSearch：SSRF + 熔断重试 + 抽取策略（可用）
-- ExecTool：多层 guard（可用但需谨慎）
-- WebSocketChannel：具备较完善的 streaming outbound 能力
-
-### 11.2 基础版/功能可用但有缺口
-
-- OpenAI 兼容 API：能用，但不支持 stream、usage 固定、模型固定
-- Skill 体系：规则路由可用，但需要持续维护关键词/权重/预算策略
-- Subagent：可 spawn 并回灌，但缺少更精细的资源配额/结果结构化与可观测性
-
-### 11.3 占位/未完全落地
-
-- provider login（OAuth）：CLI 占位
-- /restart：AgentLoop 命令禁用；bin/ricbot 支持 exit code=100 重启，但缺少触发链路闭环
-- MCP streamableHttp：未实现
-- GitStore.diffCommits：占位
-- DreamConfig（enabled/cron）：配置存在但运行调度未接入
-- 部分命名残留 nanobot（注释/提交 message 等）：需要统一
-
-### 11.4 重复/边界不清的点（设计味道）
-
-- workspace 概念同时承担“工具允许范围”与“记忆仓库根目录”的角色，且 Dream 可能 init git；在工程实践中这两个职责应拆分（避免污染业务仓库）。
-- API 层与 AgentLoop 都有 session 锁，双层锁策略虽然安全，但可能造成复杂性；未来需要统一“会话并发模型”。
-- Tools 的配置与注册分散在 AgentLoop.registerDefaultTools 与 CLI tools 命令里，有重复初始化逻辑。
-
----
-
-## 12. 后续优化建议
-
-### 12.1 架构与目录收敛
-
-- 统一命名：nanobot → ricbot（类名、注释、GitStore init message、目录/包名 tools vs tool）
-- 将 `ricbot/tool` 与文档中的 `tools/` 统一（建议以 `tool` 为准，或整体改为 `tools`，但要一次性收敛）
-- 将 Config 巨型类拆分：
-    - agents/providers/tools/channels/gateway/api/memory 分文件
-    - 引入 schema 校验（JSON schema / Jakarta validation）
-
-### 12.2 MCP 收敛与稳定化
-
-- 实现 streamableHttp（或明确不支持并从配置层禁用）
-- wrapper 调用改为复用线程池/连接级 executor，避免频繁创建
-- 对 MCP tool/resource/prompt 的返回结构做更严谨的 block 处理（保留富内容，而不是 String.valueOf）
-
-### 12.3 LLM 分层与观测
-
-- 抽象统一的 “LLM call tracing”：
-    - 请求 id、sessionKey、iteration、model、latency、token usage
-- API 层把 usage 从 AgentRunResult/LLMResponse 回填到 OpenAI 响应中
-- 统一 stream 的实现路径：
-    - API server 支持 SSE，并与 AgentHook 输出对齐
-
-### 12.4 配置治理
-
-- 明确 model/provider 的契约（建议 model 明确写成 `provider/model`）
-- 为 tools.exec 增加 allowPatterns 的配置入口（当前 ExecTool 支持，但 Config 未暴露 deny/allow）
-- DreamConfig 真正接入调度（enabled/cron/tz），并提供手动触发入口
-
-### 12.5 错误处理与日志
-
-- 统一日志：避免 System.out/err 与 slf4j 混用（尤其是 API server 与 channel）
-- 工具执行错误结构化（现在是字符串 Error: ...，可改为统一 JSON 结构，方便 LLM/前端解析）
-
-### 12.6 安全增强
-
-- 对 WebFetch 结果增加更强的“不可信内容”隔离（例如强制放入单独 context block，并在 system prompt 中强制策略）
-- ExecTool 真正 sandbox：
-    - macOS 可考虑 `sandbox-exec`（但需要谨慎）或容器化执行
-    - 更推荐“默认关闭 exec + 严格 allowPatterns + 专用执行用户/目录”
-- workspace 与 memory 仓库分离，避免 Dream git 污染业务目录
-
-### 12.7 测试覆盖与工程化
-
-- 增加端到端测试：
-    - CLI agent 单次消息
-    - API /v1/chat/completions
-    - 工具调用循环（含并发 tools）
-- 引入格式化/静态检查（spotless/checkstyle/spotbugs）形成稳定 CI
-
----
-
-## 13. 给新开发者的阅读顺序建议
-
-### 13.1 第一阶段：先跑起来（理解系统形态）
-
-1. 看入口与命令：
-    - [RicbotApplication.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/app/bootstrap/RicbotApplication.java)
-    - [CliCommands.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/app/cli/CliCommands.java)
-2. 跑一个最小命令（建议只启用 exec 或只读工具，先确认链路通）
-3. 理解配置加载：
-    - [ConfigLoader.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/infra/config/ConfigLoader.java)
-    - [Config.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/infra/config/Config.java)
-
-你需要搞懂：
-- config 从哪里来
-- model/provider 怎么选
-- 工具开关如何影响运行行为
-
-### 13.2 第二阶段：掌握主链路（能回答“消息怎么走”）
-
-按顺序读：
-1. [MessageBus.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/domain/message/MessageBus.java)
-2. [AgentLoop.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/domain/agent/AgentLoop.java)
-3. [ContextBuilder.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/domain/agent/ContextBuilder.java)
-4. [AgentRunner.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/domain/agent/AgentRunner.java)
-5. [ToolRegistry.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/tool/api/ToolRegistry.java)
-
-你需要搞懂：
-- sessionKey/锁/并发
-- 工具循环如何执行与封装 tool role message
-- hook 如何实现“流式输出/工具提示”
-
-### 13.3 第三阶段：理解持久化与长期记忆（能维护用户体验）
-
-1. [SessionManager.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/domain/session/SessionManager.java)
-2. [MemoryStore.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/domain/memory/MemoryStore.java)
-3. [Consolidator.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/domain/memory/Consolidator.java)
-4. [Dream.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/domain/memory/Dream.java)
-5. [GitStore.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/infra/git/GitStore.java)
-
-你需要搞懂：
-- session jsonl 格式与 checkpoint/pending 恢复
-- history.jsonl 游标机制
-- Dream 对 workspace git 的影响与风险
-
-### 13.4 第四阶段：对外接入（能扩展渠道、API、MCP）
-
-- API：
-    - [RicbotApiServer.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/integration/api/RicbotApiServer.java)
-- Channel：
-    - [ChannelManager.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/integration/channel/ChannelManager.java)
-    - [BaseChannel.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/integration/channel/BaseChannel.java)
-    - [WebSocketChannel.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/integration/channel/WebSocketChannel.java)
-- MCP：
-    - [MCPLoader.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/integration/mcp/MCPLoader.java)
-    - [MCPAdapters.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/integration/mcp/MCPAdapters.java)
-    - [MCPTransportFactory.java](file:///Users/rcd/Develop/JavaAbout/IdeaProjects/Ricbot/src/main/java/ricbot/integration/mcp/MCPTransportFactory.java)
-
-你需要搞懂：
-- outbound 的流式 delta 如何被 ChannelManager 合并与发送
-- API 的 session_id 如何映射到内部会话
-- MCP 工具如何注册成 `mcp_<server>_<tool>` 并参与工具循环
-
----
-
-## 附录 A：测试与验证
-
-项目测试位于 `src/test/java`，覆盖：
-- agent：AgentLoopTest/AgentRunnerTest/AgentLoopToolCallTest
-- session：SessionManagerTest
-- skill：SkillRouterTest
-- cron：CronServiceTest
-- heartbeat：HeartbeatServiceTest
-- mcp：MCPAdaptersTest/MCPIntegrationTest
-- api/channel：RicbotApiServerTest/WebSocketChannelTest
-
-运行：
-```bash
-./mvnw test
+- 这不是容器级隔离，只是轻量级本地沙箱包装
+- 若系统未安装所需命令，会报 sandbox 不可用
+
+#### MCP 服务器
+
+`stdio` 示例：
+
+```json
+{
+  "tools": {
+    "mcp_servers": {
+      "local-docs": {
+        "type": "stdio",
+        "command": "node",
+        "args": ["./mcp-server.js"],
+        "tool_timeout": 60,
+        "enabled_tools": ["*"]
+      }
+    }
+  }
+}
 ```
 
----
+`sse` 示例：
 
-## 附录 B：一份“最小可用”配置模板（建议起步）
+```json
+{
+  "tools": {
+    "mcp_servers": {
+      "remote-search": {
+        "type": "sse",
+        "url": "https://example.com/sse",
+        "tool_timeout": 60
+      }
+    }
+  }
+}
+```
 
-> 下面示例强调：restrictToWorkspace=true、web 默认关、exec 可按需开。  
-> 注意把 api_key 的环境变量替换正确。
+`streamableHttp` 示例：
+
+```json
+{
+  "tools": {
+    "mcp_servers": {
+      "remote-http": {
+        "type": "streamableHttp",
+        "url": "https://example.com/mcp",
+        "tool_timeout": 60
+      }
+    }
+  }
+}
+```
+
+### 7.6 MCP 工具怎么接入
+
+#### 场景：接入一个本地 stdio MCP
+
+操作：
+
+1. 在配置中添加 `tools.mcp_servers`
+2. 启动 `agent` 或 `serve`
+3. 运行 `tools` 命令检查是否出现 `mcp_<server>_*`
+
+结果：
+
+- 工具会被包装成 Ricbot 内部 Tool
+- 资源与 Prompt 也会被包装成只读 `mcp_*` 工具
+
+### 7.7 QQ / 微信 / WebSocket 等渠道接入
+
+#### QQ 渠道
+
+```json
+{
+  "channels": {
+    "qq": {
+      "enabled": true,
+      "app_id": "your-app-id",
+      "secret": "your-secret",
+      "allow_from": ["*"],
+      "media_dir": "./workspace/.ricbot/media/qq"
+    }
+  }
+}
+```
+
+结果：
+
+- 启动后会连接 QQ Gateway
+- 文本与附件会转换成统一 `InboundMessage`
+
+#### Weixin 渠道
+
+```json
+{
+  "channels": {
+    "weixin": {
+      "enabled": true,
+      "allow_from": ["*"],
+      "base_url": "https://ilinkai.weixin.qq.com"
+    }
+  }
+}
+```
+
+结果：
+
+- 启动长轮询
+- token 与状态会持久化
+
+#### Feishu / DingTalk / WeCom
+
+建议理解为：
+
+- Feishu：当前更适合作为出站通知渠道
+- DingTalk：当前更适合作为出站机器人渠道
+- WeCom：当前发送链路较清晰，接收入站仍需额外代理配合
+
+### 7.8 Session / Memory / Dream / Cron / Heartbeat 怎么工作
+
+#### Session
+
+- 每个会话会落盘到工作区 `sessions/*.jsonl`
+- API 会话键形如 `api:<session_id>`
+- WebSocket 会话键形如 `websocket:<client_id>`
+
+#### Memory
+
+- 长期记忆文件：
+  - `workspace/memory/MEMORY.md`
+  - `workspace/USER.md`
+  - `workspace/SOUL.md`
+- 历史归档：
+  - `workspace/memory/history.jsonl`
+
+#### Dream
+
+- 可通过 `/dream` 手动触发
+- 可通过 `/dream-log` 查看最近记忆提交
+- 可通过 `/dream-restore <sha>` 恢复某次记忆快照
+
+#### Cron
+
+- 通过 `cron` 工具管理
+- 存储文件位于 `workspace/.ricbot/cron/store.json`
+
+#### Heartbeat
+
+- `serve` 模式下根据 `gateway.heartbeat.enabled` 启动
+- 当前更偏后台执行/通知能力
+
+### 7.9 常见命令
+
+#### CLI 命令
+
+```bash
+java -jar target/Ricbot-1.0-SNAPSHOT.jar --version
+java -jar target/Ricbot-1.0-SNAPSHOT.jar status
+java -jar target/Ricbot-1.0-SNAPSHOT.jar tools --config config/ricbot.config.json
+java -jar target/Ricbot-1.0-SNAPSHOT.jar skills --config config/ricbot.config.json
+java -jar target/Ricbot-1.0-SNAPSHOT.jar provider login openai
+```
+
+#### 会话内命令
+
+```text
+/new
+/stop
+/help
+/status
+/dream
+/dream-log
+/dream-restore <commit_sha>
+```
+
+### 7.10 如何排查 MCP 是否连接成功
+
+```bash
+java -jar target/Ricbot-1.0-SNAPSHOT.jar tools --config config/ricbot.config.json
+```
+
+排查思路：
+
+1. 看输出里是否出现 `mcp_<server>_...`
+2. 如果没有，先确认 `tools.mcp_servers` 是否成功加载
+3. 再确认 `enabled_tools` 是否把工具过滤掉了
+4. 对 `sse` 检查 URL 是否真的以 SSE 端点提供服务
+5. 对 `streamableHttp` 检查服务端是否支持同步 JSON-RPC 风格调用
+
+### 7.11 如何查看日志
+
+常见日志位置：
+
+```text
+<workspace>/.ricbot/logs/ricbot.log
+```
+
+如果启动失败，终端会打印实际日志路径。建议同时查看：
+
+- 终端 stderr
+- `ricbot.log`
+- 工作区中的 `sessions/`、`memory/`、`.ricbot/cron/`
+
+## 8. 配置说明
+
+本节重点说明哪些配置已真正生效，哪些仍偏预留。
+
+### 8.1 `agents.defaults`
+
+示例：
 
 ```json
 {
   "agents": {
     "defaults": {
-      "workspace": ".",
-      "model": "openai/gpt-4o",
-      "max_tool_iterations": 6,
-      "max_tool_result_chars": 10000,
+      "workspace": "./workspace",
+      "model": "qwen-plus",
+      "max_tool_iterations": 20,
+      "context_window_tokens": 64000,
+      "context_block_limit": 200,
+      "max_tool_result_chars": 16000,
+      "provider_retry_mode": "standard",
+      "timezone": "Asia/Shanghai",
       "unified_session": false,
-      "timezone": "UTC"
+      "disabled_skills": [],
+      "session_ttl_minutes": 0,
+      "dream": {
+        "enabled": true,
+        "model_override": "",
+        "max_batch_size": 20,
+        "max_iterations": 5,
+        "cron": "0 3 * * *"
+      }
     }
-  },
+  }
+}
+```
+
+字段说明：
+
+| 字段 | 是否生效 | 说明 |
+| --- | --- | --- |
+| `workspace` | 已生效 | 工作区根目录 |
+| `model` | 已生效 | 默认模型 |
+| `max_tool_iterations` | 已生效 | Agent 工具循环上限 |
+| `context_window_tokens` | 已生效 | 影响 Consolidator 裁剪 |
+| `context_block_limit` | 已生效 | 透传给 `AgentRunSpec` |
+| `max_tool_result_chars` | 已生效 | 限制工具结果进入上下文的长度 |
+| `provider_retry_mode` | 已生效 | 控制是否使用 Provider 重试 |
+| `timezone` | 已生效 | 注入运行时上下文、Cron 默认时区 |
+| `unified_session` | 已生效 | 是否统一会话键 |
+| `disabled_skills` | 已生效 | SkillsLoader 会过滤 |
+| `session_ttl_minutes` | 已生效 | 触发 AutoCompact 扫描 |
+| `dream.enabled` | 已生效 | 控制 Dream 是否启动 |
+| `dream.cron` | 当前未完全生效 | 配置模型存在，但后台调度目前固定 15 分钟一次 |
+
+### 8.2 `providers`
+
+示例：
+
+```json
+{
   "providers": {
     "openai": {
-      "api_key": "${OPENAI_API_KEY}",
-      "api_base": "https://api.openai.com/v1",
+      "api_key": "${RICBOT_API_KEY}",
+      "api_base": "https://dashscope.aliyuncs.com/compatible-mode/v1",
       "extra_headers": {}
+    },
+    "anthropic": {
+      "api_key": "${ANTHROPIC_API_KEY}",
+      "api_base": "https://api.anthropic.com"
     }
-  },
+  }
+}
+```
+
+说明：
+
+- 已生效：`api_key`、`api_base`、`extra_headers`
+- 已生效：按模型/前缀自动推断 Provider
+- 建议：生产上尽量显式管理 Provider 配置，不完全依赖自动推断
+- 当前限制：OAuth 型 Provider 注册了规格，但 CLI 不负责完成 OAuth 登录
+
+### 8.3 `tools`
+
+示例：
+
+```json
+{
   "tools": {
     "restrictToWorkspace": true,
     "ssrf_whitelist": [],
-    "web": { "enable": false },
+    "web": {
+      "enable": true,
+      "proxy": "",
+      "search": {
+        "provider": "duckduckgo",
+        "api_key": "",
+        "base_url": "",
+        "max_results": 5,
+        "timeout": 10
+      }
+    },
     "exec": {
-      "enable": false,
+      "enable": true,
       "timeout": 60,
       "sandbox": false,
       "path_append": "",
       "allowed_env_keys": []
     },
     "mcp_servers": {}
-  },
+  }
+}
+```
+
+说明：
+
+| 字段 | 是否生效 | 说明 |
+| --- | --- | --- |
+| `restrictToWorkspace` | 已生效 | 文件与命令工作目录限制 |
+| `ssrf_whitelist` | 已生效 | 配置到 `NetworkSecurity` |
+| `web.enable` | 已生效 | 控制运行时是否注册 `web_fetch` / `web_search` |
+| `web.max_chars` | 当前未完全生效 | 配置模型存在，但 `ConfigLoader` 当前未把该字段从 JSON 映射回来 |
+| `web.search.*` | 已生效 | 搜索 Provider 与请求参数 |
+| `exec.enable` | 已生效 | 控制 `exec` 注册 |
+| `exec.sandbox` | 部分支持 | 依赖本机 `sandbox-exec` 或 `bwrap` |
+| `mcp_servers` | 已生效 | 传入 `MCPLoader` 装载 |
+
+### 8.4 `channels`
+
+说明：
+
+- `send_progress`、`send_tool_hints` 已生效，决定是否向渠道发送进度消息与工具提示
+- `transcription_provider` 已生效，用于音频转写 Provider 选择
+- 各渠道子段是否完全生效，取决于对应渠道当前实现成熟度
+
+### 8.5 `gateway / api`
+
+示例：
+
+```json
+{
   "gateway": {
-    "port": 8080,
+    "port": 8000,
     "heartbeat": {
-      "enabled": false,
-      "interval_s": 30,
-      "keep_recent_messages": 50
+      "enabled": true,
+      "interval_s": 60,
+      "keep_recent_messages": 20
+    }
+  },
+  "api": {
+    "host": "127.0.0.1",
+    "port": 8080,
+    "timeout": 120.0
+  }
+}
+```
+
+说明：
+
+| 字段 | 是否生效 | 说明 |
+| --- | --- | --- |
+| `gateway.port` | 已生效 | `serve` 启动 API 监听时实际使用 |
+| `gateway.heartbeat.*` | 已生效 | `HeartbeatService` 使用 |
+| `api.host` | 当前未生效 | 配置模型存在，但启动代码未使用 |
+| `api.port` | 当前未生效 | 当前实际仍走 `gateway.port` |
+| `api.timeout` | 当前未生效 | `serve` 当前固定传入 `120_000ms` |
+
+## 9. 功能模块详解
+
+### 9.1 `AgentLoop`
+
+- 作用：Ricbot 的核心编排器
+- 核心职责：
+  - 消费 `MessageBus` 入站消息
+  - 串行化同会话处理
+  - 调用 Session、Memory、Skill、Tool、Dream、Cron、Subagent
+  - 把结果封装成 `OutboundMessage`
+- 当前实现情况：
+  - 已支持会话锁、并发门控、后台 Dream/Cron、slash 命令、checkpoint 恢复
+- 当前限制：
+  - Dream 调度未读取 `dream.cron`
+
+### 9.2 `AgentRunner`
+
+- 作用：模型调用与工具循环执行器
+- 核心职责：
+  - 调用 `chat` / `chatWithRetry` / `chatStream`
+  - 处理 `tool_calls`
+  - 支持并发工具执行
+  - 把工具结果回灌消息序列
+- 当前实现情况：
+  - 是主链路里最关键的“推理-调用工具-继续推理”执行器
+- 当前限制：
+  - 更复杂的策略控制仍偏轻量，尚未形成插件式策略系统
+
+### 9.3 `ContextBuilder`
+
+- 作用：构建发送给模型的消息数组
+- 核心职责：
+  - 注入 system prompt
+  - 注入 runtime context（时间、时区、渠道、chat_id）
+  - 拼接历史消息、当前用户消息、媒体块
+- 当前实现情况：
+  - 已支持图片内联与工具消息合法性保护
+- 当前限制：
+  - Prompt 拼装策略仍以模板与约定为主，尚未抽象成多 Persona 体系
+
+### 9.4 `ToolRegistry`
+
+- 作用：统一工具管理
+- 核心职责：
+  - 注册与注销工具
+  - 输出 OpenAI function schema
+  - 参数校验与执行分派
+- 当前实现情况：
+  - 内置工具与 `mcp_` 工具统一输出
+- 当前限制：
+  - 分派仍基于类型判断与通用 `execute`，后续可继续解耦
+
+### 9.5 `SessionManager`
+
+- 作用：会话落盘与读取
+- 核心职责：
+  - `getOrCreate`
+  - JSONL 保存与加载
+  - 简要枚举会话列表
+- 当前实现情况：
+  - 已支持原子写入与旧会话迁移路径兼容
+- 当前限制：
+  - 当前为文件存储，未接入数据库型索引
+
+### 9.6 `MemoryStore` / `Consolidator` / `Dream`
+
+- 作用：长期记忆与上下文压缩
+- 核心职责：
+  - 维护 `MEMORY.md`、`USER.md`、`SOUL.md`
+  - 归档超长历史
+  - 利用 LLM 整理长期记忆
+- 当前实现情况：
+  - 已能形成“短期会话 -> history.jsonl -> Dream -> Git 快照”的链路
+- 当前限制：
+  - Dream 调度与策略还比较固定
+
+### 9.7 `SkillsLoader` / `SkillRouter`
+
+- 作用：技能发现与动态加载
+- 核心职责：
+  - 发现内置技能和工作区技能
+  - 根据上下文打分选择技能
+  - 渲染技能文档注入到上下文
+- 当前实现情况：
+  - 已支持 frontmatter、优先级、关键词、渠道、工具提示等评分
+- 当前限制：
+  - 当前更偏文档式技能，不是代码插件式技能
+
+### 9.8 `SubagentManager`
+
+- 作用：后台子代理运行器
+- 核心职责：
+  - 接受 `spawn` 请求
+  - 创建自己的 ToolRegistry 与 Context
+  - 后台执行后把结果通知主链路
+- 当前实现情况：
+  - 已支持异步任务、会话级取消、专用线程池
+- 当前限制：
+  - 当前仍是单机内线程池子代理，不是分布式 Agent Pool
+
+### 9.9 `MCPLoader` / `MCPAdapters` / `MCPTransportFactory`
+
+- 作用：MCP 对接层
+- 核心职责：
+  - 解析配置
+  - 建立 stdio / sse / streamableHttp 连接
+  - 将 tool/resource/prompt 包装成 Ricbot 工具
+- 当前实现情况：
+  - 已支持 `enabled_tools` 过滤与热重载式重连基础能力
+- 当前限制：
+  - `streamableHttp` 缺少测试覆盖；兼容性需实际服务端验证
+
+### 9.10 `LLMProvider` / `OpenAICompatProvider` / `ProviderFactory`
+
+- 作用：模型提供者抽象
+- 核心职责：
+  - 统一聊天接口
+  - 统一流式接口
+  - 统一错误包装与重试策略
+- 当前实现情况：
+  - OpenAI 兼容 Provider 最完善
+- 当前限制：
+  - 不同 Provider 的高级特性还未完全对齐
+
+### 9.11 `ChannelManager` / `BaseChannel` / 各渠道
+
+- 作用：渠道接入与消息分发
+- 核心职责：
+  - 初始化启用渠道
+  - 消费出站消息并分发
+  - 做流式合并、重试与基本鉴权
+- 当前实现情况：
+  - 渠道整体框架已搭好，多数渠道已有独立实现
+- 当前限制：
+  - 不同渠道成熟度不一致，尤其是入站链路
+
+### 9.12 关键工具
+
+| 工具 | 作用 | 当前实现情况 | 当前限制 |
+| --- | --- | --- | --- |
+| `read_file` / `list_dir` / `write_file` / `edit_file` | 文件操作 | 已支持 | `edit_file` 依赖先读后改的保护策略 |
+| `notebook_edit` | Jupyter Notebook 单元格编辑 | 已支持 | 只针对 `.ipynb` |
+| `glob` / `grep` | 搜索 | 已支持 | 更偏本地代码与文档搜索 |
+| `exec` | Shell 命令执行 | 已支持 | 安全策略较严格，sandbox 为轻量实现 |
+| `web_fetch` / `web_search` | Web 获取/检索 | 已支持 | 受 SSRF 与外网可达性约束 |
+| `cron` | 定时任务管理 | 已支持 | 当前为本地单机调度 |
+| `spawn` | 子代理任务 | 已支持 | 单机后台线程池 |
+| `mcp_*` | MCP 能力桥接 | 已支持 | 依赖对应 MCP server 健康状态 |
+
+## 10. 典型场景示例
+
+### 10.1 用 CLI 跑一次 Agent
+
+场景说明：本地快速验证主链路。
+
+命令：
+
+```bash
+java -jar target/Ricbot-1.0-SNAPSHOT.jar agent \
+  -c config/ricbot.config.json \
+  -m "请总结当前项目的亮点"
+```
+
+预期效果：
+
+- Agent 返回一段文本
+- 会话与记忆目录按需生成
+
+### 10.2 启动 API 服务
+
+场景说明：让外部客户端以 OpenAI SDK 方式调用 Ricbot。
+
+命令：
+
+```bash
+java -jar target/Ricbot-1.0-SNAPSHOT.jar serve \
+  -c config/ricbot.config.json
+```
+
+预期效果：
+
+- `http://127.0.0.1:8000/health` 返回 `{"status":"ok"}`
+
+### 10.3 接入一个 MCP 工具
+
+场景说明：将外部 MCP server 接成模型可调用工具。
+
+配置：
+
+```json
+{
+  "tools": {
+    "mcp_servers": {
+      "demo-mcp": {
+        "type": "stdio",
+        "command": "node",
+        "args": ["./demo-mcp.js"]
+      }
     }
   }
 }
 ```
 
----
+命令：
+
+```bash
+java -jar target/Ricbot-1.0-SNAPSHOT.jar tools \
+  --config config/ricbot.config.json
+```
+
+预期效果：
+
+- 出现 `mcp_demo-mcp_*` 命名的工具
+
+### 10.4 打开 WebSocket 作为桥接入口
+
+场景说明：让前端或桥接服务通过 WebSocket 与 Ricbot 对话。
+
+命令：
+
+```bash
+java -jar target/Ricbot-1.0-SNAPSHOT.jar serve -c config/ricbot.config.json
+```
+
+预期效果：
+
+- WebSocket 客户端建立连接后可发送文本消息
+- Agent 回复会按 message/delta 回推
+
+### 10.5 启用 QQ 渠道
+
+场景说明：接入 QQ 机器人。
+
+配置：
+
+```json
+{
+  "channels": {
+    "qq": {
+      "enabled": true,
+      "app_id": "xxx",
+      "secret": "xxx",
+      "allow_from": ["*"]
+    }
+  }
+}
+```
+
+预期效果：
+
+- `serve` 启动后打印 `QQ 机器人已启动`
+
+### 10.6 查看当前工具列表
+
+场景说明：确认哪些工具真的注册成功。
+
+命令：
+
+```bash
+java -jar target/Ricbot-1.0-SNAPSHOT.jar tools \
+  --config config/ricbot.config.json
+```
+
+预期效果：
+
+- 输出 `read_file`、`list_dir`、`glob`、`grep`、`exec` 等
+- 若 MCP 可用，也会出现 `mcp_` 前缀工具
+- 这是当前 CLI 可见工具子集，不等于 `AgentLoop` 的完整运行时工具表
+
+### 10.7 排查 MCP 工具是否连上
+
+场景说明：配置了 MCP 但模型没有调用。
+
+命令：
+
+```bash
+java -jar target/Ricbot-1.0-SNAPSHOT.jar tools \
+  --config config/ricbot.config.json
+```
+
+预期效果：
+
+- 若没有 `mcp_` 工具，说明还没成功注册
+- 进一步检查配置键、连接方式、服务可用性与日志
+
+## 11. 常见问题（FAQ）
+
+### 11.1 为什么配置了 MCP 但没有调用？
+
+常见原因：
+
+- MCP server 没连上，导致 `mcp_` 工具根本没注册
+- `enabled_tools` 配错，把目标工具过滤掉了
+- 模型当前回合没有判断出需要该工具
+- 配置用了错误的传输类型
+
+建议先跑：
+
+```bash
+java -jar target/Ricbot-1.0-SNAPSHOT.jar tools --config config/ricbot.config.json
+```
+
+### 11.2 为什么 `tools` 里看不到 `mcp_` 工具？
+
+优先排查：
+
+1. `tools.mcp_servers` 是否真的被加载
+2. `type` / `url` / `command` 是否正确
+3. `enabled_tools` 是否误过滤
+4. 当前环境是否能访问目标服务
+
+### 11.3 `streamableHttp` 为什么不能用？
+
+当前代码中：
+
+- 已有 `streamableHttp` 轻量实现
+- 但没有测试覆盖，也不是完整流式语义适配
+
+如果你的服务端本质上提供的是 SSE 端点，建议显式写：
+
+```json
+{ "type": "sse", "url": "https://.../sse" }
+```
+
+### 11.4 为什么 exec sandbox 开了反而不能执行？
+
+因为 `sandbox=true` 只是启用轻量沙箱包装，仍依赖系统命令：
+
+- macOS：`sandbox-exec`
+- Linux：`bwrap`
+
+如果系统里没有这些命令，`exec` 会直接报 sandbox 不可用。
+
+### 11.5 为什么某些渠道能注册但功能不完整？
+
+因为不同渠道成熟度不同：
+
+- Feishu / DingTalk 当前偏出站模式
+- WeCom 当前入站依赖额外代理
+- WebSocket、QQ、Weixin 相对完整
+
+### 11.6 启动失败常见原因有哪些？
+
+- 环境变量未设置，`${VAR}` 解析失败
+- API Key 缺失
+- `gateway.port` 被占用
+- `mvnw` / 脚本没有执行权限
+- 目标 Provider 或外部服务不可达
+
+### 11.7 环境变量没生效怎么办？
+
+检查：
+
+1. 配置文件里是否确实写成 `${ENV_NAME}`
+2. 是否在同一个 shell 会话里 `export`
+3. 是否使用了 `--config` 指向正确配置
+4. 启动时 stderr 打印的 `api_key env replaced` 是否为 `true`
+
+### 11.8 IDEA / Git / Maven 构建异常如何排查？
+
+- IDE 主类选 `ricbot.app.bootstrap.RicbotApplication`
+- Maven 优先使用 `sh ./mvnw -q -DskipTests package`
+- 仓库当前可能存在未提交改动，避免误以为是构建产物导致
+
+### 11.9 为什么改了 `api.port` 但服务没在那个端口启动？
+
+因为当前 `serve` 实际读取的是：
+
+```json
+gateway.port
+```
+
+`api.port` 目前只是配置模型中的预留字段，尚未真正接入启动路径。
+
+## 12. 当前限制与后续规划
+
+### 当前限制
+
+- 已可用主链路：
+  - CLI
+  - AgentLoop
+  - OpenAI 兼容 API
+  - Tool Calling
+  - Session / Memory / Dream / Cron
+  - MCP 基础接入
+- 半成品或部分支持能力：
+  - Feishu / DingTalk / WeCom 入站
+  - `api.*` 配置项真实接线
+  - Dream 自定义调度
+  - `streamableHttp` MCP 的稳定性验证
+  - OAuth 型 Provider 登录
+
+### 后续规划建议
+
+1. 让 `api.host/api.port/api.timeout` 真正接入 `serve`
+2. 完整打通 Dream 调度配置
+3. 为 `streamableHttp`、渠道接入补测试
+4. 统一历史命名，清理 `nanobot` 遗留
+5. 增加 Web 控制台或管理页
+6. 增加更细粒度的 Tool 权限策略与审计
+
+## 13. 适合写进简历 / 面试怎么介绍
+
+可以这样提炼项目亮点：
+
+- 工程价值：不是单次 LLM 调用 Demo，而是具备多入口、多工具、多会话、多渠道的 Agent Runtime
+- 架构亮点：通过 `MessageBus + AgentLoop + ToolRegistry + ProviderFactory + MCPLoader` 将主链路与外部依赖解耦
+- 可扩展性：Provider、Tool、MCP、Channel、Skill 都可独立扩展
+- 稳定性与安全性：具备 SSRF 防护、路径越界保护、命令安全过滤、超时控制、重试/熔断
+- 与普通 Demo 的区别：包含会话落盘、长期记忆、Dream、Cron、子代理、OpenAI 兼容 API 与多渠道接入
+
+一句话面试版介绍：
+
+> 这是一个用 Java 17 实现的工程化智能 Agent 系统骨架，我重点做的是统一消息主链路、Tool/MCP/Channel 扩展机制，以及会话与长期记忆的运行时管理。
+
+## 14. License / Contributing
+
+### License
+
+仓库当前未看到明确的 License 文件。
+
+如果你准备公开发布，建议尽快补充：
+
+- `MIT`
+- `Apache-2.0`
+- 或团队内部约定的专有许可证
+
+在 License 未明确前，外部使用与分发边界应谨慎处理。
+
+### Contributing
+
+如果你要继续扩展这个项目，建议优先从以下方向提交改进：
+
+- 补齐 `api.*` 配置真实接线
+- 为 MCP / Channel 增加集成测试
+- 清理历史命名与注释
+- 统一 README、配置示例与当前代码行为
+
+建议提交流程：
+
+1. 新增或修复对应测试
+2. 明确标注“已支持 / 部分支持 / 预留能力”
+3. 更新 `README.md` 与 `config/ricbot.config.json` 示例

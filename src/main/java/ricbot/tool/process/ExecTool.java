@@ -8,6 +8,7 @@ import ricbot.infra.security.NetworkSecurity;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
@@ -176,9 +177,12 @@ public class ExecTool extends Tool {
         String effectiveCommand = command;
         String effectiveCwd = cwd;
 
-        // 检查沙箱状态，当前版本不支持沙箱隔离
         if (sandbox != null && !sandbox.isBlank()) {
-            return "错误：sandbox 已启用，但当前版本未实现可验证的隔离执行。请关闭 sandbox，或仅启用 restrict_to_workspace。";
+            try {
+                effectiveCommand = wrapSandboxCommand(sandbox, effectiveCommand, this.workingDir, effectiveCwd);
+            } catch (Exception e) {
+                return "错误：sandbox 配置不可用：" + e.getMessage();
+            }
         }
 
         // 计算有效超时时间，不超过最大值
@@ -423,13 +427,109 @@ public class ExecTool extends Tool {
         }
     }
 
-    /**
-     * sandbox hook，占位。
-     */
     private String wrapSandboxCommand(String sandbox, String command, String workspace, String cwd) {
-        // 后面如果继续做更严格的 sandbox，可以把命令包装逻辑集中到单独模块
-        // 就把这里替换掉。
-        return command;
+        String mode = sandbox != null ? sandbox.trim().toLowerCase(Locale.ROOT) : "";
+        if (mode.isBlank() || "off".equals(mode) || "none".equals(mode)) {
+            return command;
+        }
+        if (IS_WINDOWS) {
+            throw new IllegalStateException("Windows 平台暂未支持 sandbox 执行");
+        }
+
+        if ("sandbox".equals(mode) || "auto".equals(mode)) {
+            if (commandExists("sandbox-exec")) {
+                return wrapWithMacSandbox(command, workspace, cwd);
+            }
+            if (commandExists("bwrap")) {
+                return wrapWithBubblewrap(command, workspace, cwd);
+            }
+            throw new IllegalStateException("未找到可用的 sandbox 工具（需要 sandbox-exec 或 bwrap）");
+        }
+
+        if (mode.contains("sandbox-exec") || mode.contains("seatbelt") || mode.contains("mac")) {
+            if (!commandExists("sandbox-exec")) {
+                throw new IllegalStateException("sandbox-exec 不可用");
+            }
+            return wrapWithMacSandbox(command, workspace, cwd);
+        }
+
+        if (mode.contains("bwrap") || mode.contains("bubblewrap")) {
+            if (!commandExists("bwrap")) {
+                throw new IllegalStateException("bwrap 不可用");
+            }
+            return wrapWithBubblewrap(command, workspace, cwd);
+        }
+
+        throw new IllegalStateException("未知 sandbox 模式：" + sandbox);
+    }
+
+    private String wrapWithMacSandbox(String command, String workspace, String cwd) {
+        try {
+            Path profile = Files.createTempFile("ricbot-sandbox-", ".sb");
+            profile.toFile().deleteOnExit();
+            String writableRoot = firstNonBlank(cwd, workspace, System.getProperty("user.dir"));
+            StringBuilder policy = new StringBuilder();
+            policy.append("(version 1)\n");
+            policy.append("(deny default)\n");
+            policy.append("(import \"system.sb\")\n");
+            policy.append("(allow process-exec)\n");
+            policy.append("(allow process-fork)\n");
+            policy.append("(allow file-read*)\n");
+            policy.append("(allow file-write* (subpath ").append(escapeSandboxPath(writableRoot)).append("))\n");
+            policy.append("(deny network*)\n");
+            Files.writeString(profile, policy.toString(), StandardCharsets.UTF_8);
+            return "sandbox-exec -f " + shellQuote(profile.toString()) + " /bin/sh -lc " + shellQuote(command);
+        } catch (Exception e) {
+            throw new IllegalStateException("生成 macOS sandbox 配置失败: " + e.getMessage(), e);
+        }
+    }
+
+    private String wrapWithBubblewrap(String command, String workspace, String cwd) {
+        String root = firstNonBlank(workspace, cwd, System.getProperty("user.dir"));
+        String effectiveCwd = firstNonBlank(cwd, root);
+        return "bwrap"
+                + " --die-with-parent"
+                + " --unshare-net"
+                + " --ro-bind /usr /usr"
+                + " --ro-bind /bin /bin"
+                + " --ro-bind /lib /lib"
+                + " --ro-bind /lib64 /lib64"
+                + " --ro-bind /etc /etc"
+                + " --proc /proc"
+                + " --dev /dev"
+                + " --bind " + shellQuote(root) + " " + shellQuote(root)
+                + " --chdir " + shellQuote(effectiveCwd)
+                + " /bin/sh -lc " + shellQuote(command);
+    }
+
+    private boolean commandExists(String command) {
+        if (command == null || command.isBlank()) {
+            return false;
+        }
+        String path = System.getenv().getOrDefault("PATH", "");
+        if (pathAppend != null && !pathAppend.isBlank()) {
+            path = path + (IS_WINDOWS ? ";" : ":") + pathAppend;
+        }
+        String sep = IS_WINDOWS ? ";" : ":";
+        for (String dir : path.split(Pattern.quote(sep))) {
+            if (dir == null || dir.isBlank()) {
+                continue;
+            }
+            Path candidate = Path.of(dir, command);
+            if (Files.isExecutable(candidate)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private String escapeSandboxPath(String value) {
+        return "\"" + String.valueOf(value).replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
+    }
+
+    private String shellQuote(String value) {
+        String s = value != null ? value : "";
+        return "'" + s.replace("'", "'\"'\"'") + "'";
     }
 
     /**

@@ -79,8 +79,10 @@ public final class MCPTransportFactory {
      * @return MCPServerConnection 实例
      */
     public static MCPServerConnection connectStreamableHttp(Config.MCPServerConfig cfg) {
-        // 抛出未支持操作异常
-        throw new UnsupportedOperationException("streamableHttp 传输方式尚未实现");
+        if (cfg == null || cfg.getUrl() == null || cfg.getUrl().isBlank()) {
+            throw new IllegalArgumentException("streamableHttp MCP 需要配置 URL");
+        }
+        return new StreamableHttpMcpServerConnection(cfg);
     }
 
     /**
@@ -515,6 +517,24 @@ public final class MCPTransportFactory {
          */
         @Override
         public void close() throws Exception {
+            session.close();
+        }
+    }
+
+    private static final class StreamableHttpMcpServerConnection implements MCPServerConnection {
+        private final StreamableHttpMcpClientSession session;
+
+        private StreamableHttpMcpServerConnection(Config.MCPServerConfig cfg) {
+            this.session = new StreamableHttpMcpClientSession(cfg);
+        }
+
+        @Override
+        public MCPClientSession getSession() {
+            return session;
+        }
+
+        @Override
+        public void close() {
             session.close();
         }
     }
@@ -1050,6 +1070,159 @@ public final class MCPTransportFactory {
                 } catch (Exception ignored) {
                 }
             }
+        }
+    }
+
+    private static final class StreamableHttpMcpClientSession implements MCPClientSession, AutoCloseable {
+        private static final ObjectMapper MAPPER = new ObjectMapper();
+
+        private final Config.MCPServerConfig cfg;
+        private final HttpClient httpClient;
+        private final AtomicLong idGen = new AtomicLong(1);
+        private final URI endpoint;
+
+        private StreamableHttpMcpClientSession(Config.MCPServerConfig cfg) {
+            this.cfg = cfg;
+            this.httpClient = HttpClient.newBuilder()
+                    .connectTimeout(Duration.ofSeconds(Math.max(5, cfg.getToolTimeout())))
+                    .build();
+            this.endpoint = SseMcpClientSession.parseUri(cfg.getUrl());
+        }
+
+        @Override
+        public void initialize() throws Exception {
+            Map<String, Object> params = new HashMap<>();
+            params.put("protocolVersion", "2024-11-05");
+            params.put("capabilities", Collections.emptyMap());
+            params.put("clientInfo", Map.of("name", "ricbot-java", "version", "0.1.0"));
+
+            call("initialize", params, cfg.getToolTimeout());
+            sendNotification("notifications/initialized", Collections.emptyMap());
+        }
+
+        @Override
+        public MCPToolResult callTool(String toolName, Map<String, Object> arguments) throws Exception {
+            Map<String, Object> params = new HashMap<>();
+            params.put("name", toolName);
+            params.put("arguments", arguments != null ? arguments : Collections.emptyMap());
+            return MAPPER.convertValue(call("tools/call", params, cfg.getToolTimeout()), MCPToolResult.class);
+        }
+
+        @Override
+        public MCPResourceResult readResource(String uri) throws Exception {
+            Map<String, Object> params = new HashMap<>();
+            params.put("uri", uri);
+            return MAPPER.convertValue(call("resources/read", params, cfg.getToolTimeout()), MCPResourceResult.class);
+        }
+
+        @Override
+        public MCPPromptResult getPrompt(String promptName, Map<String, Object> arguments) throws Exception {
+            Map<String, Object> params = new HashMap<>();
+            params.put("name", promptName);
+            params.put("arguments", arguments != null ? arguments : Collections.emptyMap());
+            return MAPPER.convertValue(call("prompts/get", params, cfg.getToolTimeout()), MCPPromptResult.class);
+        }
+
+        @Override
+        @SuppressWarnings("unchecked")
+        public List<MCPToolDefinition> listTools() throws Exception {
+            Object tools = call("tools/list", Collections.emptyMap(), cfg.getToolTimeout()).get("tools");
+            if (!(tools instanceof List<?> list)) {
+                return List.of();
+            }
+            List<MCPToolDefinition> out = new ArrayList<>();
+            for (Object item : list) {
+                if (item instanceof Map<?, ?> map) {
+                    out.add(MAPPER.convertValue(map, MCPToolDefinition.class));
+                }
+            }
+            return out;
+        }
+
+        @Override
+        @SuppressWarnings("unchecked")
+        public List<MCPResourceDefinition> listResources() throws Exception {
+            Object resources = call("resources/list", Collections.emptyMap(), cfg.getToolTimeout()).get("resources");
+            if (!(resources instanceof List<?> list)) {
+                return List.of();
+            }
+            List<MCPResourceDefinition> out = new ArrayList<>();
+            for (Object item : list) {
+                if (item instanceof Map<?, ?> map) {
+                    out.add(MAPPER.convertValue(map, MCPResourceDefinition.class));
+                }
+            }
+            return out;
+        }
+
+        @Override
+        @SuppressWarnings("unchecked")
+        public List<MCPPromptDefinition> listPrompts() throws Exception {
+            Object prompts = call("prompts/list", Collections.emptyMap(), cfg.getToolTimeout()).get("prompts");
+            if (!(prompts instanceof List<?> list)) {
+                return List.of();
+            }
+            List<MCPPromptDefinition> out = new ArrayList<>();
+            for (Object item : list) {
+                if (item instanceof Map<?, ?> map) {
+                    out.add(MAPPER.convertValue(map, MCPPromptDefinition.class));
+                }
+            }
+            return out;
+        }
+
+        private void sendNotification(String method, Map<String, Object> params) throws Exception {
+            postJson(Map.of(
+                    "jsonrpc", "2.0",
+                    "method", method,
+                    "params", params
+            ), cfg.getToolTimeout());
+        }
+
+        @SuppressWarnings("unchecked")
+        private Map<String, Object> call(String method, Map<String, Object> params, int timeoutSeconds) throws Exception {
+            long id = idGen.getAndIncrement();
+            Map<String, Object> response = postJson(Map.of(
+                    "jsonrpc", "2.0",
+                    "id", id,
+                    "method", method,
+                    "params", params
+            ), timeoutSeconds);
+
+            if (response.containsKey("error")) {
+                throw new IllegalStateException("MCP 错误: " + response.get("error"));
+            }
+
+            Object result = response.get("result");
+            if (result instanceof Map<?, ?> map) {
+                return (Map<String, Object>) map;
+            }
+            return new LinkedHashMap<>();
+        }
+
+        private Map<String, Object> postJson(Object request, int timeoutSeconds) throws Exception {
+            byte[] body = MAPPER.writeValueAsBytes(request);
+            HttpRequest req = HttpRequest.newBuilder(endpoint)
+                    .header("Content-Type", "application/json")
+                    .header("Accept", "application/json")
+                    .timeout(Duration.ofSeconds(Math.max(5, timeoutSeconds)))
+                    .POST(HttpRequest.BodyPublishers.ofByteArray(body))
+                    .build();
+
+            HttpResponse<String> res = httpClient.send(req, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            if (res.statusCode() < 200 || res.statusCode() >= 300) {
+                throw new IllegalStateException("MCP HTTP 请求失败: status=" + res.statusCode());
+            }
+
+            String bodyText = res.body() != null ? res.body().trim() : "";
+            if (bodyText.isBlank()) {
+                return new LinkedHashMap<>();
+            }
+            return MAPPER.readValue(bodyText, new TypeReference<>() {});
+        }
+
+        @Override
+        public void close() {
         }
     }
 }
