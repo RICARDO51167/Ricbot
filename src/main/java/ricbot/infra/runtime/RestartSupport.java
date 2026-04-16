@@ -3,6 +3,9 @@ package ricbot.infra.runtime;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
+/**
+ * 重启支持工具类，用于管理重启通知相关的环境变量模拟与处理。
+ */
 public final class RestartSupport {
 
     public static final String RESTART_NOTIFY_CHANNEL_ENV = "RICBOT_RESTART_NOTIFY_CHANNEL";
@@ -13,9 +16,6 @@ public final class RestartSupport {
     public static final String LEGACY_RESTART_NOTIFY_CHAT_ID_ENV = "RICBOT_RESTART_CHAT_ID";
     public static final String LEGACY_RESTART_STARTED_AT_ENV = "RICBOT_RESTART_AT";
 
-    /**
-     * Java 无法安全修改当前进程真正的 OS env，这里用进程内覆盖层模拟。
-     */
     private static final Map<String, String> ENV_OVERLAY = new ConcurrentHashMap<>();
 
     private RestartSupport() {

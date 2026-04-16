@@ -1,20 +1,19 @@
 package ricbot.app.cli;
 
-import ricbot.app.bootstrap.Bootstrapper; // 导入 Bootstrapper 类，用于初始化核心组件
-import ricbot.domain.agent.AgentLoop; // 导入 AgentLoop 类，用于运行 Agent 逻辑
-
-import ricbot.domain.message.InboundMessage; // 导入入站消息类
-import ricbot.domain.message.MessageBus; // 导入消息总线类，用于消息传递
-import ricbot.domain.message.OutboundMessage; // 导出现站消息类
-import ricbot.infra.config.Config; // 导入配置类
-import ricbot.infra.config.ConfigLoader; // 导入配置加载器
-import ricbot.infra.config.RuntimePaths; // 导入运行时路径工具类
+import ricbot.app.bootstrap.Bootstrapper;
+import ricbot.domain.agent.AgentLoop;
+import ricbot.domain.message.InboundMessage;
+import ricbot.domain.message.MessageBus;
+import ricbot.domain.message.OutboundMessage;
+import ricbot.infra.config.Config;
+import ricbot.infra.config.ConfigLoader;
+import ricbot.infra.config.RuntimePaths;
 import ricbot.domain.skill.SkillsLoader;
 import ricbot.infra.heartbeat.HeartbeatService;
 import ricbot.integration.api.RicbotApiServer;
 import ricbot.integration.mcp.MCPLoader;
-import ricbot.integration.llm.provider.ProviderRegistry; // 导入提供商注册表类
-import ricbot.integration.llm.provider.ProviderSpec; // 导入提供商规范类
+import ricbot.integration.llm.provider.ProviderRegistry;
+import ricbot.integration.llm.provider.ProviderSpec;
 import ricbot.integration.channel.ChannelManager;
 import ricbot.tool.api.ToolRegistry;
 import ricbot.tool.filesystem.EditFileTool;
@@ -27,63 +26,43 @@ import ricbot.tool.search.GrepTool;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.nio.file.Path; // 导入 Path 类，用于文件路径操作
+import java.nio.file.Path;
 import java.nio.file.Files;
-import java.util.*; // 导入 Java 集合框架
-// 导入线程池服务接口
-// 导入线程池工厂类
-
+import java.util.*;
 
 /**
- * 对应 Python: commands.py
- *
- * 主要目标：
- * 1. CLI 根入口
- * 2. 组织 onboard / agent / status / provider 等命令
- * 3. interactive chat 模式
- *
- * 说明：
- * Python 版用 typer + prompt_toolkit + rich。
- * Java 版这里先用最直接的命令分发风格。
+ * Ricbot CLI 命令入口类。
  */
 public final class CliCommands {
 
-    private static final Bootstrapper BOOTSTRAPPER = new Bootstrapper(); // 静态初始化 Bootstrapper 实例
+    private static final Bootstrapper BOOTSTRAPPER = new Bootstrapper();
     private static final Logger log = LoggerFactory.getLogger(CliCommands.class);
 
     private CliCommands() {
-        // 私有构造函数，防止实例化
     }
 
-    /**
-     * CLI 主入口方法。
-     * 解析命令行参数并分发到对应的子命令处理逻辑。
-     *
-     * @param args 命令行参数
-     * @throws Exception 执行过程中可能抛出的异常
-     */
     public static void main(String[] args) throws Exception {
         initLogging(args);
-        if (args.length == 0) { // 如果没有提供参数
-            printHelp(); // 打印帮助信息
-            return; // 退出程序
+        if (args.length == 0) {
+            printHelp();
+            return;
         }
 
-        List<String> argv = Arrays.asList(args); // 将参数数组转换为列表
-        String cmd = argv.get(0); // 获取第一个参数作为命令
+        List<String> argv = Arrays.asList(args);
+        String cmd = argv.get(0);
 
-        switch (cmd) { // 根据命令进行分发
-            case "--version", "-v" -> printVersion(); // 版本命令
-            case "onboard" -> onboard(argv.subList(1, argv.size())); // onboarding 命令，传递剩余参数
-            case "agent" -> agent(argv.subList(1, argv.size())); // agent 命令，传递剩余参数
-            case "serve" -> serve(argv.subList(1, argv.size())); // serve 命令，启动多渠道服务
-            case "status" -> status(); // 状态命令
-            case "provider" -> provider(argv.subList(1, argv.size())); // 提供商管理命令，传递剩余参数
+        switch (cmd) {
+            case "--version", "-v" -> printVersion();
+            case "onboard" -> onboard(argv.subList(1, argv.size()));
+            case "agent" -> agent(argv.subList(1, argv.size()));
+            case "serve" -> serve(argv.subList(1, argv.size()));
+            case "status" -> status();
+            case "provider" -> provider(argv.subList(1, argv.size()));
             case "tools" -> tools(argv.subList(1, argv.size()));
             case "skills" -> skills(argv.subList(1, argv.size()));
-            default -> { // 未知命令
-                System.out.println("未知命令：" + cmd); // 打印未知命令提示
-                printHelp(); // 打印帮助信息
+            default -> {
+                System.out.println("未知命令：" + cmd);
+                printHelp();
             }
         }
     }
@@ -111,210 +90,169 @@ public final class CliCommands {
         System.setProperty("ricbot.log.file", logFile.toString());
     }
 
-    // =========================================================
-    // onboard
-    // =========================================================
-
-    /**
-     * 初始化配置向导或加载现有配置。
-     * 支持指定工作空间、配置文件路径，并可启动交互式向导。
-     *
-     * @param args 命令行参数列表
-     */
     private static void onboard(List<String> args) {
-        String workspace = optionValue(args, "--workspace", "-w"); // 获取工作空间参数
-        String configPath = optionValue(args, "--config", "-c"); // 获取配置文件路径参数
+        String workspace = optionValue(args, "--workspace", "-w");
+        String configPath = optionValue(args, "--config", "-c");
 
-        Config config; // 声明配置对象
-        Path resolvedConfigPath; // 声明解析后的配置路径
+        Config config;
+        Path resolvedConfigPath;
 
-        if (configPath != null) { // 如果指定了配置路径
-            resolvedConfigPath = Path.of(configPath).toAbsolutePath().normalize(); // 解析为绝对路径并规范化
-            ConfigLoader.setConfigPath(resolvedConfigPath); // 设置配置加载器的路径
-            System.out.println("使用配置文件：" + resolvedConfigPath); // 打印使用的配置路径
-        } else { // 如果未指定配置路径
-            resolvedConfigPath = ConfigLoader.getConfigPath(); // 获取默认配置路径
+        if (configPath != null) {
+            resolvedConfigPath = Path.of(configPath).toAbsolutePath().normalize();
+            ConfigLoader.setConfigPath(resolvedConfigPath);
+            System.out.println("使用配置文件：" + resolvedConfigPath);
+        } else {
+            resolvedConfigPath = ConfigLoader.getConfigPath();
         }
 
-        if (resolvedConfigPath.toFile().exists()) { // 如果配置文件存在
-            config = ConfigLoader.loadConfig(resolvedConfigPath); // 加载现有配置
-        } else { // 如果配置文件不存在
-            config = new Config(); // 创建新的配置对象
+        if (resolvedConfigPath.toFile().exists()) {
+            config = ConfigLoader.loadConfig(resolvedConfigPath);
+        } else {
+            config = new Config();
         }
 
-        if (workspace != null && !workspace.isBlank()) { // 如果指定了工作空间且不为空
-            config.getAgents().getDefaults().setWorkspace(workspace); // 设置默认工作空间
+        if (workspace != null && !workspace.isBlank()) {
+            config.getAgents().getDefaults().setWorkspace(workspace);
         }
 
-        OnboardWizard.OnboardResult result = OnboardWizard.runOnboard(config); // 运行交互式向导
+        OnboardWizard.OnboardResult result = OnboardWizard.runOnboard(config);
         if (result.shouldSave()) {
             Config finalConfig = result.config();
-            ConfigLoader.saveConfig(finalConfig, resolvedConfigPath); // 保存配置到文件
-            onboardPlugins(resolvedConfigPath); // 初始化插件（占位方法）
+            ConfigLoader.saveConfig(finalConfig, resolvedConfigPath);
+            onboardPlugins(resolvedConfigPath);
 
-            Path workspacePath = RuntimePaths.getWorkspacePath(finalConfig.getAgents().getDefaults().getWorkspace()); // 获取工作空间路径
-            System.out.println("工作区：" + workspacePath); // 打印工作空间路径
+            Path workspacePath = RuntimePaths.getWorkspacePath(finalConfig.getAgents().getDefaults().getWorkspace());
+            System.out.println("工作区：" + workspacePath);
             System.out.println("配置已保存到：" + resolvedConfigPath);
-            System.out.println("ricbot 已就绪！"); // 打印就绪信息
+            System.out.println("ricbot 已就绪！");
             return;
         }
 
         System.out.println("已取消，配置未保存。");
     }
 
-    /**
-     * 插件初始化占位方法。
-     * 对应 Python _onboard_plugins:
-     * 读取 config.json，把 discover_all() 发现的 channels default_config 注入。
-     * 这里先保留扩展点。
-     *
-     * @param configPath 配置文件路径
-     */
     private static void onboardPlugins(Path configPath) {
-        // 对应 Python _onboard_plugins:
-        // 读取 config.json，把 discover_all() 发现的 channels default_config 注入。
-        // 这里先保留扩展点。
     }
 
-    // =========================================================
-    // agent
-    // =========================================================
-
-    /**
-     * 运行 Agent 交互模式或直接处理单条消息。
-     *
-     * @param args 命令行参数，支持 --message, --session, --config, --workspace, --no-markdown
-     * @throws Exception 执行 Agent 逻辑时可能抛出的异常
-     */
     private static void agent(List<String> args) throws Exception {
-        String message = optionValue(args, "--message", "-m"); // 获取消息内容参数
-        String sessionId = optionValue(args, "--session", "-s"); // 获取会话 ID 参数
-        String configPath = optionValue(args, "--config", "-c"); // 获取配置文件路径参数
-        String workspace = optionValue(args, "--workspace", "-w"); // 获取工作空间参数
-        boolean markdown = !hasFlag(args, "--no-markdown"); // 检查是否禁用 Markdown 渲染，默认为 true
+        String message = optionValue(args, "--message", "-m");
+        String sessionId = optionValue(args, "--session", "-s");
+        String configPath = optionValue(args, "--config", "-c");
+        String workspace = optionValue(args, "--workspace", "-w");
+        boolean markdown = !hasFlag(args, "--no-markdown");
 
-        if (sessionId == null || sessionId.isBlank()) { // 如果会话 ID 为空
-            sessionId = "cli:direct"; // 设置默认会话 ID
+        if (sessionId == null || sessionId.isBlank()) {
+            sessionId = "cli:direct";
         }
 
-        Config config = loadRuntimeConfig(configPath, workspace); // 加载运行时配置
-        Config resolvedConfig = resolveAndPrintEffectiveConfig(configPath, config); // 解析并打印生效的配置
+        Config config = loadRuntimeConfig(configPath, workspace);
+        Config resolvedConfig = resolveAndPrintEffectiveConfig(configPath, config);
 
-        MessageBus bus = new MessageBus(); // 创建消息总线实例
-        var provider = BOOTSTRAPPER.createProvider(resolvedConfig); // 创建 LLM 提供商实例
+        MessageBus bus = new MessageBus();
+        var provider = BOOTSTRAPPER.createProvider(resolvedConfig);
 
-        AgentLoop agentLoop = BOOTSTRAPPER.createAgentLoop(resolvedConfig, bus, provider); // 创建 Agent 循环实例
+        AgentLoop agentLoop = BOOTSTRAPPER.createAgentLoop(resolvedConfig, bus, provider);
 
-        if (message != null && !message.isBlank()) { // 如果提供了消息内容（非交互模式）
-            StreamRenderer renderer = new StreamRenderer(markdown, true); // 创建流式渲染器
+        if (message != null && !message.isBlank()) {
+            StreamRenderer renderer = new StreamRenderer(markdown, true);
             try {
-                OutboundMessage response = runSingleMessageViaBus(agentLoop, bus, message, sessionId, "cli", "direct", renderer); // 通过消息总线运行单条消息
-                if (!renderer.isStreamed()) { // 如果没有进行流式输出
-                    renderer.close(); // 关闭渲染器
+                OutboundMessage response = runSingleMessageViaBus(agentLoop, bus, message, sessionId, "cli", "direct", renderer);
+                if (!renderer.isStreamed()) {
+                    renderer.close();
                     printAgentResponse(
-                            response != null ? response.getContent() : "", // 获取响应内容
-                            markdown, // Markdown 渲染标志
-                            response != null ? response.getMetadata() : null // 获取元数据
+                            response != null ? response.getContent() : "",
+                            markdown,
+                            response != null ? response.getMetadata() : null
                     );
                 }
-                return; // 结束方法
+                return;
             } finally {
-                renderer.close(); // 确保渲染器被关闭
+                renderer.close();
             }
         }
 
-        interactiveAgent(agentLoop, bus, sessionId, markdown); // 进入交互式 Agent 模式
+        interactiveAgent(agentLoop, bus, sessionId, markdown);
     }
 
-    /**
-     * 启动交互式 Agent 聊天会话。
-     *
-     * @param agentLoop Agent 循环实例
-     * @param bus       消息总线
-     * @param sessionId 会话 ID
-     * @param markdown  是否渲染 Markdown
-     * @throws Exception 交互过程中可能抛出的异常
-     */
     private static void interactiveAgent(AgentLoop agentLoop, MessageBus bus, String sessionId, boolean markdown) throws Exception {
-        Scanner scanner = new Scanner(System.in); // 创建扫描器用于读取用户输入
+        Scanner scanner = new Scanner(System.in);
 
-        String cliChannel; // 声明 CLI 通道
-        String cliChatId; // 声明 CLI 聊天 ID
-        if (sessionId.contains(":")) { // 如果会话 ID 包含冒号
-            String[] parts = sessionId.split(":", 2); // 分割会话 ID
-            cliChannel = parts[0]; // 获取通道部分
-            cliChatId = parts[1]; // 获取聊天 ID 部分
-        } else { // 如果会话 ID 不包含冒号
-            cliChannel = "cli"; // 默认通道为 cli
-            cliChatId = sessionId; // 聊天 ID 为整个会话 ID
+        String cliChannel;
+        String cliChatId;
+        if (sessionId.contains(":")) {
+            String[] parts = sessionId.split(":", 2);
+            cliChannel = parts[0];
+            cliChatId = parts[1];
+        } else {
+            cliChannel = "cli";
+            cliChatId = sessionId;
         }
 
         agentLoop.start();
 
         try {
-            System.out.println("交互模式（输入 exit 或按 Ctrl+C 退出）"); // 打印交互模式提示
+            System.out.println("交互模式（输入 exit 或按 Ctrl+C 退出）");
 
-            while (true) { // 主循环
-                System.out.print("你："); // 打印提示符
-                String input = safeReadLine(scanner); // 安全读取一行输入
-                if (input == null) { // 如果读取失败（例如 EOF）
-                    System.out.println("再见！"); // 打印告别信息
-                    break; // 退出循环
+            while (true) {
+                System.out.print("你：");
+                String input = safeReadLine(scanner);
+                if (input == null) {
+                    System.out.println("再见！");
+                    break;
                 }
 
-                String command = input.trim(); // 去除输入两端空白
-                if (command.isBlank()) { // 如果输入为空
-                    continue; // 跳过本次循环
+                String command = input.trim();
+                if (command.isBlank()) {
+                    continue;
                 }
-                if (isExitCommand(command)) { // 如果是退出命令
-                    System.out.println("再见！"); // 打印告别信息
-                    break; // 退出循环
+                if (isExitCommand(command)) {
+                    System.out.println("再见！");
+                    break;
                 }
 
-                StreamRenderer renderer = new StreamRenderer(markdown, true); // 创建流式渲染器
+                StreamRenderer renderer = new StreamRenderer(markdown, true);
 
-                InboundMessage inbound = new InboundMessage(); // 创建入站消息对象
-                inbound.setChannel(cliChannel); // 设置通道
-                inbound.setSenderId("user"); // 设置发送者 ID
-                inbound.setChatId(cliChatId); // 设置聊天 ID
-                inbound.setContent(input); // 设置消息内容
-                inbound.setMetadata(Map.of("_wants_stream", true)); // 设置元数据，标记需要流式输出
+                InboundMessage inbound = new InboundMessage();
+                inbound.setChannel(cliChannel);
+                inbound.setSenderId("user");
+                inbound.setChatId(cliChatId);
+                inbound.setContent(input);
+                inbound.setMetadata(Map.of("_wants_stream", true));
 
-                bus.publishInbound(inbound); // 发布入站消息到总线
+                bus.publishInbound(inbound);
 
-                // 这里做一个最简版 outbound 消费
-                while (true) { // 内部循环，等待出站消息
-                    OutboundMessage msg = bus.pollOutbound(1000); // 轮询出站消息，超时 1000ms
-                    if (msg == null) { // 如果超时
-                        continue; // 继续等待
+                while (true) {
+                    OutboundMessage msg = bus.pollOutbound(1000);
+                    if (msg == null) {
+                        continue;
                     }
 
-                    Map<String, Object> meta = msg.getMetadata() != null ? msg.getMetadata() : Collections.emptyMap(); // 获取元数据
+                    Map<String, Object> meta = msg.getMetadata() != null ? msg.getMetadata() : Collections.emptyMap();
 
-                    if (Boolean.TRUE.equals(meta.get("_stream_delta"))) { // 如果是流式增量
-                        renderer.onDelta(msg.getContent()); // 渲染增量内容
-                        continue; // 继续等待下一条消息
+                    if (Boolean.TRUE.equals(meta.get("_stream_delta"))) {
+                        renderer.onDelta(msg.getContent());
+                        continue;
                     }
 
-                    if (Boolean.TRUE.equals(meta.get("_stream_end"))) { // 如果是流式结束
-                        renderer.onEnd(Boolean.TRUE.equals(meta.get("_resuming"))); // 处理流式结束
-                        continue; // 继续等待下一条消息
+                    if (Boolean.TRUE.equals(meta.get("_stream_end"))) {
+                        renderer.onEnd(Boolean.TRUE.equals(meta.get("_resuming")));
+                        continue;
                     }
 
-                    if (Boolean.TRUE.equals(meta.get("_streamed"))) { // 如果标记为已流式传输完成
-                        break; // 跳出内部循环
+                    if (Boolean.TRUE.equals(meta.get("_streamed"))) {
+                        break;
                     }
 
-                    if (Boolean.TRUE.equals(meta.get("_progress"))) { // 如果是进度消息
-                        continue; // 忽略进度消息
+                    if (Boolean.TRUE.equals(meta.get("_progress"))) {
+                        continue;
                     }
 
-                    if (msg.getContent() != null && !msg.getContent().isBlank()) { // 如果有非空内容且非流式
-                        if (!renderer.isStreamed()) { // 如果之前没有进行流式输出
-                            renderer.close(); // 关闭渲染器
-                            printAgentResponse(msg.getContent(), markdown, msg.getMetadata()); // 打印完整响应
+                    if (msg.getContent() != null && !msg.getContent().isBlank()) {
+                        if (!renderer.isStreamed()) {
+                            renderer.close();
+                            printAgentResponse(msg.getContent(), markdown, msg.getMetadata());
                         }
-                        break; // 跳出内部循环
+                        break;
                     }
                 }
             }
@@ -323,121 +261,78 @@ public final class CliCommands {
         }
     }
 
-    /**
-     * 运行 Ricbot 服务模式，启动所有已配置的渠道（飞书、钉钉、企微、WebSocket 等）。
-     *
-     * @param args 命令行参数，支持 --config, --workspace
-     * @throws Exception 执行过程中可能抛出的异常
-     */
-    /**
-     * 启动 Ricbot 服务模式。
-     * 该方法会初始化核心组件（AgentLoop, ChannelManager, HeartbeatService, ApiServer），
-     * 并阻塞主线程以保持服务运行，直到接收到停止信号。
-     *
-     * @param args 命令行参数，支持 --config, --workspace
-     * @throws Exception 执行过程中可能抛出的异常
-     */
     private static void serve(List<String> args) throws Exception {
-        // 从命令行参数中获取配置文件路径
         String configPath = optionValue(args, "--config", "-c");
-        // 从命令行参数中获取工作空间路径
         String workspace = optionValue(args, "--workspace", "-w");
 
-        // 加载运行时配置
         Config config = loadRuntimeConfig(configPath, workspace);
-        // 解析配置中的环境变量，并打印生效的配置信息
         Config resolvedConfig = resolveAndPrintEffectiveConfig(configPath, config);
 
-        // 创建消息总线实例
         MessageBus bus = BOOTSTRAPPER.createBus();
-        // 创建 LLM 提供商实例
         var provider = BOOTSTRAPPER.createProvider(resolvedConfig);
 
-        // 创建 Agent 循环实例，负责处理核心逻辑
         AgentLoop agentLoop = BOOTSTRAPPER.createAgentLoop(resolvedConfig, bus, provider);
-        // 创建渠道管理器，负责管理各种通讯渠道（如飞书、钉钉等）
         ChannelManager channelManager = BOOTSTRAPPER.createChannelManager(resolvedConfig, bus);
 
-        // 创建心跳服务
         HeartbeatService heartbeat = BOOTSTRAPPER.createHeartbeatService(
                 resolvedConfig,
                 provider,
-                // 心跳任务执行回调：当需要执行心跳任务时调用
                 (tasks) -> {
                     log.info("心跳任务执行中：{}", tasks);
-                    // 直接处理心跳任务消息
                     OutboundMessage out = agentLoop.processDirect(tasks, "heartbeat:default", "system", "heartbeat");
-                    // 返回处理结果内容，若无结果则返回 null
                     return out != null ? out.getContent() : null;
                 },
-                // 心跳结果处理回调：当收到心跳任务结果时调用
                 (response) -> {
                     log.info("心跳任务结果：{}", response);
-                    // 这里可以按需分发给特定渠道，或者通过 bus 发布
-                    // 创建出站消息对象
                     OutboundMessage out = new OutboundMessage();
-                    out.setChannel("system"); // 设置通道为系统通道
-                    out.setChatId("heartbeat"); // 设置聊天 ID 为 heartbeat
-                    out.setContent(response); // 设置消息内容为响应结果
-                    bus.publishOutbound(out); // 发布出站消息到总线
+                    out.setChannel("system");
+                    out.setChatId("heartbeat");
+                    out.setContent(response);
+                    bus.publishOutbound(out);
                 }
         );
 
         System.out.println("正在启动 Ricbot 服务…");
         
-        // 启动 Agent 循环，开始处理消息
         agentLoop.start();
         
-        // 启动所有已配置的通讯渠道
         channelManager.startAll();
 
-        // 启动心跳服务，定期执行健康检查或维持连接
         heartbeat.start();
 
-        // 启动 OpenAI 兼容 API 服务，允许外部通过标准 OpenAI API格式调用 Ricbot
-        Config.GatewayConfig gateway = resolvedConfig.getGateway(); // 获取网关配置
+        Config.GatewayConfig gateway = resolvedConfig.getGateway();
         var apiServer = RicbotApiServer.createAndStart(
-                gateway.getPort(), // API 服务端口
-                agentLoop, // Agent 循环实例，用于处理请求
-                resolvedConfig.getAgents().getDefaults().getModel(), // 默认使用的模型名称
-                120_000L // 超时时间（毫秒）
+                gateway.getPort(),
+                agentLoop,
+                resolvedConfig.getAgents().getDefaults().getModel(),
+                120_000L
         );
         System.out.println("OpenAI 兼容 API 服务已启动，端口：" + gateway.getPort());
 
         System.out.println("Ricbot 正在运行，按 Ctrl+C 停止。");
 
-        // 注册 JVM 关闭钩子，确保在程序退出时优雅地关闭所有服务
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             System.out.println("\n正在关闭…");
-            apiServer.stop(1); // 停止 API 服务器
-            heartbeat.stop(); // 停止心跳服务
-            channelManager.stopAll(); // 停止所有通讯渠道
-            agentLoop.stop(); // 停止 Agent 循环
+            apiServer.stop(1);
+            heartbeat.stop();
+            channelManager.stopAll();
+            agentLoop.stop();
         }));
 
-        // 阻塞主线程，保持服务运行状态
-        // 使用无限循环配合睡眠，防止主线程退出导致 JVM 进程结束
         while (true) {
             Thread.sleep(1000);
         }
     }
 
-    // =========================================================
-    // status
-    // =========================================================
-
-    /**
-     * 显示当前 ricbot 的状态信息（配置、工作空间、模型等）。
-     */
     private static void status() {
-        Config config = ConfigLoader.loadConfig(); // 加载配置
-        Path configPath = ConfigLoader.getConfigPath(); // 获取配置路径
-        Path workspace = config.getWorkspacePath(); // 获取工作空间路径
+        Config config = ConfigLoader.loadConfig();
+        Path configPath = ConfigLoader.getConfigPath();
+        Path workspace = config.getWorkspacePath();
 
-        System.out.println("ricbot 状态"); // 打印标题
-        System.out.println("配置文件：" + configPath + (configPath.toFile().exists() ? " ✓" : " ✗")); // 打印配置状态
-        System.out.println("工作区：" + workspace + (workspace.toFile().exists() ? " ✓" : " ✗")); // 打印工作空间状态
-        System.out.println("模型：" + config.getAgents().getDefaults().getModel()); // 打印默认模型
+        System.out.println("ricbot 状态");
+        System.out.println("配置文件：" + configPath + (configPath.toFile().exists() ? " ✓" : " ✗"));
+        System.out.println("工作区：" + workspace + (workspace.toFile().exists() ? " ✓" : " ✗"));
+        System.out.println("模型：" + config.getAgents().getDefaults().getModel());
     }
 
     private static void skills(List<String> args) {
@@ -476,74 +371,46 @@ public final class CliCommands {
         }
     }
 
-    /**
-     * 显示当前已注册和启用的工具列表及其配置信息。
-     * 支持指定配置文件和工作空间，解析环境变量，并根据安全策略初始化文件系统工具和执行工具。
-     *
-     * @param args 命令行参数，支持 --config, --workspace
-     */
     private static void tools(List<String> args) {
-        // 从命令行参数中获取配置文件路径
         String configPath = optionValue(args, "--config", "-c");
-        // 从命令行参数中获取工作空间覆盖路径
         String workspaceOverride = optionValue(args, "--workspace", "-w");
 
-        // 加载运行时配置
         Config config = loadRuntimeConfig(configPath, workspaceOverride);
-        // 声明解析后的配置对象，初始化为原始配置
         Config resolved = config;
-        // 标记环境变量是否成功解析
         boolean envResolved = false;
         try {
-            // 尝试解析配置中的环境变量占位符
             resolved = ConfigLoader.resolveConfigEnvVars(config);
-            // 标记解析成功
             envResolved = true;
         } catch (Exception ignored) {
-            // 忽略解析异常，保持原配置
         }
 
-        // 获取工作空间路径
         Path workspace = resolved.getWorkspacePath();
-        // 获取是否限制工具只能在工作空间内操作的配置
         boolean restrictToWorkspace = resolved.getTools().isRestrictToWorkspace();
-        // 获取执行工具的配置，如果为空则创建默认配置
         Config.ExecToolConfig execConfig = resolved.getTools().getExec() != null ? resolved.getTools().getExec() : new Config.ExecToolConfig();
 
-        // 计算允许的基目录：如果限制在工作空间或启用沙箱，则允许目录为工作空间，否则不限制（null）
         Path allowedDir = (restrictToWorkspace || execConfig.isSandbox()) ? workspace : null;
 
-        // 创建工具注册表实例
         ToolRegistry registry = new ToolRegistry();
-        // 注册读取文件工具
         registry.register(new ReadFileTool(workspace, allowedDir, List.of()));
-        // 注册列出目录工具
         registry.register(new ListDirTool(workspace, allowedDir));
-        // 注册写入文件工具
         registry.register(new WriteFileTool(workspace, allowedDir));
-        // 注册编辑文件工具
         registry.register(new EditFileTool(workspace, allowedDir));
-        // 注册全局匹配工具
         registry.register(new GlobTool(workspace, allowedDir));
-        // 注册 grep 搜索工具
         registry.register(new GrepTool(workspace, allowedDir));
         
-        // 如果启用了执行工具
         if (execConfig.isEnable()) {
-            // 注册执行命令工具
             registry.register(new ExecTool(
-                    execConfig.getTimeout(),          // 超时时间
-                    workspace.toString(),             // 工作目录
-                    null,                             // 保留参数
-                    null,                             // 保留参数
-                    restrictToWorkspace,              // 是否限制在工作空间
-                    execConfig.isSandbox() ? "sandbox" : "", // 沙箱模式标识
-                    execConfig.getPathAppend(),       // 追加路径
-                    execConfig.getAllowedEnvKeys()    // 允许的环境变量键
+                    execConfig.getTimeout(),
+                    workspace.toString(),
+                    null,
+                    null,
+                    restrictToWorkspace,
+                    execConfig.isSandbox() ? "sandbox" : "",
+                    execConfig.getPathAppend(),
+                    execConfig.getAllowedEnvKeys()
             ));
         }
 
-        // 加载 MCP 工具（如有配置）
         MCPLoader mcpLoader = null;
         if (resolved.getTools().getMcpServers() != null && !resolved.getTools().getMcpServers().isEmpty()) {
             try {
@@ -554,56 +421,38 @@ public final class CliCommands {
             }
         }
 
-        // 打印标题
         System.out.println("ricbot 工具");
-        // 打印工作区路径
         System.out.println("工作区：" + workspace);
-        // 打印是否限制在工作空间
         System.out.println("restrictToWorkspace：" + restrictToWorkspace);
-        // 打印允许的基目录
         System.out.println("允许的基目录：" + (allowedDir != null ? allowedDir : "（不限制）"));
-        // 打印执行工具的详细配置
         System.out.println("exec：enable=" + execConfig.isEnable()
                 + ", sandbox=" + execConfig.isSandbox()
                 + ", timeout=" + execConfig.getTimeout()
                 + ", allowed_env_keys=" + (execConfig.getAllowedEnvKeys() != null ? execConfig.getAllowedEnvKeys().size() : 0));
-        // 打印环境变量解析状态
         System.out.println("配置环境变量已解析：" + envResolved);
-        // 打印空行
         System.out.println();
-        // 打印已启用工具标题
         System.out.println("已启用的工具：");
 
-        // 获取所有已注册工具的名称列表
         List<String> names = new ArrayList<>(registry.toolNames());
-        // 对工具名称进行排序
         names.sort(String::compareTo);
         
-        // 遍历排序后的工具名称
         for (String name : names) {
-            // 获取工具实例
             var tool = registry.get(name);
-            // 如果工具不存在，跳过
             if (tool == null) {
                 continue;
             }
             
-            // 初始化标志字符串
             String flags = "";
-            // 如果是只读工具，添加 read-only 标志
             if (tool.isReadOnly()) {
                 flags = flags.isEmpty() ? "(read-only" : flags + ", read-only";
             }
-            // 如果是独占工具，添加 exclusive 标志
             if (tool.isExclusive()) {
                 flags = flags.isEmpty() ? "(exclusive" : flags + ", exclusive";
             }
-            // 如果有标志，闭合括号
             if (!flags.isEmpty()) {
                 flags = flags + ")";
             }
             
-            // 打印工具名称、描述及标志
             System.out.println("  - " + tool.getName() + " — " + tool.getDescription() + (flags.isEmpty() ? "" : " " + flags));
         }
 
@@ -615,117 +464,82 @@ public final class CliCommands {
         }
     }
 
-    // =========================================================
-    // provider
-    // =========================================================
-
-    /**
-     * 管理 LLM 提供商命令（如 login）。
-     *
-     * @param args 命令行参数
-     */
     private static void provider(List<String> args) {
-        if (args.isEmpty()) { // 如果没有参数
-            System.out.println("用法：provider login <provider>"); // 打印用法提示
-            return; // 退出方法
+        if (args.isEmpty()) {
+            System.out.println("用法：provider login <provider>");
+            return;
         }
 
-        String sub = args.get(0); // 获取子命令
-        if (!"login".equals(sub)) { // 如果不是 login 子命令
-            System.out.println("未知的 provider 子命令：" + sub); // 打印未知子命令提示
-            return; // 退出方法
+        String sub = args.get(0);
+        if (!"login".equals(sub)) {
+            System.out.println("未知的 provider 子命令：" + sub);
+            return;
         }
 
-        if (args.size() < 2) { // 如果缺少提供商名称
-            System.out.println("用法：provider login <provider>"); // 打印用法提示
-            return; // 退出方法
+        if (args.size() < 2) {
+            System.out.println("用法：provider login <provider>");
+            return;
         }
 
-        String provider = args.get(1); // 获取提供商名称
-        providerLogin(provider); // 执行登录逻辑
+        String provider = args.get(1);
+        providerLogin(provider);
     }
 
-    /**
-     * 处理特定提供商的 OAuth 登录逻辑占位。
-     *
-     * @param provider 提供商名称
-     */
     private static void providerLogin(String provider) {
-        System.out.println("Provider '" + provider + "' 的 OAuth 登录流程需要按 provider 具体实现。"); // 打印提示信息
-        System.out.println("这是 Java 版本的占位实现，对应 Python 的 provider_login()。"); // 打印占位提示
+        System.out.println("Provider '" + provider + "' 的 OAuth 登录流程需要按 provider 具体实现。");
+        System.out.println("这是 Java 版本的占位实现，对应 Python 的 provider_login()。");
     }
 
-    // =========================================================
-    // Helper methods
-    // =========================================================
-
-    /**
-     * 加载运行时配置。
-     *
-     * @param configPath 配置文件路径
-     * @param workspace  工作空间路径
-     * @return 配置对象
-     */
     private static Config loadRuntimeConfig(String configPath, String workspace) {
-        return BOOTSTRAPPER.loadConfig(configPath, workspace); // 调用 Bootstrapper 加载配置
+        return BOOTSTRAPPER.loadConfig(configPath, workspace);
     }
 
-    /**
-     * 解析配置中的环境变量占位符，并打印最终生效的配置信息到标准错误流。
-     * 如果 API Key 仍包含未解析的占位符，则抛出异常。
-     *
-     * @param configPath 配置文件路径字符串
-     * @param config     原始配置对象
-     * @return 解析后的配置对象
-     * @throws IllegalArgumentException 如果 API Key 包含未解析的占位符
-     */
     private static Config resolveAndPrintEffectiveConfig(String configPath, Config config) {
-        Path resolvedPath = configPath != null && !configPath.isBlank() // 计算解析后的配置路径：如果 configPath 不为空，则规范化为绝对路径，否则使用默认配置路径
+        Path resolvedPath = configPath != null && !configPath.isBlank()
                 ? Path.of(configPath).toAbsolutePath().normalize()
                 : ConfigLoader.getConfigPath();
 
-        String rawModel = config.getAgents().getDefaults().getModel(); // 获取原始模型名称
-        String rawProviderName = config.getProviderName(rawModel); // 获取原始提供商名称
-        Config.ProviderConfig rawPc = config.getProvider(rawModel); // 获取原始提供商配置
-        String rawApiKey = rawPc != null ? rawPc.getApiKey() : null; // 获取原始 API Key
+        String rawModel = config.getAgents().getDefaults().getModel();
+        String rawProviderName = config.getProviderName(rawModel);
+        Config.ProviderConfig rawPc = config.getProvider(rawModel);
+        String rawApiKey = rawPc != null ? rawPc.getApiKey() : null;
 
-        Config resolved = config; // 声明解析后的配置对象，初始化为原始配置
-        boolean envResolved = false; // 标记环境变量是否已解析
+        Config resolved = config;
+        boolean envResolved = false;
         try {
-            resolved = ConfigLoader.resolveConfigEnvVars(config); // 尝试解析配置中的环境变量
-            envResolved = true; // 标记解析成功
+            resolved = ConfigLoader.resolveConfigEnvVars(config);
+            envResolved = true;
         } catch (Exception ignored) {
-            // 忽略解析异常，保持原配置
         }
 
-        String model = resolved.getAgents().getDefaults().getModel(); // 获取解析后的模型名称
-        String providerName = resolved.getProviderName(model); // 获取解析后的提供商名称
-        ProviderSpec spec = ProviderRegistry.findByName(providerName); // 查找提供商规范
-        String backend = spec != null ? String.valueOf(spec.getBackend()) : "<unresolved>"; // 获取后端类型，若未找到则标记为未解析
-        String apiBase = resolved.getApiBase(model); // 获取 API 基础 URL
+        String model = resolved.getAgents().getDefaults().getModel();
+        String providerName = resolved.getProviderName(model);
+        ProviderSpec spec = ProviderRegistry.findByName(providerName);
+        String backend = spec != null ? String.valueOf(spec.getBackend()) : "<unresolved>";
+        String apiBase = resolved.getApiBase(model);
 
-        Config.ProviderConfig pc = resolved.getProvider(model); // 获取解析后的提供商配置
-        String providerConfigKey = providerName; // 初始化提供商配置键
-        if (!"openai".equalsIgnoreCase(providerName) && pc == resolved.getProviders().getOpenai()) { // 特殊处理 OpenAI 配置键
+        Config.ProviderConfig pc = resolved.getProvider(model);
+        String providerConfigKey = providerName;
+        if (!"openai".equalsIgnoreCase(providerName) && pc == resolved.getProviders().getOpenai()) {
             providerConfigKey = "openai";
         }
-        String apiKey = pc != null ? pc.getApiKey() : null; // 获取解析后的 API Key
-        boolean hasKey = apiKey != null && !apiKey.isBlank(); // 检查是否存在 API Key
-        boolean looksLikePlaceholder = hasKey && apiKey.contains("${") && apiKey.contains("}"); // 检查 API Key 是否看起来像未解析的占位符
-        boolean keyResolved = hasKey && !looksLikePlaceholder; // 检查 API Key 是否已解析
-        boolean rawLookedLikePlaceholder = rawApiKey != null && rawApiKey.contains("${") && rawApiKey.contains("}"); // 检查原始 API Key 是否看起来像占位符
-        boolean envReplaced = rawLookedLikePlaceholder && keyResolved && envResolved; // 检查环境变量是否被替换
+        String apiKey = pc != null ? pc.getApiKey() : null;
+        boolean hasKey = apiKey != null && !apiKey.isBlank();
+        boolean looksLikePlaceholder = hasKey && apiKey.contains("${") && apiKey.contains("}");
+        boolean keyResolved = hasKey && !looksLikePlaceholder;
+        boolean rawLookedLikePlaceholder = rawApiKey != null && rawApiKey.contains("${") && rawApiKey.contains("}");
+        boolean envReplaced = rawLookedLikePlaceholder && keyResolved && envResolved;
 
-        System.err.println("ricbot config path: " + resolvedPath); // 打印配置路径
-        System.err.println("ricbot config loaded: " + java.nio.file.Files.exists(resolvedPath)); // 打印配置文件是否存在
-        System.err.println("ricbot effective model: " + model); // 打印生效的模型
-        System.err.println("ricbot effective provider: " + providerName + " (backend=" + backend + ")"); // 打印生效的提供商及后端
-        System.err.println("ricbot provider config key: " + providerConfigKey); // 打印提供商配置键
-        System.err.println("ricbot effective api_base: " + (apiBase != null ? apiBase : "")); // 打印生效的 API Base
-        System.err.println("ricbot api_key present: " + hasKey); // 打印 API Key 是否存在
-        System.err.println("ricbot api_key env replaced: " + envReplaced); // 打印 API Key 环境变量是否被替换
+        System.err.println("ricbot config path: " + resolvedPath);
+        System.err.println("ricbot config loaded: " + java.nio.file.Files.exists(resolvedPath));
+        System.err.println("ricbot effective model: " + model);
+        System.err.println("ricbot effective provider: " + providerName + " (backend=" + backend + ")");
+        System.err.println("ricbot provider config key: " + providerConfigKey);
+        System.err.println("ricbot effective api_base: " + (apiBase != null ? apiBase : ""));
+        System.err.println("ricbot api_key present: " + hasKey);
+        System.err.println("ricbot api_key env replaced: " + envReplaced);
 
-        if (looksLikePlaceholder) { // 如果 API Key 仍包含未解析的占位符
+        if (looksLikePlaceholder) {
             String envName = null;
             int start = apiKey.indexOf("${");
             if (start >= 0) {
@@ -734,7 +548,7 @@ public final class CliCommands {
                     envName = apiKey.substring(start + 2, end);
                 }
             }
-            throw new IllegalArgumentException( // 抛出异常
+            throw new IllegalArgumentException(
                     envName != null && !envName.isBlank()
                             ? "api_key contains an unresolved placeholder (${%s}). Set the environment variable %s or put a literal api_key in the config."
                             .formatted(envName, envName)
@@ -742,21 +556,9 @@ public final class CliCommands {
             );
         }
 
-        return resolved; // 返回解析后的配置
+        return resolved;
     }
 
-    /**
-     * 运行单个消息通过总线。
-     * @param agentLoop
-     * @param bus
-     * @param input
-     * @param sessionKey
-     * @param channel
-     * @param chatId
-     * @param renderer
-     * @return
-     * @throws Exception
-     */
     private static OutboundMessage runSingleMessageViaBus(
             AgentLoop agentLoop,
             MessageBus bus,
@@ -769,184 +571,128 @@ public final class CliCommands {
         agentLoop.start();
 
         try {
-            InboundMessage inbound = new InboundMessage(); // 创建入站消息对象
-            inbound.setChannel(channel); // 设置通道
-            inbound.setSenderId("user"); // 设置发送者 ID
-            inbound.setChatId(chatId); // 设置聊天 ID
-            inbound.setContent(input); // 设置消息内容
-            inbound.setSessionKeyOverride(sessionKey); // 设置会话密钥覆盖
-            inbound.setMetadata(new HashMap<>(Map.of("_wants_stream", true))); // 设置元数据，标记需要流式输出
+            InboundMessage inbound = new InboundMessage();
+            inbound.setChannel(channel);
+            inbound.setSenderId("user");
+            inbound.setChatId(chatId);
+            inbound.setContent(input);
+            inbound.setSessionKeyOverride(sessionKey);
+            inbound.setMetadata(new HashMap<>(Map.of("_wants_stream", true)));
 
-            bus.publishInbound(inbound); // 发布入站消息
+            bus.publishInbound(inbound);
 
-            OutboundMessage last = null; // 声明最后一条消息
-            long startMillis = System.currentTimeMillis(); // 记录开始时间
+            OutboundMessage last = null;
+            long startMillis = System.currentTimeMillis();
 
-            while (true) { // 循环等待响应
-                OutboundMessage msg = bus.pollOutbound(1000); // 轮询出站消息
-                if (msg == null) { // 如果超时
-                    if (System.currentTimeMillis() - startMillis > 5 * 60 * 1000) { // 如果超过 5 分钟
-                        throw new RuntimeException("Agent response timeout"); // 抛出超时异常
+            while (true) {
+                OutboundMessage msg = bus.pollOutbound(1000);
+                if (msg == null) {
+                    if (System.currentTimeMillis() - startMillis > 5 * 60 * 1000) {
+                        throw new RuntimeException("Agent response timeout");
                     }
-                    continue; // 继续等待
+                    continue;
                 }
 
-                last = msg; // 更新最后一条消息
-                Map<String, Object> meta = msg.getMetadata() != null ? msg.getMetadata() : Collections.emptyMap(); // 获取元数据
+                last = msg;
+                Map<String, Object> meta = msg.getMetadata() != null ? msg.getMetadata() : Collections.emptyMap();
 
-                if (Boolean.TRUE.equals(meta.get("_stream_delta"))) { // 如果是流式增量
-                    renderer.onDelta(msg.getContent()); // 渲染增量
-                    continue; // 继续等待
+                if (Boolean.TRUE.equals(meta.get("_stream_delta"))) {
+                    renderer.onDelta(msg.getContent());
+                    continue;
                 }
 
-                if (Boolean.TRUE.equals(meta.get("_stream_end"))) { // 如果是流式结束
-                    renderer.onEnd(Boolean.TRUE.equals(meta.get("_resuming"))); // 处理流式结束
-                    continue; // 继续等待
+                if (Boolean.TRUE.equals(meta.get("_stream_end"))) {
+                    renderer.onEnd(Boolean.TRUE.equals(meta.get("_resuming")));
+                    continue;
                 }
 
-                if (Boolean.TRUE.equals(meta.get("_streamed"))) { // 如果标记为已流式传输完成
-                    break; // 跳出循环
+                if (Boolean.TRUE.equals(meta.get("_streamed"))) {
+                    break;
                 }
 
-                if (Boolean.TRUE.equals(meta.get("_progress"))) { // 如果是进度消息
-                    continue; // 忽略进度消息
+                if (Boolean.TRUE.equals(meta.get("_progress"))) {
+                    continue;
                 }
 
-                if (msg.getContent() != null && !msg.getContent().isBlank()) { // 如果有非空内容
-                    break; // 跳出循环
+                if (msg.getContent() != null && !msg.getContent().isBlank()) {
+                    break;
                 }
             }
 
-            return last; // 返回最后一条消息
+            return last;
         } finally {
-            agentLoop.stop(); // 停止 Agent 循环
+            agentLoop.stop();
         }
     }
 
-    /**
-     * 打印帮助信息。
-     */
     private static void printHelp() {
-        System.out.println("ricbot"); // 打印名称
-        System.out.println("命令："); // 打印命令标题
-        System.out.println("  onboard"); // 打印 onboard 命令
+        System.out.println("ricbot");
+        System.out.println("命令：");
+        System.out.println("  onboard");
         System.out.println("  agent      交互模式运行 Agent，或处理单条消息");
         System.out.println("  serve      启动多渠道服务（飞书、钉钉、企微等）");
         System.out.println("  status     显示 ricbot 状态");
-        System.out.println("  provider"); // 打印 provider 命令
+        System.out.println("  provider");
         System.out.println("  tools");
         System.out.println("  skills");
     }
 
-    /**
-     * 打印版本信息。
-     */
     private static void printVersion() {
-        System.out.println("ricbot v0.1.0"); // 打印版本号
+        System.out.println("ricbot v0.1.0");
     }
 
-    /**
-     * 判断输入是否为退出命令。
-     *
-     * @param command 用户输入的命令
-     * @return 如果是退出命令返回 true，否则 false
-     */
     private static boolean isExitCommand(String command) {
-        return Set.of("exit", "quit", "/exit", "/quit", ":q").contains(command.toLowerCase(Locale.ROOT)); // 检查命令是否在退出命令集合中
+        return Set.of("exit", "quit", "/exit", "/quit", ":q").contains(command.toLowerCase(Locale.ROOT));
     }
 
-    /**
-     * 打印 Agent 的响应内容。
-     *
-     * @param response      响应内容
-     * @param renderMarkdown 是否渲染 Markdown
-     * @param metadata      元数据
-     */
     private static void printAgentResponse(String response, boolean renderMarkdown, Map<String, Object> metadata) {
-        System.out.println(); // 打印空行
-        System.out.println("ricbot"); // 打印名称
-        System.out.println(response != null ? response : ""); // 打印响应内容
-        System.out.println(); // 打印空行
+        System.out.println();
+        System.out.println("ricbot");
+        System.out.println(response != null ? response : "");
+        System.out.println();
     }
 
-    /**
-     * 检查参数列表中是否包含指定的标志。
-     *
-     * @param args 参数列表
-     * @param flag 要检查的标志
-     * @return 如果包含返回 true，否则 false
-     */
     private static boolean hasFlag(List<String> args, String flag) {
-        return args.contains(flag); // 检查列表是否包含标志
+        return args.contains(flag);
     }
 
-    /**
-     * 从参数列表中获取指定选项的值。
-     *
-     * @param args    参数列表
-     * @param longOpt 长选项名 (e.g., --config)
-     * @param shortOpt 短选项名 (e.g., -c)
-     * @return 选项值，如果未找到则返回 null
-     */
     private static String optionValue(List<String> args, String longOpt, String shortOpt) {
-        for (int i = 0; i < args.size(); i++) { // 遍历参数列表
-            String cur = args.get(i); // 获取当前参数
-            if ((longOpt != null && longOpt.equals(cur)) || (shortOpt != null && shortOpt.equals(cur))) { // 如果匹配长选项或短选项
-                if (i + 1 < args.size()) { // 如果下一个参数存在
-                    return args.get(i + 1); // 返回下一个参数作为值
+        for (int i = 0; i < args.size(); i++) {
+            String cur = args.get(i);
+            if ((longOpt != null && longOpt.equals(cur)) || (shortOpt != null && shortOpt.equals(cur))) {
+                if (i + 1 < args.size()) {
+                    return args.get(i + 1);
                 }
             }
         }
-        return null; // 未找到则返回 null
+        return null;
     }
 
-    /**
-     * 从参数列表中获取指定选项的整数值。
-     *
-     * @param args    参数列表
-     * @param longOpt 长选项名
-     * @param shortOpt 短选项名
-     * @return 整数值，如果未找到或解析失败则返回 null
-     */
     private static Integer optionIntValue(List<String> args, String longOpt, String shortOpt) {
-        String v = optionValue(args, longOpt, shortOpt); // 获取选项字符串值
-        if (v == null) return null; // 如果值为 null，返回 null
+        String v = optionValue(args, longOpt, shortOpt);
+        if (v == null) return null;
         try {
-            return Integer.parseInt(v); // 尝试解析为整数
+            return Integer.parseInt(v);
         } catch (Exception e) {
-            return null; // 解析失败返回 null
+            return null;
         }
     }
 
-    /**
-     * 从参数列表中获取指定选项的双精度浮点数值。
-     *
-     * @param args    参数列表
-     * @param longOpt 长选项名
-     * @param shortOpt 短选项名
-     * @return 双精度浮点数值，如果未找到或解析失败则返回 null
-     */
     private static Double optionDoubleValue(List<String> args, String longOpt, String shortOpt) {
-        String v = optionValue(args, longOpt, shortOpt); // 获取选项字符串值
-        if (v == null) return null; // 如果值为 null，返回 null
+        String v = optionValue(args, longOpt, shortOpt);
+        if (v == null) return null;
         try {
-            return Double.parseDouble(v); // 尝试解析为双精度浮点数
+            return Double.parseDouble(v);
         } catch (Exception e) {
-            return null; // 解析失败返回 null
+            return null;
         }
     }
 
-    /**
-     * 安全地读取一行输入，避免异常中断。
-     *
-     * @param scanner Scanner 实例
-     * @return 读取的行内容，如果发生异常则返回 null
-     */
     private static String safeReadLine(Scanner scanner) {
         try {
-            return scanner.nextLine(); // 尝试读取下一行
+            return scanner.nextLine();
         } catch (Exception e) {
-            return null; // 发生异常返回 null
+            return null;
         }
     }
 }

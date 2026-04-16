@@ -17,66 +17,40 @@ import java.util.regex.Pattern;
 
 /**
  * 纯文件 I/O 记忆层。
- *
- * 对应 Python MemoryStore。:contentReference[oaicite:4]{index=4}
  */
 public class MemoryStore {
 
     private static final Logger log = LoggerFactory.getLogger(MemoryStore.class);
     private static final ObjectMapper MAPPER = new ObjectMapper().findAndRegisterModules();
 
-    // 默认最大历史记录条目数
     private static final int DEFAULT_MAX_HISTORY = 1000;
-    // 用于匹配旧版历史记录条目开头的正则表达式模式
     private static final Pattern LEGACY_ENTRY_START_RE =
             Pattern.compile("^\\[(\\d{4}-\\d{2}-\\d{2}[^\\]]*)\\]\\s*");
 
-    // 工作空间根路径
     private final Path workspace;
-    // 最大历史记录条目数限制
     private final int maxHistoryEntries;
 
-    // 记忆目录路径 (memory/)
     private final Path memoryDir;
-    // 主记忆文件路径 (memory/MEMORY.md)
     private final Path memoryFile;
-    // 历史记录文件路径 (memory/history.jsonl)
     private final Path historyFile;
-    // 旧版历史记录文件路径 (memory/HISTORY.md)
     private final Path legacyHistoryFile;
-    // Soul 文件路径 (SOUL.md)
     private final Path soulFile;
-    // 用户文件路径 (USER.md)
     private final Path userFile;
-    // 当前游标文件路径 (memory/.cursor)
     private final Path cursorFile;
-    // Dream 处理游标文件路径 (memory/.dream_cursor)
     private final Path dreamCursorFile;
 
-    // Git 存储管理对象
     private final GitStore git;
 
     private final Object cursorLock = new Object();
 
-    /**
-     * 构造函数，使用默认最大历史记录数
-     * @param workspace 工作空间路径
-     */
     public MemoryStore(Path workspace) {
         this(workspace, DEFAULT_MAX_HISTORY);
     }
 
-    /**
-     * 构造函数，指定最大历史记录数
-     * @param workspace 工作空间路径
-     * @param maxHistoryEntries 最大历史记录条目数
-     */
     public MemoryStore(Path workspace, int maxHistoryEntries) {
         this.workspace = workspace;
         this.maxHistoryEntries = maxHistoryEntries;
-        // 初始化记忆目录并确保其存在
         this.memoryDir = HelperUtils.ensureDir(workspace.resolve("memory"));
-        // 初始化各文件路径
         this.memoryFile = memoryDir.resolve("MEMORY.md");
         this.historyFile = memoryDir.resolve("history.jsonl");
         this.legacyHistoryFile = memoryDir.resolve("HISTORY.md");
@@ -84,32 +58,17 @@ public class MemoryStore {
         this.userFile = workspace.resolve("USER.md");
         this.cursorFile = memoryDir.resolve(".cursor");
         this.dreamCursorFile = memoryDir.resolve(".dream_cursor");
-        // 初始化 Git 存储，跟踪特定文件
         this.git = new GitStore(workspace, List.of("SOUL.md", "USER.md", "memory/MEMORY.md"));
         ensureSeedFile(memoryFile, "templates/memory/MEMORY.md");
         ensureSeedFile(userFile, "templates/USER.md");
         ensureSeedFile(soulFile, "templates/SOUL.md");
-        // 尝试迁移旧版历史记录
         maybeMigrateLegacyHistory();
     }
 
-    /**
-     * 获取工作空间路径
-     * @return 工作空间 Path
-     */
     public Path getWorkspace() { return workspace; }
 
-    /**
-     * 获取 Git 存储对象
-     * @return GitStore 实例
-     */
     public GitStore getGit() { return git; }
 
-    /**
-     * 读取文件内容为字符串
-     * @param path 文件路径
-     * @return 文件内容，如果出错返回空字符串
-     */
     public static String readFile(Path path) {
         try {
             return Files.readString(path);
@@ -140,78 +99,29 @@ public class MemoryStore {
         }
     }
 
-    /**
-     * 读取记忆文件内容
-     * @return 记忆内容
-     */
     public String readMemory() { return readFile(memoryFile); }
 
-    /**
-     * 读取 Soul 文件内容
-     * @return Soul 内容
-     */
     public String readSoul() { return readFile(soulFile); }
 
-    /**
-     * 读取用户文件内容
-     * @return 用户内容
-     */
     public String readUser() { return readFile(userFile); }
 
-    /**
-     * 获取 MEMORY.md 内容别名
-     * @return 记忆内容
-     */
     public String getMemoryMd() { return readMemory(); }
 
-    /**
-     * 获取 USER.md 内容别名
-     * @return 用户内容
-     */
     public String getUserMd() { return readUser(); }
 
-    /**
-     * 获取 SOUL.md 内容别名
-     * @return Soul 内容
-     */
     public String getSoulMd() { return readSoul(); }
 
-    /**
-     * 更新记忆文件内容
-     * @param content 新内容
-     * @throws IOException IO 异常
-     */
     public void updateMemoryMd(String content) throws IOException { Files.writeString(memoryFile, content); }
 
-    /**
-     * 更新用户文件内容
-     * @param content 新内容
-     * @throws IOException IO 异常
-     */
     public void updateUserMd(String content) throws IOException { Files.writeString(userFile, content); }
 
-    /**
-     * 更新 Soul 文件内容
-     * @param content 新内容
-     * @throws IOException IO 异常
-     */
     public void updateSoulMd(String content) throws IOException { Files.writeString(soulFile, content); }
 
-    /**
-     * 获取未处理的历史记录
-     * @return 未处理的历史记录列表
-     */
     public List<Map<String, Object>> getUnprocessedHistory() {
-        // 获取上次 Dream 处理的游标位置
         int since = getLastDreamCursor();
-        // 读取该游标之后的历史记录
         return readUnprocessedHistory(since);
     }
 
-    /**
-     * 标记指定数量的历史记录为已处理
-     * @param count 已处理的数量
-     */
     public void markHistoryAsProcessed(int count) {
         if (count <= 0) {
             return;
@@ -224,10 +134,6 @@ public class MemoryStore {
         }
     }
 
-    /**
-     * 获取记忆上下文
-     * @return 记忆内容，如果为空则返回空字符串
-     */
     public String getMemoryContext() {
         String memory = readMemory();
         String user = readUser();
@@ -247,10 +153,6 @@ public class MemoryStore {
         return HelperUtils.truncateText(out, 12_000);
     }
 
-    /**
-     * 追加一条历史记录到 history.jsonl
-     * @param content 历史内容
-     */
     public void appendHistory(String content) {
         Map<String, Object> entry = new LinkedHashMap<>();
         entry.put("type", "text");
@@ -258,10 +160,6 @@ public class MemoryStore {
         appendHistoryEntry(entry);
     }
 
-    /**
-     * 原始归档消息列表（仅记录数量）
-     * @param messages 消息列表
-     */
     public void rawArchive(List<Map<String, Object>> messages) {
         Map<String, Object> entry = new LinkedHashMap<>();
         entry.put("type", "raw_archive");
@@ -272,10 +170,6 @@ public class MemoryStore {
         appendHistoryEntry(entry);
     }
 
-    /**
-     * 获取最后处理的游标值
-     * @return 游标整数值，默认 0
-     */
     public int getLastCursor() {
         synchronized (cursorLock) {
             try {
@@ -287,10 +181,6 @@ public class MemoryStore {
         }
     }
 
-    /**
-     * 获取最后 Dream 处理的游标值
-     * @return Dream 游标整数值，默认 0
-     */
     public int getLastDreamCursor() {
         synchronized (cursorLock) {
             try {
@@ -302,10 +192,6 @@ public class MemoryStore {
         }
     }
 
-    /**
-     * 设置最后 Dream 处理的游标值
-     * @param cursor 新的游标值
-     */
     public void setLastDreamCursor(int cursor) {
         synchronized (cursorLock) {
             try {
@@ -317,13 +203,7 @@ public class MemoryStore {
         }
     }
 
-    /**
-     * 读取未处理的历史记录（游标大于 sinceCursor 的记录）
-     * @param sinceCursor 起始游标
-     * @return 未处理的历史记录列表
-     */
     public List<Map<String, Object>> readUnprocessedHistory(int sinceCursor) {
-        // 如果历史记录文件不存在，返回空列表
         if (!Files.exists(historyFile)) return List.of();
 
         List<Map<String, Object>> entries = new ArrayList<>();
@@ -359,13 +239,8 @@ public class MemoryStore {
         return entries;
     }
 
-    /**
-     * 尝试迁移旧版历史记录文件到新版 JSONL 格式
-     */
     private void maybeMigrateLegacyHistory() {
-        // 如果旧版历史文件不存在，直接返回
         if (!Files.exists(legacyHistoryFile)) return;
-        // 如果新版历史文件已存在，说明可能已经迁移过，直接返回
         if (Files.exists(historyFile)) return;
         try {
             List<String> lines = Files.readAllLines(legacyHistoryFile);

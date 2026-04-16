@@ -45,12 +45,6 @@ public class RicbotApplication {
         System.setProperty("ricbot.log.file", logFile.toString());
     }
 
-    /**
-     * 主方法，启动 Ricbot 应用
-     *
-     * @param args 命令行参数
-     * @throws Exception 异常
-     */
     public static void main(String[] args) {
         bootstrapLogging(args);
         try {

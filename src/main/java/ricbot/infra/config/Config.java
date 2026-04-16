@@ -15,35 +15,15 @@ import java.nio.file.Path;
 import java.util.*;
 
 /**
- * 统一承载 ricbot 的运行配置。
- *
- * 主要目标：
- * 1. 统一承载全部运行配置
- * 2. 提供按 model 推导 provider 的能力
- * 3. 提供 workspace / api_base / provider config 访问方法
- *
- * 设计说明（重要）：
- * - 这是一个“巨型配置类”：agent/provider/tool/mcp/channel/gateway/api/heartbeat/dream 等都在此文件中。
- *   这种写法对“快速跑起来/单文件查配置”很友好，但长期维护会面临可读性差、模块边界模糊、修改冲击面大等问题。
- * - 部分字段属于“接口先长出来，主链实现未完全接入”的状态：调用方不要默认认为所有配置都已生效。
- *   例如 DreamConfig.buildSchedule(timezone) 当前不使用 timezone；ToolsConfig.mcpServers 仍是弱类型 Map；
- *   ExecToolConfig 的 sandbox 暴露为 String 属于兼容历史接口的折中。
- * - ProvidersConfig/ChannelsConfig 采用“静态枚举式字段”，扩展新 provider/channel 往往需要改这个类与相关 switch/asMap。
- *   这比动态注册式配置更直观，但扩展性较弱。
+ * Ricbot 运行配置类
  */
 public class Config {
 
-    /** 代理配置 */
     private AgentsConfig agents = new AgentsConfig();
-    /** 提供商配置 */
     private ProvidersConfig providers = new ProvidersConfig();
-    /** 工具配置 */
     private ToolsConfig tools = new ToolsConfig();
-    /** 渠道配置 */
     private ChannelsConfig channels = new ChannelsConfig();
-    /** 网关配置 */
     private GatewayConfig gateway = new GatewayConfig();
-    /** API 配置 */
     private ApiConfig api = new ApiConfig();
 
     public Config() {
@@ -97,10 +77,6 @@ public class Config {
         this.api = api != null ? api : new ApiConfig();
     }
 
-    /**
-     * 对应 Python: config.workspace_path
-     * 获取工作空间路径，如果未配置则返回默认路径 ~/.ricbot/workspace
-     */
     public Path getWorkspacePath() {
         String raw = agents != null && agents.getDefaults() != null
                 ? agents.getDefaults().getWorkspace()
@@ -115,83 +91,49 @@ public class Config {
         return Path.of(raw).toAbsolutePath().normalize();
     }
 
-    /**
-     * 对应 Python: config.get_provider_name(model)
-     *
-     * 规则：
-     * 1. 模型名前缀如果显式包含 provider，例如 anthropic/claude...
-     * 2. 否则按 registry 的 keyword 匹配
-     * 3. 再按 provider 是否已配置 apiBase / apiKey 做弱判断
-     * 4. 最后 fallback openai
-     *
-     * 注意：
-     * - 这是启发式推断而非严格协议，存在误判可能；尤其是模型名不规范、或 apiBase 指向代理/聚合网关时。
-     * - 推荐在配置层显式指定 provider/model（例如 openai/gpt-4o）来避免歧义。
-     */
     public String getProviderName(String model) {
-        // 检查模型名称是否为空或空白，如果是则返回默认提供商 "openai"
         if (model == null || model.isBlank()) {
             return "openai";
         }
 
-        // 去除模型名称前后的空白字符
         String normalized = model.trim();
 
-        // 1) 检查是否有显式的 provider 前缀，例如 anthropic/xxx、openai/xxx
         int idx = normalized.indexOf('/');
         if (idx > 0) {
-            // 提取前缀部分
             String prefix = normalized.substring(0, idx).trim();
-            // 尝试直接通过前缀查找 ProviderSpec
             ProviderSpec direct = ProviderRegistry.findByName(prefix);
             if (direct != null) {
-                // 如果找到匹配的 ProviderSpec，返回其名称
                 return direct.getName();
             }
 
-            // 处理某些别名情况
             String alias = normalizeProviderAlias(prefix);
             ProviderSpec aliasSpec = ProviderRegistry.findByName(alias);
             if (aliasSpec != null) {
-                // 如果通过别名找到匹配的 ProviderSpec，返回其名称
                 return aliasSpec.getName();
             }
         }
 
-        // 2) 尝试按模型关键字匹配 ProviderSpec
         ProviderSpec byKeyword = ProviderRegistry.findByModelKeyword(normalized);
         if (byKeyword != null) {
-            // 如果找到匹配的关键字，返回对应的 ProviderSpec 名称
             return byKeyword.getName();
         }
 
-        // 3) 如果某些 provider 配置了 apiBase，尝试按 apiBase 识别
         for (Map.Entry<String, ProviderConfig> entry : providers.asMap().entrySet()) {
             ProviderConfig cfg = entry.getValue();
-            // 跳过空的配置项
             if (cfg == null) {
                 continue;
             }
-            // 检查 apiBase 是否非空
             if (cfg.getApiBase() != null && !cfg.getApiBase().isBlank()) {
-                // 尝试通过 apiBase 关键字查找 ProviderSpec
                 ProviderSpec byBase = ProviderRegistry.findByBaseKeyword(cfg.getApiBase());
                 if (byBase != null) {
-                    // 如果找到匹配的 ProviderSpec，返回其名称
                     return byBase.getName();
                 }
             }
         }
 
-        // 4) 如果以上步骤都未找到匹配的 provider，则返回默认的 "openai"
         return "openai";
     }
 
-    /**
-     * 对应 Python: config.get_provider(model)
-     *
-     * 根据 model 找到对应 provider 的配置段。
-     */
     public ProviderConfig getProvider(String model) {
         String providerName = getProviderName(model);
         ProviderConfig cfg = providers.get(providerName);
@@ -209,10 +151,6 @@ public class Config {
         return cfg != null ? cfg : new ProviderConfig();
     }
 
-    /**
-     * 对应 Python: config.get_api_base(model)
-     * 获取指定模型的 API 基础地址
-     */
     public String getApiBase(String model) {
         String providerName = getProviderName(model);
         ProviderSpec spec = ProviderRegistry.findByName(providerName);
@@ -224,10 +162,6 @@ public class Config {
         return spec != null ? spec.getDefaultApiBase() : null;
     }
 
-    /**
-     * 标准化提供商别名
-     * 将常见的别名映射到标准的提供商名称
-     */
     private String normalizeProviderAlias(String prefix) {
         String p = prefix.toLowerCase(Locale.ROOT);
         return switch (p) {
@@ -238,10 +172,6 @@ public class Config {
         };
     }
 
-    /**
-     * 检查提供商配置是否为空
-     * 如果 apiKey, apiBase 和 extraHeaders 都为空，则认为配置为空
-     */
     private static boolean isBlankProviderConfig(ProviderConfig cfg) {
         if (cfg == null) {
             return true;
@@ -252,14 +182,6 @@ public class Config {
         return noKey && noBase && noHeaders;
     }
 
-    // =========================================================
-    // Nested configs
-    // =========================================================
-
-    /**
-     * 代理配置类
-     * 包含代理的默认设置
-     */
     public static class AgentsConfig {
         private AgentDefaults defaults = new AgentDefaults();
 
@@ -276,10 +198,6 @@ public class Config {
     }
 
     public static class AgentDefaults {
-        /**
-         * 默认值偏“开发环境方便启动”取向，不保证对生产环境都是最稳妥的选择。
-         * 例如默认 model、contextWindowTokens、maxToolResultChars、dream/heartbeat 是否默认开启等，需要结合部署环境调整。
-         */
         private String model = "gpt-4o";
         private String workspace = Path.of(System.getProperty("user.home"), ".ricbot", "workspace").toString();
         private double temperature = 0.1;
@@ -421,11 +339,6 @@ public class Config {
     }
 
     public static class DreamConfig {
-        /**
-         * Dream 属于长期记忆整合流程，是否开启与调度策略取决于场景：
-         * - 开发环境开启便于体验；
-         * - 生产环境建议结合成本、隐私与任务类型谨慎配置。
-         */
         private boolean enabled = true;
         private String modelOverride;
         private int maxBatchSize = 20;
@@ -473,11 +386,6 @@ public class Config {
         }
 
         public String buildSchedule(String timezone) {
-            /**
-             * 预留接口：用于根据 timezone 生成具体调度表达式。
-             * 当前实现返回 cron 表达式本身；如果传入 timezone，会以文本形式附带 timezone，
-             * 便于日志/展示层区分调度语义（真正的 tz 调度需要 CronSchedule.tz 支持）。
-             */
             if (cron == null) {
                 return null;
             }
@@ -492,16 +400,7 @@ public class Config {
         }
     }
 
-    // =========================================================
-    // Providers
-    // =========================================================
-
     public static class ProvidersConfig {
-        /**
-         * ProvidersConfig 采用“静态字段枚举”的配置形态：
-         * - 优点：结构直观、序列化简单；
-         * - 缺点：扩展新 provider 需要改类字段、get(name) 与 asMap() 的 switch/映射，扩展性一般。
-         */
         private ProviderConfig openai = new ProviderConfig();
         private ProviderConfig anthropic = new ProviderConfig();
         private ProviderConfig azure_openai = new ProviderConfig();
@@ -799,15 +698,7 @@ public class Config {
         }
     }
 
-    // =========================================================
-    // Tools
-    // =========================================================
-
     public static class ToolsConfig {
-        /**
-         * 注意：mcpServers 仍是弱类型 Map<String, Object>，解析由 MCPAdapters 承担。
-         * 这意味着配置表达能力更灵活，但编译期约束弱、易传错结构、错误更晚暴露。
-         */
         private WebToolsConfig web = new WebToolsConfig();
         private ExecToolConfig exec = new ExecToolConfig();
         private boolean restrictToWorkspace = false;
@@ -956,8 +847,8 @@ public class Config {
     }
 
     public static class MCPServerConfig {
-        private String type = "stdio"; // stdio or sse
-        private String url; // for sse
+        private String type = "stdio";
+        private String url;
         private String command;
         private List<String> args = new ArrayList<>();
         private Map<String, String> env = new HashMap<>();
@@ -1109,11 +1000,6 @@ public class Config {
     }
 
     public static class ExecToolConfig {
-        /**
-         * 兼容说明：
-         * - 字段 sandbox 是 boolean，但 getSandbox() 返回 String，是为了兼容历史上 “sandbox 以字符串表示模式” 的使用方式。
-         * - 建议新代码优先使用 isSandbox()/setSandbox(boolean)。
-         */
         private boolean enable = true;
         private int timeout = 60;
         private boolean sandbox = false;
@@ -1165,17 +1051,7 @@ public class Config {
         }
     }
 
-    // =========================================================
-    // Channels
-    // =========================================================
-
     public static class ChannelsConfig {
-        /**
-         * 设计取舍：
-         * - 这里直接引用各 Channel 的内部 Config 类型，导致 Config 层反向依赖 transport/channel 实现层。
-         * - 优点：配置结构直观、无需额外 DTO；
-         * - 缺点：模块耦合偏紧，渠道实现变化会影响配置模型，长期边界不够清晰。
-         */
         private boolean sendProgress = true;
         private boolean sendToolHints = true;
         private String transcriptionProvider = "groq";
@@ -1268,10 +1144,6 @@ public class Config {
         }
     }
 
-    // =========================================================
-    // Gateway / API
-    // =========================================================
-
     public static class GatewayConfig {
         private int port = 8000;
         private HeartbeatConfig heartbeat = new HeartbeatConfig();
@@ -1294,10 +1166,6 @@ public class Config {
     }
 
     public static class HeartbeatConfig {
-        /**
-         * Heartbeat 属于“后台定时任务 + 会话压缩/通知”场景配置。
-         * 目前主要是字段承载（薄壳），更多策略逻辑在 HeartbeatService 内。
-         */
         private boolean enabled = true;
         private int intervalS = 60;
         private int keepRecentMessages = 20;
@@ -1328,9 +1196,6 @@ public class Config {
     }
 
     public static class ApiConfig {
-        /**
-         * API 配置当前为薄壳字段集合。host/port/timeout 的默认值更偏开发环境本地部署。
-         */
         private String host = "127.0.0.1";
         private int port = 8080;
         private double timeout = 120.0;

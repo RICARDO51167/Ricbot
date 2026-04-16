@@ -16,64 +16,38 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * 技能路由器，负责根据上下文选择并渲染相关的技能文档。
+ * 技能路由器
  */
 public class SkillRouter {
 
-    // 匹配模板变量的正则表达式，格式为 {{ variable_name }}
     private static final Pattern TEMPLATE_VAR = Pattern.compile("\\{\\{\\s*([a-zA-Z0-9_\\-\\.]+)\\s*\\}\\}");
     private static final Pattern YAML_LIST_ITEM = Pattern.compile("^\\s*-\\s*(.+?)\\s*$");
     private static final ObjectMapper MAPPER = new ObjectMapper().findAndRegisterModules();
 
-    // 技能加载器，用于获取技能条目和文档
     private final SkillsLoader skillsLoader;
-    // 最大选择的技能数量
     private final int maxSelected;
-    // 渲染结果的最大字符数
     private final int maxChars;
 
-    /**
-     * 构造函数
-     *
-     * @param skillsLoader 技能加载器
-     * @param maxSelected  最大选择技能数，如果为null则默认为3
-     * @param maxChars     最大渲染字符数，如果为null则默认为12000
-     */
     public SkillRouter(SkillsLoader skillsLoader, Integer maxSelected, Integer maxChars) {
         this.skillsLoader = skillsLoader;
-        // 确保 maxSelected 非负，默认值为 3
         this.maxSelected = maxSelected != null ? Math.max(0, maxSelected) : 3;
-        // 确保 maxChars 非负，默认值为 12000
         this.maxChars = maxChars != null ? Math.max(0, maxChars) : 12000;
     }
 
-    /**
-     * 根据上下文选择并渲染技能
-     *
-     * @param ctx 技能路由上下文
-     * @return 选择结果，包含始终加载的技能名、选中的技能名以及渲染后的文本
-     */
     public SelectionResult selectAndRender(SkillRoutingContext ctx) {
-        // 获取所有技能条目
         List<SkillsLoader.SkillEntry> entries = skillsLoader.listSkillEntries();
 
-        // 存储始终需要加载的技能文档
         List<SkillsLoader.SkillDocument> always = new ArrayList<>();
-        // 存储候选技能及其评分
         List<ScoredSkill> candidates = new ArrayList<>();
         List<SkillDecision> decisions = new ArrayList<>();
 
-        // 遍历所有技能条目
         for (SkillsLoader.SkillEntry entry : entries) {
-            // 加载技能文档
             SkillsLoader.SkillDocument doc = skillsLoader.loadSkillDocument(entry);
             if (doc == null) {
-                continue; // 如果文档为空，跳过
+                continue;
             }
 
-            // 解析技能元数据
             SkillMeta meta = SkillMeta.from(doc);
-            // 如果标记为 always，直接加入 always 列表
             if (meta.always) {
                 always.add(doc);
                 continue;
@@ -81,34 +55,26 @@ public class SkillRouter {
 
             ScoreResult scored = score(meta, ctx);
             int score = scored.score();
-            // 只有评分大于0的技能才作为候选
             if (score > 0) {
                 candidates.add(new ScoredSkill(doc, meta, score, scored.reasons()));
             }
         }
 
-        // 对候选技能进行排序：
-        // 1. 按评分降序
-        // 2. 按优先级降序
-        // 3. 按技能名称升序
         candidates.sort(
                 Comparator.<ScoredSkill>comparingInt(ScoredSkill::score).reversed()
                         .thenComparing(Comparator.comparingInt((ScoredSkill s) -> s.meta().priority).reversed())
                         .thenComparing(s -> s.doc().entry().name())
         );
 
-        // 选择前 maxSelected 个技能
         List<SkillsLoader.SkillDocument> selected = new ArrayList<>();
         for (ScoredSkill s : candidates) {
             if (selected.size() >= maxSelected) {
-                break; // 达到最大选择数量，停止
+                break;
             }
             selected.add(s.doc());
         }
 
-        // 构建模板变量映射
         Map<String, String> vars = buildVariables(ctx);
-        // 渲染所有选中的技能文档
         RenderAllResult rendered = renderAll(always, selected, vars);
 
         Set<String> includedAlways = new HashSet<>(rendered.includedAlways());
@@ -131,13 +97,6 @@ public class SkillRouter {
         );
     }
 
-    /**
-     * 计算技能的评分
-     *
-     * @param meta 技能元数据
-     * @param ctx  路由上下文
-     * @return 评分值
-     */
     private ScoreResult score(SkillMeta meta, SkillRoutingContext ctx) {
         int s = meta.priority;
         List<String> reasons = new ArrayList<>();
@@ -145,7 +104,6 @@ public class SkillRouter {
             reasons.add("priority=" + meta.priority);
         }
 
-        // 检查渠道匹配
         String channel = safeLower(ctx.channel());
         if (!meta.channels.isEmpty() && meta.channels.contains(channel)) {
             s += meta.weights.channelWeight();
@@ -167,7 +125,6 @@ public class SkillRouter {
             }
         }
 
-        // 检查技能名称是否在消息中出现
         if (meta.name != null && !meta.name.isBlank() && msgLower.contains(meta.name.toLowerCase(Locale.ROOT))) {
             s += meta.weights.nameWeight();
             reasons.add("name match +" + meta.weights.nameWeight());
@@ -196,14 +153,6 @@ public class SkillRouter {
         return new ScoreResult(s, reasons);
     }
 
-    /**
-     * 渲染所有技能文档
-     *
-     * @param always   始终加载的技能文档列表
-     * @param selected 选中的技能文档列表
-     * @param vars     模板变量映射
-     * @return 渲染后的字符串
-     */
     private RenderAllResult renderAll(
             List<SkillsLoader.SkillDocument> always,
             List<SkillsLoader.SkillDocument> selected,
@@ -225,14 +174,6 @@ public class SkillRouter {
         return new RenderAllResult(includedAlways, includedSelected, sb.toString().trim(), missing);
     }
 
-    /**
-     * 将单个技能文档追加到 StringBuilder 中
-     *
-     * @param sb   目标 StringBuilder
-     * @param doc  技能文档
-     * @param vars 模板变量
-     * @param seen 已处理技能名称集合
-     */
     private void appendSkillsWithBudget(
             StringBuilder sb,
             List<SkillsLoader.SkillDocument> docs,
@@ -276,29 +217,20 @@ public class SkillRouter {
         }
     }
 
-    /**
-     * 构建模板变量映射
-     *
-     * @param ctx 路由上下文
-     * @return 变量映射
-     */
     private Map<String, String> buildVariables(SkillRoutingContext ctx) {
         Map<String, String> out = new LinkedHashMap<>();
-        // 添加基本上下文变量
         out.put("workspace", ctx.workspace() != null ? ctx.workspace().toString() : "");
         out.put("channel", ctx.channel() != null ? ctx.channel() : "");
         out.put("chat_id", ctx.chatId() != null ? ctx.chatId() : "");
         out.put("message", ctx.message() != null ? ctx.message() : "");
         out.put("now", Instant.now().toString());
 
-        // 添加工具名称变量
         if (ctx.toolNames() != null && !ctx.toolNames().isEmpty()) {
             out.put("tool_names", String.join(", ", ctx.toolNames()));
         } else {
             out.put("tool_names", "");
         }
 
-        // 添加元数据变量，前缀为 meta.
         if (ctx.metadata() != null) {
             for (Map.Entry<String, Object> e : ctx.metadata().entrySet()) {
                 if (e.getKey() == null) {
@@ -310,7 +242,6 @@ public class SkillRouter {
             }
         }
 
-        // 添加自定义变量
         if (ctx.variables() != null) {
             out.putAll(ctx.variables());
         }
@@ -318,13 +249,6 @@ public class SkillRouter {
         return out;
     }
 
-    /**
-     * 渲染模板字符串，替换 {{ key }} 格式的变量
-     *
-     * @param template 模板字符串
-     * @param vars     变量映射
-     * @return 渲染后的字符串
-     */
     private static RenderedTemplate renderTemplate(String template, Map<String, String> vars) {
         if (template == null || template.isEmpty()) {
             return new RenderedTemplate("", Set.of());
@@ -337,35 +261,22 @@ public class SkillRouter {
         StringBuffer sb = new StringBuffer();
         Set<String> missing = new HashSet<>();
         while (m.find()) {
-            String key = m.group(1); // 获取变量名
-            String replacement = vars.get(key); // 查找变量值
+            String key = m.group(1);
+            String replacement = vars.get(key);
             if (replacement == null) {
                 missing.add(key);
                 replacement = "";
             }
-            // 安全地替换，防止特殊字符干扰
             m.appendReplacement(sb, Matcher.quoteReplacement(replacement));
         }
-        m.appendTail(sb); // 添加尾部剩余部分
+        m.appendTail(sb);
         return new RenderedTemplate(sb.toString(), missing);
     }
 
-    /**
-     * 安全地将字符串转换为小写
-     *
-     * @param s 输入字符串
-     * @return 小写字符串，如果输入为null则返回空字符串
-     */
     private static String safeLower(String s) {
         return s != null ? s.trim().toLowerCase(Locale.ROOT) : "";
     }
 
-    /**
-     * 解析列表字符串，支持逗号或空格分隔，可选的方括号包裹
-     *
-     * @param raw 原始字符串
-     * @return 解析后的字符串列表
-     */
     private static List<String> parseList(String raw) {
         if (raw == null) {
             return List.of();
@@ -457,16 +368,6 @@ public class SkillRouter {
         return t;
     }
 
-    /**
-     * 技能元数据记录
-     *
-     * @param name     技能名称
-     * @param always   是否始终加载
-     * @param priority 优先级
-     * @param channels 适用渠道集合
-     * @param tools    相关工具集合
-     * @param keywords 关键词集合
-     */
     private record SkillMeta(
             String name,
             boolean always,
@@ -476,33 +377,22 @@ public class SkillRouter {
             Set<String> keywords,
             Weights weights
     ) {
-        /**
-         * 从技能文档解析元数据
-         *
-         * @param doc 技能文档
-         * @return 技能元数据对象
-         */
         static SkillMeta from(SkillsLoader.SkillDocument doc) {
             Map<String, String> fm = doc.frontmatter() != null ? doc.frontmatter() : Map.of();
 
-            // 解析 always 字段
             boolean always = "true".equalsIgnoreCase(fm.getOrDefault("always", "false"));
-            // 解析 priority 字段
             int priority = parseInt(fm.get("priority"), 0);
 
-            // 解析 channels 字段
             Set<String> channels = new HashSet<>();
             for (String c : parseList(fm.getOrDefault("channels", fm.getOrDefault("channel", "")))) {
                 channels.add(c.toLowerCase(Locale.ROOT));
             }
 
-            // 解析 tools 字段
             Set<String> tools = new HashSet<>();
             for (String t : parseList(fm.getOrDefault("tools", fm.getOrDefault("tool", "")))) {
                 tools.add(t);
             }
 
-            // 解析 keywords 字段
             Set<String> keywords = new HashSet<>();
             for (String k : parseList(fm.getOrDefault("keywords", fm.getOrDefault("keyword", "")))) {
                 keywords.add(k.toLowerCase(Locale.ROOT));
@@ -513,23 +403,9 @@ public class SkillRouter {
         }
     }
 
-    /**
-     * 带评分的技能记录
-     *
-     * @param doc   技能文档
-     * @param meta  技能元数据
-     * @param score 评分
-     */
     private record ScoredSkill(SkillsLoader.SkillDocument doc, SkillMeta meta, int score, List<String> reasons) {
     }
 
-    /**
-     * 安全地将字符串解析为整数
-     *
-     * @param raw 原始字符串
-     * @param def 默认值
-     * @return 解析后的整数，如果失败则返回默认值
-     */
     private static int parseInt(String raw, int def) {
         if (raw == null) {
             return def;
@@ -541,13 +417,6 @@ public class SkillRouter {
         }
     }
 
-    /**
-     * 选择结果记录
-     *
-     * @param alwaysSkills   始终加载的技能名称列表
-     * @param selectedSkills 选中的技能名称列表
-     * @param renderedContext 渲染后的上下文文本
-     */
     public record SelectionResult(
             List<String> alwaysSkills,
             List<String> selectedSkills,

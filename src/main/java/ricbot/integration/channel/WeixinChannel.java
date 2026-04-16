@@ -17,22 +17,8 @@ import java.util.concurrent.*;
 
 /**
  * 个人微信渠道实现。
- *
- * 对应 Python: weixin.py
- *
- * 主要职责：
- * 1. 通过 ilinkai.weixin.qq.com 的 HTTP long-poll 接口收发消息
- * 2. token / account 状态持久化
- * 3. QR 登录后持久化 token
- * 4. context_token / typing_ticket 缓存
- * 5. 支持文本、图片、语音、文件、视频
- * 6. 支持 typing keepalive
  */
 public class WeixinChannel extends BaseChannel {
-
-    // ------------------------------------------------------------------
-    // Protocol constants
-    // ------------------------------------------------------------------
 
     private static final int ITEM_TEXT = 1;
     private static final int ITEM_IMAGE = 2;
@@ -155,10 +141,6 @@ public class WeixinChannel extends BaseChannel {
         }
     }
 
-    // ------------------------------------------------------------------
-    // State persistence
-    // ------------------------------------------------------------------
-
     private Path getStateDir() throws IOException {
         if (stateDir != null) return stateDir;
 
@@ -220,10 +202,6 @@ public class WeixinChannel extends BaseChannel {
         } catch (Exception ignored) {
         }
     }
-
-    // ------------------------------------------------------------------
-    // Polling
-    // ------------------------------------------------------------------
 
     @SuppressWarnings("unchecked")
     private void pollOnce() {
@@ -334,10 +312,6 @@ public class WeixinChannel extends BaseChannel {
         }
     }
 
-    // ------------------------------------------------------------------
-    // Send
-    // ------------------------------------------------------------------
-
     private void sendTextMessage(String toUserId, String content) throws Exception {
         Map<String, Object> item = new LinkedHashMap<>();
         item.put("item_type", ITEM_TEXT);
@@ -359,7 +333,6 @@ public class WeixinChannel extends BaseChannel {
         int uploadType = guessUploadMediaType(path.getFileName().toString());
         String uploadUrl = getUploadUrl(uploadType);
 
-        // 这里简化成直接把文件作为 bytes 发到 upload_url
         byte[] data = Files.readAllBytes(path);
         String mediaKey = uploadMedia(uploadUrl, data);
 
@@ -381,10 +354,6 @@ public class WeixinChannel extends BaseChannel {
 
         apiPost("sendmessage", body, true);
     }
-
-    // ------------------------------------------------------------------
-    // Typing
-    // ------------------------------------------------------------------
 
     public void startTyping(String toUserId) {
         stopTyping(toUserId);
@@ -416,10 +385,6 @@ public class WeixinChannel extends BaseChannel {
         body.put("typing_status", status);
         apiPost("typing", body, true);
     }
-
-    // ------------------------------------------------------------------
-    // Media download/upload
-    // ------------------------------------------------------------------
 
     private String downloadMediaItem(Map<String, Object> item, int itemType) {
         try {
@@ -496,10 +461,6 @@ public class WeixinChannel extends BaseChannel {
         }
         return UPLOAD_MEDIA_FILE;
     }
-
-    // ------------------------------------------------------------------
-    // HTTP helpers
-    // ------------------------------------------------------------------
 
     private Map<String, Object> apiGet(String endpoint, Map<String, Object> params, boolean auth) throws Exception {
         StringBuilder url = new StringBuilder(config.getBaseUrl()).append("/").append(endpoint);

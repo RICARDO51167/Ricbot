@@ -15,55 +15,25 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * 对应 Python: ExecTool
- *
- * 主要目标：
- * 1. 安全执行 shell 命令
- * 2. 阻止危险命令
- * 3. 阻止内部 URL SSRF
- * 4. 限制 working_dir 越界
- * 5. 控制 timeout / output 长度
+ * 安全执行 Shell 命令的工具类。
  */
 public class ExecTool extends Tool {
 
-    // 判断当前操作系统是否为 Windows
     private static final boolean IS_WINDOWS =
             System.getProperty("os.name").toLowerCase(Locale.ROOT).contains("win");
 
-    // 最大超时时间（秒）
     private static final int MAX_TIMEOUT = 600;
-    // 最大输出字符数
     private static final int MAX_OUTPUT = 10_000;
 
-    // 默认超时时间
     private final int timeout;
-    // 默认工作目录
     private final String workingDir;
-    // 禁止的命令正则模式列表
     private final List<String> denyPatterns;
-    // 允许的命令正则模式列表
     private final List<String> allowPatterns;
-    // 是否限制在工作区范围内
     private final boolean restrictToWorkspace;
-    // 沙箱配置（当前未完全实现）
     private final String sandbox;
-    // PATH 环境变量追加内容
     private final String pathAppend;
-    // 允许传递的环境变量键名列表
     private final List<String> allowedEnvKeys;
 
-    /**
-     * 构造函数
-     *
-     * @param timeout           超时时间（秒），如果小于等于0则默认为60
-     * @param workingDir        工作目录
-     * @param denyPatterns      禁止的命令模式列表，如果为null则使用默认列表
-     * @param allowPatterns     允许的命令模式列表，如果为null则初始化为空列表
-     * @param restrictToWorkspace 是否限制工作目录在工作区内
-     * @param sandbox           沙箱配置字符串
-     * @param pathAppend        需要追加到 PATH 的路径
-     * @param allowedEnvKeys    允许保留的环境变量键名列表
-     */
     public ExecTool(
             int timeout,
             String workingDir,
@@ -109,13 +79,6 @@ public class ExecTool extends Tool {
         return true;
     }
 
-    /**
-     * 执行入口方法，处理参数映射
-     *
-     * @param kwargs 参数字典
-     * @return 执行结果或错误信息
-     * @throws Exception 异常
-     */
     @Override
     public Object execute(Map<String, Object> kwargs) throws Exception {
         if (kwargs == null) {
@@ -141,19 +104,9 @@ public class ExecTool extends Tool {
         return execute(cmd, workingDirOverride, timeoutOverride);
     }
 
-    /**
-     * 核心执行逻辑
-     *
-     * @param command          要执行的命令
-     * @param workingDirOverride 覆盖的工作目录
-     * @param timeoutOverride  覆盖的超时时间
-     * @return 执行结果字符串
-     */
     public String execute(String command, String workingDirOverride, Integer timeoutOverride) {
-        // 确定最终的工作目录：优先使用传入的覆盖值，其次是配置的工作目录，最后是系统用户目录
         String cwd = firstNonBlank(workingDirOverride, this.workingDir, System.getProperty("user.dir"));
 
-        // restrict_to_workspace + working_dir 越界保护
         if (restrictToWorkspace && this.workingDir != null && !this.workingDir.isBlank()) {
             try {
                 Path requested = Path.of(cwd).toAbsolutePath().normalize();
@@ -167,7 +120,6 @@ public class ExecTool extends Tool {
             }
         }
 
-        // 检查命令安全性
         String guardError = guardCommand(command, cwd);
         if (guardError != null) {
             return guardError;
@@ -176,33 +128,27 @@ public class ExecTool extends Tool {
         String effectiveCommand = command;
         String effectiveCwd = cwd;
 
-        // 检查沙箱状态，当前版本不支持沙箱隔离
         if (sandbox != null && !sandbox.isBlank()) {
             return "错误：sandbox 已启用，但当前版本未实现可验证的隔离执行。请关闭 sandbox，或仅启用 restrict_to_workspace。";
         }
 
-        // 计算有效超时时间，不超过最大值
         int effectiveTimeout = Math.min(
                 timeoutOverride != null ? timeoutOverride : this.timeout,
                 MAX_TIMEOUT
         );
 
-        // 构建环境变量
         Map<String, String> env = buildEnv();
 
         try {
-            // 构建进程
             ProcessBuilder pb = buildProcess(effectiveCommand, effectiveCwd, env);
             Process process = pb.start();
 
-            // 等待进程结束，如果超时则杀死进程
             boolean finished = process.waitFor(effectiveTimeout, TimeUnit.SECONDS);
             if (!finished) {
                 killProcess(process);
                 return "错误：命令执行超时（" + effectiveTimeout + " 秒）";
             }
 
-            // 读取标准输出和标准错误
             String stdout = readAll(process.getInputStream());
             String stderr = readAll(process.getErrorStream());
 
@@ -223,7 +169,6 @@ public class ExecTool extends Tool {
                 result = "（无输出）";
             }
 
-            // 截断过长的输出
             if (result.length() > MAX_OUTPUT) {
                 result = result.substring(0, MAX_OUTPUT) + "\n...（已截断）";
             }
@@ -239,22 +184,15 @@ public class ExecTool extends Tool {
         }
     }
 
-    /**
-     * 构建执行进程的环境变量
-     *
-     * @return 环境变量映射
-     */
     private Map<String, String> buildEnv() {
         Map<String, String> env = new LinkedHashMap<>();
 
-        // 只保留尽可能少的默认变量
         env.put("PATH", System.getenv().getOrDefault("PATH", ""));
         env.put("HOME", System.getenv().getOrDefault("HOME", ""));
         env.put("USER", System.getenv().getOrDefault("USER", ""));
         env.put("LANG", System.getenv().getOrDefault("LANG", "C.UTF-8"));
         env.put("TERM", System.getenv().getOrDefault("TERM", "dumb"));
 
-        // 添加用户允许的环境变量
         for (String key : allowedEnvKeys) {
             String val = System.getenv(key);
             if (val != null) {
@@ -262,7 +200,6 @@ public class ExecTool extends Tool {
             }
         }
 
-        // 如果需要，追加额外的路径到 PATH
         if (pathAppend != null && !pathAppend.isBlank()) {
             if (IS_WINDOWS) {
                 env.put("PATH", env.getOrDefault("PATH", "") + ";" + pathAppend);
@@ -274,26 +211,16 @@ public class ExecTool extends Tool {
         return env;
     }
 
-    /**
-     * 对应 Python: _guard_command(...)
-     * 检查命令是否安全
-     *
-     * @param command 命令字符串
-     * @param cwd     当前工作目录
-     * @return 如果不安全返回错误信息，否则返回 null
-     */
     private String guardCommand(String command, String cwd) {
         String cmd = command != null ? command.trim() : "";
         String lower = cmd.toLowerCase(Locale.ROOT);
 
-        // 检查禁止模式
         for (String pattern : denyPatterns) {
             if (Pattern.compile(pattern).matcher(lower).find()) {
                 return "错误：命令被安全防护拦截（检测到危险模式）";
             }
         }
 
-        // 检查允许模式（如果配置了允许列表）
         if (allowPatterns != null && !allowPatterns.isEmpty()) {
             boolean allowed = false;
             for (String pattern : allowPatterns) {
@@ -307,12 +234,10 @@ public class ExecTool extends Tool {
             }
         }
 
-        // 检查是否包含内网 URL
         if (NetworkSecurity.containsInternalUrl(cmd)) {
             return "错误：命令被安全防护拦截（检测到内网/私有 URL）";
         }
 
-        // 如果限制在工作区，检查路径穿越和绝对路径访问
         if (restrictToWorkspace) {
             if (cmd.contains("..\\") || cmd.contains("../")) {
                 return "错误：命令被安全防护拦截（检测到路径穿越）";
@@ -343,29 +268,19 @@ public class ExecTool extends Tool {
         return null;
     }
 
-    /**
-     * 对应 Python: _extract_absolute_paths(...)
-     * 从命令中提取绝对路径
-     *
-     * @param command 命令字符串
-     * @return 提取到的路径列表
-     */
     private List<String> extractAbsolutePaths(String command) {
         List<String> result = new ArrayList<>();
 
-        // 匹配 Windows 绝对路径 (例如 C:\...)
         Matcher win = Pattern.compile("[A-Za-z]:\\\\[^\\s\"'|><;]*").matcher(command);
         while (win.find()) {
             result.add(win.group());
         }
 
-        // 匹配 Unix 绝对路径 (例如 /usr/bin)
         Matcher posix = Pattern.compile("(?:^|[\\s|>'\"])(/[^\\s\"'>;|<]+)").matcher(command);
         while (posix.find()) {
             result.add(posix.group(1));
         }
 
-        // 匹配家目录路径 (例如 ~/...)
         Matcher home = Pattern.compile("(?:^|[\\s|>'\"])(~[^\\s\"'>;|<]*)").matcher(command);
         while (home.find()) {
             result.add(home.group(1));
@@ -374,14 +289,6 @@ public class ExecTool extends Tool {
         return result;
     }
 
-    /**
-     * 构建 ProcessBuilder
-     *
-     * @param command 命令
-     * @param cwd     工作目录
-     * @param env     环境变量
-     * @return ProcessBuilder 实例
-     */
     private ProcessBuilder buildProcess(String command, String cwd, Map<String, String> env) {
         List<String> cmd;
         if (IS_WINDOWS) {
@@ -397,11 +304,6 @@ public class ExecTool extends Tool {
         return pb;
     }
 
-    /**
-     * 强制杀死进程
-     *
-     * @param process 进程对象
-     */
     private void killProcess(Process process) {
         try {
             process.destroyForcibly();
@@ -409,13 +311,6 @@ public class ExecTool extends Tool {
         }
     }
 
-    /**
-     * 读取输入流所有内容
-     *
-     * @param in 输入流
-     * @return 字符串内容
-     * @throws Exception 异常
-     */
     private String readAll(InputStream in) throws Exception {
         try (InputStream input = in; ByteArrayOutputStream out = new ByteArrayOutputStream()) {
             input.transferTo(out);
@@ -423,21 +318,10 @@ public class ExecTool extends Tool {
         }
     }
 
-    /**
-     * sandbox hook，占位。
-     */
     private String wrapSandboxCommand(String sandbox, String command, String workspace, String cwd) {
-        // 后面如果继续做更严格的 sandbox，可以把命令包装逻辑集中到单独模块
-        // 就把这里替换掉。
         return command;
     }
 
-    /**
-     * 展开环境变量引用
-     *
-     * @param raw 原始字符串
-     * @return 展开后的字符串
-     */
     private String expandEnv(String raw) {
         String result = raw;
         for (Map.Entry<String, String> entry : System.getenv().entrySet()) {
@@ -447,12 +331,6 @@ public class ExecTool extends Tool {
         return result;
     }
 
-    /**
-     * 获取第一个非空字符串
-     *
-     * @param values 字符串数组
-     * @return 第一个非空字符串，如果没有则返回空字符串
-     */
     private static String firstNonBlank(String... values) {
         for (String v : values) {
             if (v != null && !v.isBlank()) {
@@ -462,11 +340,6 @@ public class ExecTool extends Tool {
         return "";
     }
 
-    /**
-     * 获取默认的禁止命令模式列表
-     *
-     * @return 禁止模式列表
-     */
     private static List<String> defaultDenyPatterns() {
         return List.of(
                 "\\brm\\s+-[rf]{1,2}\\b",

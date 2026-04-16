@@ -7,7 +7,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.*;
@@ -15,12 +14,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * 对应 Python: Dream
- *
  * 长期记忆整合器。
- * 1. 读取最近的会话历史。
- * 2. 通过 LLM 提取关键事实、用户偏好、机器人性格设定。
- * 3. 更新 MEMORY.md, USER.md, SOUL.md。
  */
 public class Dream {
 
@@ -34,32 +28,23 @@ public class Dream {
     private static final Pattern FENCE_START = Pattern.compile("^\\s*```\\s*(\\w+)?\\s*$");
     private static final Pattern FENCE_END = Pattern.compile("^\\s*```\\s*$");
 
-    public Dream(Path workspace, LLMProvider provider, String model, MemoryStore store) {
+    public Dream(LLMProvider provider, String model, MemoryStore store) {
         this.provider = provider;
         this.model = model;
         this.store = store;
     }
 
-    /**
-     * 执行一次 Dream 整合任务。
-     *
-     * @return 如果有新内容处理并更新了记忆，返回 true。
-     */
     public boolean run() {
         DreamRunResult result = runDetailed();
         return result.updated();
     }
 
     public DreamRunResult runDetailed() {
-        // 记录开始记忆整合的日志
         log.info("Dream: 开始记忆整合...");
 
         try {
-            // 1. 获取最近尚未被 Dream 处理的会话片段
             List<Map<String, Object>> newHistory = store.getUnprocessedHistory();
-            // 检查获取到的历史记录是否为空或 null
             if (newHistory == null || newHistory.isEmpty()) {
-                // 如果没有新的历史记录需要处理，记录日志并返回 false
                 log.info("Dream: 没有新的历史记录需要处理。");
                 return DreamRunResult.noop("no_history");
             }
@@ -68,27 +53,16 @@ public class Dream {
             int cursorBefore = store.getLastCursor();
             log.info("Dream: 将处理 {} 条历史记录 (dream_cursor={}/{})", newHistory.size(), dreamCursorBefore, cursorBefore);
 
-            // 2. 读取现有记忆文件内容
-            // 从存储中获取 MEMORY.md 的内容
             String memoryMd = store.getMemoryMd();
-            // 从存储中获取 USER.md 的内容
             String userMd = store.getUserMd();
-            // 从存储中获取 SOUL.md 的内容
             String soulMd = store.getSoulMd();
 
-            // 3. 构建 Prompt
-            // 创建一个 HashMap 用于存储模板渲染所需的参数
             Map<String, Object> kwargs = new HashMap<>();
-            // 将格式化后的历史记录放入参数映射
             kwargs.put("history", formatHistory(newHistory));
-            // 将现有的 MEMORY.md 内容放入参数映射
             kwargs.put("memory_md", memoryMd);
-            // 将现有的 USER.md 内容放入参数映射
             kwargs.put("user_md", userMd);
-            // 将现有的 SOUL.md 内容放入参数映射
             kwargs.put("soul_md", soulMd);
 
-            // 使用 PromptTemplates 渲染 "agent/dream.md" 模板，生成最终的 prompt 字符串
             String prompt;
             try {
                 prompt = PromptTemplates.renderTemplate("agent/dream.md", true, kwargs);
@@ -115,25 +89,16 @@ public class Dream {
             userMsg.put("content", prompt);
             messages.add(userMsg);
 
-            // 4. 调用 LLM
-            // 调用 provider 的 chat 方法，发送消息并获取响应
             LLMResponse response = provider.chatWithRetry(messages, List.of(), model);
-            // 从响应中获取内容字符串
             String content = response.getContent();
 
             String normalized = content != null ? content.trim() : "";
-            // 检查 LLM 返回的内容是否为 null、空白或明确的 "(nothing)" 标记
             if (normalized.isBlank() || "(nothing)".equalsIgnoreCase(normalized) || "(无内容)".equals(normalized)) {
-                // 记录 LLM 未返回任何更新内容的日志
                 log.info("Dream: LLM 未返回任何更新内容。");
-                // 虽然没有更新文件，但这段历史已经处理过了，标记为已处理
                 store.markHistoryAsProcessed(newHistory.size());
-                // 返回 false，表示没有进行实质性的记忆更新
                 return DreamRunResult.noop("no_update");
             }
 
-            // 5. 解析并保存更新后的记忆
-            // 调用 parseAndSaveUpdates 方法解析 LLM 返回的内容并保存到相应的记忆文件中
             ParseResult parsed = parseUpdates(normalized);
             if (!parsed.hasAnyUpdates()) {
                 log.warn("Dream: 无法解析模型输出，已跳过本次更新。");
@@ -142,23 +107,16 @@ public class Dream {
             }
             parseAndSaveUpdates(parsed);
 
-            // 5.1 写入版本快照，支持 /dream-log 与 /dream-restore
             ensureGitInitialized();
             store.getGit().autoCommit("dream: update memory/user/soul");
 
-            // 6. 标记这些历史记录已被 Dream 处理
-            // 更新存储状态，标记刚才处理的历史记录条目数为已处理
             store.markHistoryAsProcessed(newHistory.size());
 
-            // 记录记忆更新成功的日志
             log.info("Dream: 记忆更新成功。");
-            // 返回 true，表示成功处理并更新了记忆
             return DreamRunResult.updated("updated");
 
         } catch (Exception e) {
-            // 捕获异常，记录记忆整合过程中发生的错误日志
             log.error("Dream: 记忆整合过程中发生错误", e);
-            // 发生异常时返回 false
             return DreamRunResult.noop("error");
         }
     }

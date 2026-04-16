@@ -18,66 +18,26 @@ import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 轻量级会话归档器。
- * <p>
- * 负责监控会话消息的 Token 使用量，并在接近上下文窗口限制时，
- * 将旧消息归档以释放空间。对应 Python 实现中的 Consolidator。
  */
 public class Consolidator {
 
     private static final Logger log = LoggerFactory.getLogger(Consolidator.class);
-    /**
-     * 安全缓冲区 Token 数，防止精确估算误差导致溢出
-     */
     private static final int SAFETY_BUFFER = 4096;
-    /**
-     * 单次触发的最大归档轮数，防止无限循环
-     */
     private static final int MAX_CONSOLIDATION_ROUNDS = 8;
     private static final int MIN_KEEP_MESSAGES = 8;
     private static final int MAX_ARCHIVE_PROMPT_CHARS = 60_000;
     private static final int MAX_MESSAGE_SNIPPET_CHARS = 2_000;
 
-    /**
-     * 记忆存储接口
-     */
     private final MemoryStore store;
-    /**
-     * LLM 提供者对象
-     */
     private final LLMProvider provider;
-    /**
-     * 使用的模型名称
-     */
     private final String model;
-    /**
-     * 会话管理器
-     */
     private final SessionManager sessions;
-    /**
-     * 上下文窗口最大 Token 数
-     */
     private final Integer contextWindowTokens;
 
-    /**
-     * 最大完成 Token 数，用于预留响应空间
-     */
     private final int maxCompletionTokens;
 
-    /**
-     * 用于会话级别锁定的并发映射
-     */
     private final ConcurrentHashMap<String, Object> locks = new ConcurrentHashMap<>();
 
-    /**
-     * 构造 Consolidator
-     *
-     * @param store               记忆存储
-     * @param provider            LLM 提供者
-     * @param model               模型名称
-     * @param sessions            会话管理器
-     * @param contextWindowTokens 上下文窗口大小
-     * @param maxCompletionTokens 最大生成 Token 数
-     */
     public Consolidator(
             MemoryStore store,
             LLMProvider provider,
@@ -94,23 +54,10 @@ public class Consolidator {
         this.maxCompletionTokens = maxCompletionTokens;
     }
 
-    /**
-     * 获取指定 key 的锁对象，确保同一会话的并发操作互斥
-     *
-     * @param key 会话唯一标识
-     * @return 锁对象
-     */
     public Object getLock(String key) {
         return locks.computeIfAbsent(key, k -> new Object());
     }
 
-    /**
-     * 归档消息列表。
-     * 尝试生成摘要并存储，如果失败则原始存储消息列表。
-     *
-     * @param messages 待归档的消息列表
-     * @return 归档摘要字符串，如果发生异常并回退到原始存储则返回 null
-     */
     public String archive(List<Map<String, Object>> messages) {
         if (messages == null || messages.isEmpty()) {
             return null;
@@ -162,21 +109,12 @@ public class Consolidator {
         }
     }
 
-    /**
-     * 根据 Token 估算值判断是否需要执行会话整合（归档）。
-     * 如果当前消息估算 Token 超过预算，则分块归档旧消息。
-     *
-     * @param session 当前会话对象
-     */
     public void maybeConsolidateByTokens(Session session) {
-        // 如果没有消息或未配置上下文窗口，直接返回
         if (session.getMessages().isEmpty() || contextWindowTokens == null || contextWindowTokens <= 0) {
             return;
         }
 
-        // 使用会话特定的锁，避免并发修改问题
         synchronized (getLock(session.getKey())) {
-            // 计算可用预算：总窗口 - 最大响应预留 - 安全缓冲
             int budget = contextWindowTokens - maxCompletionTokens - SAFETY_BUFFER;
             if (budget <= 0) {
                 return;
@@ -184,7 +122,6 @@ public class Consolidator {
 
             int estimated = estimateTokens(session.getMessages());
 
-            // 如果估算值在预算内，无需整合
             if (estimated < budget) {
                 return;
             }
@@ -192,7 +129,6 @@ public class Consolidator {
             log.info("开始对会话 {} 进行整合，预估 Token: {}, 预算: {}", 
                     session.getKey(), estimated, budget);
 
-            // 执行多轮整合，直到估算值降低到安全范围或达到最大轮数
             for (int round = 0; round < MAX_CONSOLIDATION_ROUNDS; round++) {
                 if (estimated <= budget) {
                     return;

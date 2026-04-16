@@ -11,91 +11,33 @@ import java.time.format.DateTimeFormatter;
 import java.util.*;
 
 /**
- * 对应 Python: ContextBuilder
- *
- * 主要目标：
- * 1. 组装给 LLM 的 messages
- * 2. 注入 runtime context
- * 3. 提供 add_assistant_message / add_tool_result 这类辅助能力
+ * ContextBuilder for assembling LLM messages, injecting runtime context, and managing conversation history.
  */
 public class ContextBuilder {
 
-    // 定义运行时上下文的开始标签
     public static final String RUNTIME_CONTEXT_TAG = "[RUNTIME_CONTEXT]";
-    // 定义运行时上下文的结束标签
     public static final String RUNTIME_CONTEXT_END = "[/RUNTIME_CONTEXT]";
 
     private static final int MAX_INLINE_IMAGE_BYTES = 2_000_000;
 
-    // 工作空间路径
     private final Path workspace;
-    // 时区字符串
     private final String timezone;
-    // 被禁用的技能列表
     private final List<String> disabledSkills;
 
-    /**
-     * 构造函数，仅指定工作空间
-     * @param workspace 工作空间路径
-     */
     public ContextBuilder(Path workspace) {
         this(workspace, null, null);
     }
 
-    /**
-     * 全参构造函数
-     * @param workspace 工作空间路径
-     * @param timezone 时区
-     * @param disabledSkills 被禁用的技能列表
-     */
     public ContextBuilder(Path workspace, String timezone, List<String> disabledSkills) {
         this.workspace = workspace;
         this.timezone = timezone;
-        // 如果 disabledSkills 为 null，则初始化为空列表，避免后续空指针异常
         this.disabledSkills = disabledSkills != null ? disabledSkills : new ArrayList<>();
     }
 
-    /**
-     * 获取时区
-     * @return 时区字符串
-     */
     public String getTimezone() {
         return timezone;
     }
 
-    /**
-     * 构建消息列表（简化版）
-     * 对应 Python: build_messages(...)
-     *
-     * @param history 历史消息列表
-     * @param currentMessage 当前用户消息
-     * @param channel 渠道信息
-     * @param chatId 聊天ID
-     * @return 组装好的消息列表
-     */
-    public List<Map<String, Object>> buildMessages(
-            List<Map<String, Object>> history,
-            String currentMessage,
-            String channel,
-            String chatId
-    ) {
-        // 调用全参版本，媒体、会话摘要设为null，角色默认为"user"
-        return buildMessages(history, currentMessage, null, channel, chatId, null, "user");
-    }
-
-    /**
-     * 构建消息列表（完整版）
-     * 补全版，兼容你前面 AgentLoop 用法
-     *
-     * @param history 历史消息列表
-     * @param currentMessage 当前用户消息
-     * @param media 媒体文件列表（当前未使用，保留接口兼容性）
-     * @param channel 渠道信息
-     * @param chatId 聊天ID
-     * @param sessionSummary 会话摘要
-     * @param currentRole 当前消息的角色
-     * @return 组装好的消息列表
-     */
     public List<Map<String, Object>> buildMessages(
             List<Map<String, Object>> history,
             String currentMessage,
@@ -126,15 +68,6 @@ public class ContextBuilder {
         return LLMProvider.sanitizeEmptyContent(messages);
     }
 
-    /**
-     * 构建运行时上下文字符串
-     * 对应 Python: _build_runtime_context(...)
-     *
-     * @param channel 渠道信息
-     * @param chatId 聊天ID
-     * @param timezone 时区
-     * @return 格式化后的运行时上下文字符串
-     */
     public static String buildRuntimeContext(String channel, String chatId, String timezone) {
         String tz = timezone != null && !timezone.isBlank() ? timezone : "UTC";
 
@@ -165,103 +98,6 @@ public class ContextBuilder {
         return sb.toString();
     }
 
-    /**
-     * 添加助手消息
-     * 对应 Python: add_assistant_message(...)
-     *
-     * @param messages 原始消息列表
-     * @param content 消息内容
-     * @param toolCalls 工具调用列表
-     * @param reasoningContent 推理内容
-     * @param thinkingBlocks 思考块列表
-     * @return 包含新助手消息的消息列表
-     */
-    public List<Map<String, Object>> addAssistantMessage(
-            List<Map<String, Object>> messages,
-            String content,
-            List<Map<String, Object>> toolCalls,
-            String reasoningContent,
-            List<Map<String, Object>> thinkingBlocks
-    ) {
-        // 创建新的消息列表副本，避免修改原列表
-        List<Map<String, Object>> out = new ArrayList<>(messages);
-
-        // 创建助手消息对象
-        Map<String, Object> msg = new LinkedHashMap<>();
-        msg.put("role", "assistant");
-        msg.put("content", content);
-
-        // 如果存在工具调用，则添加
-        if (toolCalls != null && !toolCalls.isEmpty()) {
-            msg.put("tool_calls", toolCalls);
-        }
-        // 如果存在推理内容，则添加
-        if (reasoningContent != null) {
-            msg.put("reasoning_content", reasoningContent);
-        }
-        // 如果存在思考块，则添加
-        if (thinkingBlocks != null && !thinkingBlocks.isEmpty()) {
-            msg.put("thinking_blocks", thinkingBlocks);
-        }
-
-        // 将新消息添加到列表
-        out.add(msg);
-        return out;
-    }
-
-    /**
-     * 添加助手消息（简化版）
-     *
-     * @param messages 原始消息列表
-     * @param content 消息内容
-     * @return 包含新助手消息的消息列表
-     */
-    public List<Map<String, Object>> addAssistantMessage(
-            List<Map<String, Object>> messages,
-            String content
-    ) {
-        // 调用全参版本，其他参数设为null
-        return addAssistantMessage(messages, content, null, null, null);
-    }
-
-    /**
-     * 添加工具执行结果
-     * 对应 Python: add_tool_result(...)
-     *
-     * @param messages 原始消息列表
-     * @param toolCallId 工具调用ID
-     * @param name 工具名称
-     * @param result 工具执行结果
-     * @return 包含新工具结果消息的消息列表
-     */
-    public List<Map<String, Object>> addToolResult(
-            List<Map<String, Object>> messages,
-            String toolCallId,
-            String name,
-            Object result
-    ) {
-        // 创建新的消息列表副本
-        List<Map<String, Object>> out = new ArrayList<>(messages);
-
-        // 创建工具结果消息对象
-        Map<String, Object> msg = new LinkedHashMap<>();
-        msg.put("role", "tool");
-        msg.put("tool_call_id", toolCallId);
-        msg.put("name", name);
-        // 将结果转换为字符串，如果结果为null则设为空字符串
-        msg.put("content", result != null ? String.valueOf(result) : "");
-
-        // 将新消息添加到列表
-        out.add(msg);
-        return out;
-    }
-
-    /**
-     * 创建系统消息对象
-     *
-     * @param text 系统提示文本
-     * @return 系统消息Map
-     */
     private Map<String, Object> systemMessage(String text) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("role", "system");
@@ -269,23 +105,14 @@ public class ContextBuilder {
         return m;
     }
 
-    /**
-     * 构建系统提示词
-     *
-     * @param sessionSummary 会话摘要
-     * @return 渲染后的系统提示词字符串
-     */
     private String buildSystemPrompt(String sessionSummary, String runtimeContext, String channel) {
-        // 准备模板参数
         Map<String, Object> kwargs = new HashMap<>();
         String workspacePath = workspace != null ? workspace.toAbsolutePath().normalize().toString() : "";
         kwargs.put("workspace_path", workspacePath);
         kwargs.put("runtime", runtimeContext != null ? runtimeContext : "");
         kwargs.put("platform_policy", "");
         kwargs.put("channel", channel != null ? channel : "");
-        // 禁用的技能列表，如果为空则设为空字符串，否则用逗号连接
         kwargs.put("disabled_skills", (disabledSkills == null || disabledSkills.isEmpty()) ? "" : String.join(", ", disabledSkills));
-        // 会话摘要，如果为null则设为空字符串
         kwargs.put("session_summary", (sessionSummary == null) ? "" : sessionSummary);
 
         String system;

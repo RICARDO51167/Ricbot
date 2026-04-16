@@ -15,19 +15,7 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * WebSocket server 渠道。
- *
- * 对应 Python: websocket.py
- *
- * 主要职责：
- * 1. nanobot 自己作为 WebSocket 服务端
- * 2. 支持 client_id / token 握手校验
- * 3. 支持 token issue route
- * 4. 每个连接映射独立 session
- * 5. 支持 streaming outbound
- *
- * 说明：
- * 这里为了不绑定特定第三方 Java WebSocket 库，先通过接口抽象掉 server/connection。
+ * WebSocket 渠道实现。
  */
 public class WebSocketChannel extends BaseChannel {
 
@@ -112,14 +100,8 @@ public class WebSocketChannel extends BaseChannel {
     private final ObjectMapper mapper = new ObjectMapper();
     private WsServer server;
 
-    /**
-     * client_id -> connection
-     */
     private final Map<String, WsConnection> connections = new ConcurrentHashMap<>();
 
-    /**
-     * token -> expiryMillis
-     */
     private final Map<String, Long> issuedTokens = new ConcurrentHashMap<>();
 
     public WebSocketChannel(Object config, MessageBus bus) {

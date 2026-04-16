@@ -10,10 +10,7 @@ import java.util.*;
 import java.util.concurrent.*;
 
 /**
- * MCP 适配层：
- * 负责连接 MCP Server，并把 MCP 的 tool/resource/prompt 包装成 nanobot Tool。
- *
- * 对应 Python 文件 mcp.py。
+ * MCP 适配层
  */
 public final class MCPAdapters {
 
@@ -64,21 +61,6 @@ public final class MCPAdapters {
         return out;
     }
 
-    // =========================================================
-    // Schema 规范化
-    // =========================================================
-
-    /**
-     * 从 oneOf / anyOf 中提取“唯一非 null 分支”。
-     *
-     * 例如：
-     * [
-     *   {"type":"null"},
-     *   {"type":"string"}
-     * ]
-     *
-     * -> 返回 {"type":"string"}, true
-     */
     @SuppressWarnings("unchecked")
     public static NullableBranch extractNullableBranch(Object options) {
         if (!(options instanceof List<?> list)) {
@@ -109,14 +91,6 @@ public final class MCPAdapters {
         return null;
     }
 
-    /**
-     * 把 MCP schema 规范化为更适合 nanobot / OpenAI function-tool 风格的 schema。
-     *
-     * 主要处理：
-     * - type: ["string", "null"]
-     * - oneOf / anyOf 中的 nullable 分支
-     * - 递归处理 properties / items
-     */
     @SuppressWarnings("unchecked")
     public static Map<String, Object> normalizeSchemaForOpenAI(Object schema) {
         if (!(schema instanceof Map<?, ?>)) {
@@ -192,13 +166,6 @@ public final class MCPAdapters {
         return normalized;
     }
 
-    // =========================================================
-    // MCP Tool Wrapper
-    // =========================================================
-
-    /**
-     * 包装 MCP server 的单个 tool。
-     */
     public static class MCPToolWrapper extends Tool {
 
         private final MCPClientSession session;
@@ -285,13 +252,6 @@ public final class MCPAdapters {
         }
     }
 
-    // =========================================================
-    // MCP Resource Wrapper
-    // =========================================================
-
-    /**
-     * 把 MCP resource 包装成只读 Tool。
-     */
     public static class MCPResourceWrapper extends Tool {
 
         private final MCPClientSession session;
@@ -371,13 +331,6 @@ public final class MCPAdapters {
         }
     }
 
-    // =========================================================
-    // MCP Prompt Wrapper
-    // =========================================================
-
-    /**
-     * 把 MCP prompt 包装成只读 Tool。
-     */
     public static class MCPPromptWrapper extends Tool {
 
         private final MCPClientSession session;
@@ -489,18 +442,6 @@ public final class MCPAdapters {
         }
     }
 
-    // =========================================================
-    // 连接 MCP Servers
-    // =========================================================
-
-    /**
-     * 连接所有配置好的 MCP server，并把其能力注册进 ToolRegistry。
-     *
-     * 返回：
-     * serverName -> MCPServerConnection
-     *
-     * 对应 Python 的 connect_mcp_servers(...)
-     */
     public static Map<String, MCPServerConnection> connectMcpServers(
             Map<String, Config.MCPServerConfig> mcpServers,
             ToolRegistry registry
@@ -533,9 +474,6 @@ public final class MCPAdapters {
         return serverConnections;
     }
 
-    /**
-     * 连接单个 MCP server。
-     */
     private static ServerConnectResult connectSingleServer(
             String name,
             Config.MCPServerConfig cfg,
@@ -691,10 +629,6 @@ public final class MCPAdapters {
             return new ServerConnectResult(name, null);
         }
     }
-
-    // =========================================================
-    // 小型返回结构
-    // =========================================================
 
     public record NullableBranch(Map<String, Object> branch, boolean nullable) {
     }

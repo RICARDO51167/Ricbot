@@ -22,16 +22,6 @@ import java.util.regex.Pattern;
 
 /**
  * QQ 渠道实现。
- *
- * 主要目标：
- * 1. 处理 QQ C2C / Group 入站消息
- * 2. 附件分块下载到本地
- * 3. 把消息转成统一 InboundMessage 发给 MessageBus
- * 4. 出站先上传媒体，再发文本
- *
- * 说明：
- * 这里把 botpy 的网络 / SDK 部分抽成 QQBotClient 接口，
- * 这样你后面换成任何 Java QQ Bot SDK 都能接。
  */
 public class QQChannel extends BaseChannel {
 
@@ -83,9 +73,6 @@ public class QQChannel extends BaseChannel {
         public void setDownloadMaxBytes(long downloadMaxBytes) { this.downloadMaxBytes = downloadMaxBytes; }
     }
 
-    /**
-     * 统一的入站消息对象，屏蔽具体 SDK 差异。
-     */
     public interface QQInboundMessage {
         String id();
         String content();
@@ -174,17 +161,12 @@ public class QQChannel extends BaseChannel {
         running = true;
 
         if (client == null) {
-            // Instantiate default client if none provided
             this.client = new DefaultQQBotClient(httpClient);
         }
 
         client.start(config.getAppId(), config.getSecret(), this::onMessage);
         System.out.println("QQ 机器人已启动");
     }
-
-    // =========================================================
-    // Default implementation of QQBotClient
-    // =========================================================
 
     public static class DefaultQQBotClient implements QQBotClient {
         private final HttpClient httpClient;
@@ -260,7 +242,6 @@ public class QQChannel extends BaseChannel {
             public CompletionStage<?> onClose(WebSocket webSocket, int statusCode, String reason) {
                 System.out.println("QQ WebSocket 已关闭：" + statusCode + " " + reason);
                 stopHeartbeat();
-                // Attempt reconnect
                 try {
                     Thread.sleep(3000);
                     connectGateway();
@@ -290,7 +271,7 @@ public class QQChannel extends BaseChannel {
                 if (op == null) return;
 
                 switch (op) {
-                    case 10: // Hello
+                    case 10:
                         Map<String, Object> d = (Map<String, Object>) msg.get("d");
                         Integer interval = d != null ? asInt(d.get("heartbeat_interval")) : null;
                         if (interval == null || interval <= 0) {
@@ -299,7 +280,7 @@ public class QQChannel extends BaseChannel {
                         startHeartbeat(interval);
                         identify(currentSocket);
                         break;
-                    case 0: // Dispatch
+                    case 0:
                         String t = (String) msg.get("t");
                         Map<String, Object> eventData = (Map<String, Object>) msg.get("d");
                         if ("READY".equals(t)) {
@@ -308,9 +289,9 @@ public class QQChannel extends BaseChannel {
                             processInboundMessage(eventData);
                         }
                         break;
-                    case 7: // Reconnect
-                    case 9: // Invalid Session
-                        currentSocket.abort(); // Will trigger onClose and reconnect
+                    case 7:
+                    case 9:
+                        currentSocket.abort();
                         break;
                 }
             }
@@ -348,7 +329,7 @@ public class QQChannel extends BaseChannel {
             
             Map<String, Object> d = new HashMap<>();
             d.put("token", "QQBot " + getAccessToken());
-            d.put("intents", 33554432 | 1073741824 | 1); // C2C & Group & Guilds
+            d.put("intents", 33554432 | 1073741824 | 1);
             identify.put("d", d);
 
             WebSocket ws = socket != null ? socket : this.webSocket;
@@ -368,7 +349,7 @@ public class QQChannel extends BaseChannel {
             String userId = author != null ? (String) author.get("id") : null;
             
             if (!isGroup && chatId == null) {
-                chatId = userId; // For C2C, fallback to user ID
+                chatId = userId;
             }
 
             String msgId = (String) data.get("id");
@@ -409,7 +390,6 @@ public class QQChannel extends BaseChannel {
 
         @Override
         public Object uploadFile(String chatId, boolean isGroup, int fileType, String base64Data, String fileName) throws Exception {
-            // In real SDK, this would call /v2/groups/{group_id}/files or /v2/users/{user_id}/files
             return null;
         }
 
@@ -421,7 +401,7 @@ public class QQChannel extends BaseChannel {
             
             Map<String, Object> body = new HashMap<>();
             body.put("content", content);
-            body.put("msg_type", 0); // 0 is text
+            body.put("msg_type", 0);
             body.put("msg_seq", nextSendMsgSeq());
             if (msgId != null && !msgId.isBlank()) {
                 body.put("msg_id", msgId);
@@ -451,7 +431,6 @@ public class QQChannel extends BaseChannel {
 
         @Override
         public void sendMediaText(String chatId, boolean isGroup, String msgId, Object mediaPayload) throws Exception {
-            // Similar to sendText but with media payload
         }
 
         private String getAccessToken() throws Exception {
@@ -509,16 +488,10 @@ public class QQChannel extends BaseChannel {
         }
     }
 
-    /**
-     * 注入具体 SDK client。
-     */
     public void setClient(QQBotClient client) {
         this.client = client;
     }
 
-    /**
-     * 入站消息处理。
-     */
     public void onMessage(QQInboundMessage data) {
         try {
             if (data == null || data.id() == null) {
@@ -583,9 +556,6 @@ public class QQChannel extends BaseChannel {
         }
     }
 
-    /**
-     * 处理附件：下载并返回本地路径 + 展示文本 + 元数据。
-     */
     private AttachmentResult handleAttachments(List<QQAttachment> attachments) {
         List<String> mediaPaths = new ArrayList<>();
         List<String> recvLines = new ArrayList<>();
@@ -622,9 +592,6 @@ public class QQChannel extends BaseChannel {
         return new AttachmentResult(mediaPaths, recvLines, attMeta);
     }
 
-    /**
-     * 分块流式下载附件，避免一次性读入内存。
-     */
     private String downloadToMediaDirChunked(String url, String filenameHint) {
         if (url == null || url.isBlank()) {
             return null;
@@ -733,7 +700,6 @@ public class QQChannel extends BaseChannel {
             replyToMsgId = lastInboundMsgIdByChat.get(chatId);
         }
 
-        // 1. 先发媒体
         if (msg.getMedia() != null) {
             for (String mediaRef : msg.getMedia()) {
                 MediaBytes media = readMediaBytes(mediaRef);
@@ -756,7 +722,6 @@ public class QQChannel extends BaseChannel {
             }
         }
 
-        // 2. 再发文本
         if (msg.getContent() != null && !msg.getContent().isBlank()) {
             sendTextOnly(chatId, isGroup, replyToMsgId, msg.getContent());
         }
@@ -774,14 +739,6 @@ public class QQChannel extends BaseChannel {
         return String.valueOf(System.currentTimeMillis()) + "_" + msgSeq;
     }
 
-    /**
-     * 读取出站媒体。
-     *
-     * 支持：
-     * - 本地路径
-     * - file://
-     * - http(s)
-     */
     private MediaBytes readMediaBytes(String mediaRef) {
         mediaRef = mediaRef == null ? "" : mediaRef.trim();
         if (mediaRef.isBlank()) {
@@ -805,7 +762,6 @@ public class QQChannel extends BaseChannel {
                 return new MediaBytes(data, localPath.getFileName().toString());
             }
 
-            // TODO: 这里最好接你前面已有的 SSRF / URL 校验模块
             HttpRequest request = HttpRequest.newBuilder(URI.create(mediaRef))
                     .timeout(Duration.ofSeconds(120))
                     .GET()

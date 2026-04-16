@@ -7,25 +7,14 @@ import java.lang.reflect.Field;
 import java.util.*;
 
 /**
- * 对应 Python: onboard.py
- *
- * 主要目标：
- * 1. 交互式配置 nanobot
- * 2. 支持主菜单与分区配置
- * 3. 支持字段浏览、输入、保存、放弃
- *
- * 说明：
- * Python 版 heavily 依赖 questionary + rich + pydantic 反射。
- * Java 这里改成 Scanner + 反射 的通用实现，但保留整体职责。
+ * OnboardWizard 提供交互式配置向导，用于初始化或修改 Ricbot 的配置。
  */
 public final class OnboardWizard {
 
-    // 定义敏感字段的关键字集合，用于后续掩码处理
     private static final Set<String> SENSITIVE_KEYWORDS = Set.of(
             "api_key", "token", "secret", "password", "credentials"
     );
 
-    // 定义特定字段的选项提示映射，例如 reasoningEffort 字段的选择项和提示文本
     private static final Map<String, SelectHint> SELECT_FIELD_HINTS = Map.of(
             "reasoningEffort", new SelectHint(
                     List.of("low", "medium", "high"),
@@ -33,41 +22,26 @@ public final class OnboardWizard {
             )
     );
 
-    // 私有构造函数，防止实例化
     private OnboardWizard() {
     }
 
-    /**
-     * 运行 onboard 向导的主入口方法
-     * @param initialConfig 初始配置对象，如果为 null 则加载默认配置
-     * @return OnboardResult 包含最终配置和是否保存的标志
-     */
     public static OnboardResult runOnboard(Config initialConfig) {
-        // 创建 Scanner 对象用于读取用户输入
         Scanner scanner = new Scanner(System.in);
 
         Config baseConfig;
-        // 如果提供了初始配置，则深拷贝一份作为基础配置
         if (initialConfig != null) {
             baseConfig = deepCopyConfig(initialConfig);
         } else {
-            // 否则从 ConfigLoader 加载默认配置
             baseConfig = ConfigLoader.loadOrDefault();
         }
 
-        // 深拷贝基础配置作为原始配置，用于比较是否有未保存的更改
         Config originalConfig = deepCopyConfig(baseConfig);
-        // 深拷贝基础配置作为当前工作配置
         Config config = deepCopyConfig(baseConfig);
 
-        // 主循环，直到用户选择保存或退出
         while (true) {
-            // 清空控制台屏幕
             clearConsole();
-            // 显示主菜单头部
             showMainMenuHeader();
 
-            // 打印主菜单选项
             System.out.println("你想配置哪一项？");
             System.out.println("1. LLM Provider（模型提供商）");
             System.out.println("2. Chat Channel（聊天渠道）");
@@ -79,9 +53,7 @@ public final class OnboardWizard {
             System.out.println("8. 不保存直接退出");
             System.out.print("> ");
 
-            // 安全地读取一行用户输入
             String answer = safeReadLine(scanner);
-            // 如果读取失败（例如 EOF），提示用户处理未保存的更改
             if (answer == null) {
                 String action = promptMainMenuExit(scanner, hasUnsavedChanges(originalConfig, config));
                 if ("save".equals(action)) {
@@ -93,71 +65,46 @@ public final class OnboardWizard {
                 continue;
             }
 
-            // 根据用户输入执行相应操作
             switch (answer.trim()) {
-                case "1" -> configureProviders(scanner, config); // 配置 LLM 提供商
-                case "2" -> configureChannels(scanner, config); // 配置聊天渠道
-                case "3" -> configureGeneralSettings(scanner, config.getAgents(), "代理设置"); // 配置代理设置
-                case "4" -> configureGeneralSettings(scanner, config.getGateway(), "网关"); // 配置网关
-                case "5" -> configureGeneralSettings(scanner, config.getTools(), "工具"); // 配置工具
-                case "6" -> showSummary(config); // 显示配置汇总
+                case "1" -> configureProviders(scanner, config);
+                case "2" -> configureChannels(scanner, config);
+                case "3" -> configureGeneralSettings(scanner, config.getAgents(), "代理设置");
+                case "4" -> configureGeneralSettings(scanner, config.getGateway(), "网关");
+                case "5" -> configureGeneralSettings(scanner, config.getTools(), "工具");
+                case "6" -> showSummary(config);
                 case "7" -> {
-                    return new OnboardResult(config, true); // 保存并退出
+                    return new OnboardResult(config, true);
                 }
                 case "8" -> {
-                    return new OnboardResult(originalConfig, false); // 不保存直接退出
+                    return new OnboardResult(originalConfig, false);
                 }
-                default -> System.out.println("未知选项"); // 处理无效输入
+                default -> System.out.println("未知选项");
             }
         }
     }
 
-    // =========================================================
-    // Main sections
-    // =========================================================
-
-    /**
-     * 配置 LLM 提供商
-     */
     private static void configureProviders(Scanner scanner, Config config) {
         showSectionHeader("LLM Provider（模型提供商）", "配置 provider 相关参数");
         configureObject(scanner, config.getProviders(), Set.of());
     }
 
-    /**
-     * 配置聊天渠道
-     */
     private static void configureChannels(Scanner scanner, Config config) {
         showSectionHeader("Chat Channel（聊天渠道）", "配置渠道相关参数");
         configureObject(scanner, config.getChannels(), Set.of("transcriptionProvider"));
     }
 
-    /**
-     * 配置通用设置
-     */
     private static void configureGeneralSettings(Scanner scanner, Object target, String title) {
         showSectionHeader(title, "配置本节字段");
         configureObject(scanner, target, Set.of());
     }
 
-    // =========================================================
-    // Generic object editor
-    // =========================================================
-
-    /**
-     * 通用对象编辑器，允许用户编辑对象的字段
-     */
     private static void configureObject(Scanner scanner, Object model, Set<String> skipFields) {
-        // 深拷贝模型对象，以便在用户确认前进行临时修改
         Object working = deepCopyObject(model);
 
         while (true) {
-            // 显示当前对象的配置面板
             showObjectPanel(working, skipFields);
 
-            // 获取可编辑的字段列表
             List<Field> editableFields = getEditableFields(working.getClass(), skipFields);
-            // 打印字段选项
             for (int i = 0; i < editableFields.size(); i++) {
                 System.out.println((i + 1) + ". " + getFieldDisplayName(editableFields.get(i)));
             }
@@ -165,60 +112,47 @@ public final class OnboardWizard {
             System.out.println("B. 返回（放弃本节修改）");
             System.out.print("> ");
 
-            // 读取用户输入
             String input = safeReadLine(scanner);
             if (input == null) {
                 return;
             }
 
-            // 如果用户选择完成，则将临时修改复制到原对象
             if ("D".equalsIgnoreCase(input)) {
                 copyObjectState(working, model);
                 return;
             }
-            // 如果用户选择返回，则放弃本节修改
             if ("B".equalsIgnoreCase(input)) {
                 return;
             }
 
             int index;
             try {
-                // 尝试将输入解析为字段索引
                 index = Integer.parseInt(input) - 1;
             } catch (Exception e) {
                 continue;
             }
 
-            // 检查索引是否有效
             if (index < 0 || index >= editableFields.size()) {
                 continue;
             }
 
-            // 获取选中的字段并编辑
             Field field = editableFields.get(index);
             editField(scanner, working, field);
         }
     }
 
-    /**
-     * 编辑单个字段
-     */
     private static void editField(Scanner scanner, Object workingModel, Field field) {
         try {
-            // 设置字段可访问
             field.setAccessible(true);
-            // 获取当前字段值
             Object currentValue = field.get(workingModel);
             String fieldName = field.getName();
             String displayName = getFieldDisplayName(field);
 
-            // 特殊处理 model 字段
             if ("model".equals(fieldName)) {
                 handleModelField(scanner, workingModel, field, displayName, currentValue);
                 return;
             }
 
-            // 特殊处理 contextWindowTokens 字段
             if ("contextWindowTokens".equals(fieldName)) {
                 handleContextWindowField(scanner, workingModel, field, displayName, currentValue);
                 return;
@@ -226,7 +160,6 @@ public final class OnboardWizard {
 
             Class<?> type = field.getType();
 
-            // 处理布尔类型字段
             if (type == boolean.class || type == Boolean.class) {
                 Boolean newValue = inputBool(scanner, displayName, currentValue instanceof Boolean b ? b : false);
                 if (newValue != null) {
@@ -235,7 +168,6 @@ public final class OnboardWizard {
                 return;
             }
 
-            // 处理有预定义选项的字段
             SelectHint hint = SELECT_FIELD_HINTS.get(fieldName);
             if (hint != null) {
                 String selected = inputSelect(scanner, displayName, hint.choices(), currentValue != null ? currentValue.toString() : null, hint.hintText());
@@ -245,7 +177,6 @@ public final class OnboardWizard {
                 return;
             }
 
-            // 处理简单类型字段（String, Number, Boolean）
             if (isSimpleType(type)) {
                 Object value = inputText(scanner, displayName, currentValue, type);
                 if (value != null) {
@@ -254,7 +185,6 @@ public final class OnboardWizard {
                 return;
             }
 
-            // 处理 List 类型字段
             if (List.class.isAssignableFrom(type)) {
                 Object value = inputList(scanner, displayName, currentValue);
                 if (value != null) {
@@ -263,7 +193,6 @@ public final class OnboardWizard {
                 return;
             }
 
-            // 处理 Map 类型字段
             if (Map.class.isAssignableFrom(type)) {
                 Object value = inputJsonMap(scanner, displayName, currentValue);
                 if (value != null) {
@@ -272,7 +201,6 @@ public final class OnboardWizard {
                 return;
             }
 
-            // 递归编辑嵌套对象
             if (currentValue != null) {
                 configureObject(scanner, currentValue, Set.of());
             }
@@ -282,13 +210,6 @@ public final class OnboardWizard {
         }
     }
 
-    // =========================================================
-    // Specialized field handlers
-    // =========================================================
-
-    /**
-     * 处理 model 字段的编辑，支持自动补全和上下文窗口自动填充
-     */
     private static void handleModelField(
             Scanner scanner,
             Object workingModel,
@@ -304,9 +225,6 @@ public final class OnboardWizard {
         }
     }
 
-    /**
-     * 处理 contextWindowTokens 字段的编辑，支持推荐值
-     */
     private static void handleContextWindowField(
             Scanner scanner,
             Object workingModel,
@@ -320,9 +238,6 @@ public final class OnboardWizard {
         }
     }
 
-    /**
-     * 获取当前模型的 provider
-     */
     private static String getCurrentProvider(Object model) {
         try {
             Field f = model.getClass().getDeclaredField("provider");
@@ -334,9 +249,6 @@ public final class OnboardWizard {
         }
     }
 
-    /**
-     * 带自动补全的 model 输入
-     */
     private static String inputModelWithAutocomplete(Scanner scanner, String displayName, Object current, String provider) {
         String currentText = current != null ? current.toString() : "";
         System.out.println(displayName + "（当前值：" + (currentText.isBlank() ? "（未设置）" : currentText) + "）");
@@ -352,9 +264,6 @@ public final class OnboardWizard {
         return value;
     }
 
-    /**
-     * 带推荐值的 contextWindowTokens 输入
-     */
     private static Integer inputContextWindowWithRecommendation(
             Scanner scanner,
             String displayName,
@@ -415,9 +324,6 @@ public final class OnboardWizard {
         }
     }
 
-    /**
-     * 尝试自动填充 contextWindowTokens
-     */
     private static void tryAutoFillContextWindow(Object workingModel, String modelName) {
         if (modelName == null || modelName.isBlank()) {
             return;
@@ -439,13 +345,6 @@ public final class OnboardWizard {
         }
     }
 
-    // =========================================================
-    // Input helpers
-    // =========================================================
-
-    /**
-     * 布尔值输入
-     */
     private static Boolean inputBool(Scanner scanner, String displayName, boolean current) {
         System.out.print(displayName + " [y/n]（当前值：" + current + "）：");
         String line = safeReadLine(scanner);
@@ -453,9 +352,6 @@ public final class OnboardWizard {
         return line.trim().equalsIgnoreCase("y") || line.trim().equalsIgnoreCase("yes");
     }
 
-    /**
-     * 选择项输入
-     */
     private static String inputSelect(Scanner scanner, String displayName, List<String> choices, String current, String hintText) {
         System.out.println(displayName + (hintText != null && !hintText.isBlank() ? " - " + hintText : ""));
         for (int i = 0; i < choices.size(); i++) {
@@ -476,9 +372,6 @@ public final class OnboardWizard {
         return null;
     }
 
-    /**
-     * 文本输入，支持多种基本类型转换
-     */
     private static Object inputText(Scanner scanner, String displayName, Object current, Class<?> type) {
         String currentText = current != null ? current.toString() : "";
         if (!currentText.isBlank() && isSensitiveField(displayName)) {
@@ -511,9 +404,6 @@ public final class OnboardWizard {
         }
     }
 
-    /**
-     * 列表输入，逗号分隔
-     */
     private static Object inputList(Scanner scanner, String displayName, Object current) {
         System.out.print(displayName + "（逗号分隔"
                 + (current != null ? "，当前值：" + current : "") + "）：");
@@ -532,9 +422,6 @@ public final class OnboardWizard {
         return list;
     }
 
-    /**
-     * JSON Map 输入
-     */
     private static Object inputJsonMap(Scanner scanner, String displayName, Object current) {
         System.out.print(displayName + "（JSON"
                 + (current != null ? "，当前值：" + current : "") + "）：");
@@ -552,22 +439,12 @@ public final class OnboardWizard {
         }
     }
 
-    // =========================================================
-    // Rendering helpers
-    // =========================================================
-
-    /**
-     * 显示主菜单头部
-     */
     private static void showMainMenuHeader() {
         System.out.println();
         System.out.println("🐈 ricbot");
         System.out.println();
     }
 
-    /**
-     * 显示章节头部
-     */
     private static void showSectionHeader(String title, String subtitle) {
         System.out.println();
         System.out.println("==== " + title + " ====");
@@ -577,9 +454,6 @@ public final class OnboardWizard {
         System.out.println();
     }
 
-    /**
-     * 显示对象配置面板
-     */
     private static void showObjectPanel(Object model, Set<String> skipFields) {
         System.out.println("--- 当前配置 ---");
         for (Field field : getEditableFields(model.getClass(), skipFields)) {
@@ -593,9 +467,6 @@ public final class OnboardWizard {
         System.out.println();
     }
 
-    /**
-     * 显示配置汇总
-     */
     private static void showSummary(Config config) {
         System.out.println();
         System.out.println("===== 配置汇总 =====");
@@ -604,20 +475,10 @@ public final class OnboardWizard {
         new Scanner(System.in).nextLine();
     }
 
-    // =========================================================
-    // Utility helpers
-    // =========================================================
-
-    /**
-     * 检查是否有未保存的更改
-     */
     private static boolean hasUnsavedChanges(Config originalConfig, Config config) {
         return !Objects.equals(String.valueOf(originalConfig), String.valueOf(config));
     }
 
-    /**
-     * 提示主菜单退出操作
-     */
     private static String promptMainMenuExit(Scanner scanner, boolean hasUnsavedChanges) {
         if (!hasUnsavedChanges) {
             return "discard";
@@ -637,9 +498,6 @@ public final class OnboardWizard {
         return "resume";
     }
 
-    /**
-     * 获取可编辑的字段列表
-     */
     private static List<Field> getEditableFields(Class<?> clazz, Set<String> skipFields) {
         List<Field> fields = new ArrayList<>();
         for (Field f : clazz.getDeclaredFields()) {
@@ -654,9 +512,6 @@ public final class OnboardWizard {
         return fields;
     }
 
-    /**
-     * 获取字段的显示名称
-     */
     private static String getFieldDisplayName(Field field) {
         String name = field.getName();
         name = name.replaceAll("([a-z])([A-Z])", "$1 $2");
@@ -672,9 +527,6 @@ public final class OnboardWizard {
         return Character.toUpperCase(name.charAt(0)) + name.substring(1);
     }
 
-    /**
-     * 判断是否为简单类型
-     */
     private static boolean isSimpleType(Class<?> type) {
         return type == String.class
                 || type == Integer.class || type == int.class
@@ -684,9 +536,6 @@ public final class OnboardWizard {
                 || type == Boolean.class || type == boolean.class;
     }
 
-    /**
-     * 判断字段是否敏感
-     */
     private static boolean isSensitiveField(String fieldName) {
         String lower = fieldName.toLowerCase(Locale.ROOT);
         for (String keyword : SENSITIVE_KEYWORDS) {
@@ -697,9 +546,6 @@ public final class OnboardWizard {
         return false;
     }
 
-    /**
-     * 掩码敏感值
-     */
     private static String maskValue(String value) {
         if (value == null || value.length() <= 4) {
             return "****";
@@ -707,9 +553,6 @@ public final class OnboardWizard {
         return "*".repeat(value.length() - 4) + value.substring(value.length() - 4);
     }
 
-    /**
-     * 格式化字段值用于显示
-     */
     private static String formatValue(Object value, String fieldName) {
         if (value == null) {
             return "（未设置）";
@@ -744,9 +587,6 @@ public final class OnboardWizard {
         return String.valueOf(value);
     }
 
-    /**
-     * 安全地读取一行输入
-     */
     private static String safeReadLine(Scanner scanner) {
         try {
             return scanner.nextLine();
@@ -755,28 +595,15 @@ public final class OnboardWizard {
         }
     }
 
-    /**
-     * 清空控制台
-     */
     private static void clearConsole() {
         System.out.print("\033[H\033[2J");
         System.out.flush();
     }
 
-    // =========================================================
-    // Copy helpers
-    // =========================================================
-
-    /**
-     * 深拷贝 Config 对象
-     */
     private static Config deepCopyConfig(Config config) {
         return (Config) deepCopyObject(config);
     }
 
-    /**
-     * 深拷贝任意对象
-     */
     private static Object deepCopyObject(Object obj) {
         if (obj == null) return null;
         try {
@@ -788,9 +615,6 @@ public final class OnboardWizard {
         }
     }
 
-    /**
-     * 将 from 对象的状态复制到 to 对象
-     */
     private static void copyObjectState(Object from, Object to) {
         if (from == null || to == null) return;
         if (!from.getClass().equals(to.getClass())) return;
@@ -804,19 +628,9 @@ public final class OnboardWizard {
         }
     }
 
-    // =========================================================
-    // Inner DTOs
-    // =========================================================
-
-    /**
-     * Onboard 结果记录
-     */
     public record OnboardResult(Config config, boolean shouldSave) {
     }
 
-    /**
-     * 选择提示记录
-     */
     private record SelectHint(List<String> choices, String hintText) {
     }
 }

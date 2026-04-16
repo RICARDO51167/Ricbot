@@ -21,39 +21,15 @@ import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * OpenAI 兼容 HTTP API 服务。
- *
- * 主要目标：
- * 1. 对外暴露 OpenAI 风格接口
- * 2. 把外部请求转给内部 AgentLoop
- * 3. 维持固定 API session，支持按 session_id 做会话隔离
- *
- * 对应 Python 文件：
- * - /v1/chat/completions
- * - /v1/models
- * - /health
  */
 public class RicbotApiServer {
 
-    /**
-     * 默认 API session key
-     */
     public static final String API_SESSION_KEY = "api:default";
 
-    /**
-     * API channel 下固定 chatId
-     */
     public static final String API_CHAT_ID = "default";
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
-    /**
-     * 创建并启动 HTTP 服务。
-     *
-     * @param port 请求端口
-     * @param agentLoop 已初始化好的 AgentLoop
-     * @param modelName 对外报告的模型名
-     * @param requestTimeoutMillis 单请求超时毫秒数
-     */
     public static HttpServer createAndStart(
             int port,
             AgentLoop agentLoop,
@@ -71,15 +47,6 @@ public class RicbotApiServer {
         return server;
     }
 
-    /**
-     * 应用上下文。
-     *
-     * 对应 Python app[...] 中存的内容：
-     * - agent_loop
-     * - model_name
-     * - request_timeout
-     * - session_locks
-     */
     public static class ApiAppContext {
         private final AgentLoop agentLoop;
         private final String modelName;
@@ -109,22 +76,6 @@ public class RicbotApiServer {
         }
     }
 
-    // ---------------------------------------------------------------------
-    // Response helpers
-    // ---------------------------------------------------------------------
-
-    /**
-     * 统一错误响应。
-     *
-     * 返回 OpenAI 风格：
-     * {
-     *   "error": {
-     *     "message": "...",
-     *     "type": "...",
-     *     "code": 400
-     *   }
-     * }
-     */
     public static void writeErrorJson(
             HttpExchange exchange,
             int status,
@@ -142,9 +93,6 @@ public class RicbotApiServer {
         writeJson(exchange, status, body);
     }
 
-    /**
-     * 构造标准 chat completion 响应体。
-     */
     public static Map<String, Object> chatCompletionResponse(String content, String model) {
         Map<String, Object> message = new LinkedHashMap<>();
         message.put("role", "assistant");
@@ -171,14 +119,6 @@ public class RicbotApiServer {
         return result;
     }
 
-    /**
-     * 兼容处理 AgentLoop.processDirect(...) 的返回结果。
-     *
-     * 可能是：
-     * - null
-     * - OutboundMessage
-     * - 其他对象
-     */
     public static String responseText(Object value) {
         if (value == null) {
             return "";
@@ -189,9 +129,6 @@ public class RicbotApiServer {
         return String.valueOf(value);
     }
 
-    /**
-     * 统一写 JSON 响应。
-     */
     public static void writeJson(HttpExchange exchange, int status, Object body) throws IOException {
         byte[] bytes = MAPPER.writeValueAsBytes(body);
         Headers headers = exchange.getResponseHeaders();
@@ -203,38 +140,22 @@ public class RicbotApiServer {
         }
     }
 
-    /**
-     * 读取请求体并转字符串。
-     */
     public static String readRequestBody(HttpExchange exchange) throws IOException {
         try (InputStream is = exchange.getRequestBody()) {
             return new String(is.readAllBytes(), StandardCharsets.UTF_8);
         }
     }
 
-    /**
-     * 安全读取 Map 字段。
-     */
     @SuppressWarnings("unchecked")
     public static Map<String, Object> asMap(Object value) {
         return value instanceof Map<?, ?> ? (Map<String, Object>) value : null;
     }
 
-    /**
-     * 安全读取 List 字段。
-     */
     @SuppressWarnings("unchecked")
     public static List<Object> asList(Object value) {
         return value instanceof List<?> ? (List<Object>) value : null;
     }
 
-    // ---------------------------------------------------------------------
-    // Route handlers
-    // ---------------------------------------------------------------------
-
-    /**
-     * POST /v1/chat/completions
-     */
     public static class ChatCompletionsHandler implements HttpHandler {
 
         private final ApiAppContext appContext;
@@ -328,7 +249,6 @@ public class RicbotApiServer {
 
                         responseText = RicbotApiServer.responseText(response);
 
-                        // 空响应时自动重试一次
                         if (responseText == null || responseText.isBlank()) {
                             System.out.println("会话 " + sessionKey + " 返回空响应，正在重试");
 
@@ -376,9 +296,6 @@ public class RicbotApiServer {
         }
     }
 
-    /**
-     * GET /v1/models
-     */
     public static class ModelsHandler implements HttpHandler {
         private final ApiAppContext appContext;
 
@@ -407,9 +324,6 @@ public class RicbotApiServer {
         }
     }
 
-    /**
-     * GET /health
-     */
     public static class HealthHandler implements HttpHandler {
         @Override
         public void handle(HttpExchange exchange) throws IOException {
@@ -422,16 +336,6 @@ public class RicbotApiServer {
         }
     }
 
-    // ---------------------------------------------------------------------
-    // Timeout helper
-    // ---------------------------------------------------------------------
-
-    /**
-     * 给同步调用包一层超时控制。
-     *
-     * 因为 Python 版是 asyncio.wait_for(...)
-     * Java 这里用 Future + timeout 模拟。
-     */
     public static Object runWithTimeout(CallableTask task, long timeoutMillis) throws Exception {
         ExecutorService executor = Executors.newSingleThreadExecutor();
         Future<Object> future = executor.submit(task::call);

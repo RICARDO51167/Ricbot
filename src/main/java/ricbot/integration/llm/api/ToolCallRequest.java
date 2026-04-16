@@ -7,28 +7,15 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * 对应 Python: ToolCallRequest
- *
- * 主要目标：
- * 1. 表示一次模型发起的工具调用请求
- * 2. 支持转成 OpenAI 风格 tool_call 结构
+ * 工具调用请求，支持转换为 OpenAI 风格的 tool_call 结构
  */
 public class ToolCallRequest {
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
-    /**
-     * 工具调用 ID
-     */
     private String id;
 
-    /**
-     * 工具名
-     */
     private String name;
 
-    /**
-     * 工具参数
-     */
     private Map<String, Object> arguments = new LinkedHashMap<>();
 
 
@@ -88,8 +75,8 @@ public class ToolCallRequest {
     public String toString() {
         return "ToolCallRequest{" +
                 "id='" + id + '\'' +
-                ", 名称='" + name + '\'' +
-                ", 参数=" + arguments +
+                ", name='" + name + '\'' +
+                ", arguments=" + arguments +
                 '}';
     }
 }

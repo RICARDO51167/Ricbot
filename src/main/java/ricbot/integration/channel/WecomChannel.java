@@ -17,15 +17,6 @@ import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 企业微信（WeCom）渠道实现。
- *
- * 对应 Python: wecom.py
- *
- * 主要职责：
- * 1. 通过 WebSocket 长连接收消息
- * 2. 按 messageId 去重
- * 3. 支持文本 / 图片 / 语音 / 文件 / mixed
- * 4. 支持 enter_chat 欢迎语
- * 5. 出站支持文本与媒体上传
  */
 public class WecomChannel extends BaseChannel {
 
@@ -89,13 +80,10 @@ public class WecomChannel extends BaseChannel {
             this.listener = listener;
             refreshAccessToken();
             System.out.println("企微 HTTP 客户端已初始化。（接收消息需要 Webhook/WebSocket 代理）");
-            // If there's a proxy or webhook, it would connect here.
-            // For now, we only support sending messages via HTTP API.
         }
 
         @Override
         public void disconnect() throws Exception {
-            // Disconnect logic
         }
 
         @Override
@@ -103,16 +91,12 @@ public class WecomChannel extends BaseChannel {
             String token = getAccessToken();
             String url = "https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=" + token;
             
-            // Assume chatId is the userId to send to
             Map<String, Object> text = new HashMap<>();
             text.put("content", content);
 
             Map<String, Object> body = new HashMap<>();
             body.put("touser", chatId);
             body.put("msgtype", "text");
-            // Assuming botId can act as agentId or we use a default
-            // In WeCom, agentId is required for app messages. 
-            // If botId is numeric, use it, else default to 1000000.
             try {
                 body.put("agentid", Integer.parseInt(botId));
             } catch (NumberFormatException e) {
@@ -131,17 +115,12 @@ public class WecomChannel extends BaseChannel {
 
         @Override
         public void sendMedia(String chatId, String mediaType, String filePath, Object frameHeaders) throws Exception {
-            // 1. Upload media to WeCom
             String token = getAccessToken();
             String uploadUrl = "https://qyapi.weixin.qq.com/cgi-bin/media/upload?access_token=" + token + "&type=" + mediaType;
             
-            // Just a placeholder for actual multipart upload
-            // WeCom expects a multipart/form-data POST with the file.
-            // For simplicity, we just print a log here since Java 11 HttpClient doesn't have built-in multipart
             System.out.println("企微：正在上传媒体 " + filePath + " 到 " + uploadUrl);
             String mediaId = "DUMMY_MEDIA_ID_" + System.currentTimeMillis();
 
-            // 2. Send message with media_id
             String url = "https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=" + token;
             
             Map<String, Object> media = new HashMap<>();
@@ -362,7 +341,6 @@ public class WecomChannel extends BaseChannel {
             }
 
             Path out = mediaDir.resolve(fileName);
-            // 实际上需要调用企业微信 API 下载媒体文件，这里暂且作为占位，将元数据写入文件
             Files.writeString(out, body.toString());
             return out.toString();
         } catch (Exception e) {
