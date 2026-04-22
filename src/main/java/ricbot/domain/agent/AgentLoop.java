@@ -269,6 +269,7 @@ public class AgentLoop {
         this.runner = new AgentRunner(provider);
         this.hookFactory = new AgentHookFactory(this.bus, this::setToolContext);
         this.sessionPreparationService = new SessionPreparationService(this.sessionManager, this.autoCompact, this.consolidator);
+        ContextSelectionService contextSelectionService = new ContextSelectionService(this.memoryStore, new ToolTraceSummarizer());
         this.agentContextService = new AgentContextService(
                 this.workspace,
                 this.contextBuilder,
@@ -278,7 +279,8 @@ public class AgentLoop {
                 this.tools,
                 this.hookFactory,
                 this::setToolContext,
-                this.extraHooks
+                this.extraHooks,
+                contextSelectionService
         );
         this.agentExecutionService = new AgentExecutionService(
                 this.runner,
@@ -840,12 +842,14 @@ public class AgentLoop {
     private CompletableFuture<OutboundMessage> cmdStatus(CommandRouter.CommandContext ctx) {
         Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
         int sessionMsgCount = session != null ? session.getMessages().size() : 0;
+        TaskState taskState = TaskState.fromSession(session);
 
         StringBuilder sb = new StringBuilder();
         sb.append("ricbot status\n");
         sb.append("model: ").append(model).append("\n");
         sb.append("workspace: ").append(workspace).append("\n");
         sb.append("session messages: ").append(sessionMsgCount).append("\n");
+        sb.append("\n").append(taskState.renderStatus());
 
         OutboundMessage out = new OutboundMessage();
         out.setChannel(ctx.getMsg().getChannel());
@@ -1014,7 +1018,9 @@ public class AgentLoop {
     }
 
     private void storeRuntimeCheckpoint(Session session, Map<String, Object> payload) {
-        session.getMetadata().put(SessionRuntimeKeys.RUNTIME_CHECKPOINT_KEY, payload);
+        Map<String, Object> checkpoint = payload != null ? new LinkedHashMap<>(payload) : new LinkedHashMap<>();
+        checkpoint.put("task_state", TaskState.fromSession(session).toMap());
+        session.getMetadata().put(SessionRuntimeKeys.RUNTIME_CHECKPOINT_KEY, checkpoint);
         sessionManager.save(session);
     }
 

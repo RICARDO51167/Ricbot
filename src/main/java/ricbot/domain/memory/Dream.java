@@ -81,12 +81,10 @@ public class Dream {
             Map<String, Object> kwargs = new HashMap<>();
             // 将格式化后的历史记录放入参数映射
             kwargs.put("history", formatHistory(newHistory));
-            // 将现有的 MEMORY.md 内容放入参数映射
             kwargs.put("memory_md", memoryMd);
-            // 将现有的 USER.md 内容放入参数映射
             kwargs.put("user_md", userMd);
-            // 将现有的 SOUL.md 内容放入参数映射
             kwargs.put("soul_md", soulMd);
+            kwargs.put("memory_entries_json", stringifyEntries(store.readMemoryEntries()));
 
             // 使用 PromptTemplates 渲染 "agent/dream.md" 模板，生成最终的 prompt 字符串
             String prompt;
@@ -132,8 +130,16 @@ public class Dream {
                 return DreamRunResult.noop("no_update");
             }
 
-            // 5. 解析并保存更新后的记忆
-            // 调用 parseAndSaveUpdates 方法解析 LLM 返回的内容并保存到相应的记忆文件中
+            List<MemoryEntry> memoryEntries = parseMemoryEntries(normalized);
+            if (!memoryEntries.isEmpty()) {
+                store.mergeMemoryEntries(memoryEntries);
+                ensureGitInitialized();
+                store.getGit().autoCommit("dream: update structured memories");
+                store.markHistoryAsProcessed(newHistory.size());
+                log.info("Dream: 结构化记忆更新成功。");
+                return DreamRunResult.updated("updated");
+            }
+
             ParseResult parsed = parseUpdates(normalized);
             if (!parsed.hasAnyUpdates()) {
                 log.warn("Dream: 无法解析模型输出，已跳过本次更新。");
@@ -194,6 +200,48 @@ public class Dream {
         if (parsed.memoryMd() != null) store.updateMemoryMd(parsed.memoryMd());
         if (parsed.userMd() != null) store.updateUserMd(parsed.userMd());
         if (parsed.soulMd() != null) store.updateSoulMd(parsed.soulMd());
+    }
+
+    private List<MemoryEntry> parseMemoryEntries(String text) {
+        if (text == null || text.isBlank()) {
+            return List.of();
+        }
+        try {
+            com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper().findAndRegisterModules();
+            Map<?, ?> parsed = mapper.readValue(text, Map.class);
+            Object entriesObj = parsed.get("entries");
+            if (!(entriesObj instanceof List<?> list)) {
+                return List.of();
+            }
+            List<MemoryEntry> entries = new ArrayList<>();
+            for (Object item : list) {
+                if (!(item instanceof Map<?, ?> raw)) {
+                    continue;
+                }
+                @SuppressWarnings("unchecked")
+                Map<String, Object> map = (Map<String, Object>) raw;
+                MemoryEntry entry = MemoryEntry.fromMap(map);
+                if (entry.getSummary() == null || entry.getSummary().isBlank()) {
+                    continue;
+                }
+                entries.add(entry);
+            }
+            return entries;
+        } catch (Exception ignored) {
+            return List.of();
+        }
+    }
+
+    private String stringifyEntries(List<MemoryEntry> entries) {
+        if (entries == null || entries.isEmpty()) {
+            return "[]";
+        }
+        StringBuilder sb = new StringBuilder("[\n");
+        for (MemoryEntry entry : entries) {
+            sb.append(entry.toMap()).append("\n");
+        }
+        sb.append("]");
+        return sb.toString();
     }
 
     private ParseResult parseUpdates(String text) {

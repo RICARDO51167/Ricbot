@@ -13,6 +13,7 @@ final class AgentRequestContext {
     private final String sessionKey;
     private final Session session;
     private final String combinedContext;
+    private final PromptContextBundle promptContext;
     private final List<Map<String, Object>> history;
     private final List<Map<String, Object>> initialMessages;
     private final AgentHook hook;
@@ -23,6 +24,7 @@ final class AgentRequestContext {
             String sessionKey,
             Session session,
             String combinedContext,
+            PromptContextBundle promptContext,
             List<Map<String, Object>> history,
             List<Map<String, Object>> initialMessages,
             AgentHook hook,
@@ -32,6 +34,7 @@ final class AgentRequestContext {
         this.sessionKey = sessionKey;
         this.session = session;
         this.combinedContext = combinedContext;
+        this.promptContext = promptContext;
         this.history = history;
         this.initialMessages = initialMessages;
         this.hook = hook;
@@ -52,6 +55,10 @@ final class AgentRequestContext {
 
     String combinedContext() {
         return combinedContext;
+    }
+
+    PromptContextBundle promptContext() {
+        return promptContext;
     }
 
     List<Map<String, Object>> history() {

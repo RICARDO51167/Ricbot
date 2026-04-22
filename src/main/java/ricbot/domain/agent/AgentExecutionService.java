@@ -49,7 +49,8 @@ final class AgentExecutionService {
                 request.hook(),
                 maxIterations,
                 maxIterationsMessage(maxIterations),
-                checkpointCallback
+                checkpointCallback,
+                request.session()
         ));
 
         AgentHook hook = request.hook();
@@ -63,7 +64,8 @@ final class AgentExecutionService {
                             hook,
                             bumped,
                             maxIterationsMessage(bumped),
-                            checkpointCallback
+                            checkpointCallback,
+                            request.session()
                     ));
                 }
             }
@@ -83,7 +85,8 @@ final class AgentExecutionService {
                 null,
                 maxIterations,
                 maxIterationsMessage(maxIterations),
-                null
+                null,
+                request.session()
         ));
 
         String finalContent = RuntimeUtils.isBlankText(result.getFinalContent())
@@ -98,7 +101,8 @@ final class AgentExecutionService {
             AgentHook hook,
             int iterations,
             String maxIterationMessage,
-            Consumer<Map<String, Object>> checkpointCallback
+            Consumer<Map<String, Object>> checkpointCallback,
+            ricbot.domain.session.Session session
     ) {
         return new AgentRunSpec()
                 .setInitialMessages(initialMessages)
@@ -115,7 +119,26 @@ final class AgentExecutionService {
                 .setSessionKey(sessionKey)
                 .setContextWindowTokens(contextWindowTokens)
                 .setContextBlockLimit(contextBlockLimit)
-                .setCheckpointCallback(checkpointCallback);
+                .setCheckpointCallback(checkpointCallback)
+                .setToolLifecycleCallback(new AgentRunSpec.ToolLifecycleCallback() {
+                    @Override
+                    public void onToolStart(String toolName, Map<String, Object> arguments) {
+                        synchronized (session) {
+                            TaskState taskState = TaskState.fromSession(session);
+                            taskState.markToolStart(toolName, arguments);
+                            taskState.persist(session);
+                        }
+                    }
+
+                    @Override
+                    public void onToolFinish(Map<String, Object> event) {
+                        synchronized (session) {
+                            TaskState taskState = TaskState.fromSession(session);
+                            taskState.markToolFinish(event);
+                            taskState.persist(session);
+                        }
+                    }
+                });
     }
 
     private String maxIterationsMessage(int iterations) {

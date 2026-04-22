@@ -4,6 +4,7 @@
 
 - 统一入口与统一主循环：CLI、API、Channel 最终都汇入 `AgentLoop`
 - 主链路可跑通：Provider 调用、Tool Calling、Session、Memory、Cron、Dream 均已有实现
+- 上下文工程升级：支持分层上下文、相关性召回、结构化工具摘要与任务状态恢复
 - 扩展点清晰：Provider、Tool、MCP、Channel、Skill 都有独立装配层
 - 不是简单 Demo：包含安全限制、流式输出、断点恢复、会话落盘、Git 化记忆管理
 
@@ -63,6 +64,7 @@ Ricbot 是一个面向“可工程化智能代理”的 Java 项目。它试图�
 | `AgentLoop` | 会话串行化、并发门控、后台任务调度 | 已支持 | 同一会话串行处理，支持全局并发限制 |
 | `AgentRunner` | LLM 调用与 Tool Calling 循环 | 已支持 | 支持串行/并发工具执行、流式回调、checkpoint |
 | `ContextBuilder` | system prompt / runtime context / history 组装 | 已支持 | 支持图片内容块，带运行时标签 |
+| `ContextSelectionService` | 分层上下文选择与相关性召回 | 已支持 | 拆分 `recent_history / task_state / user_profile / memory_recall / tool_trace` |
 | `CommandRouter` | Slash 命令 | 已支持 | 当前已注册 `/new`、`/stop`、`/help`、`/status`、`/dream*` |
 | Checkpoint | 运行时断点与恢复 | 已支持 | 使用会话元数据保存工具循环中间态 |
 | 自动补救 | 工具循环超限后二次放宽重试 | 已支持 | 非流式下会对某些 `tool_loop` 场景自动扩大迭代次数重试 |
@@ -96,8 +98,9 @@ Ricbot 是一个面向“可工程化智能代理”的 Java 项目。它试图�
 | --- | --- | --- | --- |
 | `SessionManager` | 会话 JSONL 落盘 | 已支持 | 文件位于工作区 `sessions/` |
 | `Consolidator` | 上下文逼近窗口时归档旧消息 | 已支持 | 归档摘要写入 `memory/history.jsonl` |
-| `MemoryStore` | `MEMORY.md` / `USER.md` / `SOUL.md` 管理 | 已支持 | 启动时自动补种模板文件 |
-| `Dream` | 基于历史更新长期记忆 | 已支持 | 支持 `/dream`、`/dream-log`、`/dream-restore` |
+| `MemoryStore` | 结构化记忆 + Markdown 兼容视图 | 已支持 | 主存储为 `memory/memory_entries.jsonl`，兼容输出 `MEMORY.md / USER.md / SOUL.md` |
+| `Dream` | 结构化记忆维护器 | 已支持 | 从历史提取候选记忆并做合并去重，支持 `/dream`、`/dream-log`、`/dream-restore` |
+| `task_state` | 任务状态机 | 已支持 | 会话内维护 `goal / current_step / blocked_reason / next_action`，`/status` 可见 |
 | `GitStore` | Dream 版本快照 | 已支持 | 用于记忆文件回溯与恢复 |
 | `CronService` | 定时任务调度 | 已支持 | 支持 `at/every/cron` 三类计划 |
 | `HeartbeatService` | 定期任务与通知 | 已支持 | `serve` 模式下会启动 |

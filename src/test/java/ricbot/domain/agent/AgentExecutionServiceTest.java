@@ -91,6 +91,7 @@ class AgentExecutionServiceTest {
                 "cli:direct",
                 session,
                 "",
+                new PromptContextBundle(),
                 List.of(),
                 List.of(Map.of("role", "user", "content", "hello")),
                 hook,

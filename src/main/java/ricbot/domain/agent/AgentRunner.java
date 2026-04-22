@@ -10,6 +10,8 @@ import ricbot.integration.llm.api.ToolCallRequest; // 工具调用请求对象�
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.*; // 引入 Java 集合框架
 import java.util.concurrent.*; // 引入并发包，用于多线程执行工具
 import java.util.concurrent.atomic.AtomicInteger;
@@ -432,6 +434,10 @@ public class AgentRunner implements AutoCloseable {
      */
     private ToolExecution executeSingleTool(ToolRegistry tools, ToolCallRequest toolCall, AgentRunSpec spec) {
         String toolName = toolCall.getName(); // 获取工具名
+        if (spec.getToolLifecycleCallback() != null) {
+            spec.getToolLifecycleCallback().onToolStart(toolName, toolCall.getArguments());
+        }
+        Instant startedAt = Instant.now();
 
         Object result; // 工具执行结果
         String status = "ok"; // 状态，默认为 ok
@@ -475,6 +481,11 @@ public class AgentRunner implements AutoCloseable {
         event.put("name", toolName);
         event.put("status", status);
         event.put("detail", detail);
+        event.put("tool_call_id", toolCall.getId());
+        event.put("arguments_summary", summarizeArgs(toolCall.getArguments()));
+        event.put("result_summary", summarizeResult(contentObj));
+        event.put("duration_ms", Duration.between(startedAt, Instant.now()).toMillis());
+        event.put("executed_at", Instant.now().toString());
 
         // 构建工具消息对象
         Map<String, Object> toolMsg = buildToolMessage(
@@ -486,6 +497,13 @@ public class AgentRunner implements AutoCloseable {
                 contentObj,
                 spec.getMaxToolResultChars()
         );
+        Object content = toolMsg.get("content");
+        if (content instanceof String s) {
+            event.put("truncated", s.contains("\"truncated\":true") || s.contains("(truncated)"));
+        }
+        if (spec.getToolLifecycleCallback() != null) {
+            spec.getToolLifecycleCallback().onToolFinish(event);
+        }
 
         return new ToolExecution(toolName, toolMsg, event);
     }
@@ -604,6 +622,24 @@ public class AgentRunner implements AutoCloseable {
             }
         }
         return String.valueOf(result);
+    }
+
+    private String summarizeArgs(Map<String, Object> arguments) {
+        if (arguments == null || arguments.isEmpty()) {
+            return "";
+        }
+        List<String> parts = new ArrayList<>();
+        for (Map.Entry<String, Object> entry : arguments.entrySet()) {
+            if (parts.size() >= 3) {
+                break;
+            }
+            parts.add(entry.getKey() + "=" + truncate(String.valueOf(entry.getValue()), 50));
+        }
+        return String.join(", ", parts);
+    }
+
+    private String summarizeResult(Object contentObj) {
+        return truncate(String.valueOf(contentObj), 220);
     }
 
     private String toToolContent(Object obj) {

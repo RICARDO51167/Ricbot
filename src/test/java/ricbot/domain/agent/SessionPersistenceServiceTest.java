@@ -30,6 +30,7 @@ class SessionPersistenceServiceTest {
                 "cli:direct",
                 session,
                 "",
+                new PromptContextBundle(),
                 List.of(Map.of("role", "assistant", "content", "old reply")),
                 List.of(),
                 null,
@@ -50,6 +51,12 @@ class SessionPersistenceServiceTest {
                                 Map.of("role", "assistant", "content", ""),
                                 Map.of("role", "assistant", "content", "done")
                         ))
+                        .setToolEvents(List.of(new LinkedHashMap<>(Map.of(
+                                "name", "read_file",
+                                "status", "ok",
+                                "detail", "done",
+                                "result_summary", "file content"
+                        ))))
                         .setFinalContent("done"),
                 "done"
         );
@@ -63,6 +70,8 @@ class SessionPersistenceServiceTest {
         assertTrue(toolContent.startsWith("0123456789AB"));
         assertTrue(toolContent.contains("(truncated)"));
         assertEquals("done", session.getMessages().get(2).get("content"));
+        assertTrue(session.getMetadata().containsKey(SessionRuntimeKeys.TOOL_TRACE_KEY));
+        assertEquals("completed", String.valueOf(((Map<?, ?>) session.getMetadata().get(SessionRuntimeKeys.TASK_STATE_KEY)).get("status")));
         assertFalse(session.getMetadata().containsKey(SessionRuntimeKeys.PENDING_USER_TURN_KEY));
         assertFalse(session.getMetadata().containsKey(SessionRuntimeKeys.RUNTIME_CHECKPOINT_KEY));
         assertFalse(session.getMetadata().containsKey("_last_interrupt_reason"));
@@ -79,6 +88,7 @@ class SessionPersistenceServiceTest {
                 "cli:direct",
                 session,
                 "",
+                new PromptContextBundle(),
                 List.of(),
                 List.of(),
                 null,

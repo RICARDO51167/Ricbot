@@ -3,6 +3,7 @@ package ricbot.domain.agent;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import ricbot.domain.hook.AgentHook;
+import ricbot.domain.memory.MemoryEntry;
 import ricbot.domain.memory.MemoryStore;
 import ricbot.domain.message.InboundMessage;
 import ricbot.domain.message.MessageBus;
@@ -27,13 +28,20 @@ class AgentContextServiceTest {
     void buildInteractiveRequest_combinesMemorySkillsSummaryAndBuildsHook(@TempDir Path workspace) throws Exception {
         Files.createDirectories(workspace.resolve("memory"));
         Files.createDirectories(workspace.resolve("skills").resolve("demo"));
-        Files.writeString(workspace.resolve("memory").resolve("MEMORY.md"), "remember this");
-        Files.writeString(workspace.resolve("USER.md"), "user profile");
-        Files.writeString(workspace.resolve("SOUL.md"), "soul profile");
         Files.writeString(workspace.resolve("skills").resolve("demo").resolve("SKILL.md"), "Demo skill body");
 
         ContextBuilder contextBuilder = new ContextBuilder(workspace, "UTC", List.of());
         MemoryStore memoryStore = new MemoryStore(workspace);
+        memoryStore.mergeMemoryEntries(List.of(
+                new MemoryEntry()
+                        .setType(MemoryEntry.TYPE_PREFERENCE)
+                        .setScope(MemoryEntry.SCOPE_LONG_TERM)
+                        .setSummary("remember this")
+                        .setDetails("user profile")
+                        .setImportance(0.9d)
+                        .setConfidence(0.9d)
+                        .setTags(List.of("user"))
+        ));
         SkillsLoader skillsLoader = new SkillsLoader(workspace, null, Set.of());
         SkillRouter skillRouter = new SkillRouter(skillsLoader, 3, 12_000);
         ToolRegistry tools = new ToolRegistry();
@@ -51,7 +59,8 @@ class AgentContextServiceTest {
                 tools,
                 hookFactory,
                 (channel, chatId, messageId) -> appliedContext.set(channel + ":" + chatId + ":" + messageId),
-                globalHooks
+                globalHooks,
+                new ContextSelectionService(memoryStore, new ToolTraceSummarizer())
         );
 
         Session session = new Session("cli:direct");
@@ -60,6 +69,7 @@ class AgentContextServiceTest {
                 "cli:direct",
                 session,
                 "summary block",
+                TaskState.fromSession(session),
                 null,
                 true
         );
@@ -69,14 +79,12 @@ class AgentContextServiceTest {
         AgentRequestContext request = service.buildInteractiveRequest(msg, prepared, List.of(), 20);
 
         assertEquals("cli:direct:m-1", appliedContext.get());
-        assertTrue(request.combinedContext().contains("MEMORY.md"));
         assertTrue(request.combinedContext().contains("remember this"));
-        assertTrue(request.combinedContext().contains("USER.md"));
-        assertTrue(request.combinedContext().contains("SOUL.md"));
         assertTrue(request.combinedContext().contains("summary block"));
         assertTrue(request.combinedContext().contains("Demo skill body"));
         assertEquals(1, request.history().size());
         assertNotNull(request.hook());
+        assertFalse(request.promptContext().isEmpty());
         Map<String, Object> current = request.initialMessages().get(request.initialMessages().size() - 1);
         assertEquals("user", current.get("role"));
         assertEquals("please use demo", current.get("content"));

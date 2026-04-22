@@ -105,10 +105,23 @@ public class ContextBuilder {
             String sessionSummary,
             String currentRole
     ) {
+        return buildMessages(history, currentMessage, media, channel, chatId, sessionSummary, currentRole, null);
+    }
+
+    public List<Map<String, Object>> buildMessages(
+            List<Map<String, Object>> history,
+            String currentMessage,
+            List<String> media,
+            String channel,
+            String chatId,
+            String sessionSummary,
+            String currentRole,
+            PromptContextBundle promptContext
+    ) {
         List<Map<String, Object>> messages = new ArrayList<>();
 
         String runtime = buildRuntimeContext(channel, chatId, timezone);
-        messages.add(systemMessage(buildSystemPrompt(sessionSummary, runtime, channel)));
+        messages.add(systemMessage(buildSystemPrompt(sessionSummary, runtime, channel, promptContext)));
 
         if (history != null && !history.isEmpty()) {
             messages.addAll(sanitizeHistory(history));
@@ -276,6 +289,10 @@ public class ContextBuilder {
      * @return 渲染后的系统提示词字符串
      */
     private String buildSystemPrompt(String sessionSummary, String runtimeContext, String channel) {
+        return buildSystemPrompt(sessionSummary, runtimeContext, channel, null);
+    }
+
+    private String buildSystemPrompt(String sessionSummary, String runtimeContext, String channel, PromptContextBundle promptContext) {
         // 准备模板参数
         Map<String, Object> kwargs = new HashMap<>();
         String workspacePath = workspace != null ? workspace.toAbsolutePath().normalize().toString() : "";
@@ -287,6 +304,7 @@ public class ContextBuilder {
         kwargs.put("disabled_skills", (disabledSkills == null || disabledSkills.isEmpty()) ? "" : String.join(", ", disabledSkills));
         // 会话摘要，如果为null则设为空字符串
         kwargs.put("session_summary", (sessionSummary == null) ? "" : sessionSummary);
+        kwargs.put("structured_context", promptContext != null ? promptContext.render() : "");
 
         String system;
         try {

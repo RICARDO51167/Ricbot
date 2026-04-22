@@ -65,6 +65,8 @@ public class AgentRunSpec {
      */
     private InjectionCallback injectionCallback;
 
+    private ToolLifecycleCallback toolLifecycleCallback;
+
     /**
      * 获取初始消息列表
      * @return 初始消息列表
@@ -369,6 +371,15 @@ public class AgentRunSpec {
         return contextWindowTokens;
     }
 
+    public ToolLifecycleCallback getToolLifecycleCallback() {
+        return toolLifecycleCallback;
+    }
+
+    public AgentRunSpec setToolLifecycleCallback(ToolLifecycleCallback toolLifecycleCallback) {
+        this.toolLifecycleCallback = toolLifecycleCallback;
+        return this;
+    }
+
     /**
      * 进度回调函数式接口
      */
@@ -394,5 +405,11 @@ public class AgentRunSpec {
          * @throws Exception 异常
          */
         List<Map<String, Object>> inject() throws Exception;
+    }
+
+    interface ToolLifecycleCallback {
+        void onToolStart(String toolName, Map<String, Object> arguments);
+
+        void onToolFinish(Map<String, Object> event);
     }
 }

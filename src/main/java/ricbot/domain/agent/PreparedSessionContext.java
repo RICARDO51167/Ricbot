@@ -7,20 +7,23 @@ final class PreparedSessionContext {
 
     private final String sessionKey;
     private final Session session;
-    private final String summaryContext;
+    private final String archivedSummary;
+    private final TaskState taskStateSnapshot;
     private final OutboundMessage immediateResponse;
     private final boolean userPersistedEarly;
 
     PreparedSessionContext(
             String sessionKey,
             Session session,
-            String summaryContext,
+            String archivedSummary,
+            TaskState taskStateSnapshot,
             OutboundMessage immediateResponse,
             boolean userPersistedEarly
     ) {
         this.sessionKey = sessionKey;
         this.session = session;
-        this.summaryContext = summaryContext;
+        this.archivedSummary = archivedSummary;
+        this.taskStateSnapshot = taskStateSnapshot;
         this.immediateResponse = immediateResponse;
         this.userPersistedEarly = userPersistedEarly;
     }
@@ -33,8 +36,12 @@ final class PreparedSessionContext {
         return session;
     }
 
-    String summaryContext() {
-        return summaryContext;
+    String archivedSummary() {
+        return archivedSummary;
+    }
+
+    TaskState taskStateSnapshot() {
+        return taskStateSnapshot;
     }
 
     OutboundMessage immediateResponse() {
@@ -46,6 +53,10 @@ final class PreparedSessionContext {
     }
 
     PreparedSessionContext withUserPersistedEarly(boolean userPersistedEarly) {
-        return new PreparedSessionContext(sessionKey, session, summaryContext, immediateResponse, userPersistedEarly);
+        return new PreparedSessionContext(sessionKey, session, archivedSummary, taskStateSnapshot, immediateResponse, userPersistedEarly);
+    }
+
+    PreparedSessionContext withTaskStateSnapshot(TaskState taskStateSnapshot) {
+        return new PreparedSessionContext(sessionKey, session, archivedSummary, taskStateSnapshot, immediateResponse, userPersistedEarly);
     }
 }

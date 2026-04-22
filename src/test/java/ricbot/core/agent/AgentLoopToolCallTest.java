@@ -207,4 +207,60 @@ public class AgentLoopToolCallTest {
         Session s = sessions.getOrCreate(sessionKey);
         assertTrue(s.getMessages().stream().anyMatch(m -> "assistant".equals(m.get("role")) && "second".equals(m.get("content"))));
     }
+
+    @Test
+    void statusCommand_readsTaskState(@TempDir Path workspace) throws Exception {
+        MessageBus bus = new MessageBus();
+        SessionManager sessions = new SessionManager(workspace);
+        LLMProvider provider = new LLMProvider("k", "http://localhost") {
+            @Override
+            public LLMResponse chat(
+                    List<Map<String, Object>> messages,
+                    List<Map<String, Object>> tools,
+                    String model,
+                    Integer maxTokens,
+                    Double temperature,
+                    String reasoningEffort,
+                    Object toolChoice
+            ) {
+                return new LLMResponse().setContent("done").setFinishReason("stop");
+            }
+        };
+
+        Config.WebToolsConfig web = new Config.WebToolsConfig();
+        web.setEnable(false);
+        Config.ExecToolConfig exec = new Config.ExecToolConfig();
+        exec.setEnable(false);
+        Config.DreamConfig dreamConfig = new Config.DreamConfig();
+        dreamConfig.setEnabled(false);
+
+        AgentLoop loop = new AgentLoop(
+                bus,
+                provider,
+                workspace,
+                "gpt-4o-mini",
+                5,
+                200000,
+                50,
+                10_000,
+                "standard",
+                web,
+                exec,
+                Map.of(),
+                true,
+                sessions,
+                "UTC",
+                false,
+                List.of(),
+                0,
+                dreamConfig
+        );
+
+        String sessionKey = "cli:direct";
+        loop.processDirect("帮我整理任务状态", sessionKey);
+        var out = loop.processDirect("/status", sessionKey);
+
+        assertTrue(out.getContent().contains("goal: 帮我整理任务状态"));
+        assertTrue(out.getContent().contains("status: completed"));
+    }
 }

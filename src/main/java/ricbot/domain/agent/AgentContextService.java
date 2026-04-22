@@ -10,6 +10,8 @@ import ricbot.domain.skill.SkillsLoader;
 import ricbot.tool.api.ToolRegistry;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -24,6 +26,7 @@ final class AgentContextService {
     private final AgentHookFactory hookFactory;
     private final ToolContextApplier toolContextApplier;
     private final List<AgentHook> globalHooks;
+    private final ContextSelectionService contextSelectionService;
 
     AgentContextService(
             Path workspace,
@@ -34,7 +37,8 @@ final class AgentContextService {
             ToolRegistry tools,
             AgentHookFactory hookFactory,
             ToolContextApplier toolContextApplier,
-            List<AgentHook> globalHooks
+            List<AgentHook> globalHooks,
+            ContextSelectionService contextSelectionService
     ) {
         this.workspace = workspace;
         this.contextBuilder = contextBuilder;
@@ -45,6 +49,7 @@ final class AgentContextService {
         this.hookFactory = hookFactory;
         this.toolContextApplier = toolContextApplier;
         this.globalHooks = globalHooks;
+        this.contextSelectionService = contextSelectionService;
     }
 
     AgentRequestContext buildInteractiveRequest(
@@ -55,7 +60,6 @@ final class AgentContextService {
     ) {
         toolContextApplier.apply(msg.getChannel(), msg.getChatId(), messageIdOf(msg));
 
-        String memoryContext = memoryStore.getMemoryContext();
         String skillsContext = skillsLoader.getSkillsContext();
         SkillRouter.SelectionResult selected = skillRouter.selectAndRender(new SkillRoutingContext(
                 workspace,
@@ -67,14 +71,24 @@ final class AgentContextService {
                 Map.of()
         ));
 
+        ContextSelectionService.SelectionResult selection = contextSelectionService.select(
+                new ContextSelectionService.SessionPreparedInputs(
+                        prepared.archivedSummary(),
+                        prepared.taskStateSnapshot(),
+                        recentToolTrace(prepared.session())
+                ),
+                prepared.session().getMessages(),
+                msg.getContent(),
+                historyWindowMessages
+        );
+
         String combinedContext = combineContext(
-                memoryContext,
                 skillsContext,
-                prepared.summaryContext(),
+                selection.bundle().render(),
                 selected.renderedContext()
         );
 
-        List<Map<String, Object>> history = prepared.session().getHistory(historyWindowMessages);
+        List<Map<String, Object>> history = selection.history();
         List<Map<String, Object>> initialMessages = contextBuilder.buildMessages(
                 history,
                 msg.getContent(),
@@ -82,7 +96,8 @@ final class AgentContextService {
                 msg.getChannel(),
                 msg.getChatId(),
                 combinedContext,
-                "user"
+                "user",
+                selection.bundle()
         );
 
         AgentHook hook = hookFactory.create(msg, globalHooks, requestHooks);
@@ -91,6 +106,7 @@ final class AgentContextService {
                 prepared.sessionKey(),
                 prepared.session(),
                 combinedContext,
+                selection.bundle(),
                 history,
                 initialMessages,
                 hook,
@@ -115,7 +131,8 @@ final class AgentContextService {
                 channel,
                 chatId,
                 null,
-                currentRole
+                currentRole,
+                null
         );
 
         return new AgentRequestContext(
@@ -123,6 +140,7 @@ final class AgentContextService {
                 prepared.sessionKey(),
                 prepared.session(),
                 "",
+                new PromptContextBundle(),
                 history,
                 initialMessages,
                 null,
@@ -130,11 +148,10 @@ final class AgentContextService {
         );
     }
 
-    private String combineContext(String memoryContext, String skillsContext, String summaryContext, String selectedContext) {
+    private String combineContext(String skillsContext, String structuredContext, String selectedContext) {
         StringBuilder sb = new StringBuilder();
-        appendBlock(sb, memoryContext);
         appendBlock(sb, skillsContext);
-        appendBlock(sb, summaryContext);
+        appendBlock(sb, structuredContext);
         appendBlock(sb, selectedContext);
         return sb.toString();
     }
@@ -155,5 +172,23 @@ final class AgentContextService {
         }
         Object value = msg.getMetadata().get("message_id");
         return value != null ? String.valueOf(value) : null;
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<Map<String, Object>> recentToolTrace(Session session) {
+        if (session == null) {
+            return List.of();
+        }
+        Object raw = session.getMetadata().get(SessionRuntimeKeys.TOOL_TRACE_KEY);
+        if (!(raw instanceof List<?> list)) {
+            return List.of();
+        }
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (Object item : list) {
+            if (item instanceof Map<?, ?> map) {
+                out.add(new LinkedHashMap<>((Map<String, Object>) map));
+            }
+        }
+        return out;
     }
 }

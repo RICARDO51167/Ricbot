@@ -24,6 +24,11 @@ class SessionPreparationServiceTest {
     void prepareInteractiveTurn_restoresCheckpointAndPendingToolFailure(@TempDir Path workspace) {
         Fixture fixture = fixture(workspace);
         Session session = fixture.sessions.getOrCreate("cli:direct");
+        session.getMetadata().put(SessionRuntimeKeys.TASK_STATE_KEY, Map.of(
+                "goal", "old goal",
+                "status", "active",
+                "current_step", "waiting"
+        ));
         session.getMetadata().put(SessionRuntimeKeys.RUNTIME_CHECKPOINT_KEY, new LinkedHashMap<>(Map.of(
                 "assistant_message", new LinkedHashMap<>(Map.of("role", "assistant", "content", "working")),
                 "completed_tool_results", List.of(new LinkedHashMap<>(Map.of(
@@ -36,7 +41,13 @@ class SessionPreparationServiceTest {
                         "id", "call_pending",
                         "function", new LinkedHashMap<>(Map.of("name", "read_file"))
                 ))),
-                "interruption_reason", "manual_stop"
+                "interruption_reason", "manual_stop",
+                "task_state", new LinkedHashMap<>(Map.of(
+                        "goal", "restore goal",
+                        "status", "blocked",
+                        "current_step", "tool failed",
+                        "blocked_reason", "manual stop"
+                ))
         )));
         session.getMetadata().put("_last_interrupt_reason", "manual_stop");
         fixture.sessions.save(session);
@@ -54,6 +65,8 @@ class SessionPreparationServiceTest {
         assertEquals("tool", messages.get(1).get("role"));
         assertEquals("tool", messages.get(2).get("role"));
         assertTrue(String.valueOf(messages.get(2).get("content")).contains("手动停止"));
+        assertEquals("restore goal", String.valueOf(prepared.session().getMetadata()
+                .get(SessionRuntimeKeys.TASK_STATE_KEY) instanceof Map<?, ?> map ? map.get("goal") : ""));
         assertFalse(prepared.session().getMetadata().containsKey(SessionRuntimeKeys.RUNTIME_CHECKPOINT_KEY));
         assertFalse(prepared.session().getMetadata().containsKey(SessionRuntimeKeys.PENDING_USER_TURN_KEY));
     }

@@ -44,14 +44,14 @@ final class SessionPreparationService {
             immediateResponse = commandDispatcher.dispatch(msg, session, sessionKey, raw);
         }
 
-        return new PreparedSessionContext(sessionKey, session, summaryContext, immediateResponse, false);
+        return new PreparedSessionContext(sessionKey, session, summaryContext, TaskState.fromSession(session), immediateResponse, false);
     }
 
     PreparedSessionContext prepareSystemTurn(String sessionKey) {
         Session session = sessionManager.getOrCreate(sessionKey);
         restoreRuntimeCheckpoint(session);
         restorePendingUserTurn(session);
-        return new PreparedSessionContext(sessionKey, session, null, null, false);
+        return new PreparedSessionContext(sessionKey, session, null, TaskState.fromSession(session), null, false);
     }
 
     PreparedSessionContext persistUserTurnIfNeeded(PreparedSessionContext prepared, InboundMessage msg) {
@@ -61,8 +61,11 @@ final class SessionPreparationService {
 
         prepared.session().addMessage("user", msg.getContent());
         prepared.session().getMetadata().put(SessionRuntimeKeys.PENDING_USER_TURN_KEY, true);
+        TaskState taskState = TaskState.fromSession(prepared.session());
+        taskState.beginTurn(msg.getContent());
+        taskState.persist(prepared.session());
         sessionManager.save(prepared.session());
-        return prepared.withUserPersistedEarly(true);
+        return prepared.withTaskStateSnapshot(taskState).withUserPersistedEarly(true);
     }
 
     @SuppressWarnings("unchecked")
@@ -76,6 +79,7 @@ final class SessionPreparationService {
         Object assistantMessage = checkpoint.get("assistant_message");
         Object completedToolResults = checkpoint.get("completed_tool_results");
         Object pendingToolCalls = checkpoint.get("pending_tool_calls");
+        Object taskState = checkpoint.get("task_state");
 
         if (assistantMessage instanceof Map<?, ?> assistant) {
             session.getMessages().add(new LinkedHashMap<>((Map<String, Object>) assistant));
@@ -107,6 +111,10 @@ final class SessionPreparationService {
                 toolMessage.put("timestamp", Instant.now().toString());
                 session.getMessages().add(toolMessage);
             }
+        }
+
+        if (taskState instanceof Map<?, ?> taskMap) {
+            session.getMetadata().put(SessionRuntimeKeys.TASK_STATE_KEY, new LinkedHashMap<>((Map<String, Object>) taskMap));
         }
 
         session.getMetadata().remove(SessionRuntimeKeys.PENDING_USER_TURN_KEY);

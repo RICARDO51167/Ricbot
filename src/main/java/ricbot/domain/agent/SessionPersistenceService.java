@@ -15,6 +15,7 @@ final class SessionPersistenceService {
 
     private final SessionManager sessionManager;
     private final int maxToolResultChars;
+    private final ToolTraceSummarizer toolTraceSummarizer = new ToolTraceSummarizer();
 
     SessionPersistenceService(SessionManager sessionManager, int maxToolResultChars) {
         this.sessionManager = sessionManager;
@@ -25,6 +26,8 @@ final class SessionPersistenceService {
         Session session = request.session();
         int saveSkip = 1 + request.history().size() + (request.userPersistedEarly() ? 1 : 0);
         saveTurn(session, outcome.runResult().getMessages(), saveSkip);
+        updateToolTrace(session, outcome.runResult());
+        updateTaskState(session, outcome);
 
         session.getMetadata().remove(SessionRuntimeKeys.PENDING_USER_TURN_KEY);
         session.getMetadata().remove(SessionRuntimeKeys.RUNTIME_CHECKPOINT_KEY);
@@ -44,6 +47,8 @@ final class SessionPersistenceService {
     ) {
         Session session = request.session();
         saveTurn(session, outcome.runResult().getMessages(), 1 + request.history().size());
+        updateToolTrace(session, outcome.runResult());
+        updateTaskState(session, outcome);
         session.getMetadata().remove(SessionRuntimeKeys.RUNTIME_CHECKPOINT_KEY);
         session.getMetadata().remove("_last_interrupt_reason");
         sessionManager.save(session);
@@ -111,5 +116,27 @@ final class SessionPersistenceService {
 
         entry.putIfAbsent("timestamp", Instant.now().toString());
         return entry;
+    }
+
+    private void updateToolTrace(Session session, AgentRunResult result) {
+        List<Map<String, Object>> traces = toolTraceSummarizer.summarize(result.getToolEvents());
+        if (traces.isEmpty()) {
+            return;
+        }
+        int keep = Math.max(4, Math.min(12, traces.size()));
+        session.getMetadata().put(
+                SessionRuntimeKeys.TOOL_TRACE_KEY,
+                new java.util.ArrayList<>(traces.subList(Math.max(0, traces.size() - keep), traces.size()))
+        );
+    }
+
+    private void updateTaskState(Session session, ExecutionOutcome outcome) {
+        TaskState taskState = TaskState.fromSession(session);
+        if ("stop".equals(outcome.runResult().getStopReason())) {
+            taskState.markCompleted(outcome.finalContent());
+        } else if (outcome.runResult().getError() != null && !outcome.runResult().getError().isBlank()) {
+            taskState.markBlocked(outcome.runResult().getError());
+        }
+        taskState.persist(session);
     }
 }

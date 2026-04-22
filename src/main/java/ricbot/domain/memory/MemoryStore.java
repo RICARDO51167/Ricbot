@@ -40,6 +40,8 @@ public class MemoryStore {
     private final Path memoryDir;
     // 主记忆文件路径 (memory/MEMORY.md)
     private final Path memoryFile;
+    // 结构化记忆文件路径 (memory/memory_entries.jsonl)
+    private final Path memoryEntriesFile;
     // 历史记录文件路径 (memory/history.jsonl)
     private final Path historyFile;
     // 旧版历史记录文件路径 (memory/HISTORY.md)
@@ -78,6 +80,7 @@ public class MemoryStore {
         this.memoryDir = HelperUtils.ensureDir(workspace.resolve("memory"));
         // 初始化各文件路径
         this.memoryFile = memoryDir.resolve("MEMORY.md");
+        this.memoryEntriesFile = memoryDir.resolve("memory_entries.jsonl");
         this.historyFile = memoryDir.resolve("history.jsonl");
         this.legacyHistoryFile = memoryDir.resolve("HISTORY.md");
         this.soulFile = workspace.resolve("SOUL.md");
@@ -229,6 +232,7 @@ public class MemoryStore {
      * @return 记忆内容，如果为空则返回空字符串
      */
     public String getMemoryContext() {
+        rebuildMarkdownViewsIfNeeded();
         String memory = readMemory();
         String user = readUser();
         String soul = readSoul();
@@ -245,6 +249,209 @@ public class MemoryStore {
         }
         String out = sb.toString().trim();
         return HelperUtils.truncateText(out, 12_000);
+    }
+
+    public List<MemoryEntry> readMemoryEntries() {
+        if (!Files.exists(memoryEntriesFile)) {
+            return new ArrayList<>();
+        }
+        List<MemoryEntry> entries = new ArrayList<>();
+        try (BufferedReader reader = Files.newBufferedReader(memoryEntriesFile)) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (line.isBlank()) {
+                    continue;
+                }
+                Map<String, Object> parsed = MAPPER.readValue(line, new TypeReference<>() {});
+                entries.add(MemoryEntry.fromMap(parsed));
+            }
+        } catch (Exception e) {
+            log.warn("读取结构化记忆失败: {}", memoryEntriesFile, e);
+        }
+        return entries;
+    }
+
+    public void writeMemoryEntries(List<MemoryEntry> entries) {
+        List<MemoryEntry> normalized = entries != null ? entries : List.of();
+        try {
+            Files.createDirectories(memoryEntriesFile.getParent());
+            StringBuilder sb = new StringBuilder();
+            for (MemoryEntry entry : normalized) {
+                if (entry == null) {
+                    continue;
+                }
+                sb.append(MAPPER.writeValueAsString(entry.toMap())).append("\n");
+            }
+            Files.writeString(memoryEntriesFile, sb.toString(), StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+        } catch (IOException e) {
+            throw new RuntimeException("写入结构化记忆失败: " + memoryEntriesFile, e);
+        }
+    }
+
+    public List<MemoryEntry> mergeMemoryEntries(List<MemoryEntry> candidates) {
+        List<MemoryEntry> existing = readMemoryEntries();
+        Map<String, MemoryEntry> byKey = new LinkedHashMap<>();
+        for (MemoryEntry entry : existing) {
+            byKey.put(entry.dedupeKey(), entry);
+        }
+
+        for (MemoryEntry candidate : candidates != null ? candidates : List.<MemoryEntry>of()) {
+            if (candidate == null || candidate.getSummary() == null || candidate.getSummary().isBlank()) {
+                continue;
+            }
+            String key = candidate.dedupeKey();
+            MemoryEntry current = byKey.get(key);
+            if (current == null) {
+                candidate.touch();
+                byKey.put(key, candidate);
+                continue;
+            }
+            current.setImportance(Math.max(current.getImportance(), candidate.getImportance()));
+            current.setConfidence(Math.max(current.getConfidence(), candidate.getConfidence()));
+            if (current.getDetails().isBlank() && !candidate.getDetails().isBlank()) {
+                current.setDetails(candidate.getDetails());
+            }
+            if (MemoryEntry.SCOPE_LONG_TERM.equals(candidate.getScope())) {
+                current.setScope(candidate.getScope());
+            }
+            if (MemoryEntry.STATUS_DISCARDED.equals(candidate.getStatus())) {
+                current.setStatus(MemoryEntry.STATUS_DISCARDED);
+            }
+            current.getAliases().addAll(candidate.getAliases());
+            current.setAliases(current.getAliases().stream().distinct().toList());
+            current.getTags().addAll(candidate.getTags());
+            current.setTags(current.getTags().stream().distinct().toList());
+            current.touch();
+        }
+
+        List<MemoryEntry> merged = new ArrayList<>(byKey.values());
+        writeMemoryEntries(merged);
+        rebuildMarkdownViews(merged);
+        return merged;
+    }
+
+    public void rebuildMarkdownViewsIfNeeded() {
+        if (!Files.exists(memoryEntriesFile)) {
+            return;
+        }
+        if (Files.exists(memoryFile) && Files.exists(userFile) && Files.exists(soulFile)) {
+            return;
+        }
+        rebuildMarkdownViews(readMemoryEntries());
+    }
+
+    public void rebuildMarkdownViews(List<MemoryEntry> entries) {
+        List<MemoryEntry> source = entries != null ? entries : List.of();
+        List<String> memoryLines = new ArrayList<>();
+        List<String> userLines = new ArrayList<>();
+        List<String> soulLines = new ArrayList<>();
+        for (MemoryEntry entry : source) {
+            if (entry == null || !entry.isActive()) {
+                continue;
+            }
+            if (MemoryEntry.SCOPE_DISCARDABLE.equals(entry.getScope())) {
+                continue;
+            }
+            if (entry.isSoulEntry()) {
+                soulLines.add(entry.renderLine());
+            } else if (entry.isUserProfile()) {
+                userLines.add(entry.renderLine());
+            } else {
+                memoryLines.add(entry.renderLine());
+            }
+        }
+        try {
+            updateMemoryMd(renderMarkdown("MEMORY", memoryLines));
+            updateUserMd(renderMarkdown("USER", userLines));
+            updateSoulMd(renderMarkdown("SOUL", soulLines));
+        } catch (IOException e) {
+            throw new RuntimeException("更新 Markdown 记忆视图失败", e);
+        }
+    }
+
+    public List<MemoryEntry> recallMemories(String query, String taskGoal, int limit) {
+        List<MemoryEntry> all = readMemoryEntries();
+        if (all.isEmpty()) {
+            return List.of();
+        }
+        String combined = (query != null ? query : "") + "\n" + (taskGoal != null ? taskGoal : "");
+        Set<String> queryTokens = tokenize(combined);
+
+        List<ScoredMemory> scored = new ArrayList<>();
+        for (MemoryEntry entry : all) {
+            if (entry == null || !entry.isRecallable()) {
+                continue;
+            }
+            String haystack = (entry.getSummary() + "\n" + entry.getDetails() + "\n" + String.join(" ", entry.getTags())).toLowerCase(Locale.ROOT);
+            Set<String> memoryTokens = tokenize(haystack);
+            long hits = memoryTokens.stream().filter(queryTokens::contains).count();
+            double score = entry.getImportance() * 2.0d + entry.getConfidence();
+            if (!queryTokens.isEmpty()) {
+                score += (double) hits / Math.max(1d, queryTokens.size()) * 4.0d;
+            }
+            if (MemoryEntry.SCOPE_LONG_TERM.equals(entry.getScope())) {
+                score += 1.5d;
+            }
+            scored.add(new ScoredMemory(entry, score));
+        }
+
+        List<MemoryEntry> selected = scored.stream()
+                .sorted((a, b) -> Double.compare(b.score(), a.score()))
+                .limit(Math.max(0, limit))
+                .map(ScoredMemory::entry)
+                .toList();
+        if (!selected.isEmpty()) {
+            List<MemoryEntry> allEntries = new ArrayList<>(all);
+            for (MemoryEntry entry : allEntries) {
+                if (selected.stream().anyMatch(sel -> sel.getId().equals(entry.getId()))) {
+                    entry.markUsed();
+                }
+            }
+            writeMemoryEntries(allEntries);
+        }
+        return selected;
+    }
+
+    public List<String> recallArchivedHistory(String query, int limit) {
+        if (query == null || query.isBlank() || !Files.exists(historyFile) || limit <= 0) {
+            return List.of();
+        }
+        Set<String> queryTokens = tokenize(query);
+        List<ScoredHistory> scored = new ArrayList<>();
+        try (BufferedReader reader = Files.newBufferedReader(historyFile)) {
+            String line;
+            int order = 0;
+            while ((line = reader.readLine()) != null) {
+                if (line.isBlank()) {
+                    continue;
+                }
+                Map<String, Object> parsed = MAPPER.readValue(line, new TypeReference<>() {});
+                String type = String.valueOf(parsed.getOrDefault("type", ""));
+                if (!"text".equals(type) && !"raw_archive".equals(type)) {
+                    continue;
+                }
+                String content = String.valueOf(parsed.getOrDefault("content", ""));
+                if (content.isBlank()) {
+                    continue;
+                }
+                Set<String> tokens = tokenize(content);
+                long hits = tokens.stream().filter(queryTokens::contains).count();
+                if (hits == 0) {
+                    order++;
+                    continue;
+                }
+                double score = hits + (order * 0.001d);
+                scored.add(new ScoredHistory(content, score));
+                order++;
+            }
+        } catch (Exception e) {
+            log.warn("读取归档历史召回失败: {}", historyFile, e);
+        }
+        return scored.stream()
+                .sorted((a, b) -> Double.compare(b.score(), a.score()))
+                .limit(limit)
+                .map(item -> HelperUtils.truncateText(item.content(), 260))
+                .toList();
     }
 
     /**
@@ -415,5 +622,37 @@ public class MemoryStore {
                 throw new RuntimeException(e);
             }
         }
+    }
+
+    private String renderMarkdown(String title, List<String> lines) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("# ").append(title).append("\n\n");
+        if (lines == null || lines.isEmpty()) {
+            sb.append("_暂无结构化记忆条目。_\n");
+            return sb.toString();
+        }
+        for (String line : lines) {
+            sb.append(line).append("\n");
+        }
+        return sb.toString().trim() + "\n";
+    }
+
+    private Set<String> tokenize(String text) {
+        Set<String> out = new LinkedHashSet<>();
+        if (text == null || text.isBlank()) {
+            return out;
+        }
+        for (String token : text.toLowerCase(Locale.ROOT).split("[^\\p{IsAlphabetic}\\p{IsDigit}_]+")) {
+            if (token.length() >= 2) {
+                out.add(token);
+            }
+        }
+        return out;
+    }
+
+    private record ScoredMemory(MemoryEntry entry, double score) {
+    }
+
+    private record ScoredHistory(String content, double score) {
     }
 }
