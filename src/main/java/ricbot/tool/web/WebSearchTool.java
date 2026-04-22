@@ -105,7 +105,7 @@ public class WebSearchTool extends Tool {
 
         try {
             // 构建 HTTP 客户端
-            HttpClient client = WebToolSupport.buildClient();
+            HttpClient client = WebToolSupport.buildClient(proxy);
             // 构造 Brave Search API 的请求 URL，包含查询词和结果数量
             String url = "https://api.search.brave.com/res/v1/web/search?q="
                     + encode(query) + "&count=" + n;
@@ -166,7 +166,7 @@ public class WebSearchTool extends Tool {
 
         try {
             // 构建 HTTP 客户端
-            HttpClient client = WebToolSupport.buildClient();
+            HttpClient client = WebToolSupport.buildClient(proxy);
             // 发送 POST 请求到 Tavily API
             Map<String, Object> json = WebToolSupport.postJson(
                     client,
@@ -216,7 +216,7 @@ public class WebSearchTool extends Tool {
 
         try {
             // 构建 HTTP 客户端
-            HttpClient client = WebToolSupport.buildClient();
+            HttpClient client = WebToolSupport.buildClient(proxy);
             // 构造完整的请求 URL，包含查询词和 JSON 格式参数
             String url = endpoint + "?q=" + encode(query) + "&format=json";
 
@@ -255,7 +255,7 @@ public class WebSearchTool extends Tool {
 
         try {
             // 构建 HTTP 客户端
-            HttpClient client = WebToolSupport.buildClient();
+            HttpClient client = WebToolSupport.buildClient(proxy);
             // 构造 Jina Search API 的请求 URL
             String url = "https://s.jina.ai/?q=" + encode(query);
 
@@ -313,7 +313,7 @@ public class WebSearchTool extends Tool {
 
         try {
             // 构建 HTTP 客户端
-            HttpClient client = WebToolSupport.buildClient();
+            HttpClient client = WebToolSupport.buildClient(proxy);
             // 构造 Kagi Search API 的请求 URL，包含查询词和限制数量
             String url = "https://kagi.com/api/v0/search?q=" + encode(query) + "&limit=" + n;
 
@@ -370,7 +370,7 @@ public class WebSearchTool extends Tool {
     private String searchDuckDuckGo(String query, int n) {
         try {
             // 构建 HTTP 客户端
-            HttpClient client = WebToolSupport.buildClient();
+            HttpClient client = WebToolSupport.buildClient(proxy);
             // 构造 DuckDuckGo HTML 搜索 URL
             String url = "https://duckduckgo.com/html/?q=" + encode(query);
 

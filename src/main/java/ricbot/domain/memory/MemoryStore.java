@@ -22,7 +22,9 @@ import java.util.regex.Pattern;
  */
 public class MemoryStore {
 
+    // 日志记录器，用于记录类运行时的日志信息
     private static final Logger log = LoggerFactory.getLogger(MemoryStore.class);
+    // JSON 对象映射器，用于处理 JSON 序列化与反序列化
     private static final ObjectMapper MAPPER = new ObjectMapper().findAndRegisterModules();
 
     // 默认最大历史记录条目数
@@ -58,6 +60,7 @@ public class MemoryStore {
     // Git 存储管理对象
     private final GitStore git;
 
+    // 用于同步访问游标文件的锁对象
     private final Object cursorLock = new Object();
 
     /**
@@ -122,6 +125,11 @@ public class MemoryStore {
         }
     }
 
+    /**
+     * 确保种子文件存在，如果不存在则从资源中复制
+     * @param target 目标文件路径
+     * @param resourcePath 资源路径
+     */
     private void ensureSeedFile(Path target, String resourcePath) {
         try {
             if (target == null || Files.exists(target)) {
@@ -251,6 +259,10 @@ public class MemoryStore {
         return HelperUtils.truncateText(out, 12_000);
     }
 
+    /**
+     * 读取结构化记忆条目
+     * @return 记忆条目列表
+     */
     public List<MemoryEntry> readMemoryEntries() {
         if (!Files.exists(memoryEntriesFile)) {
             return new ArrayList<>();
@@ -271,6 +283,10 @@ public class MemoryStore {
         return entries;
     }
 
+    /**
+     * 写入结构化记忆条目
+     * @param entries 记忆条目列表
+     */
     public void writeMemoryEntries(List<MemoryEntry> entries) {
         List<MemoryEntry> normalized = entries != null ? entries : List.of();
         try {
@@ -288,6 +304,11 @@ public class MemoryStore {
         }
     }
 
+    /**
+     * 合并候选记忆条目到现有记忆中
+     * @param candidates 候选记忆条目列表
+     * @return 合并后的记忆条目列表
+     */
     public List<MemoryEntry> mergeMemoryEntries(List<MemoryEntry> candidates) {
         List<MemoryEntry> existing = readMemoryEntries();
         Map<String, MemoryEntry> byKey = new LinkedHashMap<>();
@@ -330,16 +351,23 @@ public class MemoryStore {
         return merged;
     }
 
+    /**
+     * 如果需要，重建 Markdown 视图
+     */
     public void rebuildMarkdownViewsIfNeeded() {
         if (!Files.exists(memoryEntriesFile)) {
             return;
         }
-        if (Files.exists(memoryFile) && Files.exists(userFile) && Files.exists(soulFile)) {
+        if (!markdownViewsNeedRebuild()) {
             return;
         }
         rebuildMarkdownViews(readMemoryEntries());
     }
 
+    /**
+     * 根据记忆条目重建 Markdown 视图
+     * @param entries 记忆条目列表
+     */
     public void rebuildMarkdownViews(List<MemoryEntry> entries) {
         List<MemoryEntry> source = entries != null ? entries : List.of();
         List<String> memoryLines = new ArrayList<>();
@@ -369,6 +397,13 @@ public class MemoryStore {
         }
     }
 
+    /**
+     * 召回相关记忆
+     * @param query 查询字符串
+     * @param taskGoal 任务目标
+     * @param limit 返回数量限制
+     * @return 召回的记忆条目列表
+     */
     public List<MemoryEntry> recallMemories(String query, String taskGoal, int limit) {
         List<MemoryEntry> all = readMemoryEntries();
         if (all.isEmpty()) {
@@ -412,6 +447,12 @@ public class MemoryStore {
         return selected;
     }
 
+    /**
+     * 召回归档历史
+     * @param query 查询字符串
+     * @param limit 返回数量限制
+     * @return 召回的历史记录内容列表
+     */
     public List<String> recallArchivedHistory(String query, int limit) {
         if (query == null || query.isBlank() || !Files.exists(historyFile) || limit <= 0) {
             return List.of();
@@ -430,7 +471,7 @@ public class MemoryStore {
                 if (!"text".equals(type) && !"raw_archive".equals(type)) {
                     continue;
                 }
-                String content = String.valueOf(parsed.getOrDefault("content", ""));
+                String content = renderArchivedHistoryContent(type, parsed.get("content"));
                 if (content.isBlank()) {
                     continue;
                 }
@@ -601,6 +642,10 @@ public class MemoryStore {
         }
     }
 
+    /**
+     * 追加历史记录条目到文件
+     * @param entry 历史记录条目
+     */
     private void appendHistoryEntry(Map<String, Object> entry) {
         synchronized (cursorLock) {
             try {
@@ -624,6 +669,12 @@ public class MemoryStore {
         }
     }
 
+    /**
+     * 渲染 Markdown 格式内容
+     * @param title 标题
+     * @param lines 内容行列表
+     * @return Markdown 字符串
+     */
     private String renderMarkdown(String title, List<String> lines) {
         StringBuilder sb = new StringBuilder();
         sb.append("# ").append(title).append("\n\n");
@@ -637,6 +688,90 @@ public class MemoryStore {
         return sb.toString().trim() + "\n";
     }
 
+    private boolean markdownViewsNeedRebuild() {
+        if (!Files.exists(memoryFile) || !Files.exists(userFile) || !Files.exists(soulFile)) {
+            return true;
+        }
+        try {
+            long entriesMtime = Files.getLastModifiedTime(memoryEntriesFile).toMillis();
+            return Files.getLastModifiedTime(memoryFile).toMillis() < entriesMtime
+                    || Files.getLastModifiedTime(userFile).toMillis() < entriesMtime
+                    || Files.getLastModifiedTime(soulFile).toMillis() < entriesMtime;
+        } catch (IOException e) {
+            log.debug("检查记忆 Markdown 视图状态失败: {}", memoryEntriesFile, e);
+            return true;
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private String renderArchivedHistoryContent(String type, Object rawContent) {
+        if ("text".equals(type)) {
+            return rawContent != null ? String.valueOf(rawContent) : "";
+        }
+        if (!"raw_archive".equals(type) || !(rawContent instanceof Map<?, ?> map)) {
+            return rawContent != null ? String.valueOf(rawContent) : "";
+        }
+
+        Object countObj = map.get("messages_count");
+        int count = countObj instanceof Number n ? n.intValue() : 0;
+        List<String> snippets = new ArrayList<>();
+        Object messagesObj = map.get("messages");
+        if (messagesObj instanceof List<?> messages) {
+            for (Object item : messages) {
+                if (!(item instanceof Map<?, ?> rawMessage)) {
+                    continue;
+                }
+                Map<String, Object> message = (Map<String, Object>) rawMessage;
+                String role = String.valueOf(message.getOrDefault("role", ""));
+                String content = normalizeArchivedMessageContent(message.get("content"));
+                if (content.isBlank()) {
+                    continue;
+                }
+                snippets.add((role.isBlank() ? "message" : role) + ": " + content);
+                if (snippets.size() >= 4) {
+                    break;
+                }
+            }
+        }
+
+        StringBuilder sb = new StringBuilder("archived session");
+        if (count > 0) {
+            sb.append(" (").append(count).append(" messages)");
+        }
+        if (!snippets.isEmpty()) {
+            sb.append(": ").append(String.join(" | ", snippets));
+        }
+        return sb.toString();
+    }
+
+    private String normalizeArchivedMessageContent(Object rawContent) {
+        if (rawContent == null) {
+            return "";
+        }
+        if (rawContent instanceof String s) {
+            return HelperUtils.truncateText(s.trim(), 120);
+        }
+        if (rawContent instanceof List<?> list) {
+            List<String> parts = new ArrayList<>();
+            for (Object item : list) {
+                if (item == null) {
+                    continue;
+                }
+                parts.add(String.valueOf(item));
+                if (parts.size() >= 3) {
+                    break;
+                }
+            }
+            return HelperUtils.truncateText(String.join(" ", parts).trim(), 120);
+        }
+        return HelperUtils.truncateText(String.valueOf(rawContent).trim(), 120);
+    }
+
+    /**
+     * 对文本进行分词处理
+     * @param text 输入文本
+     * @return 分词后的集合
+     */
     private Set<String> tokenize(String text) {
         Set<String> out = new LinkedHashSet<>();
         if (text == null || text.isBlank()) {
@@ -650,9 +785,15 @@ public class MemoryStore {
         return out;
     }
 
+    /**
+     * 带评分的记忆条目记录
+     */
     private record ScoredMemory(MemoryEntry entry, double score) {
     }
 
+    /**
+     * 带评分的历史记录记录
+     */
     private record ScoredHistory(String content, double score) {
     }
 }

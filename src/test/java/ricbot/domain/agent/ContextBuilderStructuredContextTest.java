@@ -19,6 +19,7 @@ class ContextBuilderStructuredContextTest {
         bundle.addItem("task_state", "goal: finish upgrade");
         bundle.addItem("user_profile", "prefers concise replies");
         bundle.addItem("memory_recall", "project uses Java 17");
+        bundle.addItem("memory_recall", "project uses Java 17");
         bundle.addItem("tool_trace", "grep: ok | result=found files");
 
         List<Map<String, Object>> messages = builder.buildMessages(
@@ -41,5 +42,6 @@ class ContextBuilderStructuredContextTest {
         assertTrue(system.indexOf("## recent_history") < system.indexOf("## task_state"));
         assertTrue(system.indexOf("## task_state") < system.indexOf("## user_profile"));
         assertTrue(system.contains("grep: ok | result=found files"));
+        assertEquals(system.indexOf("project uses Java 17"), system.lastIndexOf("project uses Java 17"));
     }
 }

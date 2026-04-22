@@ -18,8 +18,63 @@ import java.util.concurrent.*;
 public final class MCPAdapters {
 
     private static final Logger log = LoggerFactory.getLogger(MCPAdapters.class);
+    private static final ExecutorService CALL_EXECUTOR = createCallExecutor();
 
     private MCPAdapters() {
+    }
+
+    private static ExecutorService createCallExecutor() {
+        int threads = Math.max(4, Math.min(Runtime.getRuntime().availableProcessors(), 16));
+        return new ThreadPoolExecutor(
+                threads,
+                threads,
+                30L,
+                TimeUnit.SECONDS,
+                new LinkedBlockingQueue<>(256),
+                r -> {
+                    Thread t = new Thread(r, "mcp-call");
+                    t.setDaemon(true);
+                    return t;
+                },
+                new ThreadPoolExecutor.CallerRunsPolicy()
+        );
+    }
+
+    private static ExecutorService createConnectExecutor(int serverCount) {
+        int threads = Math.max(1, Math.min(serverCount, Math.min(Runtime.getRuntime().availableProcessors(), 8)));
+        return new ThreadPoolExecutor(
+                threads,
+                threads,
+                30L,
+                TimeUnit.SECONDS,
+                new LinkedBlockingQueue<>(Math.max(threads, serverCount)),
+                r -> {
+                    Thread t = new Thread(r, "mcp-connect");
+                    t.setDaemon(true);
+                    return t;
+                },
+                new ThreadPoolExecutor.CallerRunsPolicy()
+        );
+    }
+
+    private static <T> T awaitMcpCall(Callable<T> task, int timeoutSeconds) throws Exception {
+        Future<T> future = CALL_EXECUTOR.submit(task);
+        try {
+            return future.get(timeoutSeconds, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            future.cancel(true);
+            Thread.currentThread().interrupt();
+            throw e;
+        } catch (TimeoutException e) {
+            future.cancel(true);
+            throw e;
+        } catch (CancellationException e) {
+            future.cancel(true);
+            throw e;
+        } catch (ExecutionException e) {
+            future.cancel(true);
+            throw e;
+        }
     }
 
     @SuppressWarnings("unchecked")
@@ -241,13 +296,8 @@ public final class MCPAdapters {
 
         @Override
         public Object execute(Map<String, Object> kwargs) {
-            ExecutorService executor = Executors.newSingleThreadExecutor();
             try {
-                Future<MCPToolResult> future = executor.submit(() ->
-                        session.callTool(originalName, kwargs)
-                );
-
-                MCPToolResult result = future.get(toolTimeout, TimeUnit.SECONDS);
+                MCPToolResult result = awaitMcpCall(() -> session.callTool(originalName, kwargs), toolTimeout);
 
                 List<String> parts = new ArrayList<>();
                 for (Object block : result.getContent()) {
@@ -262,6 +312,10 @@ public final class MCPAdapters {
             } catch (TimeoutException e) {
                 log.warn("MCP 工具 '{}' 在 {} 秒后超时", name, toolTimeout);
                 return "Error: MCP tool call timed out after " + toolTimeout + "s.";
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                log.warn("MCP 工具 '{}' 被中断", name);
+                return "Error: MCP tool call was interrupted.";
             } catch (CancellationException e) {
                 log.warn("MCP 工具 '{}' 已被服务端/SDK 取消", name);
                 return "Error: MCP tool call was cancelled.";
@@ -279,8 +333,6 @@ public final class MCPAdapters {
                 }
                 log.error("MCP 工具 '{}' 执行失败: {}: {}", name, e.getClass().getSimpleName(), e.getMessage(), e);
                 return "Error: MCP tool call failed: " + e.getClass().getSimpleName();
-            } finally {
-                executor.shutdownNow();
             }
         }
     }
@@ -335,13 +387,8 @@ public final class MCPAdapters {
 
         @Override
         public Object execute(Map<String, Object> kwargs) {
-            ExecutorService executor = Executors.newSingleThreadExecutor();
             try {
-                Future<MCPResourceResult> future = executor.submit(() ->
-                        session.readResource(uri)
-                );
-
-                MCPResourceResult result = future.get(resourceTimeout, TimeUnit.SECONDS);
+                MCPResourceResult result = awaitMcpCall(() -> session.readResource(uri), resourceTimeout);
 
                 List<String> parts = new ArrayList<>();
                 for (Object block : result.getContents()) {
@@ -359,14 +406,16 @@ public final class MCPAdapters {
             } catch (TimeoutException e) {
                 log.warn("MCP 资源 '{}' 在 {} 秒后超时", name, resourceTimeout);
                 return "（MCP 资源读取超时：" + resourceTimeout + " 秒）";
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                log.warn("MCP 资源 '{}' 被中断", name);
+                return "（MCP 资源读取已被中断）";
             } catch (CancellationException e) {
                 log.warn("MCP 资源 '{}' 已被服务端/SDK 取消", name);
                 return "（MCP 资源读取已被服务端/SDK 取消）";
             } catch (Exception e) {
                 log.error("MCP 资源 '{}' 读取失败: {}: {}", name, e.getClass().getSimpleName(), e.getMessage(), e);
                 return "（MCP 资源读取失败：" + e.getClass().getSimpleName() + "）";
-            } finally {
-                executor.shutdownNow();
             }
         }
     }
@@ -446,13 +495,8 @@ public final class MCPAdapters {
 
         @Override
         public Object execute(Map<String, Object> kwargs) {
-            ExecutorService executor = Executors.newSingleThreadExecutor();
             try {
-                Future<MCPPromptResult> future = executor.submit(() ->
-                        session.getPrompt(promptName, kwargs)
-                );
-
-                MCPPromptResult result = future.get(promptTimeout, TimeUnit.SECONDS);
+                MCPPromptResult result = awaitMcpCall(() -> session.getPrompt(promptName, kwargs), promptTimeout);
 
                 List<String> parts = new ArrayList<>();
                 for (MCPPromptMessage message : result.getMessages()) {
@@ -477,14 +521,16 @@ public final class MCPAdapters {
             } catch (TimeoutException e) {
                 log.warn("MCP 提示词 '{}' 在 {} 秒后超时", name, promptTimeout);
                 return "（MCP prompt 调用超时：" + promptTimeout + " 秒）";
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                log.warn("MCP 提示词 '{}' 被中断", name);
+                return "（MCP prompt 调用已被中断）";
             } catch (CancellationException e) {
                 log.warn("MCP 提示词 '{}' 已被服务端/SDK 取消", name);
                 return "（MCP prompt 调用已被服务端/SDK 取消）";
             } catch (Exception e) {
                 log.error("MCP 提示词 '{}' 调用失败: {}: {}", name, e.getClass().getSimpleName(), e.getMessage(), e);
                 return "（MCP prompt 调用失败：" + e.getClass().getSimpleName() + "）";
-            } finally {
-                executor.shutdownNow();
             }
         }
     }
@@ -508,7 +554,7 @@ public final class MCPAdapters {
         Map<String, MCPServerConnection> serverConnections = new HashMap<>();
         List<Future<ServerConnectResult>> futures = new ArrayList<>();
 
-        ExecutorService executor = Executors.newCachedThreadPool();
+        ExecutorService executor = createConnectExecutor(mcpServers.size());
 
         List<String> names = new ArrayList<>(mcpServers.keySet());
 

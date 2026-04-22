@@ -67,15 +67,14 @@ public class GroqTranscriptionProvider implements TranscriptionProvider {
         try {
             // 生成 multipart/form-data 的边界字符串
             String boundary = "----NanobotBoundary" + UUID.randomUUID().toString().replace("-", "");
-            // 构建 multipart 请求体，包含音频文件和模型名称
-            byte[] body = MultipartBodyBuilder.build(boundary, filePath, "whisper-large-v3");
+            HttpRequest.BodyPublisher body = MultipartBodyBuilder.buildPublisher(boundary, filePath, "whisper-large-v3");
 
             // 构建 HTTP 请求
             HttpRequest request = HttpRequest.newBuilder(URI.create(apiUrl))
                     .timeout(Duration.ofSeconds(60)) // 设置超时时间为 60 秒
                     .header("Authorization", "Bearer " + apiKey) // 设置授权头
                     .header("Content-Type", "multipart/form-data; boundary=" + boundary) // 设置内容类型和边界
-                    .POST(HttpRequest.BodyPublishers.ofByteArray(body)) // 设置 POST 请求体
+                    .POST(body) // 设置 POST 请求体
                     .build();
 
             // 创建 HttpClient 实例

@@ -302,12 +302,29 @@ public class AgentLoop {
         this.concurrencyGate = maxConcurrent > 0 ? new Semaphore(maxConcurrent) : null;
 
         // 初始化线程池
-        this.executor = Executors.newCachedThreadPool();
+        this.executor = createWorkerExecutor();
         this.scheduler = Executors.newSingleThreadScheduledExecutor();
 
         // 注册默认工具
         registerDefaultTools();
         registerCommandRoutes();
+    }
+
+    private static ExecutorService createWorkerExecutor() {
+        int threads = Math.max(4, Runtime.getRuntime().availableProcessors());
+        return new ThreadPoolExecutor(
+                threads,
+                threads,
+                30L,
+                TimeUnit.SECONDS,
+                new LinkedBlockingQueue<>(512),
+                r -> {
+                    Thread t = new Thread(r, "agent-worker");
+                    t.setDaemon(true);
+                    return t;
+                },
+                new ThreadPoolExecutor.CallerRunsPolicy()
+        );
     }
 
     // ---------------------------------------------------------------------
@@ -602,73 +619,112 @@ public class AgentLoop {
     /**
      * 处理单条用户消息。
      *
-     * @param msg       入站消息
-     * @param sessionKey 会话键
-     * @return 出站消息响应
-     * @throws Exception 处理过程中可能抛出的异常
+     * @param msg          入站消息，包含用户发送的原始内容、渠道、发送者等信息
+     * @param sessionKey   会话键，用于标识和隔离不同的对话上下文
+     * @param requestHooks 请求级别的 Agent 钩子列表，用于在请求处理过程中插入自定义逻辑
+     * @return 出站消息响应，包含 Agent 生成的回复内容
+     * @throws Exception 处理过程中可能抛出的异常，如 LLM 调用失败、持久化错误等
      */
     private OutboundMessage processMessage(InboundMessage msg, String sessionKey, List<AgentHook> requestHooks) throws Exception {
+        // 检查消息渠道是否为系统通道（system），如果是则委托给系统消息处理器
         if ("system".equals(msg.getChannel())) {
             return processSystemMessage(msg);
         }
 
+        // 生成消息内容的预览字符串，用于日志记录，限制长度为 80 字符以避免日志过长
         String preview = msg.getContent() != null && msg.getContent().length() > 80
                 ? msg.getContent().substring(0, 80) + "..."
                 : String.valueOf(msg.getContent());
+        // 记录开始处理消息的日志，包含渠道、发送者和内容预览
         log.info("处理来自 {}:{} 的消息: {}", msg.getChannel(), msg.getSenderId(), preview);
 
+        // 准备交互式会话上下文：加载历史、应用钩子、检查命令等
+        // 传入一个回调函数，用于在准备阶段遇到命令时进行分发处理
         PreparedSessionContext prepared = sessionPreparationService.prepareInteractiveTurn(
                 msg,
                 sessionKey,
                 (commandMessage, session, key, raw) -> dispatchCommand(commandMessage, session, key, raw, false)
         );
+        // 如果准备阶段产生了立即响应（例如命中了快捷命令或拦截逻辑），直接返回该响应，不再继续后续流程
         if (prepared.immediateResponse() != null) {
             return prepared.immediateResponse();
         }
 
+        // 如果需要，将用户的当前轮次消息持久化到会话存储中，并返回更新后的上下文
         PreparedSessionContext persisted = sessionPreparationService.persistUserTurnIfNeeded(prepared, msg);
+        
+        // 构建 Agent 请求上下文：组装发送给 LLM 的完整提示词、工具列表、历史消息窗口等
         AgentRequestContext request = agentContextService.buildInteractiveRequest(
                 msg,
                 persisted,
                 requestHooks,
-                historyWindowAsMessages()
+                historyWindowAsMessages() // 计算历史消息窗口大小
         );
+        
+        // 执行交互式 Agent 循环：调用 LLM，处理工具调用，直到得出最终结论或达到最大迭代次数
+        // 传入一个回调函数，用于在执行过程中保存运行时检查点（如任务状态）
         ExecutionOutcome outcome = agentExecutionService.executeInteractive(
                 request,
                 payload -> storeRuntimeCheckpoint(request.session(), payload)
         );
+        
+        // 持久化交互式轮次的结果：将 Agent 的回复、工具调用记录等保存到会话存储中
         PersistenceResult persistence = sessionPersistenceService.persistInteractiveTurn(request, outcome);
 
+        // 记录回复日志，包含渠道、发送者和回复内容的缩写（限制 120 字符）
         log.info("回复给 {}:{}: {}", msg.getChannel(), msg.getSenderId(), abbreviate(outcome.finalContent(), 120));
+        
+        // 从持久化结果中提取并返回最终的出站消息对象
         return persistence.outboundMessage();
     }
 
     /**
      * 处理系统通道（system channel）的后台消息。
+     * 此类消息通常由内部任务（如定时任务、子代理回调）触发，不直接来自用户交互。
      *
-     * @param msg 入站消息
-     * @return 出站消息响应
-     * @throws Exception 处理过程中可能抛出的异常
+     * @param msg 入站消息，包含触发系统处理的相关信息
+     * @return 出站消息响应，包含处理结果或状态更新
+     * @throws Exception 处理过程中可能抛出的异常，如会话准备失败、LLM 调用错误等
      */
     private OutboundMessage processSystemMessage(InboundMessage msg) throws Exception {
+        // 解析 chatId 以提取渠道（channel）和具体的聊天标识（chatId）
+        // 如果 chatId 包含冒号，则按第一个冒号分割；否则默认渠道为 "cli"，剩余部分为 chatId
         String[] parts = msg.getChatId() != null && msg.getChatId().contains(":")
                 ? msg.getChatId().split(":", 2)
                 : new String[]{"cli", msg.getChatId()};
 
+        // 提取渠道名称，用于确定消息的来源类型（如 cli, web, system 等）
         String channel = parts[0];
+        // 提取具体的聊天 ID，用于标识特定的对话或任务上下文
         String chatId = parts[1];
+        // 构建唯一的会话键，格式为 "channel:chatId"，用于定位和管理会话状态
         String key = channel + ":" + chatId;
+
+        // 确定当前消息在对话中的角色
+        // 如果发送者是 "subagent"，则视为助手（assistant）的后续动作；否则视为用户（user）发起的系统指令
         String currentRole = "subagent".equals(msg.getSenderId()) ? "assistant" : "user";
+
+        // 准备系统轮次的会话上下文
+        // 加载相关的历史记忆、会话状态，并为系统消息的处理做预处理
         PreparedSessionContext prepared = sessionPreparationService.prepareSystemTurn(key);
+
+        // 构建系统请求上下文
+        // 组装发送给 LLM 的必要信息，包括消息内容、会话上下文、渠道信息、角色以及历史消息窗口大小
         AgentRequestContext request = agentContextService.buildSystemRequest(
                 msg,
                 prepared,
                 channel,
                 chatId,
                 currentRole,
-                historyWindowAsMessages()
+                historyWindowAsMessages() // 计算并传入历史消息窗口的最大条数
         );
+
+        // 执行系统级的 Agent 逻辑
+        // 调用 LLM 进行处理，可能涉及工具调用或状态更新，但不一定产生直接的用户可见回复
         ExecutionOutcome outcome = agentExecutionService.executeSystem(request);
+
+        // 持久化系统轮次的处理结果
+        // 将 LLM 的输出、状态变更等保存回会话存储，并生成最终的出站消息对象
         return sessionPersistenceService.persistSystemTurn(msg, channel, chatId, request, outcome).outboundMessage();
     }
 
@@ -785,6 +841,16 @@ public class AgentLoop {
         return out;
     }
 
+    /**
+     * 分发并执行命令。
+     *
+     * @param msg          入站消息，包含用户请求的原始信息
+     * @param session      当前会话对象，可能为 null
+     * @param sessionKey   会话键，用于标识特定会话
+     * @param raw          原始命令字符串，例如 "/stop" 或 "/help"
+     * @param priorityOnly 是否仅分发高优先级命令
+     * @return 命令执行后的出站消息，如果执行失败或无响应则返回 null
+     */
     private OutboundMessage dispatchCommand(
             InboundMessage msg,
             Session session,
@@ -792,14 +858,20 @@ public class AgentLoop {
             String raw,
             boolean priorityOnly
     ) {
+        // 构建命令上下文，封装执行命令所需的所有参数
         CommandRouter.CommandContext ctx = new CommandRouter.CommandContext(msg, session, sessionKey, raw, this);
         try {
+            // 根据 priorityOnly 标志决定调用优先分发还是普通分发
             CompletableFuture<OutboundMessage> future = priorityOnly
                     ? commandRouter.dispatchPriority(ctx)
                     : commandRouter.dispatch(ctx);
+            
+            // 阻塞等待命令执行完成并获取结果，如果 future 为 null 则返回 null
             return future != null ? future.join() : null;
         } catch (Exception e) {
+            // 捕获命令执行过程中的异常，记录警告日志
             log.warn("命令执行失败: {}", raw, e);
+            // 发生异常时返回 null，表示命令处理失败
             return null;
         }
     }

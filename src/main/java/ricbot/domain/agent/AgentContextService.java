@@ -74,8 +74,6 @@ final class AgentContextService {
         // 应用工具上下文，设置通道、聊天ID和消息ID
         toolContextApplier.apply(msg.getChannel(), msg.getChatId(), messageIdOf(msg));
 
-        // 获取技能上下文
-        String skillsContext = skillsLoader.getSkillsContext();
         // 执行技能路由选择并渲染结果
         SkillRouter.SelectionResult selected = skillRouter.selectAndRender(new SkillRoutingContext(
                 workspace,
@@ -101,7 +99,6 @@ final class AgentContextService {
 
         // 合并技能上下文、结构化上下文和选定的上下文
         String combinedContext = combineContext(
-                skillsContext,
                 selection.bundle().render(),
                 selected.renderedContext()
         );
@@ -176,11 +173,11 @@ final class AgentContextService {
     }
 
     // 合并多个上下文字符串
-    private String combineContext(String skillsContext, String structuredContext, String selectedContext) {
+    private String combineContext(String... blocks) {
         StringBuilder sb = new StringBuilder();
-        appendBlock(sb, skillsContext);
-        appendBlock(sb, structuredContext);
-        appendBlock(sb, selectedContext);
+        for (String block : blocks) {
+            appendBlock(sb, block);
+        }
         return sb.toString();
     }
 

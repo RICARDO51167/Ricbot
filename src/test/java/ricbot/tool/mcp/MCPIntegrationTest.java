@@ -3,6 +3,7 @@ package ricbot.tool.mcp;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpServer;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import ricbot.infra.config.Config;
 import ricbot.tool.api.ToolRegistry;
@@ -12,6 +13,7 @@ import ricbot.integration.mcp.MCPServerConnection;
 
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
+import java.net.SocketException;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
@@ -144,9 +146,14 @@ public class MCPIntegrationTest {
         private volatile boolean running;
 
         void start() throws Exception {
-            server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+            try {
+                server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+            } catch (SocketException e) {
+                Assumptions.assumeTrue(false, "当前环境不允许绑定本地端口: " + e.getMessage());
+                return;
+            }
             running = true;
-            server.setExecutor(Executors.newCachedThreadPool());
+            server.setExecutor(Executors.newFixedThreadPool(2));
 
             server.createContext("/sse", exchange -> {
                 exchange.getResponseHeaders().add("Content-Type", "text/event-stream; charset=utf-8");

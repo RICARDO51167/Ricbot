@@ -82,8 +82,8 @@ public class CronService implements AutoCloseable {
 
     private CronStore store; // 内存中的任务存储对象
     private volatile boolean running = false; // 标记服务是否正在运行，使用 volatile 保证可见性
-    private volatile ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(); // 创建单线程 scheduled 线程池，用于定时任务调度
-    private volatile ExecutorService jobExecutor = Executors.newCachedThreadPool();
+    private volatile ScheduledExecutorService scheduler; // 延迟初始化，统一通过 ensureExecutors 创建
+    private volatile ExecutorService jobExecutor; // 延迟初始化，统一通过 ensureExecutors 创建
     private ScheduledFuture<?> timerTask; // 保存当前调度的定时任务句柄，用于取消或管理
 
     public CronService(Path storePath) {

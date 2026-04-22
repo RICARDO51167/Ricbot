@@ -33,8 +33,11 @@ final class PromptContextBundle {
         if (section == null || item == null || item.isBlank()) {
             return;
         }
-        // 如果该部分不存在则创建新列表，然后添加修剪后的内容
-        sections.computeIfAbsent(section, ignored -> new ArrayList<>()).add(item.trim());
+        String normalized = item.trim();
+        List<String> target = sections.computeIfAbsent(section, ignored -> new ArrayList<>());
+        if (!target.contains(normalized)) {
+            target.add(normalized);
+        }
     }
 
     // 获取指定部分的内容列表，如果不存在则返回空列表

@@ -77,15 +77,14 @@ public class OpenAITranscriptionProvider implements TranscriptionProvider {
         try {
             // 生成 multipart/form-data 的边界字符串
             String boundary = "----NanobotBoundary" + UUID.randomUUID().toString().replace("-", "");
-            // 构建 multipart 请求体
-            byte[] body = MultipartBodyBuilder.build(boundary, filePath, "whisper-1");
+            HttpRequest.BodyPublisher body = MultipartBodyBuilder.buildPublisher(boundary, filePath, "whisper-1");
 
             // 构建 HTTP POST 请求
             HttpRequest request = HttpRequest.newBuilder(URI.create(apiUrl))
                     .timeout(Duration.ofSeconds(60)) // 设置超时时间为 60 秒
                     .header("Authorization", "Bearer " + apiKey) // 设置认证头
                     .header("Content-Type", "multipart/form-data; boundary=" + boundary) // 设置内容类型
-                    .POST(HttpRequest.BodyPublishers.ofByteArray(body)) // 设置请求体
+                    .POST(body) // 设置请求体
                     .build();
 
             // 创建 HttpClient 实例并发送请求

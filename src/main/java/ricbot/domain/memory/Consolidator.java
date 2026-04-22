@@ -169,57 +169,74 @@ public class Consolidator {
      * @param session 当前会话对象
      */
     public void maybeConsolidateByTokens(Session session) {
-        // 如果没有消息或未配置上下文窗口，直接返回
+        // 检查会话中是否有消息，或者上下文窗口大小是否未配置/无效，若是则直接返回
         if (session.getMessages().isEmpty() || contextWindowTokens == null || contextWindowTokens <= 0) {
             return;
         }
 
-        // 使用会话特定的锁，避免并发修改问题
+        // 获取基于会话 Key 的锁对象，确保同一会话的并发操作互斥，避免数据竞争
         synchronized (getLock(session.getKey())) {
-            // 计算可用预算：总窗口 - 最大响应预留 - 安全缓冲
+            // 计算可用于历史消息的 Token 预算：总窗口大小减去最大响应预留和安全缓冲
             int budget = contextWindowTokens - maxCompletionTokens - SAFETY_BUFFER;
+            // 如果计算出的预算非正数，说明没有空间容纳历史消息，直接返回
             if (budget <= 0) {
                 return;
             }
 
+            // 估算当前会话所有消息占用的 Token 总数
             int estimated = estimateTokens(session.getMessages());
 
-            // 如果估算值在预算内，无需整合
+            // 如果当前估算的 Token 数小于预算，说明空间充足，无需进行整合
             if (estimated < budget) {
                 return;
             }
 
+            // 记录日志，表明开始对指定会话进行整合，并输出预估 Token 数和可用预算
             log.info("开始对会话 {} 进行整合，预估 Token: {}, 预算: {}", 
                     session.getKey(), estimated, budget);
 
-            // 执行多轮整合，直到估算值降低到安全范围或达到最大轮数
+            // 进入循环，执行多轮整合操作，直到 Token 使用量降至安全范围或达到最大尝试轮数
             for (int round = 0; round < MAX_CONSOLIDATION_ROUNDS; round++) {
+                // 在每轮开始前检查：如果当前估算值已满足预算要求，则退出循环
                 if (estimated <= budget) {
                     return;
                 }
+                // 检查剩余消息数量是否已达到最小保留阈值，若是则停止整合以保留必要上下文
                 if (session.getMessages().size() <= MIN_KEEP_MESSAGES) {
                     return;
                 }
 
+                // 计算最大可裁剪的消息数量：总消息数减去必须保留的最小消息数
                 int maxCut = session.getMessages().size() - MIN_KEEP_MESSAGES;
+                // 计算超出预算的 Token 数量（溢出量）
                 int overflow = estimated - budget;
+                // 确定本轮目标移除的 Token 数：取“预算的四分之一”和“溢出量”中的较大值，确保有效削减
                 int targetRemoveTokens = Math.max(budget / 4, overflow);
 
+                // 根据目标移除 Token 数和最大裁剪限制，计算具体的裁剪索引位置
                 int cut = pickCutIndex(session.getMessages(), maxCut, targetRemoveTokens);
+                // 如果计算出的裁剪索引无效（<=0），说明无法找到合适的切割点，退出方法
                 if (cut <= 0) {
                     return;
                 }
 
+                // 提取从开头到裁剪索引处的消息列表，作为待归档的数据块
                 List<Map<String, Object>> chunk = new ArrayList<>(session.getMessages().subList(0, cut));
+                // 调用 archive 方法对提取的消息块进行归档处理，获取归档后的摘要或状态
                 String archived = archive(chunk);
+                // 如果归档失败（返回 null），则中止后续操作，防止数据不一致
                 if (archived == null) {
                     return;
                 }
 
+                // 更新会话消息列表，保留从裁剪索引之后到末尾的消息
                 session.setMessages(new ArrayList<>(session.getMessages().subList(cut, session.getMessages().size())));
+                // 调整最后整合的位置索引，减去已移除的消息数量，并确保不为负数
                 session.setLastConsolidated(Math.max(0, session.getLastConsolidated() - cut));
+                // 持久化保存更新后的会话状态
                 sessions.save(session);
 
+                // 重新估算剩余消息的 Token 总数，用于下一轮循环判断或退出条件
                 estimated = estimateTokens(session.getMessages());
             }
         }

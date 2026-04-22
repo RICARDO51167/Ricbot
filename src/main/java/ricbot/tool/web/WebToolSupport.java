@@ -7,6 +7,8 @@ import ricbot.infra.common.RetryUtils;
 
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
+import java.net.InetSocketAddress;
+import java.net.ProxySelector;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -200,14 +202,30 @@ public final class WebToolSupport {
      * @return 配置好的 HttpClient
      */
     public static HttpClient buildClient() {
-        // 创建 HttpClient 构建器
-        return HttpClient.newBuilder()
-                // 允许正常重定向
+        return buildClient(null);
+    }
+
+    /**
+     * 构建一个带可选代理的 HttpClient 实例
+     * @param proxy 代理地址，格式如 http://127.0.0.1:7890
+     * @return 配置好的 HttpClient
+     */
+    public static HttpClient buildClient(String proxy) {
+        HttpClient.Builder builder = HttpClient.newBuilder()
                 .followRedirects(HttpClient.Redirect.NORMAL)
-                // 设置连接超时时间为 15 秒
-                .connectTimeout(Duration.ofSeconds(15))
-                // 构建客户端实例
-                .build();
+                .connectTimeout(Duration.ofSeconds(15));
+
+        if (proxy != null && !proxy.isBlank()) {
+            URI proxyUri = URI.create(proxy.trim());
+            String host = proxyUri.getHost();
+            int port = proxyUri.getPort();
+            if (host == null || host.isBlank() || port <= 0) {
+                throw new IllegalArgumentException("无效的代理地址: " + proxy);
+            }
+            builder.proxy(ProxySelector.of(new InetSocketAddress(host, port)));
+        }
+
+        return builder.build();
     }
 
     /**

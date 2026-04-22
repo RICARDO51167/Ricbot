@@ -42,8 +42,8 @@
   "channels": {
     "qq": {
       "enabled": true,
-      "app_id": "1903846180",
-      "secret": "GbmkV2LQHuTq0vd7",
+      "app_id": "${RICBOT_QQ_APP_ID}",
+      "secret": "${RICBOT_QQ_SECRET}",
       "allow_from": ["*"],
       "media_dir": "./workspace/.ricbot/media/qq"
     }

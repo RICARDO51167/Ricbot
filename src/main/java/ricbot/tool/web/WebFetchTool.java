@@ -86,7 +86,7 @@ public class WebFetchTool extends Tool {
             // 使用指数退避重试机制执行抓取逻辑，并结合熔断器
             return RetryUtils.withExponentialBackoff(() -> circuitBreaker.execute(() -> {
                 // 构建 HTTP 客户端
-                HttpClient client = WebToolSupport.buildClient();
+                HttpClient client = WebToolSupport.buildClient(proxy);
 
                 // 1) 先试图片直取
                 try {
@@ -142,7 +142,7 @@ public class WebFetchTool extends Tool {
     private String fetchJina(String url, int maxChars) {
         try {
             // 构建 HTTP 客户端
-            HttpClient client = WebToolSupport.buildClient();
+            HttpClient client = WebToolSupport.buildClient(proxy);
             // 构造 Jina AI 的代理 URL，去除原 URL 的协议头
             String jinaUrl = "https://r.jina.ai/http://" + stripScheme(url);
 
@@ -187,7 +187,7 @@ public class WebFetchTool extends Tool {
     private String fetchReadability(String url, String extractMode, int maxChars) {
         try {
             // 构建 HTTP 客户端
-            HttpClient client = WebToolSupport.buildClient();
+            HttpClient client = WebToolSupport.buildClient(proxy);
             // 直接获取网页 HTML 内容，设置20秒超时
             String html = WebToolSupport.fetchText(
                     client,

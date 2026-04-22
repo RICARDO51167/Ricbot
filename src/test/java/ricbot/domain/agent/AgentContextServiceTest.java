@@ -28,7 +28,14 @@ class AgentContextServiceTest {
     void buildInteractiveRequest_combinesMemorySkillsSummaryAndBuildsHook(@TempDir Path workspace) throws Exception {
         Files.createDirectories(workspace.resolve("memory"));
         Files.createDirectories(workspace.resolve("skills").resolve("demo"));
+        Files.createDirectories(workspace.resolve("skills").resolve("unused"));
         Files.writeString(workspace.resolve("skills").resolve("demo").resolve("SKILL.md"), "Demo skill body");
+        Files.writeString(workspace.resolve("skills").resolve("unused").resolve("SKILL.md"), """
+                ---
+                keywords: qq
+                ---
+                Unused skill body
+                """);
 
         ContextBuilder contextBuilder = new ContextBuilder(workspace, "UTC", List.of());
         MemoryStore memoryStore = new MemoryStore(workspace);
@@ -82,6 +89,8 @@ class AgentContextServiceTest {
         assertTrue(request.combinedContext().contains("remember this"));
         assertTrue(request.combinedContext().contains("summary block"));
         assertTrue(request.combinedContext().contains("Demo skill body"));
+        assertFalse(request.combinedContext().contains("Unused skill body"));
+        assertFalse(request.combinedContext().contains("Available Skills:"));
         assertEquals(1, request.history().size());
         assertNotNull(request.hook());
         assertFalse(request.promptContext().isEmpty());

@@ -40,9 +40,9 @@ public class ChannelManager {
 
     /**
      * 出站分发线程池
-     * 使用缓存线程池，适合执行大量短生命周期的异步任务
+     * 使用有界线程池，避免渠道异常时任务无限堆积
      */
-    private final ExecutorService executor = Executors.newCachedThreadPool();
+    private final ExecutorService executor = createExecutor();
 
     /**
      * 出站消息分发 Future
@@ -62,6 +62,23 @@ public class ChannelManager {
         this.config = config; // 初始化配置
         this.bus = bus; // 初始化消息总线
         initChannels(); // 初始化所有启用的渠道
+    }
+
+    private static ExecutorService createExecutor() {
+        int threads = Math.max(2, Math.min(Runtime.getRuntime().availableProcessors(), 8));
+        return new ThreadPoolExecutor(
+                threads,
+                threads,
+                30L,
+                TimeUnit.SECONDS,
+                new LinkedBlockingQueue<>(256),
+                r -> {
+                    Thread t = new Thread(r, "channel-manager");
+                    t.setDaemon(true);
+                    return t;
+                },
+                new ThreadPoolExecutor.CallerRunsPolicy()
+        );
     }
 
     /**
