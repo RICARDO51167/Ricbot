@@ -37,8 +37,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.nio.file.Path;
-import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -127,6 +125,8 @@ public class AgentLoop {
     private final MCPLoader mcpLoader;
     /** 命令路由器，统一 slash 命令入口 */
     private final CommandRouter commandRouter;
+    /** 命令处理器 */
+    private final AgentCommands agentCommands;
 
     /** 会话锁映射，用于保证同一会话的串行处理 */
     private final ConcurrentMap<String, Object> sessionLocks = new ConcurrentHashMap<>();
@@ -269,7 +269,8 @@ public class AgentLoop {
         // 初始化工具注册表和运行器
         this.tools = new ToolRegistry();
         this.runner = new AgentRunner(provider);
-        this.hookFactory = new AgentHookFactory(this.bus, this::setToolContext);
+        ToolContextApplier toolContextApplier = new ToolContextInjector(this.tools);
+        this.hookFactory = new AgentHookFactory(this.bus, toolContextApplier);
         this.sessionPreparationService = new SessionPreparationService(this.sessionManager, this.autoCompact, this.consolidator);
         ContextSelectionService contextSelectionService = new ContextSelectionService(this.memoryStore, new ToolTraceSummarizer());
         this.agentContextService = new AgentContextService(
@@ -280,7 +281,7 @@ public class AgentLoop {
                 this.skillRouter,
                 this.tools,
                 this.hookFactory,
-                this::setToolContext,
+                toolContextApplier,
                 this.extraHooks,
                 contextSelectionService
         );
@@ -298,6 +299,17 @@ public class AgentLoop {
         this.sessionPersistenceService = new SessionPersistenceService(this.sessionManager, this.maxToolResultChars);
         this.mcpLoader = new MCPLoader(this.tools, this.mcpServers);
         this.commandRouter = new CommandRouter();
+        this.agentCommands = new AgentCommands(
+                this.sessionManager,
+                this.memoryStore,
+                this.dream,
+                this.dreamConfig,
+                this.model,
+                this.workspace,
+                this::effectiveSessionKey,
+                activeTasks::remove,
+                this::markSessionInterrupted
+        );
 
         // 初始化并发控制
         int maxConcurrent = parseInt(System.getenv("RICBOT_MAX_CONCURRENT_REQUESTS"), 3);
@@ -388,17 +400,7 @@ public class AgentLoop {
     }
 
     private void registerCommandRoutes() {
-        commandRouter.priority("/stop", this::cmdStop);
-        commandRouter.priority("/restart", this::cmdDisabled);
-        commandRouter.exact("/new", this::cmdNew);
-        commandRouter.exact("/help", this::cmdHelp);
-        commandRouter.exact("/status", this::cmdStatus);
-
-        commandRouter.exact("/dream", this::cmdDream);
-        commandRouter.exact("/dream-log", this::cmdDreamLog);
-        commandRouter.prefix("/dream-log ", this::cmdDreamLog);
-        commandRouter.exact("/dream-restore", this::cmdDreamRestore);
-        commandRouter.prefix("/dream-restore ", this::cmdDreamRestore);
+        agentCommands.register(commandRouter);
     }
 
     // ---------------------------------------------------------------------
@@ -766,42 +768,6 @@ public class AgentLoop {
         return processDirect(content, sessionKey, "cli", "direct");
     }
 
-    // ---------------------------------------------------------------------
-    // /stop 命令处理
-    // ---------------------------------------------------------------------
-
-    private OutboundMessage buildStopResponse(InboundMessage msg) {
-        // 计算有效的会话键
-        String sessionKey = effectiveSessionKey(msg);
-        // 从活跃任务映射中移除该会话的任务列表，并获取它们
-        List<Future<?>> tasks = activeTasks.remove(sessionKey);
-
-        // 记录成功取消的任务数量
-        int cancelled = 0;
-        // 如果存在任务列表
-        if (tasks != null) {
-            // 遍历所有任务
-            for (Future<?> task : tasks) {
-                // 检查任务是否不为 null 且尚未完成
-                if (task != null && !task.isDone()) {
-                    // 尝试取消任务，true 表示允许中断正在运行的线程
-                    if (task.cancel(true)) {
-                        // 如果取消成功，计数器加一
-                        cancelled++;
-                    }
-                }
-            }
-        }
-
-        // 总取消数即为 cancelled
-        int total = cancelled;
-        if (total > 0) {
-            markSessionInterrupted(sessionKey, "manual_stop");
-        }
-
-        return plainReply(msg, total > 0 ? "⏹ 已停止 " + total + " 个任务。" : "没有可停止的任务。");
-    }
-
     /**
      * 分发并执行命令。
      *
@@ -837,115 +803,6 @@ public class AgentLoop {
         }
     }
 
-    private CompletableFuture<OutboundMessage> cmdStop(CommandRouter.CommandContext ctx) {
-        return CompletableFuture.completedFuture(buildStopResponse(ctx.getMsg()));
-    }
-
-    private CompletableFuture<OutboundMessage> cmdDisabled(CommandRouter.CommandContext ctx) {
-        return completedCommandReply(ctx, "当前运行时未启用该命令。");
-    }
-
-    private CompletableFuture<OutboundMessage> cmdNew(CommandRouter.CommandContext ctx) {
-        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
-        session.clear();
-        sessionManager.save(session);
-
-        return completedCommandReply(ctx, "已开始新的会话。");
-    }
-
-    private CompletableFuture<OutboundMessage> cmdHelp(CommandRouter.CommandContext ctx) {
-        return completedCommandReply(ctx, "ricbot 命令：\n/new — 开始新对话\n/stop — 停止当前任务\n/help — 查看可用命令");
-    }
-
-    private CompletableFuture<OutboundMessage> cmdStatus(CommandRouter.CommandContext ctx) {
-        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
-        int sessionMsgCount = session != null ? session.getMessages().size() : 0;
-        TaskState taskState = TaskState.fromSession(session);
-
-        StringBuilder sb = new StringBuilder();
-        sb.append("ricbot status\n");
-        sb.append("model: ").append(model).append("\n");
-        sb.append("workspace: ").append(workspace).append("\n");
-        sb.append("session messages: ").append(sessionMsgCount).append("\n");
-        sb.append("\n").append(taskState.renderStatus());
-
-        return completedCommandReply(ctx, sb.toString());
-    }
-
-    private CompletableFuture<OutboundMessage> cmdDream(CommandRouter.CommandContext ctx) {
-        if (dreamConfig == null || !dreamConfig.isEnabled()) {
-            return completedCommandReply(ctx, "Dream 未启用。");
-        }
-
-        boolean changed = dream.run();
-        if (changed) {
-            return completedCommandReply(ctx, "Dream 已完成一次整合，记忆文件已更新。");
-        } else {
-            return completedCommandReply(ctx, "Dream 本次没有检测到可更新内容。");
-        }
-    }
-
-    private CompletableFuture<OutboundMessage> cmdDreamLog(CommandRouter.CommandContext ctx) {
-        if (dreamConfig == null || !dreamConfig.isEnabled()) {
-            return completedCommandReply(ctx, "Dream 未启用。");
-        }
-
-        int maxEntries = 10;
-        String args = trim(ctx.getArgs());
-        if (!args.isBlank()) {
-            maxEntries = Math.max(1, Math.min(50, parseInt(args, 10)));
-        }
-
-        var git = memoryStore.getGit();
-        if (!git.isInitialized()) {
-            return completedCommandReply(ctx, "Dream 日志仓库尚未初始化。先执行一次 /dream 后再查看日志。");
-        }
-
-        var logs = git.log(maxEntries);
-        if (logs.isEmpty()) {
-            return completedCommandReply(ctx, "暂无 Dream 历史记录。");
-        }
-
-        StringBuilder sb = new StringBuilder();
-        sb.append("dream log (latest ").append(logs.size()).append(")\n");
-        sb.append("cursor: ").append(memoryStore.getLastDreamCursor())
-                .append("/").append(memoryStore.getLastCursor()).append("\n\n");
-        for (var c : logs) {
-            sb.append(c.sha()).append("  ").append(c.timestamp()).append("  ").append(c.message()).append("\n");
-        }
-        return completedCommandReply(ctx, sb.toString().trim());
-    }
-
-    private CompletableFuture<OutboundMessage> cmdDreamRestore(CommandRouter.CommandContext ctx) {
-        if (dreamConfig == null || !dreamConfig.isEnabled()) {
-            return completedCommandReply(ctx, "Dream 未启用。");
-        }
-
-        String args = trim(ctx.getArgs());
-        if (args.isBlank()) {
-            return completedCommandReply(ctx, "用法：/dream-restore <commit_sha>");
-        }
-
-        String sha = args.split("\\s+")[0];
-        var git = memoryStore.getGit();
-        if (!git.isInitialized()) {
-            return completedCommandReply(ctx, "Dream 日志仓库尚未初始化，无法 restore。请先执行 /dream。");
-        }
-
-        var found = git.findCommit(sha, 200);
-        if (found == null) {
-            return completedCommandReply(ctx, "未找到对应提交：" + sha);
-        }
-
-        String reverted = git.revert(found.sha());
-        if (reverted == null) {
-            return completedCommandReply(ctx, "restore 失败，请检查工作区状态后重试。");
-        }
-
-        String now = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
-        return completedCommandReply(ctx, "Dream 已恢复到 " + found.sha() + "，新提交: " + reverted + " (" + now + ")");
-    }
-
     /**
      * 计算有效的会话键。
      *
@@ -960,47 +817,6 @@ public class AgentLoop {
         }
         // 否则返回消息中的会话键
         return msg.getSessionKey();
-    }
-
-    /**
-     * 设置工具上下文（当前为无操作）。
-     *
-     * @param channel   通道
-     * @param chatId    聊天ID
-     * @param messageId 消息ID
-     */
-    private void setToolContext(String channel, String chatId, String messageId) {
-        for (String toolName : tools.toolNames()) {
-            var tool = tools.get(toolName);
-            if (tool == null) {
-                continue;
-            }
-
-            try {
-                if (tool instanceof CronTool cronTool) {
-                    cronTool.setContext(channel, chatId);
-                } else if (tool instanceof SpawnTool spawnTool) {
-                    spawnTool.setContext(channel, chatId);
-                }
-
-                try {
-                    var m3 = tool.getClass().getMethod("setContext", String.class, String.class, String.class);
-                    m3.invoke(tool, channel, chatId, messageId);
-                    continue;
-                } catch (NoSuchMethodException ignored) {
-                    // fall through
-                }
-
-                try {
-                    var m2 = tool.getClass().getMethod("setContext", String.class, String.class);
-                    m2.invoke(tool, channel, chatId);
-                } catch (NoSuchMethodException ignored) {
-                    // 当前工具不支持上下文注入
-                }
-            } catch (Exception e) {
-                log.debug("注入工具上下文失败: tool={}", toolName, e);
-            }
-        }
     }
 
     private void storeRuntimeCheckpoint(Session session, Map<String, Object> payload) {
@@ -1026,14 +842,6 @@ public class AgentLoop {
 
     private OutboundMessage plainReply(InboundMessage msg, String content) {
         return OutboundMessages.of(msg.getChannel(), msg.getChatId(), content);
-    }
-
-    private CompletableFuture<OutboundMessage> completedCommandReply(CommandRouter.CommandContext ctx, String content) {
-        return CompletableFuture.completedFuture(commandReply(ctx, content));
-    }
-
-    private OutboundMessage commandReply(CommandRouter.CommandContext ctx, String content) {
-        return OutboundMessages.of(ctx.getMsg().getChannel(), ctx.getMsg().getChatId(), content);
     }
 
     private SystemTarget parseSystemTarget(String rawChatId) {
@@ -1073,13 +881,6 @@ public class AgentLoop {
         return s == null ? "" : s.trim();
     }
 
-    /**
-     * 安全地解析整数。
-     *
-     * @param s   字符串
-     * @param def 默认值
-     * @return 解析后的整数或默认值
-     */
     private static int parseInt(String s, int def) {
         try {
             return s != null ? Integer.parseInt(s) : def;
