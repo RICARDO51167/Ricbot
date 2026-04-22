@@ -2,6 +2,7 @@ package ricbot.infra.config;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.extern.slf4j.Slf4j;
 import ricbot.infra.security.NetworkSecurity;
 
 import java.io.IOException;
@@ -15,6 +16,7 @@ import java.util.regex.Pattern;
  * 配置加载器类，负责加载、保存和处理 Ricbot 的配置信息。
  * 对应 Python: loader.py
  */
+@Slf4j
 public final class ConfigLoader {
 
     // Jackson ObjectMapper 实例，用于 JSON 序列化和反序列化，并自动注册找到的模块
@@ -40,7 +42,7 @@ public final class ConfigLoader {
      */
     public static void setConfigPath(Path path) {
         // 如果路径不为空，则转换为绝对路径并规范化；否则设为 null
-        currentConfigPath = path != null ? path.toAbsolutePath().normalize() : null;
+        currentConfigPath = normalizePath(path);
     }
 
     /**
@@ -54,23 +56,21 @@ public final class ConfigLoader {
         if (currentConfigPath != null) {
             return currentConfigPath;
         }
-        
+
         // 2. 检查环境变量 RICBOT_CONFIG
-        String env = System.getenv("RICBOT_CONFIG");
-        if (env != null && !env.isBlank()) {
-            return Path.of(env).toAbsolutePath().normalize();
+        Path envPath = configuredPath(System.getenv("RICBOT_CONFIG"));
+        if (envPath != null) {
+            return envPath;
         }
-        
+
         // 3. 检查系统属性 ricbot.config
-        String prop = System.getProperty("ricbot.config");
-        if (prop != null && !prop.isBlank()) {
-            return Path.of(prop).toAbsolutePath().normalize();
+        Path propertyPath = configuredPath(System.getProperty("ricbot.config"));
+        if (propertyPath != null) {
+            return propertyPath;
         }
-        
+
         // 4. 返回默认路径：用户主目录/.ricbot/config.json
-        return Path.of(System.getProperty("user.home"), ".ricbot", "config.json")
-                .toAbsolutePath()
-                .normalize();
+        return defaultConfigPath();
     }
 
     /**
@@ -82,7 +82,9 @@ public final class ConfigLoader {
         try {
             return loadConfig();
         } catch (Exception e) {
-            return new Config();
+            Path path = getConfigPath();
+            log.warn("加载配置失败，改用默认配置: {}", path, e);
+            return defaultConfig();
         }
     }
 
@@ -104,9 +106,9 @@ public final class ConfigLoader {
      */
     public static Config loadConfig(Path configPath) {
         // 确定最终使用的配置路径
-        Path path = configPath != null ? configPath.toAbsolutePath().normalize() : getConfigPath();
+        Path path = resolveConfigPath(configPath);
         // 创建一个新的配置对象作为基础
-        Config config = new Config();
+        Config config = defaultConfig();
 
         // 如果配置文件存在，则尝试读取和解析
         if (Files.exists(path)) {
@@ -118,9 +120,7 @@ public final class ConfigLoader {
                 // 将 Map 转换为 Config 对象
                 config = mapToConfig(raw);
             } catch (Exception e) {
-                // 打印错误信息，表示加载失败
-                System.err.println("从 " + path + " 加载配置失败：" + e.getMessage());
-                System.err.println("将使用默认配置。");
+                log.warn("从 {} 加载配置失败，将使用默认配置。", path, e);
             }
         }
 
@@ -147,13 +147,17 @@ public final class ConfigLoader {
      */
     public static void saveConfig(Config config, Path configPath) {
         // 确定最终保存的路径
-        Path path = configPath != null ? configPath.toAbsolutePath().normalize() : getConfigPath();
+        Path path = resolveConfigPath(configPath);
+        Config actualConfig = safeConfig(config);
 
         try {
             // 确保父目录存在，如果不存在则创建
-            Files.createDirectories(path.getParent());
+            Path parent = path.getParent();
+            if (parent != null) {
+                Files.createDirectories(parent);
+            }
             // 将 Config 对象转换为 Map，并以美观的格式写入 JSON 文件
-            MAPPER.writerWithDefaultPrettyPrinter().writeValue(path.toFile(), configToMap(config));
+            MAPPER.writerWithDefaultPrettyPrinter().writeValue(path.toFile(), configToMap(actualConfig));
         } catch (IOException e) {
             // 如果发生 IO 异常，抛出运行时异常
             throw new RuntimeException("保存配置失败：" + path, e);
@@ -169,7 +173,7 @@ public final class ConfigLoader {
      */
     public static Config resolveConfigEnvVars(Config config) {
         // 将 Config 对象转换为 Map
-        Map<String, Object> raw = configToMap(config);
+        Map<String, Object> raw = configToMap(safeConfig(config));
         // 递归解析 Map 中的环境变量
         Object resolved = resolveEnvVars(raw);
         @SuppressWarnings("unchecked")
@@ -177,6 +181,35 @@ public final class ConfigLoader {
         Map<String, Object> map = (Map<String, Object>) resolved;
         // 将解析后的 Map 转换回 Config 对象
         return mapToConfig(map);
+    }
+
+    private static Path resolveConfigPath(Path configPath) {
+        return configPath != null ? normalizePath(configPath) : getConfigPath();
+    }
+
+    private static Path configuredPath(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        return normalizePath(Path.of(value));
+    }
+
+    private static Path normalizePath(Path path) {
+        return path != null ? path.toAbsolutePath().normalize() : null;
+    }
+
+    private static Path defaultConfigPath() {
+        return Path.of(System.getProperty("user.home"), ".ricbot", "config.json")
+                .toAbsolutePath()
+                .normalize();
+    }
+
+    private static Config defaultConfig() {
+        return new Config();
+    }
+
+    private static Config safeConfig(Config config) {
+        return config != null ? config : defaultConfig();
     }
 
     /**

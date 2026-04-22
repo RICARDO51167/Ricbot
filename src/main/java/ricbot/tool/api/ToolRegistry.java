@@ -1,16 +1,92 @@
 package ricbot.tool.api;
 
+import lombok.RequiredArgsConstructor;
 import ricbot.tool.filesystem.EditFileTool;
 import ricbot.tool.filesystem.ListDirTool;
 import ricbot.tool.filesystem.ReadFileTool;
 import ricbot.tool.filesystem.WriteFileTool;
 import ricbot.tool.process.ExecTool;
+import ricbot.tool.process.SpawnTool;
 import ricbot.tool.search.GlobTool;
 import ricbot.tool.search.GrepTool;
+import ricbot.tool.web.WebFetchTool;
+import ricbot.tool.web.WebSearchTool;
+
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class ToolRegistry {
+
+    private static final List<LegacyToolExecutor<? extends Tool>> LEGACY_EXECUTORS = List.of(
+            new LegacyToolExecutor<>(
+                    ReadFileTool.class,
+                    (tool, params) -> tool.execute(
+                            (String) params.get("path"),
+                            (Integer) params.get("offset"),
+                            (Integer) params.get("limit")
+                    )
+            ),
+            new LegacyToolExecutor<>(
+                    ListDirTool.class,
+                    (tool, params) -> tool.execute((String) params.get("path"))
+            ),
+            new LegacyToolExecutor<>(
+                    GlobTool.class,
+                    (tool, params) -> tool.execute(
+                            (String) params.get("pattern"),
+                            (String) params.get("base_dir")
+                    )
+            ),
+            new LegacyToolExecutor<>(
+                    GrepTool.class,
+                    (tool, params) -> tool.execute(
+                            (String) params.get("pattern"),
+                            (String) params.get("base_dir"),
+                            (String) params.get("file_glob"),
+                            (Boolean) params.get("ignore_case"),
+                            (Integer) params.get("max_results")
+                    )
+            ),
+            new LegacyToolExecutor<>(
+                    WriteFileTool.class,
+                    (tool, params) -> tool.execute(
+                            (String) params.get("path"),
+                            (String) params.get("content")
+                    )
+            ),
+            new LegacyToolExecutor<>(
+                    EditFileTool.class,
+                    (tool, params) -> tool.execute(
+                            (String) params.get("path"),
+                            (String) params.get("old_text"),
+                            (String) params.get("new_text"),
+                            (Boolean) params.get("replace_all")
+                    )
+            ),
+            new LegacyToolExecutor<>(
+                    SpawnTool.class,
+                    (tool, params) -> tool.execute(
+                            (String) params.get("task"),
+                            (String) params.get("label"),
+                            (String) params.get("session_key")
+                    )
+            ),
+            new LegacyToolExecutor<>(
+                    WebFetchTool.class,
+                    (tool, params) -> tool.execute(
+                            (String) params.get("url"),
+                            (String) params.get("extract_mode"),
+                            (Integer) params.get("max_chars")
+                    )
+            ),
+            new LegacyToolExecutor<>(
+                    WebSearchTool.class,
+                    (tool, params) -> tool.execute(
+                            (String) params.get("query"),
+                            (Integer) params.get("count")
+                    )
+            )
+    );
 
     // 存储已注册的工具，键为工具名称，值为工具实例
     private final Map<String, Tool> tools = new ConcurrentHashMap<>();
@@ -104,8 +180,7 @@ public class ToolRegistry {
         // 查找工具
         Tool tool = tools.get(name);
         if (tool == null) {
-            return new PrepareResult(null, rawParams,
-                    "Error: Tool '" + name + "' not found. Available tools: " + String.join(", ", toolNames()));
+            return new PrepareResult(null, rawParams, toolNotFoundMessage(name));
         }
 
         // 验证参数是否为 Map 类型
@@ -113,8 +188,7 @@ public class ToolRegistry {
             return new PrepareResult(
                     tool,
                     rawParams,
-                    "Error: Tool '" + name + "' parameters must be a JSON object, got "
-                            + (rawParams == null ? "null" : rawParams.getClass().getSimpleName())
+                    invalidParameterShapeMessage(name, rawParams)
             );
         }
 
@@ -126,8 +200,7 @@ public class ToolRegistry {
 
         // 如果存在校验错误，返回错误信息
         if (!errors.isEmpty()) {
-            return new PrepareResult(tool, castParams,
-                    "Error: Invalid parameters for tool '" + name + "': " + String.join("; ", errors));
+            return new PrepareResult(tool, castParams, invalidParametersMessage(name, errors));
         }
 
         // 返回成功的准备结果
@@ -161,70 +234,24 @@ public class ToolRegistry {
         // 再次获取工具实例以防万一
         Tool tool = get(name);
         if (tool == null) {
-            return "Error: Tool '" + name + "' not found. Available tools: " + String.join(", ", toolNames());
+            return toolNotFoundMessage(name);
         }
 
         // 参数转换和二次校验
         params = tool.castParams(params);
         java.util.List<String> errors = tool.validateParams(params);
         if (!errors.isEmpty()) {
-            return "Error: Invalid parameters for tool '" + name + "': " + String.join("; ", errors);
+            return invalidParametersMessage(name, errors);
         }
 
         try {
-            Object result;
-            // 根据工具类型执行特定的 execute 方法，避免通用反射调用的开销或类型问题
-            if (tool instanceof ReadFileTool t) {
-                result = t.execute(
-                        (String) params.get("path"),
-                        (Integer) params.get("offset"),
-                        (Integer) params.get("limit")
-                );
-            } else if (tool instanceof ListDirTool t) {
-                result = t.execute((String) params.get("path"));
-
-            } else if (tool instanceof ExecTool t) {
-                result = t.execute(
-                        (String) params.get("command"),
-                        (String) params.get("working_dir"),
-                        (Integer) params.get("timeout")
-                );
-            } else if (tool instanceof GlobTool t) {
-                result = t.execute(
-                        (String) params.get("pattern"),
-                        (String) params.get("base_dir")
-                );
-            } else if (tool instanceof GrepTool t) {
-                result = t.execute(
-                        (String) params.get("pattern"),
-                        (String) params.get("base_dir"),
-                        (String) params.get("file_glob"),
-                        (Boolean) params.get("ignore_case"),
-                        (Integer) params.get("max_results")
-                );
-            } else if (tool instanceof WriteFileTool t) {
-                result = t.execute(
-                        (String) params.get("path"),
-                        (String) params.get("content")
-                );
-            } else if (tool instanceof EditFileTool t) {
-                result = t.execute(
-                        (String) params.get("path"),
-                        (String) params.get("old_text"),
-                        (String) params.get("new_text"),
-                        (Boolean) params.get("replace_all")
-                );
-            } else {
-                // 默认执行方式
-                result = tool.execute(params);
-            }
-
+            Object result = executeTool(tool, params);
             // 如果结果是字符串且以错误或错误开头，直接返回
             if (result instanceof String s && (s.startsWith("Error") || s.startsWith("错误"))) return s;
             return result;
         } catch (Exception e) {
             // 捕获执行过程中的异常并返回错误信息
-            return "Error: Tool '" + name + "' execution failed: " + e.getMessage();
+            return executionFailedMessage(name, e);
         }
     }
 
@@ -242,6 +269,43 @@ public class ToolRegistry {
         return names;
     }
 
+    private Object executeTool(Tool tool, Map<String, Object> params) throws Exception {
+        LegacyToolExecutor<? extends Tool> legacyExecutor = findLegacyExecutor(tool);
+        if (legacyExecutor != null) {
+            return legacyExecutor.executeUnchecked(tool, params);
+        }
+        return tool.execute(params);
+    }
+
+    private LegacyToolExecutor<? extends Tool> findLegacyExecutor(Tool tool) {
+        if (tool instanceof ExecTool) {
+            return null;
+        }
+        for (LegacyToolExecutor<? extends Tool> executor : LEGACY_EXECUTORS) {
+            if (executor.supports(tool)) {
+                return executor;
+            }
+        }
+        return null;
+    }
+
+    private String toolNotFoundMessage(String name) {
+        return "Error: Tool '" + name + "' not found. Available tools: " + String.join(", ", toolNames());
+    }
+
+    private static String invalidParameterShapeMessage(String name, Object rawParams) {
+        return "Error: Tool '" + name + "' parameters must be a JSON object, got "
+                + (rawParams == null ? "null" : rawParams.getClass().getSimpleName());
+    }
+
+    private static String invalidParametersMessage(String name, List<String> errors) {
+        return "Error: Invalid parameters for tool '" + name + "': " + String.join("; ", errors);
+    }
+
+    private static String executionFailedMessage(String name, Exception e) {
+        return "Error: Tool '" + name + "' execution failed: " + e.getMessage();
+    }
+
     /**
      * 记录准备调用的结果
      * @param tool 工具实例
@@ -249,4 +313,23 @@ public class ToolRegistry {
      * @param error 错误信息，如果没有错误则为 null
      */
     public record PrepareResult(Tool tool, Object params, String error) {}
+
+    @RequiredArgsConstructor
+    private static final class LegacyToolExecutor<T extends Tool> {
+        private final Class<T> toolType;
+        private final LegacyToolInvoker<T> invoker;
+
+        private boolean supports(Tool tool) {
+            return toolType.isInstance(tool);
+        }
+
+        private Object executeUnchecked(Tool tool, Map<String, Object> params) throws Exception {
+            return invoker.execute(toolType.cast(tool), params);
+        }
+    }
+
+    @FunctionalInterface
+    private interface LegacyToolInvoker<T extends Tool> {
+        Object execute(T tool, Map<String, Object> params) throws Exception;
+    }
 }

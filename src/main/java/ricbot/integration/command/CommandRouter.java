@@ -185,16 +185,6 @@ public class CommandRouter {
     }
 
     /**
-     * 注册拦截器 (interceptor)。
-     *
-     * @param handler 拦截器处理器
-     */
-    public void intercept(Handler handler) {
-        // 将拦截器添加到列表末尾
-        interceptors.add(handler);
-    }
-
-    /**
      * 检查是否为高优先级命令。
      *
      * @param text 待检查的命令文本

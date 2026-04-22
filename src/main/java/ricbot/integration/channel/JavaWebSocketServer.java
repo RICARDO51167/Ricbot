@@ -1,5 +1,6 @@
 package ricbot.integration.channel;
 
+import lombok.extern.slf4j.Slf4j;
 import org.java_websocket.WebSocket; // 导入 WebSocket 接口，代表一个客户端连接
 import org.java_websocket.handshake.ClientHandshake; // 导入客户端握手信息类，用于获取握手时的详细信息
 import org.java_websocket.server.WebSocketServer; // 导入 WebSocketServer 基类，提供服务端基础功能
@@ -12,6 +13,7 @@ import java.util.concurrent.ConcurrentHashMap; // 导入 ConcurrentHashMap，用
 /**
  * 基于 Java-WebSocket 库的 WebSocket 服务端实现。
  */
+@Slf4j
 public class JavaWebSocketServer extends WebSocketServer implements WebSocketChannel.WsServer {
 
     private WebSocketChannel.WsServerListener listener; // 声明服务端事件监听器，用于回调处理连接事件
@@ -71,11 +73,11 @@ public class JavaWebSocketServer extends WebSocketServer implements WebSocketCha
 
     @Override
     public void onError(WebSocket conn, Exception ex) {
-        System.err.println("WebSocket 错误：" + (ex != null ? ex.getMessage() : "未知错误")); // 打印错误信息到标准错误流，处理空指针异常情况
+        log.error("WebSocket 错误: {}", ex != null ? ex.getMessage() : "未知错误", ex);
     }
 
     @Override
     public void onStart() {
-        System.out.println("WebSocket 服务已启动：" + getAddress()); // 打印服务启动成功的日志，包含绑定的地址信息
+        log.info("WebSocket 服务已启动: {}", getAddress());
     }
 }

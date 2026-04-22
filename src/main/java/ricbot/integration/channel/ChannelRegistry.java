@@ -1,5 +1,6 @@
 package ricbot.integration.channel;
 
+import lombok.extern.slf4j.Slf4j;
 
 import java.util.*;
 
@@ -15,6 +16,7 @@ import java.util.*;
  *
  * 并保持“内置优先于插件”的语义。
  */
+@Slf4j
 public final class ChannelRegistry {
 
     // 私有构造函数，防止实例化，因为这是一个工具类，所有方法都是静态的
@@ -67,8 +69,7 @@ public final class ChannelRegistry {
                     plugins.put(name, clazz);
                 }
             } catch (Exception e) {
-                // 捕获加载过程中的异常，并打印错误信息到标准错误流，避免单个插件失败影响其他插件加载
-                System.err.println("加载渠道插件失败：" + e.getMessage());
+                log.warn("加载渠道插件失败", e);
             }
         }
 
@@ -91,7 +92,7 @@ public final class ChannelRegistry {
         shadowed.retainAll(builtin.keySet());
         // 如果有被覆盖的插件渠道，打印警告信息
         if (!shadowed.isEmpty()) {
-            System.err.println("以下插件渠道被内置渠道覆盖（已忽略）：" + shadowed);
+            log.warn("以下插件渠道被内置渠道覆盖（已忽略）：{}", shadowed);
         }
 
         // 创建一个新的 LinkedHashMap，首先放入所有插件渠道

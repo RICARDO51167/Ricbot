@@ -66,6 +66,14 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class SubagentManager implements AutoCloseable {
 
     private static final Logger log = LoggerFactory.getLogger(SubagentManager.class);
+    private static final int SUBAGENT_ID_LENGTH = 8;
+    private static final int SUBAGENT_MAX_ITERATIONS = 15;
+    private static final int DEFAULT_LABEL_MAX_LENGTH = 30;
+    private static final String DEFAULT_ORIGIN_CHANNEL = "cli";
+    private static final String DEFAULT_ORIGIN_CHAT_ID = "direct";
+    private static final String DEFAULT_MAX_ITERATIONS_MESSAGE = "任务已结束，但未生成最终回复。";
+    private static final String DEFAULT_ERROR_MESSAGE = "错误：子代理执行失败。";
+    private static final String CANCELLED_MESSAGE = "任务已取消。";
 
     /**
      * 子代理执行时的简单日志 Hook。
@@ -114,8 +122,6 @@ public class SubagentManager implements AutoCloseable {
     private final Config.ExecToolConfig execConfig;
     // 是否限制在工作空间内
     private final boolean restrictToWorkspace;
-    // 禁用的技能集合
-    private final Set<String> disabledSkills;
     private final Config.WebToolsConfig webConfig;
     private final SkillsLoader skillsLoader;
     // 代理运行器实例
@@ -178,8 +184,9 @@ public class SubagentManager implements AutoCloseable {
         // 初始化工作空间限制标志
         this.restrictToWorkspace = restrictToWorkspace;
         // 初始化禁用技能集合，如果传入为null则初始化为空集合
-        this.disabledSkills = new HashSet<>(disabledSkills != null ? disabledSkills : List.of());
-        this.skillsLoader = new SkillsLoader(workspace, null, this.disabledSkills);
+        // 禁用的技能集合
+        Set<String> disabledSkills1 = new HashSet<>(disabledSkills != null ? disabledSkills : List.of());
+        this.skillsLoader = new SkillsLoader(workspace, null, disabledSkills1);
         // 初始化代理运行器
         this.runner = new AgentRunner(provider);
 
@@ -224,56 +231,61 @@ public class SubagentManager implements AutoCloseable {
             String originChatId,
             String sessionKey
     ) {
-        // 生成8位随机任务ID
-        String taskId = UUID.randomUUID().toString().substring(0, 8);
-        // 确定显示标签，如果label为空则截取任务描述前30个字符
-        String displayLabel = (label != null && !label.isBlank())
-                ? label
-                : truncate(task, 30);
+        String taskId = UUID.randomUUID().toString().substring(0, SUBAGENT_ID_LENGTH);
+        String displayLabel = resolveDisplayLabel(task, label);
+        Origin origin = new Origin(
+                originChannel != null ? originChannel : DEFAULT_ORIGIN_CHANNEL,
+                originChatId != null ? originChatId : DEFAULT_ORIGIN_CHAT_ID
+        );
 
-        // 构建来源信息映射
-        Map<String, String> origin = new HashMap<>();
-        // 设置渠道，默认为"cli"
-        origin.put("channel", originChannel != null ? originChannel : "cli");
-        // 设置聊天ID，默认为"direct"
-        origin.put("chat_id", originChatId != null ? originChatId : "direct");
-
-        Future<?> future;
         try {
-            future = executor.submit(() -> {
-                try {
-                    runSubagent(taskId, task, displayLabel, origin);
-                } finally {
-                    runningTasks.remove(taskId);
-                    if (sessionKey != null) {
-                        Set<String> ids = sessionTasks.get(sessionKey);
-                        if (ids != null) {
-                            ids.remove(taskId);
-                            if (ids.isEmpty()) {
-                                sessionTasks.remove(sessionKey);
-                            }
-                        }
-                    }
-                }
-            });
+            Future<?> future = submitSubagentTask(taskId, task, displayLabel, origin, sessionKey);
+            registerRunningTask(taskId, sessionKey, future);
         } catch (RejectedExecutionException e) {
             log.warn("子代理任务队列已满，拒绝执行: label={}", displayLabel);
             return "子代理系统繁忙，请稍后再试。";
         }
 
-        // 将任务Future存入运行任务映射
-        runningTasks.put(taskId, future);
-
-        // 如果提供了会话密钥，将会话与任务关联
-        if (sessionKey != null) {
-            // 获取或创建该会话的任务ID集合，并添加当前任务ID
-            sessionTasks.computeIfAbsent(sessionKey, k -> ConcurrentHashMap.newKeySet()).add(taskId);
-        }
-
         log.info("已启动子代理: id={}, label={}", taskId, displayLabel);
-
-        // 返回启动成功提示信息
         return "子代理 [" + displayLabel + "] 已启动（id：" + taskId + "）。完成后我会通知你。";
+    }
+
+    private Future<?> submitSubagentTask(
+            String taskId,
+            String task,
+            String displayLabel,
+            Origin origin,
+            String sessionKey
+    ) {
+        return executor.submit(() -> {
+            try {
+                runSubagent(taskId, task, displayLabel, origin);
+            } finally {
+                cleanupTask(taskId, sessionKey);
+            }
+        });
+    }
+
+    private void registerRunningTask(String taskId, String sessionKey, Future<?> future) {
+        runningTasks.put(taskId, future);
+        if (sessionKey != null) {
+            sessionTasks.computeIfAbsent(sessionKey, key -> ConcurrentHashMap.newKeySet()).add(taskId);
+        }
+    }
+
+    private void cleanupTask(String taskId, String sessionKey) {
+        runningTasks.remove(taskId);
+        if (sessionKey == null) {
+            return;
+        }
+        Set<String> ids = sessionTasks.get(sessionKey);
+        if (ids == null) {
+            return;
+        }
+        ids.remove(taskId);
+        if (ids.isEmpty()) {
+            sessionTasks.remove(sessionKey);
+        }
     }
 
     /**
@@ -288,157 +300,100 @@ public class SubagentManager implements AutoCloseable {
             String taskId,
             String task,
             String label,
-            Map<String, String> origin
+            Origin origin
     ) {
         log.info("子代理开始: id={}, label={}", taskId, label);
 
         try {
-            // -----------------------------
-            // 1. 构造子代理自己的工具集
-            // -----------------------------
-            // 创建新的工具注册表
-            ToolRegistry tools = new ToolRegistry();
-
-            // 确定允许访问的目录：如果限制工作空间或启用了沙箱，则限制为工作空间目录，否则为null（无限制）
-            Path allowedDir = (restrictToWorkspace || isSandboxEnabled(execConfig))
-                    ? workspace
-                    : null;
-
-            // 注册文件读取工具
-            tools.register(new ReadFileTool(workspace, allowedDir, List.of()));
-            // 注册文件写入工具
-            tools.register(new WriteFileTool(workspace, allowedDir));
-            // 注册文件编辑工具
-            tools.register(new EditFileTool(workspace, allowedDir));
-            // 注册目录列表工具
-            tools.register(new ListDirTool(workspace, allowedDir));
-            // 注册全局匹配搜索工具
-            tools.register(new GlobTool(workspace, allowedDir));
-            // 注册内容搜索工具
-            tools.register(new GrepTool(workspace, allowedDir));
-
-            // 如果执行工具启用，则注册执行工具
-            if (execConfig.isEnable()) {
-                tools.register(new ExecTool(
-                        execConfig.getTimeout(), // 超时时间
-                        String.valueOf(workspace), // 工作目录
-                        null, // 额外路径
-                        null, // 额外环境变量
-                        restrictToWorkspace, // 是否限制工作空间
-                        execConfig.getSandbox(), // 沙箱配置
-                        execConfig.getPathAppend(), // 路径追加
-                        execConfig.getAllowedEnvKeys() // 允许的环境变量键
-                ));
-            }
-
-            if (webConfig.isEnable()) {
-                tools.register(new WebFetchTool(webConfig.getMaxChars(), webConfig.getProxy()));
-                tools.register(new WebSearchTool(webConfig.getSearch(), webConfig.getProxy()));
-            }
-
-            // -----------------------------
-            // 2. 构造子代理 prompt
-            // -----------------------------
-            // 构建子代理系统提示词
-            String systemPrompt = buildSubagentPrompt(origin);
-
-            // 创建消息列表
-            List<Map<String, Object>> messages = new ArrayList<>();
-            // 添加系统消息
-            messages.add(Map.of(
-                    "role", "system",
-                    "content", systemPrompt
-            ));
-            // 添加用户任务消息
-            messages.add(Map.of(
-                    "role", "user",
-                    "content", task
-            ));
-
-            // -----------------------------
-            // 3. 跑子代理
-            // -----------------------------
-            // 创建代理运行规范
-            AgentRunSpec spec = new AgentRunSpec();
-            // 设置初始消息
-            spec.setInitialMessages(messages);
-            // 设置工具集
-            spec.setTools(tools);
-            // 设置模型
-            spec.setModel(model);
-            // 设置最大迭代次数
-            spec.setMaxIterations(15);
-            // 设置最大工具结果字符数
-            spec.setMaxToolResultChars(maxToolResultChars);
-            // 设置钩子，用于日志记录
-            spec.setHook(new SubagentHook(taskId));
-            // 设置达到最大迭代次数时的消息
-            spec.setMaxIterationsMessage("任务已结束，但未生成最终回复。");
-            // 设置错误消息为null
-            spec.setErrorMessage(null);
-            // 设置在工具错误时失败
-            spec.setFailOnToolError(true);
-
-            // 运行代理并获取结果
+            ToolRegistry tools = buildSubagentTools();
+            AgentRunSpec spec = buildRunSpec(taskId, task, origin, tools);
             AgentRunResult result = runner.run(spec);
-
-            // -----------------------------
-            // 4. 处理结果
-            // -----------------------------
-            // 如果停止原因是工具错误
-            if ("tool_error".equals(result.getStopReason())) {
-                // 宣布结果为错误，包含部分进度信息
-                announceResult(
-                        taskId,
-                        label,
-                        task,
-                        formatPartialProgress(result),
-                        origin,
-                        "error"
-                );
-                return;
-            }
-
-            // 如果停止原因是其他错误
-            if ("error".equals(result.getStopReason())) {
-                // 宣布结果为错误，包含错误信息
-                announceResult(
-                        taskId,
-                        label,
-                        task,
-                        result.getError() != null ? result.getError() : "错误：子代理执行失败。",
-                        origin,
-                        "error"
-                );
-                return;
-            }
-
-            if ("cancelled".equals(result.getStopReason())) {
-                announceResult(taskId, label, task, "任务已取消。", origin, "cancelled");
-                return;
-            }
-
-            // 获取最终结果内容，如果为空则使用默认消息
-            String finalResult = result.getFinalContent() != null
-                    ? result.getFinalContent()
-                    : "任务已结束，但未生成最终回复。";
-
             log.info("子代理完成: id={}, label={}", taskId, label);
-            // 宣布结果为成功
-            announceResult(taskId, label, task, finalResult, origin, "ok");
-
+            announceResult(taskId, label, task, resolveAnnouncement(result), origin);
         } catch (CancellationException e) {
-            announceResult(taskId, label, task, "任务已取消。", origin, "cancelled");
+            announceResult(taskId, label, task, new Announcement(CANCELLED_MESSAGE, "cancelled"), origin);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            announceResult(taskId, label, task, "任务已取消。", origin, "cancelled");
+            announceResult(taskId, label, task, new Announcement(CANCELLED_MESSAGE, "cancelled"), origin);
         } catch (Exception e) {
-            // 捕获异常，构建错误消息
             String errorMsg = "错误：" + e.getMessage();
             log.warn("子代理执行失败: id={}, label={}", taskId, label, e);
-            // 宣布结果为错误
-            announceResult(taskId, label, task, errorMsg, origin, "error");
+            announceResult(taskId, label, task, new Announcement(errorMsg, "error"), origin);
         }
+    }
+
+    private ToolRegistry buildSubagentTools() {
+        ToolRegistry tools = new ToolRegistry();
+        Path allowedDir = resolveAllowedDir();
+
+        tools.register(new ReadFileTool(workspace, allowedDir, List.of()));
+        tools.register(new WriteFileTool(workspace, allowedDir));
+        tools.register(new EditFileTool(workspace, allowedDir));
+        tools.register(new ListDirTool(workspace, allowedDir));
+        tools.register(new GlobTool(workspace, allowedDir));
+        tools.register(new GrepTool(workspace, allowedDir));
+
+        if (execConfig.isEnable()) {
+            tools.register(new ExecTool(
+                    execConfig.getTimeout(),
+                    String.valueOf(workspace),
+                    null,
+                    null,
+                    restrictToWorkspace,
+                    execConfig.getSandbox(),
+                    execConfig.getPathAppend(),
+                    execConfig.getAllowedEnvKeys()
+            ));
+        }
+
+        if (webConfig.isEnable()) {
+            tools.register(new WebFetchTool(webConfig.getMaxChars(), webConfig.getProxy()));
+            tools.register(new WebSearchTool(webConfig.getSearch(), webConfig.getProxy()));
+        }
+        return tools;
+    }
+
+    private Path resolveAllowedDir() {
+        return (restrictToWorkspace || isSandboxEnabled(execConfig)) ? workspace : null;
+    }
+
+    private AgentRunSpec buildRunSpec(String taskId, String task, Origin origin, ToolRegistry tools) {
+        List<Map<String, Object>> messages = new ArrayList<>();
+        messages.add(Map.of("role", "system", "content", buildSubagentPrompt(origin)));
+        messages.add(Map.of("role", "user", "content", task));
+
+        return new AgentRunSpec()
+                .setInitialMessages(messages)
+                .setTools(tools)
+                .setModel(model)
+                .setMaxIterations(SUBAGENT_MAX_ITERATIONS)
+                .setMaxToolResultChars(maxToolResultChars)
+                .setHook(new SubagentHook(taskId))
+                .setMaxIterationsMessage(DEFAULT_MAX_ITERATIONS_MESSAGE)
+                .setErrorMessage(null)
+                .setFailOnToolError(true);
+    }
+
+    private Announcement resolveAnnouncement(AgentRunResult result) {
+        if (result == null) {
+            return new Announcement(DEFAULT_ERROR_MESSAGE, "error");
+        }
+        if ("tool_error".equals(result.getStopReason())) {
+            return new Announcement(formatPartialProgress(result), "error");
+        }
+        if ("error".equals(result.getStopReason())) {
+            return new Announcement(
+                    result.getError() != null ? result.getError() : DEFAULT_ERROR_MESSAGE,
+                    "error"
+            );
+        }
+        if ("cancelled".equals(result.getStopReason())) {
+            return new Announcement(CANCELLED_MESSAGE, "cancelled");
+        }
+        return new Announcement(
+                result.getFinalContent() != null ? result.getFinalContent() : DEFAULT_MAX_ITERATIONS_MESSAGE,
+                "ok"
+        );
     }
 
     /**
@@ -451,26 +406,22 @@ public class SubagentManager implements AutoCloseable {
      * @param taskId 任务ID
      * @param label 任务标签
      * @param task 任务描述
-     * @param result 执行结果
      * @param origin 来源信息
-     * @param status 状态（ok 或 error）
      */
     private void announceResult(
             String taskId,
             String label,
             String task,
-            String result,
-            Map<String, String> origin,
-            String status
+            Announcement announcement,
+            Origin origin
     ) {
-        // 根据状态确定状态文本
+        String status = announcement.status();
         String statusText = switch (status) {
             case "ok" -> "已完成";
             case "cancelled" -> "已取消";
             default -> "失败";
         };
 
-        // 渲染公告内容模板
         String announceContent = PromptTemplates.renderTemplate(
                 "agent/subagent_announce.md",
                 true,
@@ -478,24 +429,23 @@ public class SubagentManager implements AutoCloseable {
                         "label", label,
                         "status_text", statusText,
                         "task", task,
-                        "result", result
+                        "result", announcement.result()
                 )
         );
 
         InboundMessage msg = InboundMessages.of(
                 "system",
                 "subagent",
-                origin.get("channel") + ":" + origin.get("chat_id"),
+                origin.channel() + ":" + origin.chatId(),
                 announceContent
         );
 
         try {
-            // 发布消息到消息总线
             bus.publishInbound(msg);
             log.info("子代理结果已回传: id={}, to={}:{}, status={}",
                     taskId,
-                    origin.get("channel"),
-                    origin.get("chat_id"),
+                    origin.channel(),
+                    origin.chatId(),
                     status
             );
         } catch (Exception e) {
@@ -572,18 +522,13 @@ public class SubagentManager implements AutoCloseable {
 
         // 如果没有任何行，返回错误信息或默认消息
         return lines.isEmpty()
-                ? (result.getError() != null ? result.getError() : "错误：子代理执行失败。")
+                ? "错误：子代理执行失败。"
                 : String.join("\n", lines);
     }
 
-    /**
-     * 构造子代理专用 system prompt。
-     *
-     * @return 渲染后的系统提示词
-     */
-    private String buildSubagentPrompt(Map<String, String> origin) {
-        String channel = origin != null ? origin.get("channel") : null;
-        String chatId = origin != null ? origin.get("chat_id") : null;
+    private String buildSubagentPrompt(Origin origin) {
+        String channel = origin != null ? origin.channel() : null;
+        String chatId = origin != null ? origin.chatId() : null;
         String timeCtx = ContextBuilder.buildRuntimeContext(channel, chatId, null);
         String skillsSummary = skillsLoader.buildSkillsSummary();
 
@@ -638,11 +583,6 @@ public class SubagentManager implements AutoCloseable {
         return futures.size();
     }
 
-    /**
-     * 获取当前运行中的子代理数量。
-     *
-     * @return 运行中的任务数量
-     */
     public int getRunningCount() {
         return runningTasks.size();
     }
@@ -672,15 +612,18 @@ public class SubagentManager implements AutoCloseable {
      * @return 截断后的文本
      */
     private String truncate(String text, int maxLen) {
-        // 如果文本为null，返回空字符串
         if (text == null) {
             return "";
         }
-        // 如果文本长度不超过最大长度，直接返回
         return text.length() <= maxLen
                 ? text
-                // 否则截取前maxLen个字符并添加省略号
                 : text.substring(0, maxLen) + "...";
+    }
+
+    private String resolveDisplayLabel(String task, String label) {
+        return (label != null && !label.isBlank())
+                ? label
+                : truncate(task, DEFAULT_LABEL_MAX_LENGTH);
     }
 
     /**
@@ -692,5 +635,11 @@ public class SubagentManager implements AutoCloseable {
      */
     private boolean isSandboxEnabled(Config.ExecToolConfig cfg) {
         return cfg.getSandbox() != null && !cfg.getSandbox().isBlank();
+    }
+
+    private record Origin(String channel, String chatId) {
+    }
+
+    private record Announcement(String result, String status) {
     }
 }

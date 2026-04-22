@@ -1,7 +1,11 @@
 package ricbot.integration.channel;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.Getter;
+import lombok.Setter;
+import lombok.extern.slf4j.Slf4j;
 import ricbot.infra.common.CircuitBreaker;
+import ricbot.infra.config.RuntimePaths;
 import ricbot.infra.common.RetryUtils;
 import ricbot.domain.message.MessageBus;
 import ricbot.domain.message.OutboundMessage;
@@ -27,25 +31,20 @@ import java.util.concurrent.ConcurrentHashMap;
  * 4. 支持 enter_chat 欢迎语
  * 5. 出站支持文本与媒体上传
  */
+@Slf4j
 public class WecomChannel extends BaseChannel {
 
+    private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(30);
+    private static final int MAX_PROCESSED_MESSAGE_IDS = 1000;
+
+    @Getter
+    @Setter
     public static class WecomConfig {
         private boolean enabled = false;
         private String botId = "";
         private String secret = "";
         private List<String> allowFrom = new ArrayList<>();
         private String welcomeMessage = "";
-
-        public boolean isEnabled() { return enabled; }
-        public void setEnabled(boolean enabled) { this.enabled = enabled; }
-        public String getBotId() { return botId; }
-        public void setBotId(String botId) { this.botId = botId; }
-        public String getSecret() { return secret; }
-        public void setSecret(String secret) { this.secret = secret; }
-        public List<String> getAllowFrom() { return allowFrom; }
-        public void setAllowFrom(List<String> allowFrom) { this.allowFrom = allowFrom; }
-        public String getWelcomeMessage() { return welcomeMessage; }
-        public void setWelcomeMessage(String welcomeMessage) { this.welcomeMessage = welcomeMessage; }
     }
 
     public interface WecomClient {
@@ -88,7 +87,7 @@ public class WecomChannel extends BaseChannel {
         public void connect(WecomListener listener) throws Exception {
             this.listener = listener;
             refreshAccessToken();
-            System.out.println("企微 HTTP 客户端已初始化。（接收消息需要 Webhook/WebSocket 代理）");
+            log.info("企微 HTTP 客户端已初始化，接收消息仍需要 Webhook 或 WebSocket 代理");
             // If there's a proxy or webhook, it would connect here.
             // For now, we only support sending messages via HTTP API.
         }
@@ -138,7 +137,7 @@ public class WecomChannel extends BaseChannel {
             // Just a placeholder for actual multipart upload
             // WeCom expects a multipart/form-data POST with the file.
             // For simplicity, we just print a log here since Java 11 HttpClient doesn't have built-in multipart
-            System.out.println("企微：正在上传媒体 " + filePath + " 到 " + uploadUrl);
+            log.info("企微上传媒体: filePath={}, uploadUrl={}", filePath, uploadUrl);
             String mediaId = "DUMMY_MEDIA_ID_" + System.currentTimeMillis();
 
             // 2. Send message with media_id
@@ -221,17 +220,17 @@ public class WecomChannel extends BaseChannel {
         }
         if (client == null) {
             HttpClient httpClient = HttpClient.newBuilder()
-                    .connectTimeout(Duration.ofSeconds(30))
+                    .connectTimeout(CONNECT_TIMEOUT)
                     .build();
             this.client = new DefaultWecomClient(httpClient, config.getBotId(), config.getSecret());
         }
 
         running = true;
         client.connect(new WecomListener() {
-            @Override public void onConnected(Object frame) { System.out.println("企微已连接"); }
-            @Override public void onAuthenticated(Object frame) { System.out.println("企微已认证"); }
-            @Override public void onDisconnected(Object frame) { System.out.println("企微已断开连接：" + frame); }
-            @Override public void onError(Object frame) { System.err.println("企微错误：" + frame); }
+            @Override public void onConnected(Object frame) { log.info("企微已连接"); }
+            @Override public void onAuthenticated(Object frame) { log.info("企微已认证"); }
+            @Override public void onDisconnected(Object frame) { log.warn("企微已断开连接: {}", frame); }
+            @Override public void onError(Object frame) { log.error("企微错误: {}", frame); }
             @Override public void onTextMessage(Object frame) { processMessage(frame, "text"); }
             @Override public void onImageMessage(Object frame) { processMessage(frame, "image"); }
             @Override public void onVoiceMessage(Object frame) { processMessage(frame, "voice"); }
@@ -250,15 +249,23 @@ public class WecomChannel extends BaseChannel {
     }
 
     public void send(OutboundMessage msg) throws Exception {
-        if (client == null) return;
+        if (client == null || msg == null) {
+            return;
+        }
 
         Object frameHeaders = chatFrames.get(msg.getChatId());
 
         if (msg.getMedia() != null) {
             for (String mediaPath : msg.getMedia()) {
                 Path p = Path.of(mediaPath).toAbsolutePath().normalize();
-                if (!Files.isRegularFile(p)) continue;
-                if (Files.size(p) > WECOM_UPLOAD_MAX_BYTES) continue;
+                if (!Files.isRegularFile(p)) {
+                    log.debug("跳过不存在的企微媒体文件: {}", p);
+                    continue;
+                }
+                if (Files.size(p) > WECOM_UPLOAD_MAX_BYTES) {
+                    log.warn("跳过超出大小限制的企微媒体文件: path={}, maxBytes={}", p, WECOM_UPLOAD_MAX_BYTES);
+                    continue;
+                }
 
                 String mediaType = guessWecomMediaType(p.getFileName().toString());
                 client.sendMedia(msg.getChatId(), mediaType, p.toString(), frameHeaders);
@@ -316,7 +323,7 @@ public class WecomChannel extends BaseChannel {
             handleMessage(fromUser, chatId, content, mediaPaths, metadata);
 
         } catch (Exception e) {
-            e.printStackTrace();
+            log.error("处理企微消息失败: type={}, frame={}", msgType, frame, e);
         }
     }
 
@@ -336,7 +343,7 @@ public class WecomChannel extends BaseChannel {
                 client.sendText(fromUser, config.getWelcomeMessage(), frame);
             }
         } catch (Exception e) {
-            e.printStackTrace();
+            log.error("处理企微欢迎消息失败: frame={}", frame, e);
         }
     }
 
@@ -356,16 +363,13 @@ public class WecomChannel extends BaseChannel {
 
     private String saveWecomMedia(Map<String, Object> body, String fileName, String msgType) {
         try {
-            Path mediaDir = Path.of(System.getProperty("user.home"), ".nanobot", "media", "wecom");
-            if (!Files.exists(mediaDir)) {
-                Files.createDirectories(mediaDir);
-            }
-
+            Path mediaDir = RuntimePaths.getMediaDir("wecom");
             Path out = mediaDir.resolve(fileName);
             // 实际上需要调用企业微信 API 下载媒体文件，这里暂且作为占位，将元数据写入文件
             Files.writeString(out, body.toString());
             return out.toString();
         } catch (Exception e) {
+            log.warn("保存企微媒体失败: fileName={}, msgType={}", fileName, msgType, e);
             return null;
         }
     }
@@ -392,7 +396,7 @@ public class WecomChannel extends BaseChannel {
     }
 
     private void trimProcessed() {
-        if (processedMessageIds.size() > 1000) {
+        if (processedMessageIds.size() > MAX_PROCESSED_MESSAGE_IDS) {
             Iterator<String> it = processedMessageIds.keySet().iterator();
             if (it.hasNext()) {
                 it.next();

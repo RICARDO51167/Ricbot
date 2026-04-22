@@ -98,10 +98,23 @@ public class MessageBus {
         }
     }
 
+    /**
+     * 消费一条入站消息（带超时）。
+     *
+     * @param i 超时时间数值
+     * @param timeUnit 时间单位
+     * @return 超时返回 null，否则返回一条入站消息
+     * @throws InterruptedException 如果线程在阻塞时被中断
+     */
     public InboundMessage consumeInbound(int i, TimeUnit timeUnit) throws InterruptedException {
         return inbound.poll(i, timeUnit);
     }
 
+    /**
+     * 发送一条出站消息（阻塞直到成功或线程被中断）。
+     *
+     * @param msg Agent 处理完成后的响应消息
+     */
     public void sendOutbound(OutboundMessage msg) {
         try {
             outbound.put(msg);
@@ -110,6 +123,11 @@ public class MessageBus {
         }
     }
 
+    /**
+     * 立即获取并移除出站队列中的下一条消息（不等待）。
+     *
+     * @return 如果队列为空则返回 null，否则返回一条出站消息
+     */
     public OutboundMessage pollOutboundNow() {
         return outbound.poll();
     }

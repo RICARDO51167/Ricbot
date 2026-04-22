@@ -223,40 +223,26 @@ public class MemoryStore {
      * 标记指定数量的历史记录为已处理
      * @param count 已处理的数量
      */
+    /**
+     * 标记指定数量的历史记录为已处理
+     * @param count 已处理的数量
+     */
     public void markHistoryAsProcessed(int count) {
+        // 如果计数小于或等于0，直接返回，不做任何操作
         if (count <= 0) {
             return;
         }
+        // 使用锁确保线程安全，防止并发修改游标
         synchronized (cursorLock) {
+            // 获取当前 Dream 处理的游标位置
             int current = getLastDreamCursor();
+            // 获取最新的总历史记录游标位置
             int max = getLastCursor();
+            // 计算新的游标位置：取当前游标加上处理数量与最大游标的较小值，防止越界
             int next = Math.min(max, current + count);
+            // 更新 Dream 处理游标到新的位置
             setLastDreamCursor(next);
         }
-    }
-
-    /**
-     * 获取记忆上下文
-     * @return 记忆内容，如果为空则返回空字符串
-     */
-    public String getMemoryContext() {
-        rebuildMarkdownViewsIfNeeded();
-        String memory = readMemory();
-        String user = readUser();
-        String soul = readSoul();
-
-        StringBuilder sb = new StringBuilder();
-        if (memory != null && !memory.isBlank()) {
-            sb.append("MEMORY.md\n").append(memory.trim()).append("\n\n");
-        }
-        if (user != null && !user.isBlank()) {
-            sb.append("USER.md\n").append(user.trim()).append("\n\n");
-        }
-        if (soul != null && !soul.isBlank()) {
-            sb.append("SOUL.md\n").append(soul.trim()).append("\n\n");
-        }
-        String out = sb.toString().trim();
-        return HelperUtils.truncateText(out, 12_000);
     }
 
     /**
@@ -310,43 +296,61 @@ public class MemoryStore {
      * @return 合并后的记忆条目列表
      */
     public List<MemoryEntry> mergeMemoryEntries(List<MemoryEntry> candidates) {
+        // 读取现有的所有记忆条目
         List<MemoryEntry> existing = readMemoryEntries();
+        // 使用 LinkedHashMap 保持插入顺序，以 dedupeKey 为键存储记忆条目
         Map<String, MemoryEntry> byKey = new LinkedHashMap<>();
         for (MemoryEntry entry : existing) {
             byKey.put(entry.dedupeKey(), entry);
         }
 
+        // 遍历候选记忆条目，如果 candidates 为 null 则使用空列表
         for (MemoryEntry candidate : candidates != null ? candidates : List.<MemoryEntry>of()) {
+            // 跳过无效或摘要为空的候选条目
             if (candidate == null || candidate.getSummary() == null || candidate.getSummary().isBlank()) {
                 continue;
             }
+            // 获取候选条目的去重键
             String key = candidate.dedupeKey();
+            // 查找是否存在相同键的现有条目
             MemoryEntry current = byKey.get(key);
             if (current == null) {
+                // 如果不存在，更新候选条目的时间戳并加入映射
                 candidate.touch();
                 byKey.put(key, candidate);
                 continue;
             }
+            // 如果存在，合并重要性：取最大值
             current.setImportance(Math.max(current.getImportance(), candidate.getImportance()));
+            // 合并置信度：取最大值
             current.setConfidence(Math.max(current.getConfidence(), candidate.getConfidence()));
+            // 如果当前条目详情为空且候选条目详情不为空，则更新详情
             if (current.getDetails().isBlank() && !candidate.getDetails().isBlank()) {
                 current.setDetails(candidate.getDetails());
             }
+            // 如果候选条目是长期范围，则更新当前条目的范围
             if (MemoryEntry.SCOPE_LONG_TERM.equals(candidate.getScope())) {
                 current.setScope(candidate.getScope());
             }
+            // 如果候选条目状态为已丢弃，则更新当前条目状态为已丢弃
             if (MemoryEntry.STATUS_DISCARDED.equals(candidate.getStatus())) {
                 current.setStatus(MemoryEntry.STATUS_DISCARDED);
             }
+            // 合并别名列表，并去重
             current.getAliases().addAll(candidate.getAliases());
             current.setAliases(current.getAliases().stream().distinct().toList());
+            // 合并标签列表，并去重
             current.getTags().addAll(candidate.getTags());
             current.setTags(current.getTags().stream().distinct().toList());
+            // 更新当前条目的时间戳
             current.touch();
         }
 
+        // 将映射中的值转换为列表
         List<MemoryEntry> merged = new ArrayList<>(byKey.values());
+        // 写入合并后的记忆条目到文件
         writeMemoryEntries(merged);
+        // 重建 Markdown 视图以反映最新变化
         rebuildMarkdownViews(merged);
         return merged;
     }
@@ -355,12 +359,15 @@ public class MemoryStore {
      * 如果需要，重建 Markdown 视图
      */
     public void rebuildMarkdownViewsIfNeeded() {
+        // 如果结构化记忆文件不存在，直接返回
         if (!Files.exists(memoryEntriesFile)) {
             return;
         }
+        // 检查 Markdown 视图是否需要重建，如果不需要则返回
         if (!markdownViewsNeedRebuild()) {
             return;
         }
+        // 读取所有记忆条目并重建 Markdown 视图
         rebuildMarkdownViews(readMemoryEntries());
     }
 
@@ -369,17 +376,22 @@ public class MemoryStore {
      * @param entries 记忆条目列表
      */
     public void rebuildMarkdownViews(List<MemoryEntry> entries) {
+        // 如果 entries 为 null 则使用空列表
         List<MemoryEntry> source = entries != null ? entries : List.of();
+        // 初始化用于存储 MEMORY.md、USER.md 和 SOUL.md 内容的行列表
         List<String> memoryLines = new ArrayList<>();
         List<String> userLines = new ArrayList<>();
         List<String> soulLines = new ArrayList<>();
         for (MemoryEntry entry : source) {
+            // 跳过无效或非活跃的条目
             if (entry == null || !entry.isActive()) {
                 continue;
             }
+            // 跳过可丢弃范围的条目
             if (MemoryEntry.SCOPE_DISCARDABLE.equals(entry.getScope())) {
                 continue;
             }
+            // 根据条目类型分类添加到对应的行列表
             if (entry.isSoulEntry()) {
                 soulLines.add(entry.renderLine());
             } else if (entry.isUserProfile()) {
@@ -389,10 +401,14 @@ public class MemoryStore {
             }
         }
         try {
+            // 更新 MEMORY.md 文件内容
             updateMemoryMd(renderMarkdown("MEMORY", memoryLines));
+            // 更新 USER.md 文件内容
             updateUserMd(renderMarkdown("USER", userLines));
+            // 更新 SOUL.md 文件内容
             updateSoulMd(renderMarkdown("SOUL", soulLines));
         } catch (IOException e) {
+            // 如果发生 IO 异常，抛出运行时异常
             throw new RuntimeException("更新 Markdown 记忆视图失败", e);
         }
     }
@@ -405,39 +421,55 @@ public class MemoryStore {
      * @return 召回的记忆条目列表
      */
     public List<MemoryEntry> recallMemories(String query, String taskGoal, int limit) {
+        // 读取所有记忆条目
         List<MemoryEntry> all = readMemoryEntries();
+        // 如果没有记忆条目，返回空列表
         if (all.isEmpty()) {
             return List.of();
         }
+        // 组合查询字符串和任务目标
         String combined = (query != null ? query : "") + "\n" + (taskGoal != null ? taskGoal : "");
+        // 对组合文本进行分词
         Set<String> queryTokens = tokenize(combined);
 
+        // 初始化带评分的记忆条目列表
         List<ScoredMemory> scored = new ArrayList<>();
         for (MemoryEntry entry : all) {
+            // 跳过无效或不可召回的条目
             if (entry == null || !entry.isRecallable()) {
                 continue;
             }
+            // 构建用于匹配的文本 haystack（包含摘要、详情和标签）
             String haystack = (entry.getSummary() + "\n" + entry.getDetails() + "\n" + String.join(" ", entry.getTags())).toLowerCase(Locale.ROOT);
+            // 对 haystack 进行分词
             Set<String> memoryTokens = tokenize(haystack);
+            // 计算查询 token 在记忆 token 中出现的次数
             long hits = memoryTokens.stream().filter(queryTokens::contains).count();
+            // 基础评分：重要性 * 2 + 置信度
             double score = entry.getImportance() * 2.0d + entry.getConfidence();
+            // 如果查询 token 不为空，增加基于匹配比例的评分
             if (!queryTokens.isEmpty()) {
                 score += (double) hits / Math.max(1d, queryTokens.size()) * 4.0d;
             }
+            // 如果是长期范围，额外增加评分
             if (MemoryEntry.SCOPE_LONG_TERM.equals(entry.getScope())) {
                 score += 1.5d;
             }
+            // 添加带评分的记忆条目
             scored.add(new ScoredMemory(entry, score));
         }
 
+        // 按评分降序排序，限制返回数量，并提取记忆条目
         List<MemoryEntry> selected = scored.stream()
                 .sorted((a, b) -> Double.compare(b.score(), a.score()))
                 .limit(Math.max(0, limit))
                 .map(ScoredMemory::entry)
                 .toList();
+        // 如果有选中的条目，标记它们为已使用并更新文件
         if (!selected.isEmpty()) {
             List<MemoryEntry> allEntries = new ArrayList<>(all);
             for (MemoryEntry entry : allEntries) {
+                // 如果当前条目在选中列表中，标记为已使用
                 if (selected.stream().anyMatch(sel -> sel.getId().equals(entry.getId()))) {
                     entry.markUsed();
                 }
@@ -454,40 +486,54 @@ public class MemoryStore {
      * @return 召回的历史记录内容列表
      */
     public List<String> recallArchivedHistory(String query, int limit) {
+        // 如果查询为空、历史文件不存在或 limit <= 0，返回空列表
         if (query == null || query.isBlank() || !Files.exists(historyFile) || limit <= 0) {
             return List.of();
         }
+        // 对查询字符串进行分词
         Set<String> queryTokens = tokenize(query);
+        // 初始化带评分的历史记录列表
         List<ScoredHistory> scored = new ArrayList<>();
         try (BufferedReader reader = Files.newBufferedReader(historyFile)) {
             String line;
             int order = 0;
             while ((line = reader.readLine()) != null) {
+                // 跳过空行
                 if (line.isBlank()) {
                     continue;
                 }
+                // 解析 JSONL 行
                 Map<String, Object> parsed = MAPPER.readValue(line, new TypeReference<>() {});
                 String type = String.valueOf(parsed.getOrDefault("type", ""));
+                // 只处理 text 或 raw_archive 类型
                 if (!"text".equals(type) && !"raw_archive".equals(type)) {
                     continue;
                 }
+                // 渲染归档历史内容
                 String content = renderArchivedHistoryContent(type, parsed.get("content"));
+                // 如果内容为空，跳过
                 if (content.isBlank()) {
                     continue;
                 }
+                // 对内容进行分词
                 Set<String> tokens = tokenize(content);
+                // 计算查询 token 在内容 token 中出现的次数
                 long hits = tokens.stream().filter(queryTokens::contains).count();
+                // 如果没有命中，增加顺序计数并跳过
                 if (hits == 0) {
                     order++;
                     continue;
                 }
+                // 计算评分：命中数 + 顺序权重
                 double score = hits + (order * 0.001d);
                 scored.add(new ScoredHistory(content, score));
                 order++;
             }
         } catch (Exception e) {
+            // 记录读取归档历史失败的警告日志
             log.warn("读取归档历史召回失败: {}", historyFile, e);
         }
+        // 按评分降序排序，限制数量，截断内容并返回
         return scored.stream()
                 .sorted((a, b) -> Double.compare(b.score(), a.score()))
                 .limit(limit)
@@ -500,9 +546,11 @@ public class MemoryStore {
      * @param content 历史内容
      */
     public void appendHistory(String content) {
+        // 创建历史记录条目映射
         Map<String, Object> entry = new LinkedHashMap<>();
         entry.put("type", "text");
         entry.put("content", content != null ? content : "");
+        // 调用通用方法追加条目
         appendHistoryEntry(entry);
     }
 
@@ -511,12 +559,14 @@ public class MemoryStore {
      * @param messages 消息列表
      */
     public void rawArchive(List<Map<String, Object>> messages) {
+        // 创建原始归档条目映射
         Map<String, Object> entry = new LinkedHashMap<>();
         entry.put("type", "raw_archive");
         entry.put("content", Map.of(
                 "messages_count", messages != null ? messages.size() : 0,
                 "messages", messages != null ? messages : List.of()
         ));
+        // 调用通用方法追加条目
         appendHistoryEntry(entry);
     }
 
@@ -527,9 +577,12 @@ public class MemoryStore {
     public int getLastCursor() {
         synchronized (cursorLock) {
             try {
+                // 如果游标文件不存在，返回 0
                 if (!Files.exists(cursorFile)) return 0;
+                // 读取并解析游标文件内容
                 return Integer.parseInt(Files.readString(cursorFile).trim());
             } catch (Exception e) {
+                // 如果发生异常，返回 0
                 return 0;
             }
         }
@@ -542,9 +595,12 @@ public class MemoryStore {
     public int getLastDreamCursor() {
         synchronized (cursorLock) {
             try {
+                // 如果 Dream 游标文件不存在，返回 0
                 if (!Files.exists(dreamCursorFile)) return 0;
+                // 读取并解析 Dream 游标文件内容
                 return Integer.parseInt(Files.readString(dreamCursorFile).trim());
             } catch (Exception e) {
+                // 如果发生异常，返回 0
                 return 0;
             }
         }
@@ -557,9 +613,11 @@ public class MemoryStore {
     public void setLastDreamCursor(int cursor) {
         synchronized (cursorLock) {
             try {
+                // 写入 Dream 游标值，确保非负，并覆盖现有文件
                 Files.writeString(dreamCursorFile, String.valueOf(Math.max(0, cursor)),
                         StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
             } catch (IOException e) {
+                // 如果发生 IO 异常，抛出运行时异常
                 throw new RuntimeException(e);
             }
         }
@@ -570,40 +628,56 @@ public class MemoryStore {
      * @param sinceCursor 起始游标
      * @return 未处理的历史记录列表
      */
+    /**
+     * 读取未处理的历史记录（游标大于 sinceCursor 的记录）
+     * @param sinceCursor 起始游标，只返回游标值严格大于此值的记录
+     * @return 未处理的历史记录列表，每个元素是一个包含 cursor, timestamp, content 的 Map
+     */
     public List<Map<String, Object>> readUnprocessedHistory(int sinceCursor) {
-        // 如果历史记录文件不存在，返回空列表
+        // 如果历史记录文件不存在，直接返回空列表
         if (!Files.exists(historyFile)) return List.of();
 
+        // 初始化用于存储未处理历史记录的列表
         List<Map<String, Object>> entries = new ArrayList<>();
         try (BufferedReader reader = Files.newBufferedReader(historyFile)) {
             String line;
+            // 逐行读取 history.jsonl 文件
             while ((line = reader.readLine()) != null) {
+                // 跳过空行
                 if (line.isBlank()) {
                     continue;
                 }
+                // 将 JSON 行解析为 Map 对象
                 Map<String, Object> parsed = MAPPER.readValue(line, new TypeReference<>() {});
+                
+                // 获取当前记录的游标值，如果不存在或类型不匹配则默认为 0
                 Object cursorObj = parsed.get("cursor");
                 int cursor = cursorObj instanceof Number n ? n.intValue() : 0;
+                
+                // 如果当前记录的游标小于或等于指定起始游标，则跳过（已处理过）
                 if (cursor <= sinceCursor) {
                     continue;
                 }
 
+                // 构建新的条目 Map，只保留需要的字段
                 Map<String, Object> entry = new LinkedHashMap<>();
+                // 放入游标值
                 entry.put("cursor", cursor);
+                // 放入时间戳，转换为字符串，默认为空串
                 entry.put("timestamp", String.valueOf(parsed.getOrDefault("timestamp", "")));
 
+                // 兼容不同版本的内容字段：优先取 "content"，其次取 "payload"，最后默认为空串
                 if (parsed.containsKey("content")) {
                     entry.put("content", parsed.get("content"));
-                } else if (parsed.containsKey("payload")) {
-                    entry.put("content", parsed.get("payload"));
-                } else {
-                    entry.put("content", "");
-                }
+                } else entry.put("content", parsed.getOrDefault("payload", ""));
+                // 将构建好的条目添加到结果列表中
                 entries.add(entry);
             }
         } catch (Exception e) {
+            // 捕获异常并记录警告日志，防止程序崩溃
             log.warn("读取 history 失败: {}", historyFile, e);
         }
+        // 返回所有未处理的历史记录
         return entries;
     }
 

@@ -1,424 +1,671 @@
 package ricbot.integration.channel;
 
+import lombok.extern.slf4j.Slf4j;
 import ricbot.domain.message.InboundMessage;
 import ricbot.domain.message.InboundMessages;
-import ricbot.domain.message.MessageBus; // 导入消息总线类，用于发布入站消息
-import ricbot.domain.message.OutboundMessage; // 导出发消息类，用于发送出站消息
-import ricbot.integration.llm.api.GroqTranscriptionProvider; // 导入 Groq 语音转写提供者实现
-import ricbot.integration.llm.openai.OpenAITranscriptionProvider; // 导入 OpenAI 语音转写提供者实现
-import ricbot.integration.llm.api.TranscriptionProvider; // 导入语音转写提供者接口
-import ricbot.integration.channel.event.ChannelEvent; // 导入渠道事件类
+import ricbot.domain.message.MessageBus;
+import ricbot.domain.message.OutboundMessage;
+import ricbot.integration.channel.event.ChannelEvent;
+import ricbot.integration.llm.api.GroqTranscriptionProvider;
+import ricbot.integration.llm.api.TranscriptionProvider;
+import ricbot.integration.llm.openai.OpenAITranscriptionProvider;
 
-import java.nio.file.Path; // 导入文件路径类，用于处理音频文件路径
-import java.time.LocalDateTime; // 导入本地日期时间类，用于时间戳处理
-import java.util.ArrayDeque; // 导入数组双端队列，用于维护最近的事件 ID 队列
-import java.util.HashMap; // 导入哈希映射，用于处理元数据
-import java.util.HashSet; // 导入哈希集合，用于快速查找最近的事件 ID
-import java.util.List; // 导入列表接口，用于处理媒体文件列表等
-import java.util.Map; // 导入映射接口，用于处理配置和元数据
-import java.util.Set; // 导入集合接口，用于存储事件 ID 集合
+import java.nio.file.Path;
+import java.time.LocalDateTime;
+import java.util.ArrayDeque;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * Channel 抽象基类
- * 定义了所有渠道共同的基础行为和属性
+ *
+ * 设计目标：
+ * 1. 统一各类渠道的公共行为
+ * 2. 向消息总线发布入站消息
+ * 3. 提供事件去重能力
+ * 4. 提供语音转写能力
+ *
+ * 本次重构重点：
+ * - 将多个 handleMessage 重载收敛为一个请求对象 + 一个核心方法
+ * - 保留旧重载方法用于兼容外部已有子类调用
  */
+@Slf4j
 public abstract class BaseChannel {
 
     /**
+     * 默认转写 provider
+     */
+    private static final String DEFAULT_TRANSCRIPTION_PROVIDER = "groq";
+
+    /**
+     * 最近事件 ID 最大保留数量，避免去重集合无限增长
+     */
+    private static final int MAX_RECENT_EVENT_IDS = 5000;
+
+    /**
      * 渠道配置对象
-     * 通常是一个 Map 或特定的配置类实例，存储渠道的初始化参数
      */
     protected final Object channelConfig;
 
     /**
-     * 消息总线实例
-     * 用于将接收到的消息发布到系统内部进行处理
+     * 消息总线
      */
     protected final MessageBus bus;
 
-    protected String name; // 渠道的唯一标识名称
-    protected String displayName; // 渠道的显示名称，用于前端展示
-    protected boolean running = false; // 渠道运行状态标志，true 表示正在运行
-    protected String transcriptionProvider; // 语音转写服务提供商名称，如 "groq", "openai"
-    protected String transcriptionApiKey; // 语音转写服务的 API 密钥
-    protected String transcriptionApiBase; // 语音转写服务的基础 URL（可选，用于自定义端点）
+    /**
+     * 渠道标识名称
+     */
+    protected String name;
 
-    // 用于去重的最近事件 ID 队列，保持插入顺序
+    /**
+     * 渠道展示名称
+     */
+    protected String displayName;
+
+    /**
+     * 渠道运行状态
+     */
+    protected boolean running = false;
+
+    /**
+     * 转写 provider 名称，例如 groq / openai
+     */
+    protected String transcriptionProvider;
+
+    /**
+     * 转写 API Key
+     */
+    protected String transcriptionApiKey;
+
+    /**
+     * 转写 API Base
+     */
+    protected String transcriptionApiBase;
+
+    /**
+     * 最近事件 ID 队列：保持插入顺序，便于淘汰最老数据
+     */
     private final ArrayDeque<String> recentEventIds = new ArrayDeque<>();
-    // 用于快速查找事件 ID 是否已存在的集合
+
+    /**
+     * 最近事件 ID 集合：便于快速判重
+     */
     private final Set<String> recentEventIdSet = new HashSet<>();
 
-    /**
-     * 构造函数
-     *
-     * @param channelConfig 渠道配置对象
-     * @param bus           消息总线实例
-     */
-    protected BaseChannel(
-            Object channelConfig,
-            MessageBus bus
-    ) {
-        this.channelConfig = channelConfig; // 初始化渠道配置
-        this.bus = bus; // 初始化消息总线
+    protected BaseChannel(Object channelConfig, MessageBus bus) {
+        this.channelConfig = channelConfig;
+        this.bus = bus;
     }
 
-    /**
-     * 获取渠道名称
-     *
-     * @return 渠道名称
-     */
     public String getName() {
         return name;
     }
 
-    /**
-     * 获取渠道显示名称
-     *
-     * @return 渠道显示名称
-     */
-    public String getDisplayName() {
-        return displayName;
-    }
-
-    /**
-     * 检查渠道是否正在运行
-     *
-     * @return 如果正在运行返回 true，否则返回 false
-     */
     public boolean isRunning() {
         return running;
     }
 
-    /**
-     * 启动渠道
-     * 具体实现由子类提供
-     *
-     * @throws Exception 启动过程中可能抛出的异常
-     */
     public abstract void start() throws Exception;
 
-    /**
-     * 停止渠道
-     * 具体实现由子类提供
-     *
-     * @throws Exception 停止过程中可能抛出的异常
-     */
     public abstract void stop() throws Exception;
 
-    /**
-     * 获取允许的来源列表
-     * 具体实现由子类提供，用于权限控制或过滤
-     *
-     * @return 允许的来源字符串列表
-     */
     public abstract List<String> getAllowFrom();
 
-    /**
-     * 设置语音转写提供商名称
-     *
-     * @param provider 提供商名称，如 "groq", "openai"
-     */
     public void setTranscriptionProvider(String provider) {
         this.transcriptionProvider = provider;
     }
 
-    /**
-     * 设置语音转写 API 密钥
-     *
-     * @param apiKey API 密钥
-     */
     public void setTranscriptionApiKey(String apiKey) {
         this.transcriptionApiKey = apiKey;
     }
 
-    /**
-     * 设置语音转写 API 基础 URL
-     *
-     * @param apiBase API 基础 URL
-     */
     public void setTranscriptionApiBase(String apiBase) {
         this.transcriptionApiBase = apiBase;
     }
 
+    // =========================================================
+    // Inbound message dispatch
+    // =========================================================
+
     /**
-     * 从配置中获取字符串类型的值
+     * 统一分发入站消息的核心方法。
      *
-     * @param key 配置键
-     * @return 对应的字符串值，如果不存在或配置不是 Map 类型则返回 null
+     * @param request 入站分发请求对象，包含消息的所有必要字段
+     * @throws Exception 当请求为空或处理过程中出现异常时抛出
      */
-    protected String getStringConfig(String key) {
-        // 检查配置对象是否是 Map 类型
-        if (channelConfig instanceof Map<?, ?> m) {
-            Object v = m.get(key); // 获取指定键的值
-            // 如果值不为 null，转换为字符串返回，否则返回 null
-            return v != null ? String.valueOf(v) : null;
+    protected void dispatchInbound(InboundDispatchRequest request) throws Exception {
+        // 1. 参数校验：确保请求对象不为空
+        if (request == null) {
+            throw new IllegalArgumentException("InboundDispatchRequest must not be null");
         }
-        return null; // 配置不是 Map 类型，返回 null
-    }
 
-    /**
-     * 处理入站消息入口方法
-     * 捕获异常并记录错误日志，避免单个消息处理失败影响整体运行
-     *
-     * @param content    消息内容
-     * @param chatId     聊天 ID
-     * @param senderId   发送者 ID
-     * @param senderName 发送者名称
-     * @param metadata   消息元数据
-     */
-    protected void onMessage(
-            String content,
-            String chatId,
-            String senderId,
-            String senderName,
-            Map<String, Object> metadata
-    ) {
-        try {
-            // 调用核心的 handleMessage 方法处理消息
-            handleMessage(senderId, chatId, content, null, metadata, senderName, null);
-        } catch (InterruptedException e) {
-            // 如果线程被中断，恢复中断状态
-            Thread.currentThread().interrupt();
-        } catch (Exception e) {
-            // 捕获其他异常并打印错误信息，包含渠道名称和异常消息
-            System.err.println("Error processing message from " + getName() + ": " + e.getMessage());
+        // 2. 深拷贝元数据，避免修改原始请求中的 Map，保证线程安全及数据隔离
+        Map<String, Object> metadata = copyMetadata(request.metadata());
+
+        // 3. 如果存在发送者名称且非空，将其放入元数据中（若 key 已存在则不覆盖）
+        if (hasText(request.senderName())) {
+            metadata.putIfAbsent("sender_name", request.senderName());
         }
-    }
 
-    /**
-     * 处理入站消息 (遗留版本，兼容性方法)
-     *
-     * @param senderId 发送者 ID
-     * @param chatId   聊天 ID
-     * @param content  消息内容
-     * @param media    媒体文件列表
-     * @param metadata 消息元数据
-     * @throws Exception 处理过程中可能抛出的异常
-     */
-    protected void handleMessage(
-            String senderId,
-            String chatId,
-            String content,
-            List<String> media,
-            Map<String, Object> metadata
-    ) throws Exception {
-        // 委托给更完整参数的 handleMessage 方法，senderName 和 sessionKeyOverride 为 null
-        handleMessage(senderId, chatId, content, media, metadata, null);
-    }
-
-    /**
-     * 处理入站消息 (带 sessionKeyOverride 参数)
-     *
-     * @param senderId          发送者 ID
-     * @param chatId            聊天 ID
-     * @param content           消息内容
-     * @param media             媒体文件列表
-     * @param metadata          消息元数据
-     * @param sessionKeyOverride 会话键覆盖值，用于指定特定的会话上下文
-     * @throws Exception 处理过程中可能抛出的异常
-     */
-    protected void handleMessage(
-            String senderId,
-            String chatId,
-            String content,
-            List<String> media,
-            Map<String, Object> metadata,
-            String sessionKeyOverride
-    ) throws Exception {
-        // 委托给最完整参数的 handleMessage 方法，senderName 为 null
-        handleMessage(senderId, chatId, content, media, metadata, null, sessionKeyOverride);
-    }
-
-    /**
-     * 核心入站消息处理方法
-     * 构建 InboundMessage 对象并通过消息总线发布
-     *
-     * @param senderId          发送者 ID
-     * @param chatId            聊天 ID
-     * @param content           消息内容
-     * @param media             媒体文件列表
-     * @param metadata          消息元数据
-     * @param senderName        发送者名称
-     * @param sessionKeyOverride 会话键覆盖值
-     * @throws Exception 处理过程中可能抛出的异常
-     */
-    protected void handleMessage(
-            String senderId,
-            String chatId,
-            String content,
-            List<String> media,
-            Map<String, Object> metadata,
-            String senderName,
-            String sessionKeyOverride
-    ) throws Exception {
-        // 复制元数据，避免修改原始引用
-        Map<String, Object> m = metadata != null ? new HashMap<>(metadata) : new HashMap<>();
-        // 如果发送者名称不为空且非空白，将其加入元数据
-        if (senderName != null && !senderName.isBlank()) {
-            m.putIfAbsent("sender_name", senderName);
-        }
+        // 4. 构建入站消息对象
         InboundMessage msg = InboundMessages.of(
-                getName(),
-                senderId,
-                chatId,
-                content,
-                media,
-                m,
-                sessionKeyOverride,
-                java.time.LocalDateTime.now()
+                getName(),                                  // 渠道名称
+                request.senderId(),                         // 发送者 ID
+                request.chatId(),                           // 会话 ID
+                request.content(),                          // 消息内容
+                safeMedia(request.media()),                 // 媒体资源列表（确保非 null）
+                metadata,                                   // 元数据
+                request.sessionKeyOverride(),               // 会话密钥覆盖值
+                request.timestamp() != null ? request.timestamp() : LocalDateTime.now() // 时间戳，若未提供则使用当前时间
         );
-        bus.publishInbound(msg); // 通过消息总线发布入站消息
+
+        // 5. 将构建好的入站消息发布到消息总线
+        bus.publishInbound(msg);
     }
 
     /**
-     * 发布渠道事件
-     * 将 ChannelEvent 转换为 InboundMessage 并发布，同时进行事件去重检查
+     * 兼容旧调用方式：senderId/chatId/content/media/metadata
      *
-     * @param event 渠道事件对象
-     * @throws Exception 发布过程中可能抛出的异常
+     * 保留该方法，避免外部已有子类直接调用时报错。
+     */
+    protected void handleMessage(
+            String senderId,
+            String chatId,
+            String content,
+            List<String> media,
+            Map<String, Object> metadata
+    ) throws Exception {
+        dispatchInbound(
+                InboundDispatchRequest.builder()
+                        .senderId(senderId)
+                        .chatId(chatId)
+                        .content(content)
+                        .media(media)
+                        .metadata(metadata)
+                        .build()
+        );
+    }
+
+    /**
+     * 兼容旧调用方式：增加 sessionKeyOverride
+     */
+    @Deprecated
+    protected void handleMessage(
+            String senderId,
+            String chatId,
+            String content,
+            List<String> media,
+            Map<String, Object> metadata,
+            String sessionKeyOverride
+    ) throws Exception {
+        dispatchInbound(
+                InboundDispatchRequest.builder()
+                        .senderId(senderId)
+                        .chatId(chatId)
+                        .content(content)
+                        .media(media)
+                        .metadata(metadata)
+                        .sessionKeyOverride(sessionKeyOverride)
+                        .build()
+        );
+    }
+
+    /**
+     * 兼容旧调用方式：完整参数版本
+     */
+    @Deprecated
+    protected void handleMessage(
+            String senderId,
+            String chatId,
+            String content,
+            List<String> media,
+            Map<String, Object> metadata,
+            String senderName,
+            String sessionKeyOverride
+    ) throws Exception {
+        dispatchInbound(
+                InboundDispatchRequest.builder()
+                        .senderId(senderId)
+                        .chatId(chatId)
+                        .content(content)
+                        .media(media)
+                        .metadata(metadata)
+                        .senderName(senderName)
+                        .sessionKeyOverride(sessionKeyOverride)
+                        .build()
+        );
+    }
+
+    /**
+     * 发布渠道事件：
+     * 1. 判空
+     * 2. 去重
+     * 3. 转换为入站消息
+     * 4. 自动补齐 channel/timestamp
+     * 5. 发布到消息总线
      */
     protected void publishEvent(ChannelEvent event) throws Exception {
         if (event == null) {
-            return; // 如果事件为空，直接返回
+            return;
         }
         if (!acceptEvent(event.eventId())) {
-            return; // 如果事件 ID 已存在（重复事件），则拒绝处理
+            return;
         }
 
-        // 将事件转换为入站消息
         InboundMessage msg = event.toInboundMessage();
-        // 如果消息中未设置渠道名称，则使用当前渠道名称
-        if (msg.getChannel() == null || msg.getChannel().isBlank()) {
+
+        if (!hasText(msg.getChannel())) {
             msg.setChannel(getName());
         }
-        // 如果消息中未设置时间戳，则使用当前时间
         if (msg.getTimestamp() == null) {
             msg.setTimestamp(LocalDateTime.now());
         }
-        bus.publishInbound(msg); // 发布入站消息
+
+        bus.publishInbound(msg);
     }
 
     /**
-     * 检查并接受事件 ID，用于去重
-     * 同步方法，确保线程安全
+     * 事件去重。
      *
-     * @param eventId 事件 ID
-     * @return 如果是新事件返回 true，如果是重复事件返回 false
+     * 线程安全：
+     * - 用 synchronized 保护 recentEventIds / recentEventIdSet
      */
     private synchronized boolean acceptEvent(String eventId) {
-        if (eventId == null || eventId.isBlank()) {
-            return true; // 如果事件 ID 为空或空白，视为新事件
+        if (!hasText(eventId)) {
+            return true;
         }
         if (recentEventIdSet.contains(eventId)) {
-            return false; // 如果集合中已存在该事件 ID，视为重复事件，拒绝
+            return false;
         }
-        // 将新事件 ID 添加到队列和集合中
+
         recentEventIds.addLast(eventId);
         recentEventIdSet.add(eventId);
-        
-        // 限制历史记录大小，防止内存无限增长
-        int max = 5000; // 最大保留的事件 ID 数量
-        while (recentEventIds.size() > max) {
-            String removed = recentEventIds.removeFirst(); // 移除最旧的事件 ID
-            recentEventIdSet.remove(removed); // 从集合中也移除该 ID
+
+        while (recentEventIds.size() > MAX_RECENT_EVENT_IDS) {
+            String removed = recentEventIds.removeFirst();
+            recentEventIdSet.remove(removed);
         }
-        return true; // 接受该新事件
+        return true;
     }
 
-    /**
-     * 发送增量消息（流式输出）
-     * 默认实现为空，子类可根据需要重写以支持流式响应
-     *
-     * @param chatId   聊天 ID
-     * @param delta    增量内容
-     * @param metadata 元数据
-     * @throws Exception 发送过程中可能抛出的异常
-     */
     public void sendDelta(String chatId, String delta, Map<String, Object> metadata) throws Exception {
-        // 默认不支持流式，子类可重写
+        // 默认不支持流式输出，子类按需覆盖
     }
 
-    /**
-     * 发送出站消息
-     * 具体实现由子类提供
-     *
-     * @param msg 出站消息对象
-     * @throws Exception 发送过程中可能抛出的异常
-     */
     public abstract void send(OutboundMessage msg) throws Exception;
 
     // =========================================================
-    // Audio transcription (语音转写相关方法)
+    // Audio transcription
     // =========================================================
 
-    /**
-     * 转写音频文件
-     *
-     * @param filePath 音频文件路径
-     * @return 转写后的文本内容，如果失败或文件为空则返回空字符串
-     */
     public String transcribeAudio(Path filePath) {
         if (filePath == null) {
-            return ""; // 如果文件路径为空，返回空字符串
-        }
-
-        // 解析要使用的语音转写提供商名称
-        String providerName = resolveTranscriptionProviderName();
-        // 构建对应的语音转写提供者实例
-        TranscriptionProvider provider = buildTranscriptionProvider(providerName);
-
-        if (provider == null) {
-            // 如果没有可用的提供商，打印错误信息并返回空字符串
-            System.err.println("当前渠道没有可用的语音转写 provider：" + getName());
             return "";
         }
 
-        // 调用提供商的转写方法并返回结果
+        String providerName = resolveTranscriptionProviderName();
+        TranscriptionProvider provider = buildTranscriptionProvider(providerName);
+
+        if (provider == null) {
+            log.warn("当前渠道没有可用的语音转写 provider：{}", getName());
+            return "";
+        }
+
         return provider.transcribe(filePath);
     }
 
     /**
-     * 解析语音转写提供商名称
-     * 如果未配置，则默认使用 "groq"
-     *
-     * @return 提供商名称
+     * 解析最终使用的转写 provider 名称
      */
     protected String resolveTranscriptionProviderName() {
-        // 如果已配置提供商名称且非空白，则使用配置的名称
-        if (transcriptionProvider != null && !transcriptionProvider.isBlank()) {
+        if (hasText(transcriptionProvider)) {
             return transcriptionProvider;
         }
-        return "groq"; // 默认返回 "groq"
+        return DEFAULT_TRANSCRIPTION_PROVIDER;
     }
 
     /**
-     * 构建语音转写提供者实例
-     * 根据提供商名称创建对应的 TranscriptionProvider 实现类
-     *
-     * @param providerName 提供商名称
-     * @return TranscriptionProvider 实例，如果名称不支持则回退到 Groq
+     * 构建具体的转写 provider
      */
     protected TranscriptionProvider buildTranscriptionProvider(String providerName) {
-        // 规范化提供商名称：去除空格并转为小写，如果为空则默认为 "groq"
-        String name = providerName != null
-                ? providerName.trim().toLowerCase(java.util.Locale.ROOT)
-                : "groq";
+        String name = hasText(providerName)
+                ? providerName.trim().toLowerCase(Locale.ROOT)
+                : DEFAULT_TRANSCRIPTION_PROVIDER;
 
-        // 根据名称切换创建不同的提供者实例
         return switch (name) {
             case "openai", "whisper", "openai_whisper" ->
-                    // 创建 OpenAI 语音转写提供者
                     new OpenAITranscriptionProvider(transcriptionApiKey, transcriptionApiBase);
 
             case "groq", "groq_whisper" ->
-                    // 创建 Groq 语音转写提供者
                     new GroqTranscriptionProvider(transcriptionApiKey, transcriptionApiBase);
 
             default -> {
-                // 对于不支持的提供商名称，打印警告并回退到 Groq
-                System.err.println("不支持的语音转写 provider：" + providerName + "，将回退到 groq");
+                log.warn("不支持的语音转写 provider：{}，将回退到 {}", providerName, DEFAULT_TRANSCRIPTION_PROVIDER);
                 yield new GroqTranscriptionProvider(transcriptionApiKey, transcriptionApiBase);
             }
         };
+    }
+
+    // =========================================================
+    // Helper methods
+    // =========================================================
+
+    /**
+     * 拷贝 metadata，避免直接修改调用方传入的 map
+     */
+    private Map<String, Object> copyMetadata(Map<String, Object> metadata) {
+        return metadata == null ? new HashMap<>() : new HashMap<>(metadata);
+    }
+
+    /**
+     * 保证 media 非空，减少下游 NPE 风险
+     */
+    private List<String> safeMedia(List<String> media) {
+        return media == null ? Collections.emptyList() : media;
+    }
+
+    /**
+     * 统一字符串判空逻辑
+     */
+    protected boolean hasText(String value) {
+        return value != null && !value.isBlank();
+    }
+
+    // =========================================================
+    // Request object
+    // =========================================================
+
+    /**
+     * 入站分发请求对象。
+     *
+     * 好处：
+     * 1. 替代参数爆炸式重载
+     * 2. 增加字段时不需要继续新增 handleMessage(...)
+     * 3. 调用方语义更清晰，避免位置参数传错
+     */
+    protected static final class InboundDispatchRequest {
+        /**
+         * 发送者 ID
+         */
+        private final String senderId;
+
+        /**
+         * 会话/聊天 ID
+         */
+        private final String chatId;
+
+        /**
+         * 消息内容
+         */
+        private final String content;
+
+        /**
+         * 媒体资源列表（如图片、音频链接等）
+         */
+        private final List<String> media;
+
+        /**
+         * 附加元数据
+         */
+        private final Map<String, Object> metadata;
+
+        /**
+         * 发送者名称
+         */
+        private final String senderName;
+
+        /**
+         * 会话密钥覆盖值（用于特定场景下的会话标识覆盖）
+         */
+        private final String sessionKeyOverride;
+
+        /**
+         * 消息时间戳
+         */
+        private final LocalDateTime timestamp;
+
+        /**
+         * 私有构造函数，仅通过 Builder 创建实例
+         *
+         * @param builder 构建器对象
+         */
+        private InboundDispatchRequest(Builder builder) {
+            this.senderId = builder.senderId;
+            this.chatId = builder.chatId;
+            this.content = builder.content;
+            this.media = builder.media;
+            this.metadata = builder.metadata;
+            this.senderName = builder.senderName;
+            this.sessionKeyOverride = builder.sessionKeyOverride;
+            this.timestamp = builder.timestamp;
+        }
+
+        /**
+         * 创建一个新的构建器实例
+         *
+         * @return Builder 实例
+         */
+        public static Builder builder() {
+            return new Builder();
+        }
+
+        /**
+         * 获取发送者 ID
+         *
+         * @return 发送者 ID
+         */
+        public String senderId() {
+            return senderId;
+        }
+
+        /**
+         * 获取会话/聊天 ID
+         *
+         * @return 会话 ID
+         */
+        public String chatId() {
+            return chatId;
+        }
+
+        /**
+         * 获取消息内容
+         *
+         * @return 消息内容
+         */
+        public String content() {
+            return content;
+        }
+
+        /**
+         * 获取媒体资源列表
+         *
+         * @return 媒体资源列表
+         */
+        public List<String> media() {
+            return media;
+        }
+
+        /**
+         * 获取附加元数据
+         *
+         * @return 元数据 Map
+         */
+        public Map<String, Object> metadata() {
+            return metadata;
+        }
+
+        /**
+         * 获取发送者名称
+         *
+         * @return 发送者名称
+         */
+        public String senderName() {
+            return senderName;
+        }
+
+        /**
+         * 获取会话密钥覆盖值
+         *
+         * @return 会话密钥覆盖值
+         */
+        public String sessionKeyOverride() {
+            return sessionKeyOverride;
+        }
+
+        /**
+         * 获取消息时间戳
+         *
+         * @return 时间戳
+         */
+        public LocalDateTime timestamp() {
+            return timestamp;
+        }
+
+        /**
+         * 构建器类，用于链式创建 InboundDispatchRequest 实例
+         */
+        protected static final class Builder {
+            /**
+             * 发送者 ID
+             */
+            private String senderId;
+
+            /**
+             * 会话/聊天 ID
+             */
+            private String chatId;
+
+            /**
+             * 消息内容
+             */
+            private String content;
+
+            /**
+             * 媒体资源列表
+             */
+            private List<String> media;
+
+            /**
+             * 附加元数据
+             */
+            private Map<String, Object> metadata;
+
+            /**
+             * 发送者名称
+             */
+            private String senderName;
+
+            /**
+             * 会话密钥覆盖值
+             */
+            private String sessionKeyOverride;
+
+            /**
+             * 消息时间戳
+             */
+            private LocalDateTime timestamp;
+
+            /**
+             * 设置发送者 ID
+             *
+             * @param senderId 发送者 ID
+             * @return 当前 Builder 实例
+             */
+            public Builder senderId(String senderId) {
+                this.senderId = senderId;
+                return this;
+            }
+
+            /**
+             * 设置会话/聊天 ID
+             *
+             * @param chatId 会话 ID
+             * @return 当前 Builder 实例
+             */
+            public Builder chatId(String chatId) {
+                this.chatId = chatId;
+                return this;
+            }
+
+            /**
+             * 设置消息内容
+             *
+             * @param content 消息内容
+             * @return 当前 Builder 实例
+             */
+            public Builder content(String content) {
+                this.content = content;
+                return this;
+            }
+
+            /**
+             * 设置媒体资源列表
+             *
+             * @param media 媒体资源列表
+             * @return 当前 Builder 实例
+             */
+            public Builder media(List<String> media) {
+                this.media = media;
+                return this;
+            }
+
+            /**
+             * 设置附加元数据
+             *
+             * @param metadata 元数据 Map
+             * @return 当前 Builder 实例
+             */
+            public Builder metadata(Map<String, Object> metadata) {
+                this.metadata = metadata;
+                return this;
+            }
+
+            /**
+             * 设置发送者名称
+             *
+             * @param senderName 发送者名称
+             * @return 当前 Builder 实例
+             */
+            public Builder senderName(String senderName) {
+                this.senderName = senderName;
+                return this;
+            }
+
+            /**
+             * 设置会话密钥覆盖值
+             *
+             * @param sessionKeyOverride 会话密钥覆盖值
+             * @return 当前 Builder 实例
+             */
+            public Builder sessionKeyOverride(String sessionKeyOverride) {
+                this.sessionKeyOverride = sessionKeyOverride;
+                return this;
+            }
+
+            /**
+             * 设置消息时间戳
+             *
+             * @param timestamp 时间戳
+             * @return 当前 Builder 实例
+             */
+            public Builder timestamp(LocalDateTime timestamp) {
+                this.timestamp = timestamp;
+                return this;
+            }
+
+            /**
+             * 构建并返回 InboundDispatchRequest 实例
+             *
+             * @return 构建完成的 InboundDispatchRequest 对象
+             */
+            public InboundDispatchRequest build() {
+                return new InboundDispatchRequest(this);
+            }
+        }
     }
 }

@@ -5,6 +5,7 @@ import com.sun.net.httpserver.Headers;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
+import lombok.extern.slf4j.Slf4j;
 import ricbot.domain.agent.AgentLoop;
 import ricbot.domain.hook.AgentHook;
 import ricbot.domain.hook.AgentHookContext;
@@ -39,6 +40,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * - /v1/models
  * - /health
  */
+@Slf4j
 public class RicbotApiServer {
 
     /**
@@ -91,15 +93,40 @@ public class RicbotApiServer {
      * - request_timeout
      * - session_locks
      */
+    /**
+     * 应用上下文。
+     *
+     * 对应 Python app[...] 中存的内容：
+     * - agent_loop
+     * - model_name
+     * - request_timeout
+     * - session_locks
+     */
     public static class ApiAppContext {
+        // 核心业务逻辑代理，负责处理具体的 Agent 交互
         private final AgentLoop agentLoop;
+        // 对外报告的模型名称
         private final String modelName;
+        // 单个请求的超时时间（毫秒）
         private final long requestTimeoutMillis;
+        // 服务绑定的主机地址
         private final String bindHost;
+        // 用于身份验证的 Bearer Token
         private final String bearerToken;
+        // 是否强制要求身份验证（取决于 token 是否存在或是否为回环地址）
         private final boolean requireAuth;
+        // 会话锁映射表，用于保证同一会话的并发安全
         private final Map<String, ReentrantLock> sessionLocks = new ConcurrentHashMap<>();
 
+        /**
+         * 构造函数，初始化应用上下文。
+         *
+         * @param agentLoop 已初始化好的 AgentLoop 实例
+         * @param modelName 模型名称，若为空则默认为 "ricbot"
+         * @param requestTimeoutMillis 请求超时毫秒数，若小于等于0则默认为 120秒
+         * @param bindHost 绑定主机地址，若为空则默认为 "127.0.0.1"
+         * @param bearerToken 鉴权 Token，若为空则去除首尾空格
+         */
         public ApiAppContext(
                 AgentLoop agentLoop,
                 String modelName,
@@ -108,56 +135,104 @@ public class RicbotApiServer {
                 String bearerToken
         ) {
             this.agentLoop = agentLoop;
+            // 如果模型名为空，使用默认值 "ricbot"
             this.modelName = modelName != null ? modelName : "ricbot";
+            // 如果超时时间无效，使用默认值 120,000 毫秒 (2分钟)
             this.requestTimeoutMillis = requestTimeoutMillis > 0 ? requestTimeoutMillis : 120_000L;
+            // 如果绑定主机为空，使用默认本地地址
             this.bindHost = bindHost != null && !bindHost.isBlank() ? bindHost : "127.0.0.1";
+            // 处理 bearerToken，去除首尾空格，若为 null 则置为空串
             this.bearerToken = bearerToken != null ? bearerToken.trim() : "";
+            // 确定是否需要鉴权：如果配置了 token 或者绑定的不是回环地址，则需要鉴权
             this.requireAuth = !this.bearerToken.isBlank() || !isLoopbackHost(this.bindHost);
         }
 
+        /**
+         * 获取 AgentLoop 实例。
+         *
+         * @return AgentLoop 对象
+         */
         public AgentLoop getAgentLoop() {
             return agentLoop;
         }
 
+        /**
+         * 获取模型名称。
+         *
+         * @return 模型名称字符串
+         */
         public String getModelName() {
             return modelName;
         }
 
+        /**
+         * 获取请求超时时间。
+         *
+         * @return 超时毫秒数
+         */
         public long getRequestTimeoutMillis() {
             return requestTimeoutMillis;
         }
 
+        /**
+         * 检查当前 HTTP 请求是否已通过授权。
+         *
+         * @param exchange HTTP 交换对象，用于获取请求头
+         * @return 如果不需要鉴权或鉴权通过返回 true，否则返回 false
+         */
         public boolean isAuthorized(HttpExchange exchange) {
+            // 如果配置为不需要鉴权，直接通过
             if (!requireAuth) {
                 return true;
             }
+            // 如果需要鉴权但 token 为空，则拒绝
             if (bearerToken.isBlank()) {
                 return false;
             }
 
+            // 获取 Authorization 请求头
             String header = exchange.getRequestHeaders().getFirst("Authorization");
+            // 检查头部是否存在且以 "Bearer " 开头（忽略大小写）
             if (header == null || !header.regionMatches(true, 0, "Bearer ", 0, 7)) {
                 return false;
             }
 
+            // 提取提供的 token 部分
             String provided = header.substring(7).trim();
+            // 使用恒定时间比较算法防止时序攻击，比对配置的 token 和提供的 token
             return MessageDigest.isEqual(
                     bearerToken.getBytes(StandardCharsets.UTF_8),
                     provided.getBytes(StandardCharsets.UTF_8)
             );
         }
 
+        /**
+         * 获取指定会话键对应的重入锁。
+         * 如果不存在则创建一个新的锁并放入映射表。
+         *
+         * @param sessionKey 会话唯一标识键
+         * @return 对应的 ReentrantLock 实例
+         */
         public ReentrantLock getSessionLock(String sessionKey) {
             return sessionLocks.computeIfAbsent(sessionKey, k -> new ReentrantLock());
         }
 
+        /**
+         * 判断给定的主机地址是否为回环地址（如 localhost, 127.0.0.1）。
+         *
+         * @param host 主机地址字符串
+         * @return 如果是回环地址返回 true，否则返回 false
+         */
         private static boolean isLoopbackHost(String host) {
+            // 空字符串视为非回环
             if (host == null || host.isBlank()) {
                 return false;
             }
             try {
+                // 尝试解析 InetAddress 并判断是否为回环地址
                 return InetAddress.getByName(host).isLoopbackAddress();
             } catch (Exception e) {
+                // 如果解析失败，兜底判断是否等于 "localhost"
                 return "localhost".equalsIgnoreCase(host);
             }
         }
@@ -289,72 +364,49 @@ public class RicbotApiServer {
     /**
      * POST /v1/chat/completions
      */
-    public static class ChatCompletionsHandler implements HttpHandler {
+    public record ChatCompletionsHandler(ApiAppContext appContext) implements HttpHandler {
+            private static final String FALLBACK_RESPONSE = RuntimeConstants.EMPTY_FINAL_RESPONSE_MESSAGE;
 
-        private final ApiAppContext appContext;
-
-        public ChatCompletionsHandler(ApiAppContext appContext) {
-            this.appContext = appContext;
-        }
-
-        @Override
-        public void handle(HttpExchange exchange) throws IOException {
-            if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
-                writeErrorJson(exchange, 405, "不支持的 HTTP 方法", "invalid_request_error");
-                return;
+            @Override
+            public void handle(HttpExchange exchange) throws IOException {
+                // 检查HTTP方法是否为POST，如果不是则返回错误
+                if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+                    writeErrorJson(exchange, 405, "不支持的 HTTP 方法", "invalid_request_error");
+                    return;
+                }
+                // 检查认证是否通过，未通过则返回401错误
+                if (!appContext.isAuthorized(exchange)) {
+                    writeErrorJson(exchange, 401, "缺少或无效的 Bearer token", "authentication_error");
+                    return;
+                }
+                // 尝试解析请求体JSON，失败则返回400错误
+                try {
+                    Map<String, Object> body = readJsonRequestBody(exchange);
+                    handleAuthorizedRequest(exchange, body);
+                } catch (Exception e) {
+                    if (e instanceof InvalidRequestException invalidRequest) {
+                        writeErrorJson(exchange, invalidRequest.status(), invalidRequest.getMessage(), invalidRequest.errorType());
+                        return;
+                    }
+                    log.error("处理 chat completions 请求失败", e);
+                    writeErrorJson(exchange, 500, "服务器内部错误", "internal_error");
+                }
             }
 
-            if (!appContext.isAuthorized(exchange)) {
-                writeErrorJson(exchange, 401, "缺少或无效的 Bearer token", "authentication_error");
-                return;
-            }
+            private void handleAuthorizedRequest(HttpExchange exchange, Map<String, Object> body) throws IOException {
+                List<Object> messages = asList(body.get("messages"));
+                if (messages == null || messages.isEmpty()) {
+                    throw invalidRequest("messages 必须是非空数组");
+                }
 
-            Map<String, Object> body;
-            try {
-                String raw = readRequestBody(exchange);
-                body = MAPPER.readValue(raw, Map.class);
-            } catch (Exception e) {
-                writeErrorJson(exchange, 400, "JSON 请求体无效", "invalid_request_error");
-                return;
-            }
+                boolean streamEnabled = Boolean.TRUE.equals(body.get("stream"));
+                ParsedMessages parsed = parseIncomingMessages(messages);
+                String modelName = validateRequestedModel(body.get("model"));
+                String sessionKey = resolveSessionKey(body);
+                ReentrantLock sessionLock = appContext.getSessionLock(sessionKey);
 
-            List<Object> messages = asList(body.get("messages"));
-            if (messages == null || messages.isEmpty()) {
-                writeErrorJson(exchange, 400, "messages 必须是非空数组", "invalid_request_error");
-                return;
-            }
+                log.info("API 请求 sessionKey={} 内容={}", sessionKey, abbreviate(parsed.currentUserContent(), 80));
 
-            Object stream = body.get("stream");
-            boolean streamEnabled = Boolean.TRUE.equals(stream);
-
-            ParsedMessages parsed;
-            try {
-                parsed = parseMessages(messages);
-            } catch (IllegalArgumentException e) {
-                writeErrorJson(exchange, 400, e.getMessage(), "invalid_request_error");
-                return;
-            }
-            String userContent = parsed.currentUserContent();
-
-            String modelName = appContext.getModelName();
-            Object requestedModel = body.get("model");
-            if (requestedModel != null && !modelName.equals(String.valueOf(requestedModel))) {
-                writeErrorJson(exchange, 400, "仅支持已配置的模型 '" + modelName + "'", "invalid_request_error");
-                return;
-            }
-
-            String sessionKey = body.get("session_id") != null
-                    ? "api:" + body.get("session_id")
-                    : API_SESSION_KEY;
-
-            ReentrantLock sessionLock = appContext.getSessionLock(sessionKey);
-
-            System.out.println("API 请求 sessionKey=" + sessionKey + " 内容=" +
-                    userContent.substring(0, Math.min(userContent.length(), 80)));
-
-            final String FALLBACK = RuntimeConstants.EMPTY_FINAL_RESPONSE_MESSAGE;
-
-            try {
                 sessionLock.lock();
                 try {
                     if (streamEnabled) {
@@ -362,137 +414,191 @@ public class RicbotApiServer {
                         return;
                     }
 
-                    String responseText;
-
-                    try {
-                        if (parsed.shouldSyncHistory()) {
-                            Session session = appContext.getAgentLoop().getSessions().getOrCreate(sessionKey);
-                            session.setMessages(parsed.history());
-                            appContext.getAgentLoop().getSessions().save(session);
-                        }
-
-                        Object response = runWithTimeout(
-                                () -> appContext.getAgentLoop().processDirect(
-                                        userContent,
-                                        sessionKey,
-                                        "api",
-                                        API_CHAT_ID
-                                ),
-                                appContext.getRequestTimeoutMillis()
-                        );
-
-                        responseText = RicbotApiServer.responseText(response);
-
-                        // 空响应时自动重试一次
-                        if (responseText == null || responseText.isBlank()) {
-                            System.out.println("会话 " + sessionKey + " 返回空响应，正在重试");
-
-                            Object retryResponse = runWithTimeout(
-                                    () -> appContext.getAgentLoop().processDirect(
-                                            userContent,
-                                            sessionKey,
-                                            "api",
-                                            API_CHAT_ID
-                                    ),
-                                    appContext.getRequestTimeoutMillis()
-                            );
-
-                            responseText = RicbotApiServer.responseText(retryResponse);
-
-                            if (responseText == null || responseText.isBlank()) {
-                                System.out.println("会话 " + sessionKey + " 重试后仍为空，使用兜底响应");
-                                responseText = FALLBACK;
-                            }
-                        }
-
-                    } catch (TimeoutException e) {
-                        writeErrorJson(
-                                exchange,
-                                504,
-                                "请求超时（" + (appContext.getRequestTimeoutMillis() / 1000.0) + " 秒）",
-                                "timeout_error"
-                        );
-                        return;
-                    } catch (Exception e) {
-                        e.printStackTrace();
-                        writeErrorJson(exchange, 500, "服务器内部错误", "internal_error");
-                        return;
-                    }
-
+                    syncHistoryIfNeeded(parsed, sessionKey);
+                    String responseText = executeCompletionWithRetry(parsed.currentUserContent(), sessionKey);
                     writeJson(exchange, 200, chatCompletionResponse(responseText, modelName));
-
+                } catch (TimeoutException e) {
+                    writeErrorJson(
+                            exchange,
+                            504,
+                            "请求超时（" + (appContext.getRequestTimeoutMillis() / 1000.0) + " 秒）",
+                            "timeout_error"
+                    );
+                } catch (Exception e) {
+                    log.error("处理 chat completions 同步请求失败: sessionKey={}", sessionKey, e);
+                    writeErrorJson(exchange, 500, "服务器内部错误", "internal_error");
                 } finally {
                     sessionLock.unlock();
                 }
-            } catch (Exception e) {
-                e.printStackTrace();
-                writeErrorJson(exchange, 500, "服务器内部错误", "internal_error");
             }
-        }
 
-        private void handleStreaming(HttpExchange exchange, ParsedMessages parsed, String sessionKey, String modelName) throws IOException {
-            Headers headers = exchange.getResponseHeaders();
-            headers.set("Content-Type", "text/event-stream; charset=utf-8");
-            headers.set("Cache-Control", "no-cache");
-            headers.set("Connection", "keep-alive");
-            exchange.sendResponseHeaders(200, 0);
+            private Map<String, Object> readJsonRequestBody(HttpExchange exchange) throws IOException {
+                try {
+                    return MAPPER.readValue(readRequestBody(exchange), Map.class);
+                } catch (Exception e) {
+                    throw invalidRequest("JSON 请求体无效");
+                }
+            }
 
-            try (OutputStream os = exchange.getResponseBody();
-                 Writer writer = new OutputStreamWriter(os, StandardCharsets.UTF_8)) {
-                String streamId = "chatcmpl-" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
-                AtomicBoolean wroteRole = new AtomicBoolean(false);
-                AtomicBoolean wroteStop = new AtomicBoolean(false);
+            private ParsedMessages parseIncomingMessages(List<Object> messages) {
+                try {
+                    return parseMessages(messages);
+                } catch (IllegalArgumentException e) {
+                    throw invalidRequest(e.getMessage());
+                }
+            }
 
-                if (parsed.shouldSyncHistory()) {
-                    Session session = appContext.getAgentLoop().getSessions().getOrCreate(sessionKey);
-                    session.setMessages(parsed.history());
-                    appContext.getAgentLoop().getSessions().save(session);
+            private String validateRequestedModel(Object requestedModel) {
+                String modelName = appContext.getModelName();
+                if (requestedModel != null && !modelName.equals(String.valueOf(requestedModel))) {
+                    throw invalidRequest("仅支持已配置的模型 '" + modelName + "'");
+                }
+                return modelName;
+            }
+
+            private String resolveSessionKey(Map<String, Object> body) {
+                Object sessionId = body.get("session_id");
+                return sessionId != null ? "api:" + sessionId : API_SESSION_KEY;
+            }
+
+            private void syncHistoryIfNeeded(ParsedMessages parsed, String sessionKey) {
+                if (!parsed.shouldSyncHistory()) {
+                    return;
+                }
+                Session session = appContext.getAgentLoop().getSessions().getOrCreate(sessionKey);
+                session.setMessages(parsed.history());
+                appContext.getAgentLoop().getSessions().save(session);
+            }
+
+            private String executeCompletionWithRetry(String userContent, String sessionKey) throws Exception {
+                String responseText = executeCompletionOnce(userContent, sessionKey);
+                if (!isBlankResponse(responseText)) {
+                    return responseText;
                 }
 
-                AgentHook streamHook = new AgentHook(true) {
-                    @Override
-                    public boolean wantsStreaming() {
-                        return true;
-                    }
+                log.warn("会话 {} 返回空响应，准备重试", sessionKey);
+                responseText = executeCompletionOnce(userContent, sessionKey);
+                if (!isBlankResponse(responseText)) {
+                    return responseText;
+                }
 
-                    @Override
-                    public void onStream(AgentHookContext context, String delta) throws Exception {
-                        ensureRoleChunk(writer, streamId, modelName, wroteRole);
-                        writeSse(writer, streamChunk(streamId, modelName, delta, null));
-                    }
+                log.warn("会话 {} 重试后仍为空，使用兜底响应", sessionKey);
+                return FALLBACK_RESPONSE;
+            }
 
-                    @Override
-                    public void onStreamEnd(AgentHookContext context, boolean resuming) throws Exception {
-                        if (resuming) {
-                            return;
-                        }
-                        ensureRoleChunk(writer, streamId, modelName, wroteRole);
-                        if (wroteStop.compareAndSet(false, true)) {
-                            writeSse(writer, streamChunk(streamId, modelName, "", "stop"));
-                        }
-                    }
-                };
-
-                appContext.getAgentLoop().processDirect(
-                        parsed.currentUserContent(),
-                        sessionKey,
-                        "api",
-                        API_CHAT_ID,
-                        Map.of("_wants_stream", true),
-                        List.of(streamHook)
+            private String executeCompletionOnce(String userContent, String sessionKey) throws Exception {
+                Object response = runWithTimeout(
+                        () -> appContext.getAgentLoop().processDirect(
+                                userContent,
+                                sessionKey,
+                                "api",
+                                API_CHAT_ID
+                        ),
+                        appContext.getRequestTimeoutMillis()
                 );
+                return RicbotApiServer.responseText(response);
+            }
 
-                ensureRoleChunk(writer, streamId, modelName, wroteRole);
-                if (wroteStop.compareAndSet(false, true)) {
-                    writeSse(writer, streamChunk(streamId, modelName, "", "stop"));
+            private boolean isBlankResponse(String responseText) {
+                return responseText == null || responseText.isBlank();
+            }
+
+            private InvalidRequestException invalidRequest(String message) {
+                return new InvalidRequestException(400, message, "invalid_request_error");
+            }
+
+            /**
+             * 处理流式聊天完成请求。
+             *
+             * @param exchange HTTP 交换对象
+             * @param parsed 解析后的消息对象，包含用户内容和历史记录
+             * @param sessionKey 会话键，用于隔离不同会话
+             * @param modelName 模型名称
+             * @throws IOException 如果发生 I/O 错误
+             */
+            private void handleStreaming(HttpExchange exchange, ParsedMessages parsed, String sessionKey, String modelName) throws IOException {
+                // 设置响应头，指定内容类型为 SSE (Server-Sent Events)
+                Headers headers = exchange.getResponseHeaders();
+                headers.set("Content-Type", "text/event-stream; charset=utf-8");
+                // 禁用缓存，确保客户端实时接收数据
+                headers.set("Cache-Control", "no-cache");
+                // 保持连接活跃，支持长连接
+                headers.set("Connection", "keep-alive");
+                // 发送响应头，状态码 200，内容长度未知（0 表示分块传输）
+                exchange.sendResponseHeaders(200, 0);
+
+                // 使用 try-with-resources 确保输出流和写入器正确关闭
+                try (OutputStream os = exchange.getResponseBody();
+                     Writer writer = new OutputStreamWriter(os, StandardCharsets.UTF_8)) {
+
+                    // 生成唯一的流 ID，格式为 chatcmpl-xxxxxxxxxxxx
+                    String streamId = "chatcmpl-" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
+
+                    // 原子布尔值，用于跟踪是否已写入角色信息块
+                    AtomicBoolean wroteRole = new AtomicBoolean(false);
+                    // 原子布尔值，用于跟踪是否已写入停止信号块
+                    AtomicBoolean wroteStop = new AtomicBoolean(false);
+
+                    syncHistoryIfNeeded(parsed, sessionKey);
+
+                    // 创建流式处理的 AgentHook 回调
+                    AgentHook streamHook = new AgentHook(true) {
+                        @Override
+                        public boolean wantsStreaming() {
+                            // 声明需要流式输出
+                            return true;
+                        }
+
+                        @Override
+                        public void onStream(AgentHookContext context, String delta) throws Exception {
+                            // 确保先写入角色信息块（assistant）
+                            ensureRoleChunk(writer, streamId, modelName, wroteRole);
+                            // 写入当前增量内容的 SSE 数据块
+                            writeSse(writer, streamChunk(streamId, modelName, delta, null));
+                        }
+
+                        @Override
+                        public void onStreamEnd(AgentHookContext context, boolean resuming) throws Exception {
+                            // 如果是恢复状态，则不执行结束逻辑
+                            if (resuming) {
+                                return;
+                            }
+                            // 确保先写入角色信息块
+                            ensureRoleChunk(writer, streamId, modelName, wroteRole);
+                            // 如果尚未写入停止信号，则写入 finish_reason 为 "stop" 的块
+                            if (wroteStop.compareAndSet(false, true)) {
+                                writeSse(writer, streamChunk(streamId, modelName, "", "stop"));
+                            }
+                        }
+                    };
+
+                    // 调用 AgentLoop 处理直接请求，传入流式钩子
+                    appContext.getAgentLoop().processDirect(
+                            parsed.currentUserContent(), // 用户当前输入内容
+                            sessionKey,                  // 会话键
+                            "api",                       // 渠道标识
+                            API_CHAT_ID,                 // 聊天 ID
+                            Map.of("_wants_stream", true), // 额外参数，标记需要流式
+                            List.of(streamHook)          // 注册的钩子列表
+                    );
+
+                    // 再次确保角色块已写入（防止没有产生任何流式内容时的情况）
+                    ensureRoleChunk(writer, streamId, modelName, wroteRole);
+                    // 如果尚未写入停止信号，则补充写入
+                    if (wroteStop.compareAndSet(false, true)) {
+                        writeSse(writer, streamChunk(streamId, modelName, "", "stop"));
+                    }
+
+                    // 写入 SSE 结束标记 [DONE]
+                    writer.write("data: [DONE]\n\n");
+                    // 刷新缓冲区，确保所有数据发送给客户端
+                    writer.flush();
+                } catch (Exception e) {
+                    log.error("处理流式 chat completions 失败: sessionKey={}", sessionKey, e);
+                    throw new IOException("streaming chat failed", e);
                 }
-                writer.write("data: [DONE]\n\n");
-                writer.flush();
-            } catch (Exception e) {
-                throw new IOException("streaming chat failed", e);
             }
         }
-    }
 
     /**
      * GET /v1/models
@@ -566,13 +672,33 @@ public class RicbotApiServer {
      * 因为 Python 版是 asyncio.wait_for(...)
      * Java 这里用 Future + timeout 模拟。
      */
+    /**
+     * 带超时控制的同步任务执行器。
+     *
+     * 模拟 Python 中的 asyncio.wait_for 行为，用于防止 AgentLoop 处理请求时无限阻塞。
+     *
+     * @param task 需要执行的任务 callable
+     * @param timeoutMillis 超时时间（毫秒）
+     * @return 任务执行结果
+     * @throws Exception 如果任务执行异常或超时
+     */
     public static Object runWithTimeout(CallableTask task, long timeoutMillis) throws Exception {
+        // 创建单线程执行器，确保任务在独立线程中运行
         ExecutorService executor = Executors.newSingleThreadExecutor();
-        Future<Object> future = executor.submit(task::call);
         try {
-            return future.get(timeoutMillis, java.util.concurrent.TimeUnit.MILLISECONDS);
+            // 提交任务并获取 Future 对象，用于后续获取结果或取消任务
+            Future<Object> future = executor.submit(task::call);
+            try {
+                // 等待任务完成，如果在指定时间内未完成则抛出 TimeoutException
+                return future.get(timeoutMillis, java.util.concurrent.TimeUnit.MILLISECONDS);
+            } finally {
+                // 无论任务是否成功，都尝试取消任务（如果仍在运行）
+                // true 表示如果任务正在运行，则中断该线程
+                future.cancel(true);
+            }
         } finally {
-            future.cancel(true);
+            // 确保执行器被关闭，释放线程资源
+            // shutdownNow 尝试停止所有正在执行的任务
             executor.shutdownNow();
         }
     }
@@ -580,6 +706,32 @@ public class RicbotApiServer {
     @FunctionalInterface
     public interface CallableTask {
         Object call() throws Exception;
+    }
+
+    private static String abbreviate(String value, int max) {
+        if (value == null) {
+            return "";
+        }
+        return value.length() <= max ? value : value.substring(0, max) + "...";
+    }
+
+    private static final class InvalidRequestException extends RuntimeException {
+        private final int status;
+        private final String errorType;
+
+        private InvalidRequestException(int status, String message, String errorType) {
+            super(message);
+            this.status = status;
+            this.errorType = errorType;
+        }
+
+        private int status() {
+            return status;
+        }
+
+        private String errorType() {
+            return errorType;
+        }
     }
 
     private record ParsedMessages(String currentUserContent, List<Map<String, Object>> history, boolean shouldSyncHistory) {

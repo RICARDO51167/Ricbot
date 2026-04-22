@@ -131,6 +131,30 @@ public class ToolRegistryTest {
     }
 
     @Test
+    void genericMapExecuteTool_usesDefaultToolContract() {
+        ToolRegistry registry = new ToolRegistry();
+        registry.register(new Tool() {
+            @Override
+            public String getName() {
+                return "echo_map";
+            }
+
+            @Override
+            public String getDescription() {
+                return "echo";
+            }
+
+            @Override
+            public Object execute(Map<String, Object> params) {
+                return "value=" + params.get("value");
+            }
+        });
+
+        Object out = registry.execute("echo_map", Map.of("value", "ok"));
+        assertEquals("value=ok", out);
+    }
+
+    @Test
     void filesystemTools_rejectSymlinkEscapes(@TempDir Path workspace) throws Exception {
         Path outsideDir = workspace.resolveSibling("outside");
         Files.createDirectories(outsideDir);

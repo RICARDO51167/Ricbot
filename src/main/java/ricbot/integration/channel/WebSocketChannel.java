@@ -2,6 +2,8 @@ package ricbot.integration.channel;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.Data;
+import lombok.extern.slf4j.Slf4j;
 import ricbot.domain.message.MessageBus;
 import ricbot.domain.message.OutboundMessage;
 import ricbot.integration.channel.event.CommandEvent;
@@ -9,6 +11,8 @@ import ricbot.integration.channel.event.IncomingMessageEvent;
 
 import java.net.InetSocketAddress;
 import java.net.URI;
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.*;
@@ -29,8 +33,12 @@ import java.util.concurrent.ConcurrentHashMap;
  * 说明：
  * 这里为了不绑定特定第三方 Java WebSocket 库，先通过接口抽象掉 server/connection。
  */
+@Slf4j
 public class WebSocketChannel extends BaseChannel {
 
+    private static final ObjectMapper JSON = new ObjectMapper();
+
+    @Data
     public static class WebSocketConfig {
         private boolean enabled = false;
         private String host = "127.0.0.1";
@@ -49,38 +57,13 @@ public class WebSocketChannel extends BaseChannel {
         private String sslCertfile = "";
         private String sslKeyfile = "";
 
-        public boolean isEnabled() { return enabled; }
-        public void setEnabled(boolean enabled) { this.enabled = enabled; }
-        public String getHost() { return host; }
-        public void setHost(String host) { this.host = host; }
-        public int getPort() { return port; }
-        public void setPort(int port) { this.port = port; }
-        public String getPath() { return path; }
-        public void setPath(String path) { this.path = normalizeConfigPath(path); }
-        public String getToken() { return token; }
-        public void setToken(String token) { this.token = token; }
-        public String getTokenIssuePath() { return tokenIssuePath; }
-        public void setTokenIssuePath(String tokenIssuePath) { this.tokenIssuePath = normalizeConfigPath(tokenIssuePath); }
-        public String getTokenIssueSecret() { return tokenIssueSecret; }
-        public void setTokenIssueSecret(String tokenIssueSecret) { this.tokenIssueSecret = tokenIssueSecret; }
-        public int getTokenTtlS() { return tokenTtlS; }
-        public void setTokenTtlS(int tokenTtlS) { this.tokenTtlS = tokenTtlS; }
-        public boolean isWebsocketRequiresToken() { return websocketRequiresToken; }
-        public void setWebsocketRequiresToken(boolean websocketRequiresToken) { this.websocketRequiresToken = websocketRequiresToken; }
-        public List<String> getAllowFrom() { return allowFrom; }
-        public void setAllowFrom(List<String> allowFrom) { this.allowFrom = allowFrom; }
-        public boolean isStreaming() { return streaming; }
-        public void setStreaming(boolean streaming) { this.streaming = streaming; }
-        public int getMaxMessageBytes() { return maxMessageBytes; }
-        public void setMaxMessageBytes(int maxMessageBytes) { this.maxMessageBytes = maxMessageBytes; }
-        public double getPingIntervalS() { return pingIntervalS; }
-        public void setPingIntervalS(double pingIntervalS) { this.pingIntervalS = pingIntervalS; }
-        public double getPingTimeoutS() { return pingTimeoutS; }
-        public void setPingTimeoutS(double pingTimeoutS) { this.pingTimeoutS = pingTimeoutS; }
-        public String getSslCertfile() { return sslCertfile; }
-        public void setSslCertfile(String sslCertfile) { this.sslCertfile = sslCertfile; }
-        public String getSslKeyfile() { return sslKeyfile; }
-        public void setSslKeyfile(String sslKeyfile) { this.sslKeyfile = sslKeyfile; }
+        public void setPath(String path) {
+            this.path = normalizeConfigPath(path);
+        }
+
+        public void setTokenIssuePath(String tokenIssuePath) {
+            this.tokenIssuePath = normalizeConfigPath(tokenIssuePath);
+        }
     }
 
     public interface WsConnection {
@@ -109,13 +92,16 @@ public class WebSocketChannel extends BaseChannel {
     }
 
     private final WebSocketConfig config;
-    private final ObjectMapper mapper = new ObjectMapper();
     private WsServer server;
 
     /**
      * client_id -> connection
      */
     private final Map<String, WsConnection> connections = new ConcurrentHashMap<>();
+    /**
+     * connection_id -> client_id
+     */
+    private final Map<String, String> connectionClientIds = new ConcurrentHashMap<>();
 
     /**
      * token -> expiryMillis
@@ -132,7 +118,6 @@ public class WebSocketChannel extends BaseChannel {
     public void setServer(WsServer server) {
         this.server = server;
     }
-
     @Override
     public void start() throws Exception {
         if (running) {
@@ -155,7 +140,7 @@ public class WebSocketChannel extends BaseChannel {
 
                 @Override
                 public void onClose(WsConnection connection, int code, String reason) {
-                    connections.values().removeIf(c -> Objects.equals(c.id(), connection.id()));
+                    unregisterConnection(connection);
                 }
 
                 @Override
@@ -183,10 +168,14 @@ public class WebSocketChannel extends BaseChannel {
             }
         }
         connections.clear();
+        connectionClientIds.clear();
         issuedTokens.clear();
     }
 
     public void send(OutboundMessage msg) throws Exception {
+        if (msg == null) {
+            return;
+        }
         WsConnection connection = connections.get(msg.getChatId());
         if (connection == null) {
             return;
@@ -199,7 +188,7 @@ public class WebSocketChannel extends BaseChannel {
         payload.put("metadata", msg.getMetadata() != null ? msg.getMetadata() : new HashMap<>());
         payload.put("timestamp", Instant.now().toString());
 
-        connection.sendText(mapper.writeValueAsString(payload));
+        connection.sendText(JSON.writeValueAsString(payload));
     }
 
     @Override
@@ -215,7 +204,7 @@ public class WebSocketChannel extends BaseChannel {
         payload.put("metadata", metadata != null ? metadata : new HashMap<>());
         payload.put("timestamp", Instant.now().toString());
 
-        connection.sendText(mapper.writeValueAsString(payload));
+        connection.sendText(JSON.writeValueAsString(payload));
     }
 
     private boolean isAllowed(String clientId) {
@@ -230,10 +219,7 @@ public class WebSocketChannel extends BaseChannel {
         ParsedRequest req = parseRequestPath(pathWithQuery);
 
         if (!expectedPath().equals(req.path)) {
-            try {
-                connection.close(1008, "路径无效");
-            } catch (Exception ignored) {
-            }
+            rejectConnection(connection, "路径无效");
             return;
         }
 
@@ -243,23 +229,17 @@ public class WebSocketChannel extends BaseChannel {
         }
 
         if (!isAllowed(clientId)) {
-            try {
-                connection.close(1008, "不允许");
-            } catch (Exception ignored) {
-            }
+            rejectConnection(connection, "不允许");
             return;
         }
 
         String tokenValue = firstQuery(req.query, "token");
         if (!validateConnectionToken(tokenValue)) {
-            try {
-                connection.close(1008, "Token 无效");
-            } catch (Exception ignored) {
-            }
+            rejectConnection(connection, "Token 无效");
             return;
         }
 
-        connections.put(clientId, connection);
+        registerConnection(clientId, connection);
     }
 
     private void handleInbound(WsConnection connection, String raw) {
@@ -269,14 +249,7 @@ public class WebSocketChannel extends BaseChannel {
                 return;
             }
 
-            String clientId = null;
-            for (Map.Entry<String, WsConnection> entry : connections.entrySet()) {
-                if (Objects.equals(entry.getValue().id(), connection.id())) {
-                    clientId = entry.getKey();
-                    break;
-                }
-            }
-
+            String clientId = resolveClientId(connection);
             if (clientId == null || clientId.isBlank()) {
                 clientId = "anonymous";
             }
@@ -312,7 +285,7 @@ public class WebSocketChannel extends BaseChannel {
                 ));
             }
         } catch (Exception e) {
-            e.printStackTrace();
+            log.error("处理 WebSocket 入站消息失败: connectionId={}, raw={}", connection != null ? connection.id() : "null", raw, e);
         }
     }
 
@@ -338,12 +311,52 @@ public class WebSocketChannel extends BaseChannel {
     private record ChannelParsedCommand(String command, String args) {
     }
 
+    private void registerConnection(String clientId, WsConnection connection) {
+        WsConnection previous = connections.put(clientId, connection);
+        if (previous != null) {
+            connectionClientIds.remove(previous.id());
+        }
+        connectionClientIds.put(connection.id(), clientId);
+    }
+
+    private void unregisterConnection(WsConnection connection) {
+        if (connection == null) {
+            return;
+        }
+        String clientId = connectionClientIds.remove(connection.id());
+        if (clientId != null) {
+            connections.remove(clientId, connection);
+            return;
+        }
+        connections.values().removeIf(c -> Objects.equals(c.id(), connection.id()));
+    }
+
+    private String resolveClientId(WsConnection connection) {
+        if (connection == null) {
+            return null;
+        }
+        String clientId = connection.clientId();
+        if (clientId != null && !clientId.isBlank()) {
+            return clientId;
+        }
+        return connectionClientIds.get(connection.id());
+    }
+
+    private void rejectConnection(WsConnection connection, String reason) {
+        if (connection == null) {
+            return;
+        }
+        try {
+            connection.close(1008, reason);
+        } catch (Exception e) {
+            log.debug("关闭 WebSocket 连接失败: connectionId={}, reason={}", connection.id(), reason, e);
+        }
+    }
+
     private HttpResponseData handleHttpGet(String pathWithQuery, Map<String, String> headers) {
         ParsedRequest parsed = parseRequestPath(pathWithQuery);
 
-        if (config.getTokenIssuePath() != null
-                && !config.getTokenIssuePath().isBlank()
-                && config.getTokenIssuePath().equals(parsed.path)) {
+        if (isTokenIssuePath(parsed.path)) {
 
             if (!issueRouteSecretMatches(headers, config.getTokenIssueSecret())) {
                 return httpJsonResponse(Map.of("error", "unauthorized"), 401);
@@ -362,6 +375,12 @@ public class WebSocketChannel extends BaseChannel {
         }
 
         return httpJsonResponse(Map.of("error", "not_found"), 404);
+    }
+
+    private boolean isTokenIssuePath(String path) {
+        return config.getTokenIssuePath() != null
+                && !config.getTokenIssuePath().isBlank()
+                && config.getTokenIssuePath().equals(path);
     }
 
     private boolean validateConnectionToken(String tokenValue) {
@@ -423,7 +442,7 @@ public class WebSocketChannel extends BaseChannel {
 
         if (text.startsWith("{")) {
             try {
-                Map<String, Object> data = new ObjectMapper().readValue(text, new TypeReference<>() {});
+                Map<String, Object> data = JSON.readValue(text, new TypeReference<>() {});
                 for (String key : List.of("content", "text", "message")) {
                     Object value = data.get(key);
                     if (value instanceof String s && !s.isBlank()) {
@@ -443,7 +462,7 @@ public class WebSocketChannel extends BaseChannel {
         res.status = status;
         res.headers.put("Content-Type", "application/json; charset=utf-8");
         try {
-            res.body = new ObjectMapper().writeValueAsString(data);
+            res.body = JSON.writeValueAsString(data);
         } catch (Exception e) {
             res.body = "{\"error\":\"serialization_failed\"}";
         }
@@ -456,13 +475,14 @@ public class WebSocketChannel extends BaseChannel {
 
     private static String normalizeConfigPath(String path) {
         if (path == null || path.isBlank()) return "/";
-        if (path.length() > 1 && path.endsWith("/")) {
-            return path.substring(0, path.length() - 1);
+        String normalized = path.trim();
+        if (!normalized.startsWith("/")) {
+            normalized = "/" + normalized;
         }
-        if (!path.startsWith("/")) {
-            return "/" + path;
+        if (normalized.length() > 1 && normalized.endsWith("/")) {
+            normalized = normalized.substring(0, normalized.length() - 1);
         }
-        return path;
+        return normalized;
     }
 
     private static ParsedRequest parseRequestPath(String pathWithQuery) {
@@ -494,17 +514,10 @@ public class WebSocketChannel extends BaseChannel {
     }
 
     private static String decode(String s) {
-        return s.replace("+", " ");
+        return URLDecoder.decode(s, StandardCharsets.UTF_8);
     }
 
-    private static class ParsedRequest {
-        final String path;
-        final Map<String, List<String>> query;
-
-        ParsedRequest(String path, Map<String, List<String>> query) {
-            this.path = path;
-            this.query = query;
-        }
+    private record ParsedRequest(String path, Map<String, List<String>> query) {
     }
 
     @Override

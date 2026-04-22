@@ -48,6 +48,8 @@ public class AgentLoop {
 
     /** 日志记录器，用于记录 AgentLoop 类的运行日志 */
     private static final Logger log = LoggerFactory.getLogger(AgentLoop.class);
+    /** 入站消息轮询超时 */
+    private static final int INBOUND_POLL_TIMEOUT_MS = 500;
 
     /** 统一会话的默认键值，当启用统一会话模式时使用 */
     public static final String UNIFIED_SESSION_KEY = "unified:default";
@@ -232,7 +234,7 @@ public class AgentLoop {
         );
         
         // 初始化 Dream 模块
-        this.dream = new Dream(this.workspace, this.provider, this.model, this.memoryStore);
+        this.dream = new Dream(this.provider, this.model, this.memoryStore);
         this.autoCompact = new AutoCompact(this.sessionManager, this.consolidator, this.sessionTtlMinutes);
         
         // 初始化子代理管理器
@@ -436,10 +438,18 @@ public class AgentLoop {
 
     /**
      * 启动 Agent 主循环。
+     * <p>
+     * 该方法首先确保后台服务（如定时任务、MCP加载等）已启动，
+     * 然后使用 CAS 操作保证 Agent 主循环线程只被创建和启动一次。
      */
     public void start() {
+        // 启动必要的后台服务（如 Cron, Dream, MCP 等），内部有幂等性保护
         startBackgroundIfNeeded();
+        
+        // 尝试将 loopThreadStarted 标志从 false 设置为 true
+        // 如果设置成功，说明这是第一次调用 start()，需要创建并启动主循环线程
         if (loopThreadStarted.compareAndSet(false, true)) {
+            // 创建名为 "agent-loop" 的新线程，执行 run() 方法，并立即启动
             new Thread(this::run, "agent-loop").start();
         }
     }
@@ -448,97 +458,93 @@ public class AgentLoop {
      * Agent 主循环运行逻辑。
      */
     public void run() {
-        // 标记 Agent 循环为运行状态
+        // 标记 Agent 循环为运行状态 - 设置 running 标志为 true，表示 Agent 开始运行
         this.running = true;
-        // 记录启动日志
+        // 记录启动日志 - 输出一条 INFO 级别的日志，表明 Agent 循环已启动
         log.info("Agent 循环已启动");
 
-        // 主循环：持续监听 inbound 消息
+        // 主循环：持续监听 inbound 消息 - 这是一个无限循环，只要 running 为 true 就会一直运行
         while (running) {
             try {
-                // 阻塞最多 500ms 等待入站消息，若超时返回 null
-                InboundMessage msg = bus.consumeInbound(500, TimeUnit.MILLISECONDS);
+                // 阻塞最多 500ms 等待入站消息，若超时返回 null - 从消息总线消费消息，最多等待 500 毫秒
+                InboundMessage msg = bus.consumeInbound(INBOUND_POLL_TIMEOUT_MS, TimeUnit.MILLISECONDS);
                 if (msg == null) {
-                    // 无消息则继续下一轮循环
+                    // 无消息则继续下一轮循环 - 如果没有收到消息（超时），则跳过本次循环，继续等待下一条消息
                     continue;
                 }
 
-                // 获取消息内容并去除首尾空白
+                // 获取消息内容并去除首尾空白 - 调用 trim 方法移除消息内容开头和结尾的空白字符
                 String raw = trim(msg.getContent());
 
-                // /stop 优先处理：立即停止当前会话任务
-                if (raw != null && raw.startsWith("/") && commandRouter.isPriority(raw)) {
+                // /stop 优先处理：立即停止当前会话任务 - 检查消息是否为以 "/" 开头的优先级命令
+                if (raw.startsWith("/") && commandRouter.isPriority(raw)) {
+                    // 分发优先级命令并获取响应 - 调用 dispatchCommand 方法处理优先级命令
                     OutboundMessage priorityOut = dispatchCommand(msg, null, effectiveSessionKey(msg), raw, true);
                     if (priorityOut != null) {
+                        // 如果有响应消息，则发布到出站消息总线 - 将命令执行结果发送出去
                         bus.publishOutbound(priorityOut);
                     }
+                    // 跳过正常消息处理流程 - 优先级命令处理完后直接进入下一次循环
                     continue;
                 }
 
-                // 正常异步分发：计算会话 Key
-                String sessionKey = effectiveSessionKey(msg);
-
-                // 提交任务到线程池异步执行
-                Future<?> future = executor.submit(() -> {
-                    try {
-                        // 如果配置了并发限制信号量，则先获取许可
-                        if (concurrencyGate != null) {
-                            concurrencyGate.acquire();
-                        }
-                        // 分发消息进行处理
-                        dispatch(msg);
-                    } catch (InterruptedException e) {
-                        // 恢复中断状态
-                        Thread.currentThread().interrupt();
-                    } finally {
-                        // 释放并发限制信号量许可
-                        if (concurrencyGate != null) {
-                            concurrencyGate.release();
-                        }
-                    }
-                });
-
-                // 将未来任务对象添加到对应会话的活动任务列表中
-                activeTasks.computeIfAbsent(sessionKey, k -> Collections.synchronizedList(new ArrayList<>()))
-                        .add(future);
+                submitDispatchTask(msg);
 
             } catch (InterruptedException e) {
-                // 线程被中断，恢复中断状态并退出循环
+                // 线程被中断，恢复中断状态并退出循环 - 如果主循环线程被中断，恢复中断状态并跳出循环
                 Thread.currentThread().interrupt();
                 break;
             } catch (Exception e) {
-                // 捕获其他未预期异常，记录日志并继续运行
+                // 捕获其他未预期异常，记录日志并继续运行 - 出现非中断异常时，记录错误但不停止整个循环
                 log.error("Agent 循环出错", e);
             }
         }
     }
 
+    /**
+     * 按需启动后台服务。
+     * 使用 CAS 确保该方法只被执行一次，避免重复启动后台任务。
+     */
     private void startBackgroundIfNeeded() {
+        // 尝试将 backgroundStarted 从 false 设置为 true，如果设置失败（说明已经启动过），则直接返回
         if (!backgroundStarted.compareAndSet(false, true)) {
             return;
         }
+        // 标记 Agent 循环为运行状态
         this.running = true;
+        // 启动定时任务服务
         this.cronService.start();
+        
+        // 如果配置了 MCP 服务器且不为空，则异步加载 MCP 服务
         if (mcpServers != null && !mcpServers.isEmpty()) {
             executor.submit(() -> {
                 try {
+                    // 加载 MCP 服务
                     mcpLoader.load();
                 } catch (Exception e) {
+                    // 记录 MCP 加载失败的错误日志
                     log.error("MCP 加载失败", e);
                 }
             });
         }
+        
+        // 如果启用了 Dream 配置，则调度定期执行 Dream 任务
         if (dreamConfig != null && dreamConfig.isEnabled()) {
+            // 每 15 分钟执行一次 Dream 任务，初始延迟也为 15 分钟
             scheduler.scheduleWithFixedDelay(() -> {
                 try {
+                    // 执行 Dream 任务（记忆整理/反思）
                     dream.run();
                 } catch (Exception e) {
+                    // 记录后台 Dream 任务出错的错误日志
                     log.error("后台 Dream 任务出错", e);
                 }
             }, 15, 15, TimeUnit.MINUTES);
         }
 
+        // 如果设置了会话自动归档 TTL（大于 0），则调度定期执行自动归档扫描
         if (sessionTtlMinutes > 0) {
+            // 每 1 分钟执行一次自动归档扫描，初始延迟为 1 分钟
             scheduler.scheduleWithFixedDelay(this::runAutoCompactSweep, 1, 1, TimeUnit.MINUTES);
         }
     }
@@ -577,37 +583,21 @@ public class AgentLoop {
     private void dispatch(InboundMessage msg) {
         // 计算有效的会话键，用于确定消息所属的会话
         String sessionKey = effectiveSessionKey(msg);
-        // 获取或创建会话锁，确保同一会话的消息串行处理
-        Object lock = sessionLocks.computeIfAbsent(sessionKey, k -> new Object());
-
-        // 同步块，保证线程安全
-        synchronized (lock) {
-            try {
-                // 处理消息并获取响应
+        try {
+            withSessionLock(sessionKey, () -> {
                 OutboundMessage response = processMessage(msg, sessionKey, List.of());
                 if (response != null) {
-                    // 如果响应不为空，发布出站消息
                     bus.publishOutbound(response);
                 } else if ("cli".equals(msg.getChannel())) {
-                    // CLI 通道特殊处理：如果响应为空，发送一个空包以结束本轮输出
                     bus.publishOutbound(reply(msg, ""));
                 }
-            } catch (Exception e) {
-                // 捕获处理过程中的异常，记录日志并发送错误消息
-                log.error("处理会话 {} 的消息时出错", sessionKey, e);
-                try {
-                    // 尝试发布错误消息
-                    bus.publishOutbound(plainReply(msg, "抱歉，我遇到了一点错误。"));
-                } catch (Exception publishErr) {
-                    log.warn("发布错误消息失败: channel={}, chatId={}", msg.getChannel(), msg.getChatId(), publishErr);
-                }
-            } finally {
-                // 清理已完成的任务引用，防止内存泄漏
-                List<Future<?>> tasks = activeTasks.get(sessionKey);
-                if (tasks != null) {
-                    tasks.removeIf(Future::isDone);
-                }
-            }
+                return null;
+            });
+        } catch (Exception e) {
+            log.error("处理会话 {} 的消息时出错", sessionKey, e);
+            publishProcessingError(msg);
+        } finally {
+            cleanupCompletedTasks(sessionKey);
         }
     }
 
@@ -736,6 +726,19 @@ public class AgentLoop {
         return processDirect(content, sessionKey, channel, chatId, Map.of(), List.of());
     }
 
+    /**
+     * 直接调用 Agent 处理逻辑，支持自定义元数据和请求级钩子。
+     * 该方法绕过消息总线，同步执行消息处理流程，适用于测试或内部直接调用场景。
+     *
+     * @param content      用户输入的内容
+     * @param sessionKey   会话键，用于标识和隔离不同的对话上下文
+     * @param channel      通信渠道，例如 "cli", "web" 等
+     * @param chatId       聊天 ID，用于区分同一渠道下的不同对话
+     * @param metadata     附加的元数据映射，可包含额外的上下文信息
+     * @param requestHooks 请求级别的 Agent 钩子列表，用于在请求处理过程中插入自定义逻辑
+     * @return 出站消息，包含 Agent 的回复内容
+     * @throws Exception 处理过程中可能抛出的异常，如 LLM 调用失败、持久化错误等
+     */
     public OutboundMessage processDirect(
             String content,
             String sessionKey,
@@ -744,13 +747,17 @@ public class AgentLoop {
             Map<String, Object> metadata,
             List<AgentHook> requestHooks
     ) throws Exception {
+        // 创建入站消息对象，封装用户输入及上下文信息
         InboundMessage msg = newDirectMessage(content, sessionKey, channel, chatId, metadata);
 
+        // 计算有效的会话键，处理统一会话模式或覆盖逻辑
         String effectiveKey = effectiveSessionKey(msg);
-        Object lock = sessionLocks.computeIfAbsent(effectiveKey, key -> new Object());
-        synchronized (lock) {
-            return processMessage(msg, effectiveKey, requestHooks != null ? requestHooks : List.of());
-        }
+
+        // 处理消息并返回结果，如果请求钩子为 null 则使用空列表
+        return withSessionLock(
+                effectiveKey,
+                () -> processMessage(msg, effectiveKey, requestHooks != null ? requestHooks : List.of())
+        );
     }
 
     /**
@@ -819,13 +826,38 @@ public class AgentLoop {
         return msg.getSessionKey();
     }
 
+    /**
+     * 存储运行时检查点。
+     * <p>
+     * 将当前的任务状态和额外的负载数据保存到会话的元数据中，并持久化会话。
+     * 这用于在长时间运行的任务中保存中间状态，以便在中断后恢复或进行调试。
+     *
+     * @param session 当前会话对象
+     * @param payload 额外的负载数据映射，可能包含特定的上下文信息
+     */
     private void storeRuntimeCheckpoint(Session session, Map<String, Object> payload) {
+        // 如果 payload 不为 null，则创建一个新的 LinkedHashMap 并复制 payload 的内容；否则创建一个新的空 LinkedHashMap
         Map<String, Object> checkpoint = payload != null ? new LinkedHashMap<>(payload) : new LinkedHashMap<>();
+        // 从会话中提取任务状态，并将其转换为 Map 形式，放入检查点中
         checkpoint.put("task_state", TaskState.fromSession(session).toMap());
+        // 将构建好的检查点数据存入会话的元数据中，使用预定义的键
         session.getMetadata().put(SessionRuntimeKeys.RUNTIME_CHECKPOINT_KEY, checkpoint);
+        // 保存更新后的会话到持久化存储
         sessionManager.save(session);
     }
 
+    /**
+     * 创建直接调用的入站消息。
+     * <p>
+     * 用于绕过消息总线，直接构造一个模拟用户输入的 InboundMessage 对象。
+     *
+     * @param content   消息内容
+     * @param sessionKey 会话键
+     * @param channel   通信渠道（如 "cli"）
+     * @param chatId    聊天 ID
+     * @param metadata  附加的元数据
+     * @return 构造好的 InboundMessage 对象
+     */
     private InboundMessage newDirectMessage(
             String content,
             String sessionKey,
@@ -833,22 +865,56 @@ public class AgentLoop {
             String chatId,
             Map<String, Object> metadata
     ) {
+        // 调用 InboundMessages 工厂方法创建消息，发送者固定为 "user"，附件列表为空，时间戳为 null
         return InboundMessages.of(channel, "user", chatId, content, List.of(), metadata, sessionKey, null);
     }
 
+    /**
+     * 生成回复消息。
+     * <p>
+     * 基于原始入站消息生成一个标准的回复出站消息。
+     *
+     * @param msg     原始入站消息
+     * @param content 回复内容
+     * @return 出站消息对象
+     */
     private OutboundMessage reply(InboundMessage msg, String content) {
+        // 使用 OutboundMessages 工具类生成回复，保持原有的渠道和聊天 ID 关联
         return OutboundMessages.replyTo(msg, content);
     }
 
+    /**
+     * 生成纯文本回复消息。
+     * <p>
+     * 创建一个简单的出站消息，不包含复杂的回复结构，仅包含渠道、聊天 ID 和内容。
+     *
+     * @param msg     原始入站消息，用于提取渠道和聊天 ID
+     * @param content 回复内容
+     * @return 出站消息对象
+     */
     private OutboundMessage plainReply(InboundMessage msg, String content) {
+        // 直接构造出站消息，不使用 replyTo 的完整上下文关联逻辑
         return OutboundMessages.of(msg.getChannel(), msg.getChatId(), content);
     }
 
+    /**
+     * 解析系统目标标识。
+     * <p>
+     * 从原始的 chatId 字符串中解析出渠道（channel）和具体的聊天 ID（chatId）。
+     * 格式预期为 "channel:chatId"。如果格式不符合，则默认渠道为 "cli"。
+     *
+     * @param rawChatId 原始的聊天 ID 字符串
+     * @return 解析后的 SystemTarget 记录对象
+     */
     private SystemTarget parseSystemTarget(String rawChatId) {
+        // 检查 rawChatId 是否非空且包含分隔符 ":"
         if (rawChatId != null && rawChatId.contains(":")) {
+            // 按 ":" 分割字符串，限制分割次数为 2，以处理 chatId 本身包含 ":" 的情况
             String[] parts = rawChatId.split(":", 2);
+            // 返回解析出的渠道和聊天 ID
             return new SystemTarget(parts[0], parts[1]);
         }
+        // 如果格式不匹配，默认渠道为 "cli"，整个字符串作为 chatId
         return new SystemTarget("cli", rawChatId);
     }
 
@@ -886,6 +952,63 @@ public class AgentLoop {
             return s != null ? Integer.parseInt(s) : def;
         } catch (Exception e) {
             return def;
+        }
+    }
+
+    private void submitDispatchTask(InboundMessage msg) {
+        String sessionKey = effectiveSessionKey(msg);
+        Future<?> future = executor.submit(() -> {
+            boolean permitAcquired = false;
+            try {
+                permitAcquired = acquireConcurrencyPermit();
+                dispatch(msg);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } finally {
+                releaseConcurrencyPermit(permitAcquired);
+            }
+        });
+        registerActiveTask(sessionKey, future);
+    }
+
+    private boolean acquireConcurrencyPermit() throws InterruptedException {
+        if (concurrencyGate != null) {
+            concurrencyGate.acquire();
+            return true;
+        }
+        return false;
+    }
+
+    private void releaseConcurrencyPermit(boolean permitAcquired) {
+        if (permitAcquired && concurrencyGate != null) {
+            concurrencyGate.release();
+        }
+    }
+
+    private void registerActiveTask(String sessionKey, Future<?> future) {
+        activeTasks.computeIfAbsent(sessionKey, key -> Collections.synchronizedList(new ArrayList<>()))
+                .add(future);
+    }
+
+    private void cleanupCompletedTasks(String sessionKey) {
+        List<Future<?>> tasks = activeTasks.get(sessionKey);
+        if (tasks != null) {
+            tasks.removeIf(Future::isDone);
+        }
+    }
+
+    private void publishProcessingError(InboundMessage msg) {
+        try {
+            bus.publishOutbound(plainReply(msg, "抱歉，我遇到了一点错误。"));
+        } catch (Exception publishErr) {
+            log.warn("发布错误消息失败: channel={}, chatId={}", msg.getChannel(), msg.getChatId(), publishErr);
+        }
+    }
+
+    private <T> T withSessionLock(String sessionKey, SessionWork<T> work) throws Exception {
+        Object lock = sessionLocks.computeIfAbsent(sessionKey, key -> new Object());
+        synchronized (lock) {
+            return work.run();
         }
     }
 
@@ -944,6 +1067,11 @@ public class AgentLoop {
         if (extraHooks != null) {
             this.extraHooks.addAll(extraHooks);
         }
+    }
+
+    @FunctionalInterface
+    private interface SessionWork<T> {
+        T run() throws Exception;
     }
 
     private record SystemTarget(String channel, String chatId) {

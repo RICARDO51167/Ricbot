@@ -9,7 +9,9 @@ import com.sun.net.httpserver.HttpPrincipal;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import ricbot.domain.agent.AgentLoop;
+import ricbot.domain.hook.AgentHook;
 import ricbot.domain.message.MessageBus;
+import ricbot.domain.message.OutboundMessage;
 import ricbot.domain.session.SessionManager;
 import ricbot.infra.config.Config;
 import ricbot.integration.api.RicbotApiServer;
@@ -143,6 +145,32 @@ public class RicbotApiServerTest {
             Map<String, Object> json = MAPPER.readValue(exchange.responseText(), new TypeReference<>() {});
             Map<String, Object> err = (Map<String, Object>) json.get("error");
             assertEquals("timeout_error", String.valueOf(err.get("type")));
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void chatCompletions_blankResponseFallsBackAfterRetry(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildBlankLoop(workspace);
+        var app = new RicbotApiServer.ApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "");
+        var handler = new RicbotApiServer.ChatCompletionsHandler(app);
+
+        try {
+            TestExchange exchange = postExchange("/v1/chat/completions", Map.of(
+                    "model", "gpt-4o-mini",
+                    "messages", List.of(Map.of("role", "user", "content", "ping"))
+            ));
+
+            handler.handle(exchange);
+
+            assertEquals(200, exchange.getResponseCode(), exchange.responseText());
+            Map<String, Object> json = MAPPER.readValue(exchange.responseText(), new TypeReference<>() {});
+            List<?> choices = (List<?>) json.get("choices");
+            Map<?, ?> choice0 = (Map<?, ?>) choices.get(0);
+            Map<?, ?> message = (Map<?, ?>) choice0.get("message");
+            assertEquals("assistant", String.valueOf(message.get("role")));
+            assertEquals("处理已完成，但无响应可提供。", String.valueOf(message.get("content")));
         } finally {
             loop.stop();
         }
@@ -302,6 +330,74 @@ public class RicbotApiServerTest {
                 0,
                 dreamConfig
         );
+        loop.start();
+        return loop;
+    }
+
+    private static AgentLoop buildBlankLoop(Path workspace) {
+        MessageBus bus = new MessageBus();
+        SessionManager sessionManager = new SessionManager(workspace);
+
+        LLMProvider provider = new LLMProvider("k", "http://localhost") {
+            @Override
+            public LLMResponse chat(
+                    List<Map<String, Object>> messages,
+                    List<Map<String, Object>> tools,
+                    String model,
+                    Integer maxTokens,
+                    Double temperature,
+                    String reasoningEffort,
+                    Object toolChoice
+            ) {
+                return new LLMResponse().setContent("").setFinishReason("stop");
+            }
+        };
+
+        Config.WebToolsConfig web = new Config.WebToolsConfig();
+        web.setEnable(false);
+        Config.ExecToolConfig exec = new Config.ExecToolConfig();
+        exec.setEnable(false);
+        Config.DreamConfig dreamConfig = new Config.DreamConfig();
+        dreamConfig.setEnabled(false);
+
+        AgentLoop loop = new AgentLoop(
+                bus,
+                provider,
+                workspace,
+                "gpt-4o-mini",
+                5,
+                2000,
+                50,
+                10_000,
+                "standard",
+                web,
+                exec,
+                Map.of(),
+                true,
+                sessionManager,
+                "UTC",
+                false,
+                List.of(),
+                0,
+                dreamConfig
+        ) {
+            @Override
+            public OutboundMessage processDirect(String content, String sessionKey, String channel, String chatId) {
+                return new OutboundMessage(channel, chatId, "");
+            }
+
+            @Override
+            public OutboundMessage processDirect(
+                    String content,
+                    String sessionKey,
+                    String channel,
+                    String chatId,
+                    Map<String, Object> metadata,
+                    List<AgentHook> requestHooks
+            ) {
+                return new OutboundMessage(channel, chatId, "");
+            }
+        };
         loop.start();
         return loop;
     }

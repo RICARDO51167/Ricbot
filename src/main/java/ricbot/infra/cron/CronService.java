@@ -112,6 +112,7 @@ public class CronService implements AutoCloseable {
 
     /**
      * 对应 Python: _now_ms()
+     * 获取当前系统时间的毫秒时间戳
      */
     public static long nowMs() {
         return System.currentTimeMillis(); // 获取当前系统时间的毫秒戳
@@ -119,70 +120,100 @@ public class CronService implements AutoCloseable {
 
     /**
      * 对应 Python: _compute_next_run(schedule, now_ms)
+     * 根据调度配置和当前时间，计算下一次执行的时间戳
+     *
+     * @param schedule 调度配置对象，包含任务类型（AT/EVERY/CRON）及具体参数
+     * @param nowMs    当前时间的毫秒时间戳，作为计算基准
+     * @return 下一次执行的毫秒时间戳；如果无法计算或任务已过期，则返回 null
      */
     public static Long computeNextRun(CronSchedule schedule, long nowMs) {
-        if (schedule == null || schedule.getKind() == null) { // 如果调度配置为空或类型为空，返回 null
+        // 检查调度配置是否为空，或者调度类型是否为空，若是则无法计算，返回 null
+        if (schedule == null || schedule.getKind() == null) {
             return null;
         }
 
-        if (schedule.getKind() == ScheduleKind.AT) { // 如果是 AT 类型（一次性任务）
-            Long atMs = schedule.getAtMs(); // 获取指定执行时间戳
-            return (atMs != null && atMs > nowMs) ? atMs : null; // 如果指定时间在未来，则返回该时间，否则返回 null
+        // 处理 AT 类型：一次性执行任务
+        if (schedule.getKind() == ScheduleKind.AT) {
+            Long atMs = schedule.getAtMs(); // 获取预设的执行时间戳
+            // 只有当预设时间存在且在未来时，才返回该时间；否则视为已过期，返回 null
+            return (atMs != null && atMs > nowMs) ? atMs : null;
         }
 
-        if (schedule.getKind() == ScheduleKind.EVERY) { // 如果是 EVERY 类型（周期性任务）
-            Long everyMs = schedule.getEveryMs(); // 获取间隔毫秒数
-            if (everyMs == null || everyMs <= 0) { // 如果间隔无效，返回 null
+        // 处理 EVERY 类型：周期性间隔执行任务
+        if (schedule.getKind() == ScheduleKind.EVERY) {
+            Long everyMs = schedule.getEveryMs(); // 获取执行间隔毫秒数
+            // 检查间隔是否有效：必须非空且大于 0
+            if (everyMs == null || everyMs <= 0) {
                 return null;
             }
-            return nowMs + everyMs; // 返回当前时间加上间隔时间作为下次执行时间
+            // 下次执行时间为当前时间加上间隔时间
+            return nowMs + everyMs;
         }
 
-        if (schedule.getKind() == ScheduleKind.CRON) { // 如果是 CRON 类型（cron 表达式任务）
-            String expr = schedule.getExpr(); // 获取 cron 表达式
-            if (expr == null || expr.isBlank()) { // 如果表达式为空，返回 null
+        // 处理 CRON 类型：基于 Cron 表达式执行的任务
+        if (schedule.getKind() == ScheduleKind.CRON) {
+            String expr = schedule.getExpr(); // 获取 Cron 表达式字符串
+            // 检查表达式是否有效：非空且非空白
+            if (expr == null || expr.isBlank()) {
                 return null;
             }
 
             try {
+                // 确定时区：如果配置中指定了有效时区字符串，则使用它；否则使用系统默认时区
                 ZoneId zone = schedule.getTz() != null && !schedule.getTz().isBlank()
-                        ? ZoneId.of(schedule.getTz()) // 如果指定了时区，使用时区 ID
-                        : ZoneId.systemDefault(); // 否则使用系统默认时区
+                        ? ZoneId.of(schedule.getTz())
+                        : ZoneId.systemDefault();
 
-                return CronExpressionUtils.nextExecutionMillis(expr, zone, nowMs); // 计算下一次执行时间戳
+                // 调用工具类计算基于 Cron 表达式的下一次执行时间戳
+                return CronExpressionUtils.nextExecutionMillis(expr, zone, nowMs);
             } catch (Exception e) {
+                // 如果 Cron 表达式解析失败或计算出错，记录警告日志并返回 null
                 log.warn("Cron: cron 表达式解析失败 expr='{}' tz='{}': {}", expr, schedule.getTz(), e.getMessage(), e);
-                return null; // 如果解析失败，返回 null
+                return null;
             }
         }
 
-        return null; // 其他情况返回 null
+        // 如果调度类型未知或未匹配上述任何类型，返回 null
+        return null;
     }
 
     /**
+     * 验证调度配置的合法性，用于添加新任务时
      * 对应 Python: _validate_schedule_for_add(schedule)
+     *
+     * @param schedule 待验证的调度配置对象
+     * @throws IllegalArgumentException 如果调度配置无效
      */
     public static void validateScheduleForAdd(CronSchedule schedule) {
+        // 检查调度配置是否为空
         if (schedule == null) {
             throw new IllegalArgumentException("schedule.kind is required");
         }
+        // 调用调度配置自身的验证逻辑（如检查必填字段）
         schedule.validateForAdd(nowMs());
 
+        // 如果是 CRON 表达式类型，需要额外验证表达式和时区
         if (schedule.getKind() == ScheduleKind.CRON) {
-            ZoneId zone;
+            ZoneId zone; // 定义时区变量
+            // 检查是否指定了时区且非空
             if (schedule.getTz() != null && !schedule.getTz().isBlank()) {
                 try {
+                    // 尝试根据时区字符串创建 ZoneId 对象
                     zone = ZoneId.of(schedule.getTz());
                 } catch (Exception e) {
+                    // 如果时区字符串无效，抛出异常
                     throw new IllegalArgumentException("unknown timezone '" + schedule.getTz() + "'");
                 }
             } else {
+                // 如果未指定时区，使用系统默认时区
                 zone = ZoneId.systemDefault();
             }
 
             try {
+                // 尝试计算下一次执行时间，以验证 Cron 表达式是否合法
                 CronExpressionUtils.nextExecutionMillis(schedule.getExpr(), zone, nowMs());
             } catch (Exception e) {
+                // 如果表达式解析失败，抛出异常
                 throw new IllegalArgumentException("invalid cron expr '" + schedule.getExpr() + "'");
             }
         }
@@ -193,175 +224,279 @@ public class CronService implements AutoCloseable {
     // =========================================================
 
     /**
+     * 从磁盘加载任务列表和版本信息
      * 对应 Python: _load_jobs()
+     *
+     * @return LoadedJobs 包含任务列表和版本号的记录对象
      */
     private LoadedJobs loadJobs() {
-        List<CronJob> jobs = new ArrayList<>(); // 初始化任务列表
-        int version = 1; // 默认版本号
+        List<CronJob> jobs = new ArrayList<>(); // 初始化任务列表，用于存储加载到的任务
+        int version = 1; // 设置默认版本号为 1
 
-        if (Files.exists(storePath)) { // 如果存储文件存在
+        // 检查存储文件是否存在
+        if (Files.exists(storePath)) {
             try {
-                String raw = Files.readString(storePath); // 读取文件内容
-                Map<String, Object> data = mapper.readValue(raw, new TypeReference<>() {}); // 反序列化为 Map
+                String raw = Files.readString(storePath); // 读取存储文件的原始内容
+                // 将 JSON 字符串反序列化为 Map 对象，以便提取字段
+                Map<String, Object> data = mapper.readValue(raw, new TypeReference<>() {});
 
-                Number versionNum = data.get("version") instanceof Number n ? n : null; // 提取版本号
-                version = versionNum != null ? versionNum.intValue() : 1; // 设置版本号，默认为 1
+                // 提取版本号，如果不存在或不是数字类型则默认为 null
+                Number versionNum = data.get("version") instanceof Number n ? n : null;
+                // 如果版本号有效则使用它，否则保持默认值 1
+                version = versionNum != null ? versionNum.intValue() : 1;
 
-                Object jobsObj = data.get("jobs"); // 获取 jobs 字段
-                if (jobsObj instanceof List<?> list) { // 如果 jobs 是列表
-                    for (Object item : list) { // 遍历列表项
-                        if (item instanceof Map<?, ?> rawJob) { // 如果项是 Map
+                // 获取 "jobs" 字段，它应该是一个列表
+                Object jobsObj = data.get("jobs");
+                // 检查 jobs 字段是否是 List 类型
+                if (jobsObj instanceof List<?> list) {
+                    // 遍历列表中的每一项
+                    for (Object item : list) {
+                        // 检查每一项是否是 Map 类型（即原始的任务数据）
+                        if (item instanceof Map<?, ?> rawJob) {
                             @SuppressWarnings("unchecked")
-                            Map<String, Object> jobMap = (Map<String, Object>) rawJob; // 强制转换为 String-Object Map
+                            // 将原始 Map 强制转换为 String-Object 类型的 Map，方便后续处理
+                            Map<String, Object> jobMap = (Map<String, Object>) rawJob;
                             try {
-                                CronJob job = CronJob.fromMap(jobMap); // 从 Map 构建 CronJob 对象
-                                if (job != null) { // 如果构建成功
-                                    jobs.add(job); // 添加到任务列表
+                                // 尝试从 Map 构建 CronJob 对象
+                                CronJob job = CronJob.fromMap(jobMap);
+                                // 如果构建成功（非 null），则添加到任务列表中
+                                if (job != null) {
+                                    jobs.add(job);
                                 }
                             } catch (Exception e) {
+                                // 如果单个任务解析失败，记录警告日志但不中断整个加载过程
                                 log.warn("Cron: 解析 job 失败: {}", e.getMessage(), e);
                             }
                         }
                     }
                 }
             } catch (Exception e) {
+                // 如果文件读取或整体反序列化失败，记录警告日志
                 log.warn("Cron: 加载存储失败 path='{}': {}", storePath, e.getMessage(), e);
             }
         }
 
-        return new LoadedJobs(jobs, version); // 返回加载结果对象
+        // 返回包含加载到的任务列表和版本号的记录对象
+        return new LoadedJobs(jobs, version);
     }
 
     /**
+     * 合并 action.jsonl 文件中的待处理操作到内存存储中
      * 对应 Python: _merge_action()
+     *
+     * 该方法会读取 action.jsonl 文件，按顺序应用其中的增删改操作到当前的任务列表中，
+     * 然后清空或保留解析失败的行。此方法必须在持有 actionLock 的情况下调用（内部会再次加锁以确保安全，或者假设外部已加锁，此处实现为内部加锁）。
+     * 注意：当前实现中，外层调用 ensureStoreLoadedLocked 时已经持有了 storeLock 的写锁，
+     * 而 mergeActionLocked 内部使用 actionLock 保护对 actionPath 文件的读写。
      */
     private void mergeActionLocked() {
-        if (!Files.exists(actionPath) || store == null) { // 如果 action 文件不存在或 store 未初始化，直接返回
+        // 如果 action 日志文件不存在，或者内存中的 store 尚未初始化，则无需合并，直接返回
+        if (!Files.exists(actionPath) || store == null) {
             return;
         }
 
-        Map<String, CronJob> jobsMap = new LinkedHashMap<>(); // 使用 LinkedHashMap 保持插入顺序
-        for (CronJob job : store.getJobs()) { // 遍历当前 store 中的任务
-            jobsMap.put(job.getId(), job); // 将任务放入 Map，key 为 ID
+        // 创建一个 LinkedHashMap 来暂存任务，Key 为任务 ID，Value 为任务对象
+        // 使用 LinkedHashMap 以保持任务的插入顺序，确保最终保存的顺序可预测
+        Map<String, CronJob> jobsMap = new LinkedHashMap<>();
+        
+        // 将当前内存 store 中的所有任务加载到 jobsMap 中作为基础数据
+        for (CronJob job : store.getJobs()) {
+            jobsMap.put(job.getId(), job);
         }
 
-        actionLock.lock(); // 加锁，保证线程安全
+        // 获取 action 文件的独占锁，防止与其他线程同时修改 action 文件或读取不一致的状态
+        actionLock.lock();
         try {
-            boolean changed = false; // 标记是否有变更
+            // 标记任务列表是否发生了变更，如果未变更则无需更新 store 和文件
+            boolean changed = false;
+            
+            // 用于存储解析失败的行，以便后续写回文件，避免丢失未处理的操作
             List<String> failedLines = new ArrayList<>();
+            
+            // 使用 try-with-resources 自动关闭 BufferedReader
             try (var reader = Files.newBufferedReader(actionPath)) {
                 String line;
+                // 逐行读取 action 文件
                 while ((line = reader.readLine()) != null) {
                     try {
-                        if (line.isBlank()) { // 跳过空行
+                        // 跳过空白行
+                        if (line.isBlank()) {
                             continue;
                         }
 
-                        Map<String, Object> action = mapper.readValue(line, new TypeReference<>() {}); // 反序列化行动记录
-                        String type = String.valueOf(action.get("action")); // 获取行动类型
+                        // 将 JSON 行反序列化为 Map，提取 action 类型和参数
+                        Map<String, Object> action = mapper.readValue(line, new TypeReference<>() {});
+                        
+                        // 获取操作类型，如 "add", "update", "del"
+                        String type = String.valueOf(action.get("action"));
+                        
+                        // 获取操作参数，确保其为 Map 类型，否则默认为空 Map
                         @SuppressWarnings("unchecked")
                         Map<String, Object> params = action.get("params") instanceof Map<?, ?> p
                                 ? (Map<String, Object>) p
-                                : Collections.emptyMap(); // 获取参数 Map
+                                : Collections.emptyMap();
 
-                        if ("del".equals(type)) { // 如果是删除操作
-                            String jobId = String.valueOf(params.get("job_id")); // 获取任务 ID
-                            if (jobId != null) { // 如果 ID 有效
-                                jobsMap.remove(jobId); // 从 Map 中移除任务
-                                changed = true; // 标记已变更
+                        // 根据操作类型执行相应的逻辑
+                        if ("del".equals(type)) {
+                            // 如果是删除操作
+                            // 从参数中获取要删除的任务 ID
+                            String jobId = String.valueOf(params.get("job_id"));
+                            // 如果 ID 有效且不为 null
+                            if (jobId != null && !"null".equals(jobId)) {
+                                // 从 jobsMap 中移除该任务
+                                jobsMap.remove(jobId);
+                                // 标记状态已变更
+                                changed = true;
                             }
-                        } else { // 其他操作（如 add/update）
-                            CronJob job = CronJob.fromMap(params); // 从参数构建任务对象
-                            if (job != null) { // 如果构建成功
-                                jobsMap.put(job.getId(), job); // 更新或添加任务到 Map
-                                changed = true; // 标记已变更
+                        } else {
+                            // 如果是添加或更新操作（add/update）
+                            // 从参数 Map 中构建 CronJob 对象
+                            CronJob job = CronJob.fromMap(params);
+                            // 如果构建成功（非 null）
+                            if (job != null) {
+                                // 将任务放入或更新到 jobsMap 中
+                                jobsMap.put(job.getId(), job);
+                                // 标记状态已变更
+                                changed = true;
                             }
                         }
                     } catch (Exception e) {
+                        // 如果某一行解析失败，将其加入失败列表，并记录警告日志
                         failedLines.add(line);
                         log.warn("Cron: action 行解析失败: {}", e.getMessage(), e);
                     }
                 }
             }
 
+            // 如果任务列表发生了变更，则更新内存中的 store
             if (changed) {
+                // 将 Map 中的值转换为 List 并设置到 store 中
                 store.setJobs(new ArrayList<>(jobsMap.values()));
             }
 
+            // 处理 action 文件本身：
+            // 如果所有行都解析成功，则清空文件（因为操作已应用到 store）
+            // 如果有解析失败的行，则将这些行写回文件，以便下次启动时重试
             if (failedLines.isEmpty()) {
                 Files.writeString(actionPath, "");
             } else {
+                // 将失败的行重新写入文件，每行之间用换行符分隔，末尾添加换行符
                 Files.writeString(actionPath, String.join("\n", failedLines) + "\n");
             }
         } catch (IOException e) {
+            // 如果发生 IO 异常（如读取或写入文件失败），记录警告日志
             log.warn("Cron: 合并 action 文件失败: {}", e.getMessage(), e);
         } finally {
-            actionLock.unlock(); // 释放锁
+            // 无论是否发生异常，最终都要释放 action 锁
+            actionLock.unlock();
         }
     }
 
     /**
-     * 对应 Python: _load_store()
+     * 在获取读锁的情况下执行存储读取操作
+     * 如果存储尚未加载，则升级为写锁进行初始化，然后降级为读锁执行操作
+     *
+     * @param op 要执行的读取操作
+     * @return 操作的结果
      */
-    private CronStore loadStore() {
-        return withStoreRead(() -> store);
-    }
-
     private <T> T withStoreRead(Supplier<T> op) {
+        // 首先尝试获取读锁
         storeLock.readLock().lock();
         try {
+            // 如果存储已加载，直接执行操作并返回结果
             if (store != null) {
                 return op.get();
             }
         } finally {
+            // 释放读锁
             storeLock.readLock().unlock();
         }
 
+        // 如果存储未加载，需要获取写锁进行初始化
         storeLock.writeLock().lock();
         try {
+            // 确保存储数据已加载到内存中（双重检查，防止其他线程已加载）
             ensureStoreLoadedLocked();
+            // 在释放写锁前，先获取读锁，实现锁降级
             storeLock.readLock().lock();
         } finally {
+            // 释放写锁，此时仍持有读锁
             storeLock.writeLock().unlock();
         }
 
         try {
+            // 在持有读锁的情况下执行操作并返回结果
             return op.get();
         } finally {
+            // 释放读锁
             storeLock.readLock().unlock();
         }
     }
 
+    /**
+     * 在获取写锁的情况下执行存储操作
+     * 确保在执行操作前存储已加载，并在操作完成后释放锁
+     *
+     * @param op 要执行的操作
+     * @return 操作的结果
+     */
     private <T> T withStoreWrite(Supplier<T> op) {
+        // 获取写锁，确保对存储的独占访问
         storeLock.writeLock().lock();
         try {
+            // 确保存储已加载到内存中
             ensureStoreLoadedLocked();
+            // 执行传入的操作并返回结果
             return op.get();
         } finally {
+            // 无论操作是否成功，都释放写锁
             storeLock.writeLock().unlock();
         }
     }
 
+    /**
+     * 确保存储数据已加载到内存中
+     * 该方法必须在持有 storeLock 写锁的情况下调用
+     */
     private void ensureStoreLoadedLocked() {
+        // 如果 store 已经初始化，则直接返回，避免重复加载
         if (store != null) {
             return;
         }
+        // 从磁盘加载任务数据和版本信息
         LoadedJobs loaded = loadJobs();
+        // 使用加载的数据初始化内存中的 CronStore 对象
         store = new CronStore(loaded.version(), loaded.jobs());
+        // 合并 action.jsonl 文件中的待处理操作（如服务停止期间的增删改）
         mergeActionLocked();
+        // 将合并后的最新状态保存回 store.json 文件，确保数据一致性
         saveStoreLocked();
     }
 
+    /**
+     * 将当前内存中的任务存储保存到磁盘文件
+     * 该方法必须在持有 storeLock 写锁的情况下调用，以确保数据一致性
+     */
     private void saveStoreLocked() {
+        // 如果内存中的存储对象为空，则无需保存，直接返回
         if (store == null) {
             return;
         }
         try {
+            // 确保存储文件的父目录存在，如果不存在则创建（包括必要的中间目录）
             Files.createDirectories(storePath.getParent());
+            
+            // 将内存中的 CronStore 对象转换为 Map，并使用 Jackson 序列化为格式化的 JSON 字符串
+            // writerWithDefaultPrettyPrinter() 用于生成易读的格式化 JSON
             String json = mapper.writerWithDefaultPrettyPrinter().writeValueAsString(store.toMap());
+            
+            // 将生成的 JSON 字符串写入到 storePath 指定的文件中，覆盖原有内容
             Files.writeString(storePath, json);
         } catch (IOException e) {
+            // 如果发生 IO 异常（如磁盘满、权限不足等），记录错误日志
             log.error("Cron: 保存存储失败 path='{}': {}", storePath, e.getMessage(), e);
+            
+            // 抛出运行时异常，中断当前操作，通知上层调用者保存失败
             throw new RuntimeException("保存 cron 存储失败", e);
         }
     }
@@ -374,15 +509,29 @@ public class CronService implements AutoCloseable {
      * 对应 Python: async start()
      */
     public synchronized void start() {
+        // 设置服务运行状态为true，表示服务已启动
         running = true;
+        
+        // 确保执行器已初始化（定时任务调度器和工作线程池）
         ensureExecutors();
+        
+        // 在存储写锁下执行以下操作：
         withStoreWrite(() -> {
+            // 重新计算所有任务的下次运行时间
             recomputeNextRunsLocked(nowMs());
+            // 将更新后的存储状态保存到文件
             saveStoreLocked();
+            // 返回null（因为Supplier需要返回值，这里不需要返回有意义的值）
             return null;
         });
+        
+        // 设置/重新设置定时器，使其在下一个任务到期时唤醒
         armTimer();
+        
+        // 获取当前任务数量用于日志输出
         int count = withStoreRead(() -> store != null ? store.getJobs().size() : 0);
+        
+        // 记录服务启动信息，包括任务数量
         log.info("Cron: 服务已启动，任务数={}", count);
     }
 
@@ -403,111 +552,163 @@ public class CronService implements AutoCloseable {
         stop();
     }
 
+    /**
+     * 确保定时任务调度器和工作线程池已初始化且处于运行状态
+     * 如果执行器为空或已关闭，则重新创建它们
+     */
     private void ensureExecutors() {
+        // 检查调度器是否为空或已关闭
         if (scheduler == null || scheduler.isShutdown()) {
+            // 创建单线程的定时任务调度器
             scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
+                // 创建名为 "cron-scheduler" 的线程
                 Thread t = new Thread(r, "cron-scheduler");
+                // 设置为守护线程，当所有非守护线程结束时，JVM 会自动退出
                 t.setDaemon(true);
                 return t;
             });
         }
+
+        // 检查工作线程池是否为空或已关闭
         if (jobExecutor == null || jobExecutor.isShutdown()) {
+            // 计算核心线程数：至少为 2，或者 CPU 核心数的一半
             int threads = Math.max(2, Runtime.getRuntime().availableProcessors() / 2);
+            
+            // 创建固定大小的线程池用于执行具体的定时任务
             jobExecutor = new ThreadPoolExecutor(
-                    threads,
-                    threads,
-                    30L,
-                    TimeUnit.SECONDS,
-                    new LinkedBlockingQueue<>(256),
-                    r -> {
+                    threads,                // 核心线程数
+                    threads,                // 最大线程数（与核心线程数相同，表示固定大小）
+                    30L,                    // 空闲线程存活时间
+                    TimeUnit.SECONDS,       // 时间单位
+                    new LinkedBlockingQueue<>(256), // 工作队列，容量为 256
+                    r -> {                  // 线程工厂
+                        // 创建名为 "cron-worker" 的线程
                         Thread t = new Thread(r, "cron-worker");
+                        // 设置为守护线程
                         t.setDaemon(true);
                         return t;
                     },
-                    new ThreadPoolExecutor.AbortPolicy()
+                    new ThreadPoolExecutor.AbortPolicy() // 拒绝策略：当队列满时抛出 RejectedExecutionException
             );
         }
     }
 
+    /**
+     * 关闭并清理执行器资源
+     * 立即停止调度器和工作线程池，中断正在执行的任务
+     */
     private void shutdownExecutors() {
+        // 获取当前调度器的引用并清空成员变量，防止后续误用
         ScheduledExecutorService s = scheduler;
         scheduler = null;
+        // 如果调度器存在，则立即强制关闭（中断所有正在执行和等待的任务）
         if (s != null) {
             s.shutdownNow();
         }
+
+        // 获取当前工作线程池的引用并清空成员变量
         ExecutorService w = jobExecutor;
         jobExecutor = null;
+        // 如果工作线程池存在，则立即强制关闭
         if (w != null) {
             w.shutdownNow();
         }
     }
 
     /**
+     * 重新计算所有启用任务的下次运行时间
      * 对应 Python: _recompute_next_runs()
+     *
+     * @param now 当前时间戳（毫秒），用于计算基准时间
      */
     private void recomputeNextRunsLocked(long now) {
+        // 如果内存存储未初始化，直接返回
         if (store == null) {
             return;
         }
+        // 遍历所有任务
         for (CronJob job : store.getJobs()) {
+            // 仅处理已启用的任务
             if (job.isEnabled()) {
+                // 根据调度配置和当前时间，计算下一次执行时间并更新到任务状态中
                 job.getState().setNextRunAtMs(computeNextRun(job.getSchedule(), now));
             }
         }
     }
 
     /**
+     * 获取所有启用任务中最早的下次运行时间
      * 对应 Python: _get_next_wake_ms()
+     *
+     * @return 最早的下一次运行时间戳（毫秒），如果没有待执行任务则返回 null
      */
     private Long getNextWakeMsLocked() {
+        // 如果内存存储未初始化，返回 null
         if (store == null) {
             return null;
         }
+        // 初始化最小时间为 null
         Long min = null;
+        // 遍历所有任务寻找最小的 nextRunAtMs
         for (CronJob job : store.getJobs()) {
+            // 跳过已禁用的任务
             if (!job.isEnabled()) continue;
+            
+            // 获取任务的下次运行时间
             Long next = job.getState().getNextRunAtMs();
+            // 如果下次运行时间为 null（例如一次性任务已过时或 cron 解析失败），跳过
             if (next == null) continue;
+            
+            // 如果当前最小值为 null，或者找到的时间更早，则更新最小值
             if (min == null || next < min) {
                 min = next;
             }
         }
+        // 返回找到的最早执行时间，若无则返回 null
         return min;
     }
 
     /**
-     * 对应 Python: _arm_timer()
      * 启动或重新调度定时器，确保在最近的到期时间唤醒
+     * 对应 Python: _arm_timer()
      */
     private synchronized void armTimer() {
-        // 如果存在已调度的定时任务，先取消它（不中断正在执行的任务）
+        // 如果存在已调度的定时任务句柄，先取消它
+        // cancel(false) 表示如果任务正在执行，允许其执行完成，但不重复执行
         if (timerTask != null) {
             timerTask.cancel(false);
         }
 
-        // 如果服务未处于运行状态，则不再调度新任务
+        // 如果服务未处于运行状态，则不再调度新任务，直接返回
         if (!running) {
             return;
         }
 
+        // 获取当前调度器的本地引用，避免并发修改问题
         ScheduledExecutorService localScheduler = this.scheduler;
+        // 如果调度器为空或已关闭，无法进行调度，直接返回
         if (localScheduler == null || localScheduler.isShutdown()) {
             return;
         }
 
+        // 在读取锁保护下获取下一个唤醒时间点
         Long nextWake = withStoreRead(this::getNextWakeMsLocked);
+        
         long delayMs;
         if (nextWake == null) {
-            // 如果没有待执行的任务，使用最大休眠时间，避免无限等待
+            // 如果没有待执行的任务，使用最大休眠时间，避免 CPU 空转或无限等待
             delayMs = maxSleepMs;
         } else {
-            // 计算距离下次执行的延迟时间，确保不为负数，且不超过最大休眠时间
+            // 计算距离下次执行的延迟时间：
+            // 1. nextWake - nowMs(): 理论延迟
+            // 2. Math.max(0, ...): 确保延迟不为负数（防止过去的时间导致立即执行或异常）
+            // 3. Math.min(maxSleepMs, ...): 确保延迟不超过最大限制，保证定期有机会检查状态变化
             delayMs = Math.min(maxSleepMs, Math.max(0, nextWake - nowMs()));
         }
 
-        // 调度一个新的定时任务，在 delayMs 毫秒后执行 onTimer 方法
+        // 调度一个新的定时任务，在计算出的 delayMs 毫秒后执行 onTimer 方法
         timerTask = localScheduler.schedule(() -> {
-            // 再次检查服务是否仍在运行，防止在休眠期间服务被停止
+            // 再次检查服务是否仍在运行，防止在休眠期间服务被停止后仍执行逻辑
             if (running) {
                 onTimer();
             }

@@ -2,6 +2,9 @@ package ricbot.integration.channel;
 
 import com.fasterxml.jackson.core.type.TypeReference; // 导入 Jackson 的类型引用类，用于反序列化泛型对象
 import com.fasterxml.jackson.databind.ObjectMapper; // 导入 Jackson 的 ObjectMapper，用于 JSON 序列化和反序列化
+import lombok.Getter;
+import lombok.Setter;
+import lombok.extern.slf4j.Slf4j;
 import ricbot.infra.common.CircuitBreaker; // 导入自定义的熔断器类
 import ricbot.infra.common.RetryUtils; // 导入自定义的重试工具类
 import ricbot.domain.message.MessageBus; // 导入消息总线接口
@@ -19,6 +22,7 @@ import java.util.regex.Pattern; // 导入正则表达式 Pattern 类
 /**
  * 飞书 / Lark 渠道实现。
  */
+@Slf4j
 public class FeishuChannel extends BaseChannel {
 
     private static final ObjectMapper MAPPER = new ObjectMapper(); // 创建静态的 ObjectMapper 实例，用于 JSON 处理
@@ -84,7 +88,7 @@ public class FeishuChannel extends BaseChannel {
             return; // 如果无效则不启动
         }
         running = true; // 标记为运行状态
-        System.out.println("飞书渠道已启动（仅 HTTP 模式）"); // 打印启动日志
+        log.info("飞书渠道已启动（仅 HTTP 模式）");
     }
 
     @Override
@@ -129,7 +133,7 @@ public class FeishuChannel extends BaseChannel {
         // 发送请求并获取响应
         HttpResponse<String> response = sendHttp(request, HttpResponse.BodyHandlers.ofString());
         if (response.statusCode() != 200) { // 如果状态码不是 200
-            System.err.println("发送飞书消息失败：" + response.body()); // 打印错误信息
+            log.warn("发送飞书消息失败: {}", response.body());
         }
     }
 
@@ -245,35 +249,23 @@ public class FeishuChannel extends BaseChannel {
     /**
      * 飞书渠道配置类
      */
+    @Getter
+    @Setter
     public static class FeishuConfig {
         private boolean enabled = false; // 是否启用
         private String appId = ""; // App ID
         private String appSecret = ""; // App Secret
         private List<String> allowFrom = new ArrayList<>(); // 允许的来源列表
-
-        public boolean isEnabled() { return enabled; }
-        public void setEnabled(boolean enabled) { this.enabled = enabled; }
-        public String getAppId() { return appId; }
-        public void setAppId(String appId) { this.appId = appId; }
-        public String getAppSecret() { return appSecret; }
-        public void setAppSecret(String appSecret) { this.appSecret = appSecret; }
-        public List<String> getAllowFrom() { return allowFrom; }
-        public void setAllowFrom(List<String> allowFrom) { this.allowFrom = allowFrom; }
     }
 
     /**
      * 飞书流式消息缓冲区类
      */
+    @Getter
+    @Setter
     public static class FeishuStreamBuf {
         private String text = ""; // 累积的文本内容
         private String cardId; // 卡片消息 ID
         private long lastEditMillis = 0; // 上次编辑时间戳
-
-        public String getText() { return text; }
-        public void setText(String text) { this.text = text; }
-        public String getCardId() { return cardId; }
-        public void setCardId(String cardId) { this.cardId = cardId; }
-        public long getLastEditMillis() { return lastEditMillis; }
-        public void setLastEditMillis(long lastEditMillis) { this.lastEditMillis = lastEditMillis; }
     }
 }

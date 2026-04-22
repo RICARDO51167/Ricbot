@@ -302,4 +302,47 @@ public class AgentRunnerTest {
         assertEquals("ok", result.getFinalContent());
         assertEquals(2, calls.get());
     }
+
+    @Test
+    void runner_usesDirectChatWhenProviderRetryIsDisabled() throws Exception {
+        AtomicInteger directCalls = new AtomicInteger(0);
+        AtomicInteger retryCalls = new AtomicInteger(0);
+
+        LLMProvider provider = new LLMProvider("k", "http://localhost") {
+            @Override
+            public LLMResponse chat(
+                    List<Map<String, Object>> messages,
+                    List<Map<String, Object>> toolsDef,
+                    String model,
+                    Integer maxTokens,
+                    Double temperature,
+                    String reasoningEffort,
+                    Object toolChoice
+            ) {
+                directCalls.incrementAndGet();
+                return new LLMResponse().setContent("ok").setFinishReason("stop");
+            }
+
+            @Override
+            public LLMResponse chatWithRetry(
+                    List<Map<String, Object>> messages,
+                    List<Map<String, Object>> tools,
+                    String model
+            ) throws Exception {
+                retryCalls.incrementAndGet();
+                return super.chatWithRetry(messages, tools, model);
+            }
+        };
+
+        AgentRunner runner = new AgentRunner(provider);
+        AgentRunResult result = runner.run(new AgentRunSpec()
+                .setInitialMessages(List.of(Map.of("role", "user", "content", "hello")))
+                .setModel("gpt-4o-mini")
+                .setMaxIterations(2)
+                .setProviderRetryMode("none"));
+
+        assertEquals("ok", result.getFinalContent());
+        assertEquals(1, directCalls.get());
+        assertEquals(0, retryCalls.get());
+    }
 }

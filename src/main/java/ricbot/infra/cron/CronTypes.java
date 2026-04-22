@@ -886,10 +886,6 @@ public final class CronTypes {
         private int version = 1;             // 存储版本号，默认为 1
         private List<CronJob> jobs = new ArrayList<>(); // 任务列表
 
-        // 默认构造函数
-        public CronStore() {
-        }
-
         // 全参构造函数
         public CronStore(int version, List<CronJob> jobs) {
             this.version = version;
@@ -928,41 +924,6 @@ public final class CronTypes {
             }
             map.put("jobs", items);
             return map;
-        }
-
-        /**
-         * 从 Map 中构建 CronStore 对象，用于反序列化
-         * @param map 源数据 Map
-         * @return 构建好的 CronStore 对象
-         */
-        @SuppressWarnings("unchecked")
-        public static CronStore fromMap(Map<String, Object> map) {
-            CronStore store = new CronStore();
-            if (map == null) {
-                return store;
-            }
-
-            // 解析版本号，默认为 1
-            Number versionNum = number(map.get("version"));
-            store.setVersion(versionNum != null ? versionNum.intValue() : 1);
-
-            // 解析任务列表
-            List<CronJob> jobs = new ArrayList<>();
-            Object jobsObj = map.get("jobs");
-            if (jobsObj instanceof List<?> list) {
-                for (Object item : list) {
-                    if (item instanceof Map<?, ?> raw) {
-                        // 递归构建 CronJob
-                        CronJob job = CronJob.fromMap((Map<String, Object>) raw);
-                        if (job != null) {
-                            jobs.add(job);
-                        }
-                    }
-                }
-            }
-
-            store.setJobs(jobs);
-            return store;
         }
 
         @Override

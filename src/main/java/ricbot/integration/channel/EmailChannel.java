@@ -4,6 +4,7 @@ import jakarta.mail.*;
 import jakarta.mail.internet.InternetAddress;
 import jakarta.mail.internet.MimeMessage;
 import jakarta.mail.search.FlagTerm;
+import lombok.extern.slf4j.Slf4j;
 import ricbot.domain.message.MessageBus;
 import ricbot.domain.message.OutboundMessage;
 import ricbot.integration.channel.event.CommandEvent;
@@ -18,6 +19,7 @@ import java.util.concurrent.TimeUnit;
 /**
  * Email 渠道实现。
  */
+@Slf4j
 public class EmailChannel extends BaseChannel {
 
     // 内部静态类，用于存储 Email 渠道的配置信息
@@ -313,8 +315,7 @@ public class EmailChannel extends BaseChannel {
             folder.close(true); // 关闭文件夹，true 表示保存更改（如标记已读）
             store.close(); // 关闭存储连接
         } catch (Exception e) {
-            // 打印错误信息到标准错误流
-            System.err.println("邮件获取错误: " + e.getMessage());
+            log.error("邮件获取错误: {}", e.getMessage(), e);
         }
     }
 

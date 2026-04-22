@@ -94,24 +94,27 @@ public class AgentRunner implements AutoCloseable {
         String finalContent = null;
         // 停止原因，默认为 "stop"
         String stopReason = "stop";
+        // 停止详情，用于记录具体的错误信息或原因
         String stopDetail = null;
+        // 连续工具调用轮数计数器
         int consecutiveToolTurns = 0;
+        // 助手返回空内容的轮数计数器
         int blankAssistantTurns = 0;
+        // 工具执行错误的轮数计数器
         int toolErrorTurns = 0;
+        // 消息注入的轮数计数器
         int injectionRounds = 0;
 
         // 获取钩子实现
         AgentHook hook = spec.getHook();
         // 获取工具注册表
         ToolRegistry tools = spec.getTools();
+        List<Map<String, Object>> toolDefinitions = tools != null ? tools.getDefinitions() : List.of();
 
         // 开始主循环，最多执行 spec.getMaxIterations() 次
         for (int iteration = 1; iteration <= spec.getMaxIterations(); iteration++) {
             // 创建钩子上下文，设置当前消息、迭代次数和会话 key
-            AgentHookContext context = new AgentHookContext()
-                    .setMessages(messages)
-                    .setIteration(iteration)
-                    .setSessionKey(spec.getSessionKey());
+            AgentHookContext context = newHookContext(messages, iteration, spec.getSessionKey());
 
             // 如果存在钩子，执行迭代前钩子
             if (hook != null) {
@@ -120,61 +123,7 @@ public class AgentRunner implements AutoCloseable {
 
             LLMResponse response; // 声明 LLM 响应变量
             try {
-                // 判断是否启用流式输出
-                boolean wantsStreaming = hook != null && hook.wantsStreaming();
-
-                if (wantsStreaming) {
-                    int it = iteration;
-                    // 调用流式聊天接口
-                    response = provider.chatStream(
-                            messages, // 消息历史
-                            tools != null ? tools.getDefinitions() : List.of(), // 工具定义
-                            spec.getModel(), // 模型名称
-                            null, // 温度
-                            null, // top_p
-                            null, // max_tokens
-                            null, // stop sequences
-                            // 流式数据回调
-                            delta -> {
-                                AgentHookContext streamCtx = new AgentHookContext()
-                                        .setMessages(messages)
-                                        .setIteration(it)
-                                        .setSessionKey(spec.getSessionKey());
-                                if (hook != null) {
-                                    safeHook(() -> hook.onStream(streamCtx, delta), hook);
-                                }
-                            },
-                            // 流式结束回调
-                            resuming -> {
-                                AgentHookContext streamCtx = new AgentHookContext()
-                                        .setMessages(messages)
-                                        .setIteration(it)
-                                        .setSessionKey(spec.getSessionKey());
-                                if (hook != null) {
-                                    safeHook(() -> hook.onStreamEnd(streamCtx, resuming.hasToolCalls()), hook);
-                                }
-                            }
-                    );
-                } else {
-                    String retryMode = spec.getProviderRetryMode() != null ? spec.getProviderRetryMode().trim() : "";
-                    if ("none".equalsIgnoreCase(retryMode) || "off".equalsIgnoreCase(retryMode) || "disabled".equalsIgnoreCase(retryMode)) {
-                        response = provider.chat(
-                                messages,
-                                tools != null ? tools.getDefinitions() : List.of(),
-                                spec.getModel(),
-                                null,
-                                null,
-                                null,
-                                null
-                        );
-                    } else {
-                        response = provider.chatWithRetry(
-                                messages,
-                                tools != null ? tools.getDefinitions() : List.of(),
-                                spec.getModel()
-                        );
-                    }
-                }
+                response = requestModel(spec, messages, toolDefinitions, hook, iteration);
             } catch (Exception e) {
                 // 如果发生异常，且存在钩子，执行错误钩子
                 if (hook != null) {
@@ -207,44 +156,26 @@ public class AgentRunner implements AutoCloseable {
             }
 
             // 构建 assistant 消息，先加入历史
-            Map<String, Object> assistantMessage = new LinkedHashMap<>();
-            assistantMessage.put("role", "assistant"); // 角色为 assistant
-            assistantMessage.put("content", response.getContent()); // 内容
-
-            // 如果有工具调用，添加工具调用信息
-            if (response.hasToolCalls()) {
-                List<Map<String, Object>> toolCallDicts = response.getToolCalls().stream()
-                        .map(ToolCallRequest::toOpenAIToolCall) // 转换为 OpenAI 格式的工具调用字典
-                        .collect(Collectors.toList());
-                assistantMessage.put("tool_calls", toolCallDicts);
-            }
+            Map<String, Object> assistantMessage = buildAssistantMessage(response);
 
             // 将 assistant 消息加入消息历史
             messages.add(assistantMessage);
+            // 如果助手返回内容为空或空白，增加空白轮数计数
             if (response.getContent() == null || response.getContent().isBlank()) {
                 blankAssistantTurns++;
             }
 
             // 检查点：如果有检查点回调且存在工具调用，保存当前状态
-            if (spec.getCheckpointCallback() != null && response.hasToolCalls()) {
-                Map<String, Object> checkpoint = new LinkedHashMap<>();
-                checkpoint.put("assistant_message", assistantMessage);
-                checkpoint.put("completed_tool_results", new ArrayList<>()); // 此时工具结果尚未完成
-                checkpoint.put("pending_tool_calls", response.getToolCalls().stream()
-                        .map(ToolCallRequest::toOpenAIToolCall)
-                        .toList());
-                spec.getCheckpointCallback().accept(checkpoint); // 执行检查点回调
-            }
+            publishCheckpoint(spec, assistantMessage, List.of(), response.getToolCalls());
 
             // 如果没有工具调用，结束循环
             if (!response.hasToolCalls()) {
-                finalContent = response.getContent(); // 获取最终内容
-                if (hook != null) {
-                    finalContent = hook.finalizeContent(context, finalContent); // 通过钩子 finalize 内容
-                }
-                stopReason = response.getFinishReason() != null ? response.getFinishReason() : "stop"; // 确定停止原因
+                finalContent = finalizeContent(hook, context, response.getContent());
+                // 确定停止原因，优先使用模型返回的 finishReason，否则默认为 "stop"
+                stopReason = response.getFinishReason() != null ? response.getFinishReason() : "stop";
                 break; // 跳出循环
             }
+            // 增加连续工具调用轮数计数
             consecutiveToolTurns++;
 
             // 工具执行前钩子
@@ -267,16 +198,11 @@ public class AgentRunner implements AutoCloseable {
             }
 
             // 更新检查点：工具执行完成后
-            if (spec.getCheckpointCallback() != null) {
-                Map<String, Object> checkpoint = new LinkedHashMap<>();
-                checkpoint.put("assistant_message", assistantMessage);
-                checkpoint.put("completed_tool_results", toolResults); // 已完成的结果
-                checkpoint.put("pending_tool_calls", List.of()); // 无 pending 调用
-                spec.getCheckpointCallback().accept(checkpoint);
-            }
+            publishCheckpoint(spec, assistantMessage, toolResults, List.of());
 
+            // 如果配置了遇到工具错误即失败，检查是否有错误
+            Map<String, Object> firstError = firstToolError(toolEvents, toolEventStart);
             if (spec.isFailOnToolError()) {
-                Map<String, Object> firstError = firstToolError(toolEvents, toolEventStart);
                 if (firstError != null) {
                     stopReason = "tool_error";
                     stopDetail = String.valueOf(firstError.getOrDefault("detail", "tool_error"));
@@ -284,35 +210,23 @@ public class AgentRunner implements AutoCloseable {
                     break;
                 }
             }
-            if (firstToolError(toolEvents, toolEventStart) != null) {
+            // 如果本轮有工具错误，增加错误轮数计数
+            if (firstError != null) {
                 toolErrorTurns++;
             }
 
             // 处理 follow-up 注入消息
-            if (spec.getInjectionCallback() != null) {
-                List<Map<String, Object>> injected;
-                try {
-                    injected = spec.getInjectionCallback().inject();
-                } catch (Exception e) {
-                    injected = null;
-                    if (hook != null) {
-                        safeHook(() -> hook.onError(context, e), hook);
-                    } else {
-                        log.warn("注入回调失败: sessionKey={}", spec.getSessionKey(), e);
-                    }
-                }
-
-                List<Map<String, Object>> normalized = normalizeInjectedMessages(injected, MAX_INJECTIONS_PER_TURN);
-                if (!normalized.isEmpty()) {
-                    messages.addAll(normalized);
-                    hadInjections = true;
-                    injectionRounds++;
-                }
+            List<Map<String, Object>> injected = collectInjectedMessages(spec, context, hook);
+            if (!injected.isEmpty()) {
+                messages.addAll(injected);
+                hadInjections = true;
+                injectionRounds++;
             }
         }
 
         // 如果循环结束后 finalContent 仍为 null，说明达到了最大迭代次数
         if (finalContent == null) {
+            // 分类最大迭代次数的具体原因
             stopReason = classifyMaxIterationReason(
                     spec.getMaxIterations(),
                     consecutiveToolTurns,
@@ -327,15 +241,142 @@ public class AgentRunner implements AutoCloseable {
         result.setFinalContent(finalContent);
         result.setMessages(messages);
         result.setStopReason(stopReason);
+        // 如果有详细的停止信息，设置为 error 字段
         if (stopDetail != null && !stopDetail.isBlank()) {
             result.setError(stopDetail);
         } else if ("max_iterations".equals(stopReason) && consecutiveToolTurns > 0) {
+            // 如果是因最大迭代次数停止且有工具调用，记录详细信息
             result.setError("max_iterations: tool_calls_turns=" + consecutiveToolTurns + ", had_injections=" + hadInjections);
         }
         result.setHadInjections(hadInjections);
         result.setToolsUsed(toolsUsed);
         result.setToolEvents(toolEvents);
         return result; // 返回结果
+    }
+
+    private AgentHookContext newHookContext(List<Map<String, Object>> messages, int iteration, String sessionKey) {
+        return new AgentHookContext()
+                .setMessages(messages)
+                .setIteration(iteration)
+                .setSessionKey(sessionKey);
+    }
+
+    private LLMResponse requestModel(
+            AgentRunSpec spec,
+            List<Map<String, Object>> messages,
+            List<Map<String, Object>> toolDefinitions,
+            AgentHook hook,
+            int iteration
+    ) throws Exception {
+        if (hook != null && hook.wantsStreaming()) {
+            return provider.chatStream(
+                    messages,
+                    toolDefinitions,
+                    spec.getModel(),
+                    null,
+                    null,
+                    null,
+                    null,
+                    delta -> safeHook(
+                            () -> hook.onStream(newHookContext(messages, iteration, spec.getSessionKey()), delta),
+                            hook
+                    ),
+                    resuming -> safeHook(
+                            () -> hook.onStreamEnd(
+                                    newHookContext(messages, iteration, spec.getSessionKey()),
+                                    resuming.hasToolCalls()
+                            ),
+                            hook
+                    )
+            );
+        }
+
+        if (shouldSkipProviderRetry(spec.getProviderRetryMode())) {
+            return provider.chat(
+                    messages,
+                    toolDefinitions,
+                    spec.getModel(),
+                    null,
+                    null,
+                    null,
+                    null
+            );
+        }
+
+        return provider.chatWithRetry(messages, toolDefinitions, spec.getModel());
+    }
+
+    private boolean shouldSkipProviderRetry(String retryMode) {
+        String mode = retryMode != null ? retryMode.trim() : "";
+        return "none".equalsIgnoreCase(mode)
+                || "off".equalsIgnoreCase(mode)
+                || "disabled".equalsIgnoreCase(mode);
+    }
+
+    private Map<String, Object> buildAssistantMessage(LLMResponse response) {
+        Map<String, Object> assistantMessage = new LinkedHashMap<>();
+        assistantMessage.put("role", "assistant");
+        assistantMessage.put("content", response.getContent());
+        if (response.hasToolCalls()) {
+            assistantMessage.put(
+                    "tool_calls",
+                    response.getToolCalls().stream()
+                            .map(ToolCallRequest::toOpenAIToolCall)
+                            .collect(Collectors.toList())
+            );
+        }
+        return assistantMessage;
+    }
+
+    private void publishCheckpoint(
+            AgentRunSpec spec,
+            Map<String, Object> assistantMessage,
+            List<Map<String, Object>> completedToolResults,
+            List<ToolCallRequest> pendingToolCalls
+    ) {
+        if (spec.getCheckpointCallback() == null) {
+            return;
+        }
+        Map<String, Object> checkpoint = new LinkedHashMap<>();
+        checkpoint.put("assistant_message", assistantMessage);
+        checkpoint.put("completed_tool_results", completedToolResults != null ? completedToolResults : List.of());
+        checkpoint.put(
+                "pending_tool_calls",
+                pendingToolCalls != null
+                        ? pendingToolCalls.stream().map(ToolCallRequest::toOpenAIToolCall).toList()
+                        : List.of()
+        );
+        spec.getCheckpointCallback().accept(checkpoint);
+    }
+
+    private String finalizeContent(AgentHook hook, AgentHookContext context, String content) throws Exception {
+        if (hook == null) {
+            return content;
+        }
+        return hook.finalizeContent(context, content);
+    }
+
+    private List<Map<String, Object>> collectInjectedMessages(
+            AgentRunSpec spec,
+            AgentHookContext context,
+            AgentHook hook
+    ) throws Exception {
+        if (spec.getInjectionCallback() == null) {
+            return List.of();
+        }
+
+        List<Map<String, Object>> injected;
+        try {
+            injected = spec.getInjectionCallback().inject();
+        } catch (Exception e) {
+            if (hook != null) {
+                safeHook(() -> hook.onError(context, e), hook);
+            } else {
+                log.warn("注入回调失败: sessionKey={}", spec.getSessionKey(), e);
+            }
+            return List.of();
+        }
+        return normalizeInjectedMessages(injected, MAX_INJECTIONS_PER_TURN);
     }
 
     /**

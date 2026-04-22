@@ -38,7 +38,7 @@ class DreamStructuredMemoryTest {
             }
         };
 
-        Dream dream = new Dream(workspace, provider, "test-model", store);
+        Dream dream = new Dream(provider, "test-model", store);
         Dream.DreamRunResult result = dream.runDetailed();
 
         assertTrue(result.updated());

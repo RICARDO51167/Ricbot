@@ -226,7 +226,6 @@ public class SkillRouter {
      * 将单个技能文档追加到 StringBuilder 中
      *
      * @param sb   目标 StringBuilder
-     * @param doc  技能文档
      * @param vars 模板变量
      * @param seen 已处理技能名称集合
      */

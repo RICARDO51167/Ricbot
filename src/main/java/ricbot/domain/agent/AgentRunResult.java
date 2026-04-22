@@ -1,6 +1,10 @@
 package ricbot.domain.agent;
 
 
+import lombok.Getter;
+import lombok.Setter;
+import lombok.experimental.Accessors;
+
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -11,6 +15,9 @@ import java.util.Map;
  *
  * 对应 Python runner.run(...) 的返回对象语义
  */
+@Getter
+@Setter
+@Accessors(chain = true)
 public class AgentRunResult {
 
     /**
@@ -53,26 +60,8 @@ public class AgentRunResult {
      */
     private List<Map<String, Object>> toolEvents = new ArrayList<>();
 
-    public String getFinalContent() {
-        return finalContent;
-    }
-
-    public AgentRunResult setFinalContent(String finalContent) {
-        this.finalContent = finalContent;
-        return this;
-    }
-
-    public List<String> getToolsUsed() {
-        return toolsUsed;
-    }
-
-    public AgentRunResult setToolsUsed(List<String> toolsUsed) {
+    public void setToolsUsed(List<String> toolsUsed) {
         this.toolsUsed = toolsUsed != null ? toolsUsed : new ArrayList<>();
-        return this;
-    }
-
-    public List<Map<String, Object>> getMessages() {
-        return messages;
     }
 
     public AgentRunResult setMessages(List<Map<String, Object>> messages) {
@@ -80,44 +69,9 @@ public class AgentRunResult {
         return this;
     }
 
-    public String getStopReason() {
-        return stopReason;
-    }
-
-    public AgentRunResult setStopReason(String stopReason) {
-        this.stopReason = stopReason;
-        return this;
-    }
-
-    public boolean isHadInjections() {
-        return hadInjections;
-    }
-
-    public AgentRunResult setHadInjections(boolean hadInjections) {
-        this.hadInjections = hadInjections;
-        return this;
-    }
-
-    public Map<String, Integer> getUsage() {
-        return usage;
-    }
-
     public AgentRunResult setUsage(Map<String, Integer> usage) {
         this.usage = usage != null ? usage : new HashMap<>();
         return this;
-    }
-
-    public String getError() {
-        return error;
-    }
-
-    public AgentRunResult setError(String error) {
-        this.error = error;
-        return this;
-    }
-
-    public List<Map<String, Object>> getToolEvents() {
-        return toolEvents;
     }
 
     public AgentRunResult setToolEvents(List<Map<String, Object>> toolEvents) {

@@ -1,6 +1,9 @@
 // 定义包路径，用于组织类文件
 package ricbot.integration.channel;
 
+import lombok.Getter;
+import lombok.Setter;
+import lombok.extern.slf4j.Slf4j;
 // 导入 Jackson 库中的 TypeReference，用于泛型反序列化
 import com.fasterxml.jackson.core.type.TypeReference;
 // 导入 Jackson 库中的 ObjectMapper，用于 JSON 序列化和反序列化
@@ -33,6 +36,7 @@ import java.util.*;
  * 钉钉渠道实现类。
  * 负责通过钉钉 API 发送消息和处理配置。
  */
+@Slf4j
 public class DingTalkChannel extends BaseChannel {
 
     // 创建静态的 ObjectMapper 实例，用于 JSON 处理，线程安全且可复用
@@ -110,7 +114,7 @@ public class DingTalkChannel extends BaseChannel {
         // 标记渠道为运行中
         running = true;
         // 打印启动日志
-        System.out.println("钉钉渠道已启动（仅 HTTP 模式）");
+        log.info("钉钉渠道已启动（仅 HTTP 模式）");
     }
 
     /**
@@ -175,7 +179,7 @@ public class DingTalkChannel extends BaseChannel {
         HttpResponse<String> response = sendHttp(request, HttpResponse.BodyHandlers.ofString());
         // 如果响应状态码不是 200，打印错误信息
         if (response.statusCode() != 200) {
-            System.err.println("发送钉钉消息失败：" + response.body());
+            log.warn("发送钉钉消息失败: {}", response.body());
         }
     }
 
@@ -234,6 +238,8 @@ public class DingTalkChannel extends BaseChannel {
      * 钉钉渠道配置内部类。
      * 封装了钉钉应用所需的配置项。
      */
+    @Getter
+    @Setter
     public static class DingTalkConfig {
         // 是否启用该渠道
         private boolean enabled = false;
@@ -243,22 +249,5 @@ public class DingTalkChannel extends BaseChannel {
         private String appSecret = "";
         // 允许发送消息的来源列表
         private List<String> allowFrom = new ArrayList<>();
-
-        // 获取启用状态
-        public boolean isEnabled() { return enabled; }
-        // 设置启用状态
-        public void setEnabled(boolean enabled) { this.enabled = enabled; }
-        // 获取 AppKey
-        public String getAppKey() { return appKey; }
-        // 设置 AppKey
-        public void setAppKey(String appKey) { this.appKey = appKey; }
-        // 获取 AppSecret
-        public String getAppSecret() { return appSecret; }
-        // 设置 AppSecret
-        public void setAppSecret(String appSecret) { this.appSecret = appSecret; }
-        // 获取允许的来源列表
-        public List<String> getAllowFrom() { return allowFrom; }
-        // 设置允许的来源列表
-        public void setAllowFrom(List<String> allowFrom) { this.allowFrom = allowFrom; }
     }
 }

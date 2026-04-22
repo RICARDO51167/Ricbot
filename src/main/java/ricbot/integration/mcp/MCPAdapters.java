@@ -66,57 +66,85 @@ public final class MCPAdapters {
             future.cancel(true);
             Thread.currentThread().interrupt();
             throw e;
-        } catch (TimeoutException e) {
-            future.cancel(true);
-            throw e;
-        } catch (CancellationException e) {
-            future.cancel(true);
-            throw e;
-        } catch (ExecutionException e) {
+        } catch (TimeoutException | ExecutionException | CancellationException e) {
             future.cancel(true);
             throw e;
         }
     }
 
     @SuppressWarnings("unchecked")
+    /**
+     * 解析原始配置 Map，将其转换为 MCP 服务器配置对象。
+     *
+     * @param raw 原始配置数据，键为服务器名称，值为配置详情（可能是 Config.MCPServerConfig 实例或 Map）
+     * @return 解析后的 MCP 服务器配置映射
+     */
     public static Map<String, Config.MCPServerConfig> parseMcpServers(Map<String, Object> raw) {
+        // 初始化结果映射，保持插入顺序
         Map<String, Config.MCPServerConfig> out = new LinkedHashMap<>();
+        
+        // 如果输入为空或 null，直接返回空映射
         if (raw == null || raw.isEmpty()) {
             return out;
         }
 
+        // 遍历原始配置中的每个条目
         for (Map.Entry<String, Object> entry : raw.entrySet()) {
+            // 获取服务器名称
             String name = entry.getKey();
+            // 获取配置值
             Object value = entry.getValue();
+            
+            // 如果值已经是 Config.MCPServerConfig 类型，直接放入结果映射
             if (value instanceof Config.MCPServerConfig typed) {
                 out.put(name, typed);
                 continue;
             }
+            
+            // 如果值不是 Map 类型，跳过该条目
             if (!(value instanceof Map<?, ?> map)) {
                 continue;
             }
 
+            // 将原始 Map 转换为字符串键的 Map，便于后续处理
             Map<String, Object> cfg = new LinkedHashMap<>();
             for (Map.Entry<?, ?> e : map.entrySet()) {
                 cfg.put(String.valueOf(e.getKey()), e.getValue());
             }
 
+            // 创建新的 MCP 服务器配置对象
             Config.MCPServerConfig server = new Config.MCPServerConfig();
+            
+            // 设置传输类型，优先使用 "type" 字段， fallback 到默认值
             server.setType(stringValue(cfg, "type", server.getType()));
+            
+            // 设置 URL，优先使用 "url" 字段， fallback 到默认值
             server.setUrl(stringValue(cfg, "url", server.getUrl()));
+            
+            // 设置命令，优先使用 "command" 字段， fallback 到默认值
             server.setCommand(stringValue(cfg, "command", server.getCommand()));
+            
+            // 设置参数列表，优先使用 "args" 字段， fallback 到默认值
             server.setArgs(stringListValue(cfg, "args", server.getArgs()));
+            
+            // 设置环境变量，优先使用 "env" 字段， fallback 到默认值
             server.setEnv(stringMapValue(cfg, "env", server.getEnv()));
+            
+            // 设置启用的工具列表，支持蛇形命名 "enabled_tools" 和驼峰命名 "enabledTools"
             server.setEnabledTools(stringListValue(
                     cfg,
                     "enabled_tools",
                     stringListValue(cfg, "enabledTools", server.getEnabledTools())
             ));
+            
+            // 设置工具超时时间，支持蛇形命名 "tool_timeout" 和驼峰命名 "toolTimeout"
             server.setToolTimeout(intValue(cfg, "tool_timeout", intValue(cfg, "toolTimeout", server.getToolTimeout())));
 
+            // 将解析后的配置放入结果映射
             out.put(name, server);
         }
 
+        // 返回解析结果
         return out;
     }
 

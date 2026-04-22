@@ -15,56 +15,34 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-// 代理上下文服务类，负责构建代理请求所需的上下文信息
-final class AgentContextService {
+/**
+ * 代理上下文服务类，负责构建代理请求所需的上下文信息
+ *
+ * @param workspace               工作空间路径
+ * @param contextBuilder          上下文构建器
+ * @param memoryStore             内存存储
+ * @param skillsLoader            技能加载器
+ * @param skillRouter             技能路由器
+ * @param tools                   工具注册表
+ * @param hookFactory             代理钩子工厂
+ * @param toolContextApplier      工具上下文应用器
+ * @param globalHooks             全局钩子列表
+ * @param contextSelectionService 上下文选择服务
+ */
+record AgentContextService(Path workspace, ContextBuilder contextBuilder, MemoryStore memoryStore,
+                           SkillsLoader skillsLoader, SkillRouter skillRouter, ToolRegistry tools,
+                           AgentHookFactory hookFactory, ToolContextApplier toolContextApplier,
+                           List<AgentHook> globalHooks, ContextSelectionService contextSelectionService) {
 
-    // 工作空间路径
-    private final Path workspace;
-    // 上下文构建器
-    private final ContextBuilder contextBuilder;
-    // 内存存储
-    private final MemoryStore memoryStore;
-    // 技能加载器
-    private final SkillsLoader skillsLoader;
-    // 技能路由器
-    private final SkillRouter skillRouter;
-    // 工具注册表
-    private final ToolRegistry tools;
-    // 代理钩子工厂
-    private final AgentHookFactory hookFactory;
-    // 工具上下文应用器
-    private final ToolContextApplier toolContextApplier;
-    // 全局钩子列表
-    private final List<AgentHook> globalHooks;
-    // 上下文选择服务
-    private final ContextSelectionService contextSelectionService;
-
-    // 构造函数，初始化所有依赖项
-    AgentContextService(
-            Path workspace,
-            ContextBuilder contextBuilder,
-            MemoryStore memoryStore,
-            SkillsLoader skillsLoader,
-            SkillRouter skillRouter,
-            ToolRegistry tools,
-            AgentHookFactory hookFactory,
-            ToolContextApplier toolContextApplier,
-            List<AgentHook> globalHooks,
-            ContextSelectionService contextSelectionService
-    ) {
-        this.workspace = workspace;
-        this.contextBuilder = contextBuilder;
-        this.memoryStore = memoryStore;
-        this.skillsLoader = skillsLoader;
-        this.skillRouter = skillRouter;
-        this.tools = tools;
-        this.hookFactory = hookFactory;
-        this.toolContextApplier = toolContextApplier;
-        this.globalHooks = globalHooks;
-        this.contextSelectionService = contextSelectionService;
-    }
-
-    // 构建交互式请求上下文
+    /**
+     * 构建交互式请求上下文
+     *
+     * @param msg                  入站消息
+     * @param prepared             预处理的会话上下文
+     * @param requestHooks         请求级别的钩子列表
+     * @param historyWindowMessages 历史消息窗口大小
+     * @return 构建好的代理请求上下文
+     */
     AgentRequestContext buildInteractiveRequest(
             InboundMessage msg,
             PreparedSessionContext prepared,
@@ -74,7 +52,7 @@ final class AgentContextService {
         // 应用工具上下文，设置通道、聊天ID和消息ID
         toolContextApplier.apply(msg.getChannel(), msg.getChatId(), messageIdOf(msg));
 
-        // 执行技能路由选择并渲染结果
+        // 执行技能路由选择并渲染结果，基于当前消息和工作空间信息
         SkillRouter.SelectionResult selected = skillRouter.selectAndRender(new SkillRoutingContext(
                 workspace,
                 msg.getChannel(),
@@ -85,7 +63,7 @@ final class AgentContextService {
                 Map.of()
         ));
 
-        // 根据会话准备输入、消息内容等选择上下文
+        // 根据会话准备输入（如归档摘要、任务状态快照、最近工具追踪）、消息内容等选择上下文
         ContextSelectionService.SelectionResult selection = contextSelectionService.select(
                 new ContextSelectionService.SessionPreparedInputs(
                         prepared.archivedSummary(),
@@ -97,15 +75,16 @@ final class AgentContextService {
                 historyWindowMessages
         );
 
-        // 合并技能上下文、结构化上下文和选定的上下文
+        // 合并技能上下文、结构化上下文和选定的上下文，形成最终的上下文字符串
         String combinedContext = combineContext(
                 selection.bundle().render(),
                 selected.renderedContext()
         );
 
-        // 获取历史消息
+        // 获取经过筛选的历史消息列表
         List<Map<String, Object>> history = selection.history();
-        // 构建初始消息列表
+        
+        // 构建初始消息列表，包含历史消息、当前消息内容、媒体信息、渠道信息及合并后的上下文
         List<Map<String, Object>> initialMessages = contextBuilder.buildMessages(
                 history,
                 msg.getContent(),
@@ -117,9 +96,10 @@ final class AgentContextService {
                 selection.bundle()
         );
 
-        // 创建代理钩子
+        // 创建代理钩子，整合全局钩子和请求级钩子
         AgentHook hook = hookFactory.create(msg, globalHooks, requestHooks);
-        // 返回构建好的代理请求上下文
+        
+        // 返回构建好的代理请求上下文对象
         return new AgentRequestContext(
                 msg,
                 prepared.sessionKey(),
@@ -133,7 +113,17 @@ final class AgentContextService {
         );
     }
 
-    // 构建系统请求上下文
+    /**
+     * 构建系统请求上下文
+     *
+     * @param msg                  入站消息
+     * @param prepared             预处理的会话上下文
+     * @param channel              通信渠道
+     * @param chatId               聊天ID
+     * @param currentRole          当前角色
+     * @param historyWindowMessages 历史消息窗口大小
+     * @return 构建好的系统代理请求上下文
+     */
     AgentRequestContext buildSystemRequest(
             InboundMessage msg,
             PreparedSessionContext prepared,
@@ -142,11 +132,13 @@ final class AgentContextService {
             String currentRole,
             int historyWindowMessages
     ) {
-        // 应用工具上下文
+        // 应用工具上下文，设置通道、聊天ID和消息ID
         toolContextApplier.apply(channel, chatId, messageIdOf(msg));
-        // 获取指定窗口大小的历史消息
+
+        // 获取指定窗口大小的历史消息列表
         List<Map<String, Object>> history = prepared.session().getHistory(historyWindowMessages);
-        // 构建初始消息列表，系统请求通常不包含媒体和额外上下文
+
+        // 构建初始消息列表，系统请求通常不包含媒体和额外上下文，因此相关参数传null
         List<Map<String, Object>> initialMessages = contextBuilder.buildMessages(
                 history,
                 msg.getContent(),
@@ -158,7 +150,7 @@ final class AgentContextService {
                 null
         );
 
-        // 返回构建好的系统代理请求上下文
+        // 返回构建好的系统代理请求上下文，其中上下文字符串为空，Bundle为空对象，无钩子
         return new AgentRequestContext(
                 msg,
                 prepared.sessionKey(),
@@ -172,7 +164,12 @@ final class AgentContextService {
         );
     }
 
-    // 合并多个上下文字符串
+    /**
+     * 合并多个上下文字符串块
+     *
+     * @param blocks 待合并的字符串块
+     * @return 合并后的字符串
+     */
     private String combineContext(String... blocks) {
         StringBuilder sb = new StringBuilder();
         for (String block : blocks) {
@@ -181,7 +178,12 @@ final class AgentContextService {
         return sb.toString();
     }
 
-    // 向StringBuilder中追加非空文本块，并在需要时添加换行符
+    /**
+     * 向StringBuilder中追加非空文本块，并在需要时添加换行符分隔
+     *
+     * @param sb    目标StringBuilder
+     * @param value 待追加的值
+     */
     private void appendBlock(StringBuilder sb, String value) {
         if (value == null || value.isBlank()) {
             return;
@@ -192,7 +194,12 @@ final class AgentContextService {
         sb.append(value);
     }
 
-    // 从入站消息元数据中提取消息ID
+    /**
+     * 从入站消息元数据中提取消息ID
+     *
+     * @param msg 入站消息
+     * @return 消息ID字符串，若不存在则返回null
+     */
     private String messageIdOf(InboundMessage msg) {
         if (msg.getMetadata() == null) {
             return null;
@@ -201,17 +208,25 @@ final class AgentContextService {
         return value != null ? String.valueOf(value) : null;
     }
 
-    // 获取最近的工具调用追踪记录
+    /**
+     * 获取最近的工具调用追踪记录
+     *
+     * @param session 会话对象
+     * @return 工具追踪记录列表，每个元素为Map结构
+     */
     @SuppressWarnings("unchecked")
     private List<Map<String, Object>> recentToolTrace(Session session) {
         if (session == null) {
             return List.of();
         }
+        // 从会话元数据中获取原始的工具追踪对象
         Object raw = session.getMetadata().get(SessionRuntimeKeys.TOOL_TRACE_KEY);
+        // 检查是否为List类型
         if (!(raw instanceof List<?> list)) {
             return List.of();
         }
         List<Map<String, Object>> out = new ArrayList<>();
+        // 遍历列表，将每个Map元素转换为LinkedHashMap以保持顺序
         for (Object item : list) {
             if (item instanceof Map<?, ?> map) {
                 out.add(new LinkedHashMap<>((Map<String, Object>) map));
