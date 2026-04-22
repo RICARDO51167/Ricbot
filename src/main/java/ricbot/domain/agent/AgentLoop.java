@@ -25,8 +25,10 @@ import ricbot.tool.search.GrepTool;
 import ricbot.integration.mcp.MCPLoader;
 import ricbot.integration.command.CommandRouter;
 import ricbot.domain.message.InboundMessage;
+import ricbot.domain.message.InboundMessages;
 import ricbot.domain.message.MessageBus;
 import ricbot.domain.message.OutboundMessage;
+import ricbot.domain.message.OutboundMessages;
 import ricbot.infra.config.Config;
 import ricbot.integration.llm.api.LLMProvider;
 import ricbot.domain.session.Session;
@@ -413,11 +415,12 @@ public class AgentLoop {
         log.info("执行定时任务: {}", job.getName());
         
         // 构建入站消息
-        InboundMessage msg = new InboundMessage();
-        msg.setChannel(job.getPayload().getChannel() != null ? job.getPayload().getChannel() : "system");
-        msg.setChatId(job.getPayload().getTo() != null ? job.getPayload().getTo() : "cron");
-        msg.setContent(job.getPayload().getMessage());
-        msg.setSenderId("cron");
+        InboundMessage msg = InboundMessages.of(
+                job.getPayload().getChannel() != null ? job.getPayload().getChannel() : "system",
+                "cron",
+                job.getPayload().getTo() != null ? job.getPayload().getTo() : "cron",
+                job.getPayload().getMessage()
+        );
         
         // 标记这是一个 cron 任务
         msg.getMetadata().put("_cron_job_id", job.getId());
@@ -585,24 +588,14 @@ public class AgentLoop {
                     bus.publishOutbound(response);
                 } else if ("cli".equals(msg.getChannel())) {
                     // CLI 通道特殊处理：如果响应为空，发送一个空包以结束本轮输出
-                    OutboundMessage empty = new OutboundMessage();
-                    empty.setChannel(msg.getChannel());
-                    empty.setChatId(msg.getChatId());
-                    empty.setContent("");
-                    empty.setMetadata(msg.getMetadata() != null ? new HashMap<>(msg.getMetadata()) : new HashMap<>());
-                    bus.publishOutbound(empty);
+                    bus.publishOutbound(reply(msg, ""));
                 }
             } catch (Exception e) {
                 // 捕获处理过程中的异常，记录日志并发送错误消息
                 log.error("处理会话 {} 的消息时出错", sessionKey, e);
-                OutboundMessage error = new OutboundMessage();
-                error.setChannel(msg.getChannel());
-                error.setChatId(msg.getChatId());
-                error.setContent("抱歉，我遇到了一点错误。");
-                error.setMetadata(new HashMap<>());
                 try {
                     // 尝试发布错误消息
-                    bus.publishOutbound(error);
+                    bus.publishOutbound(plainReply(msg, "抱歉，我遇到了一点错误。"));
                 } catch (Exception publishErr) {
                     log.warn("发布错误消息失败: channel={}, chatId={}", msg.getChannel(), msg.getChatId(), publishErr);
                 }
@@ -687,16 +680,9 @@ public class AgentLoop {
      * @throws Exception 处理过程中可能抛出的异常，如会话准备失败、LLM 调用错误等
      */
     private OutboundMessage processSystemMessage(InboundMessage msg) throws Exception {
-        // 解析 chatId 以提取渠道（channel）和具体的聊天标识（chatId）
-        // 如果 chatId 包含冒号，则按第一个冒号分割；否则默认渠道为 "cli"，剩余部分为 chatId
-        String[] parts = msg.getChatId() != null && msg.getChatId().contains(":")
-                ? msg.getChatId().split(":", 2)
-                : new String[]{"cli", msg.getChatId()};
-
-        // 提取渠道名称，用于确定消息的来源类型（如 cli, web, system 等）
-        String channel = parts[0];
-        // 提取具体的聊天 ID，用于标识特定的对话或任务上下文
-        String chatId = parts[1];
+        SystemTarget target = parseSystemTarget(msg.getChatId());
+        String channel = target.channel();
+        String chatId = target.chatId();
         // 构建唯一的会话键，格式为 "channel:chatId"，用于定位和管理会话状态
         String key = channel + ":" + chatId;
 
@@ -756,22 +742,7 @@ public class AgentLoop {
             Map<String, Object> metadata,
             List<AgentHook> requestHooks
     ) throws Exception {
-        // 创建一个新的入站消息对象
-        InboundMessage msg = new InboundMessage();
-        // 设置通信渠道
-        msg.setChannel(channel);
-        // 设置发送者为 "user"，表示这是用户发起的请求
-        msg.setSenderId("user");
-        // 设置聊天 ID
-        msg.setChatId(chatId);
-        // 设置消息内容
-        msg.setContent(content);
-        // 初始化媒体列表为空列表
-        msg.setMedia(new ArrayList<>());
-        // 初始化元数据
-        msg.setMetadata(metadata != null ? new HashMap<>(metadata) : new HashMap<>());
-        // 设置会话键覆盖值，确保使用指定的 sessionKey
-        msg.setSessionKeyOverride(sessionKey);
+        InboundMessage msg = newDirectMessage(content, sessionKey, channel, chatId, metadata);
 
         String effectiveKey = effectiveSessionKey(msg);
         Object lock = sessionLocks.computeIfAbsent(effectiveKey, key -> new Object());
@@ -828,17 +799,7 @@ public class AgentLoop {
             markSessionInterrupted(sessionKey, "manual_stop");
         }
 
-        // 构建出站响应消息
-        OutboundMessage out = new OutboundMessage();
-        // 设置响应渠道
-        out.setChannel(msg.getChannel());
-        // 设置响应聊天 ID
-        out.setChatId(msg.getChatId());
-        // 根据取消数量设置响应内容
-        out.setContent(total > 0 ? "⏹ 已停止 " + total + " 个任务。" : "没有可停止的任务。");
-        // 初始化元数据
-        out.setMetadata(new HashMap<>());
-        return out;
+        return plainReply(msg, total > 0 ? "⏹ 已停止 " + total + " 个任务。" : "没有可停止的任务。");
     }
 
     /**
@@ -881,12 +842,7 @@ public class AgentLoop {
     }
 
     private CompletableFuture<OutboundMessage> cmdDisabled(CommandRouter.CommandContext ctx) {
-        OutboundMessage out = new OutboundMessage();
-        out.setChannel(ctx.getMsg().getChannel());
-        out.setChatId(ctx.getMsg().getChatId());
-        out.setContent("当前运行时未启用该命令。");
-        out.setMetadata(new HashMap<>());
-        return CompletableFuture.completedFuture(out);
+        return completedCommandReply(ctx, "当前运行时未启用该命令。");
     }
 
     private CompletableFuture<OutboundMessage> cmdNew(CommandRouter.CommandContext ctx) {
@@ -894,21 +850,11 @@ public class AgentLoop {
         session.clear();
         sessionManager.save(session);
 
-        OutboundMessage out = new OutboundMessage();
-        out.setChannel(ctx.getMsg().getChannel());
-        out.setChatId(ctx.getMsg().getChatId());
-        out.setContent("已开始新的会话。");
-        out.setMetadata(new HashMap<>());
-        return CompletableFuture.completedFuture(out);
+        return completedCommandReply(ctx, "已开始新的会话。");
     }
 
     private CompletableFuture<OutboundMessage> cmdHelp(CommandRouter.CommandContext ctx) {
-        OutboundMessage out = new OutboundMessage();
-        out.setChannel(ctx.getMsg().getChannel());
-        out.setChatId(ctx.getMsg().getChatId());
-        out.setContent("ricbot 命令：\n/new — 开始新对话\n/stop — 停止当前任务\n/help — 查看可用命令");
-        out.setMetadata(new HashMap<>());
-        return CompletableFuture.completedFuture(out);
+        return completedCommandReply(ctx, "ricbot 命令：\n/new — 开始新对话\n/stop — 停止当前任务\n/help — 查看可用命令");
     }
 
     private CompletableFuture<OutboundMessage> cmdStatus(CommandRouter.CommandContext ctx) {
@@ -923,43 +869,25 @@ public class AgentLoop {
         sb.append("session messages: ").append(sessionMsgCount).append("\n");
         sb.append("\n").append(taskState.renderStatus());
 
-        OutboundMessage out = new OutboundMessage();
-        out.setChannel(ctx.getMsg().getChannel());
-        out.setChatId(ctx.getMsg().getChatId());
-        out.setContent(sb.toString());
-        out.setMetadata(new HashMap<>());
-        return CompletableFuture.completedFuture(out);
+        return completedCommandReply(ctx, sb.toString());
     }
 
     private CompletableFuture<OutboundMessage> cmdDream(CommandRouter.CommandContext ctx) {
-        OutboundMessage out = new OutboundMessage();
-        out.setChannel(ctx.getMsg().getChannel());
-        out.setChatId(ctx.getMsg().getChatId());
-        out.setMetadata(new HashMap<>());
-
         if (dreamConfig == null || !dreamConfig.isEnabled()) {
-            out.setContent("Dream 未启用。");
-            return CompletableFuture.completedFuture(out);
+            return completedCommandReply(ctx, "Dream 未启用。");
         }
 
         boolean changed = dream.run();
         if (changed) {
-            out.setContent("Dream 已完成一次整合，记忆文件已更新。");
+            return completedCommandReply(ctx, "Dream 已完成一次整合，记忆文件已更新。");
         } else {
-            out.setContent("Dream 本次没有检测到可更新内容。");
+            return completedCommandReply(ctx, "Dream 本次没有检测到可更新内容。");
         }
-        return CompletableFuture.completedFuture(out);
     }
 
     private CompletableFuture<OutboundMessage> cmdDreamLog(CommandRouter.CommandContext ctx) {
-        OutboundMessage out = new OutboundMessage();
-        out.setChannel(ctx.getMsg().getChannel());
-        out.setChatId(ctx.getMsg().getChatId());
-        out.setMetadata(new HashMap<>());
-
         if (dreamConfig == null || !dreamConfig.isEnabled()) {
-            out.setContent("Dream 未启用。");
-            return CompletableFuture.completedFuture(out);
+            return completedCommandReply(ctx, "Dream 未启用。");
         }
 
         int maxEntries = 10;
@@ -970,14 +898,12 @@ public class AgentLoop {
 
         var git = memoryStore.getGit();
         if (!git.isInitialized()) {
-            out.setContent("Dream 日志仓库尚未初始化。先执行一次 /dream 后再查看日志。");
-            return CompletableFuture.completedFuture(out);
+            return completedCommandReply(ctx, "Dream 日志仓库尚未初始化。先执行一次 /dream 后再查看日志。");
         }
 
         var logs = git.log(maxEntries);
         if (logs.isEmpty()) {
-            out.setContent("暂无 Dream 历史记录。");
-            return CompletableFuture.completedFuture(out);
+            return completedCommandReply(ctx, "暂无 Dream 历史记录。");
         }
 
         StringBuilder sb = new StringBuilder();
@@ -987,49 +913,37 @@ public class AgentLoop {
         for (var c : logs) {
             sb.append(c.sha()).append("  ").append(c.timestamp()).append("  ").append(c.message()).append("\n");
         }
-        out.setContent(sb.toString().trim());
-        return CompletableFuture.completedFuture(out);
+        return completedCommandReply(ctx, sb.toString().trim());
     }
 
     private CompletableFuture<OutboundMessage> cmdDreamRestore(CommandRouter.CommandContext ctx) {
-        OutboundMessage out = new OutboundMessage();
-        out.setChannel(ctx.getMsg().getChannel());
-        out.setChatId(ctx.getMsg().getChatId());
-        out.setMetadata(new HashMap<>());
-
         if (dreamConfig == null || !dreamConfig.isEnabled()) {
-            out.setContent("Dream 未启用。");
-            return CompletableFuture.completedFuture(out);
+            return completedCommandReply(ctx, "Dream 未启用。");
         }
 
         String args = trim(ctx.getArgs());
         if (args.isBlank()) {
-            out.setContent("用法：/dream-restore <commit_sha>");
-            return CompletableFuture.completedFuture(out);
+            return completedCommandReply(ctx, "用法：/dream-restore <commit_sha>");
         }
 
         String sha = args.split("\\s+")[0];
         var git = memoryStore.getGit();
         if (!git.isInitialized()) {
-            out.setContent("Dream 日志仓库尚未初始化，无法 restore。请先执行 /dream。");
-            return CompletableFuture.completedFuture(out);
+            return completedCommandReply(ctx, "Dream 日志仓库尚未初始化，无法 restore。请先执行 /dream。");
         }
 
         var found = git.findCommit(sha, 200);
         if (found == null) {
-            out.setContent("未找到对应提交：" + sha);
-            return CompletableFuture.completedFuture(out);
+            return completedCommandReply(ctx, "未找到对应提交：" + sha);
         }
 
         String reverted = git.revert(found.sha());
         if (reverted == null) {
-            out.setContent("restore 失败，请检查工作区状态后重试。");
-            return CompletableFuture.completedFuture(out);
+            return completedCommandReply(ctx, "restore 失败，请检查工作区状态后重试。");
         }
 
         String now = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
-        out.setContent("Dream 已恢复到 " + found.sha() + "，新提交: " + reverted + " (" + now + ")");
-        return CompletableFuture.completedFuture(out);
+        return completedCommandReply(ctx, "Dream 已恢复到 " + found.sha() + "，新提交: " + reverted + " (" + now + ")");
     }
 
     /**
@@ -1094,6 +1008,40 @@ public class AgentLoop {
         checkpoint.put("task_state", TaskState.fromSession(session).toMap());
         session.getMetadata().put(SessionRuntimeKeys.RUNTIME_CHECKPOINT_KEY, checkpoint);
         sessionManager.save(session);
+    }
+
+    private InboundMessage newDirectMessage(
+            String content,
+            String sessionKey,
+            String channel,
+            String chatId,
+            Map<String, Object> metadata
+    ) {
+        return InboundMessages.of(channel, "user", chatId, content, List.of(), metadata, sessionKey, null);
+    }
+
+    private OutboundMessage reply(InboundMessage msg, String content) {
+        return OutboundMessages.replyTo(msg, content);
+    }
+
+    private OutboundMessage plainReply(InboundMessage msg, String content) {
+        return OutboundMessages.of(msg.getChannel(), msg.getChatId(), content);
+    }
+
+    private CompletableFuture<OutboundMessage> completedCommandReply(CommandRouter.CommandContext ctx, String content) {
+        return CompletableFuture.completedFuture(commandReply(ctx, content));
+    }
+
+    private OutboundMessage commandReply(CommandRouter.CommandContext ctx, String content) {
+        return OutboundMessages.of(ctx.getMsg().getChannel(), ctx.getMsg().getChatId(), content);
+    }
+
+    private SystemTarget parseSystemTarget(String rawChatId) {
+        if (rawChatId != null && rawChatId.contains(":")) {
+            String[] parts = rawChatId.split(":", 2);
+            return new SystemTarget(parts[0], parts[1]);
+        }
+        return new SystemTarget("cli", rawChatId);
     }
 
     // ---------------------------------------------------------------------
@@ -1195,5 +1143,8 @@ public class AgentLoop {
         if (extraHooks != null) {
             this.extraHooks.addAll(extraHooks);
         }
+    }
+
+    private record SystemTarget(String channel, String chatId) {
     }
 }

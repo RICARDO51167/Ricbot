@@ -5,14 +5,13 @@ import ricbot.domain.hook.AgentHookContext;
 import ricbot.domain.message.InboundMessage;
 import ricbot.domain.message.MessageBus;
 import ricbot.domain.message.OutboundMessage;
+import ricbot.domain.message.OutboundMessages;
 import ricbot.infra.common.HelperUtils;
 import ricbot.infra.template.ToolHintFormatter;
-import ricbot.integration.llm.api.ToolCallRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -48,14 +47,9 @@ final class AgentHookFactory {
                         : newClean;
 
                 if (!incremental.isBlank()) {
-                    OutboundMessage out = new OutboundMessage();
-                    out.setChannel(msg.getChannel());
-                    out.setChatId(msg.getChatId());
-                    out.setContent(incremental);
-
-                    Map<String, Object> meta = msg.getMetadata() != null ? new HashMap<>(msg.getMetadata()) : new HashMap<>();
+                    Map<String, Object> meta = OutboundMessages.copyMetadata(msg);
                     meta.put("_stream_delta", true);
-                    out.setMetadata(meta);
+                    OutboundMessage out = OutboundMessages.replyTo(msg, incremental, meta);
 
                     try {
                         bus.publishOutbound(out);
@@ -67,15 +61,10 @@ final class AgentHookFactory {
 
             @Override
             public void onStreamEnd(AgentHookContext context, boolean resuming) {
-                OutboundMessage out = new OutboundMessage();
-                out.setChannel(msg.getChannel());
-                out.setChatId(msg.getChatId());
-                out.setContent("");
-
-                Map<String, Object> meta = msg.getMetadata() != null ? new HashMap<>(msg.getMetadata()) : new HashMap<>();
+                Map<String, Object> meta = OutboundMessages.copyMetadata(msg);
                 meta.put("_stream_end", true);
                 meta.put("_resuming", resuming);
-                out.setMetadata(meta);
+                OutboundMessage out = OutboundMessages.replyTo(msg, "", meta);
 
                 try {
                     bus.publishOutbound(out);
@@ -141,15 +130,10 @@ final class AgentHookFactory {
     }
 
     private void publishProgress(InboundMessage msg, String content, boolean toolHint) {
-        OutboundMessage out = new OutboundMessage();
-        out.setChannel(msg.getChannel());
-        out.setChatId(msg.getChatId());
-        out.setContent(content);
-
-        Map<String, Object> meta = msg.getMetadata() != null ? new HashMap<>(msg.getMetadata()) : new HashMap<>();
+        Map<String, Object> meta = OutboundMessages.copyMetadata(msg);
         meta.put("_progress", true);
         meta.put("_tool_hint", toolHint);
-        out.setMetadata(meta);
+        OutboundMessage out = OutboundMessages.replyTo(msg, content, meta);
 
         try {
             bus.publishOutbound(out);

@@ -3,6 +3,7 @@ package ricbot.integration.mcp;
 import ricbot.tool.api.Tool;
 import ricbot.tool.api.ToolRegistry;
 import ricbot.infra.config.Config;
+import ricbot.infra.common.TextParsingUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -753,37 +754,8 @@ public final class MCPAdapters {
         if (v == null) {
             return def;
         }
-        String s = normalizeQuoted(String.valueOf(v));
+        String s = TextParsingUtils.normalizeQuoted(String.valueOf(v));
         return s.isBlank() ? def : s;
-    }
-
-    private static String normalizeQuoted(String raw) {
-        if (raw == null) {
-            return "";
-        }
-        String s = normalizeWhitespace(raw);
-        if (s.length() >= 2) {
-            char first = s.charAt(0);
-            char last = s.charAt(s.length() - 1);
-            if ((first == '`' && last == '`') || (first == '"' && last == '"') || (first == '\'' && last == '\'')) {
-                s = s.substring(1, s.length() - 1).trim();
-            }
-        }
-        if (s.length() >= 2 && s.charAt(0) == '`' && s.charAt(s.length() - 1) == '`') {
-            s = s.substring(1, s.length() - 1).trim();
-        }
-        return normalizeWhitespace(s);
-    }
-
-    private static String normalizeWhitespace(String raw) {
-        if (raw == null) {
-            return "";
-        }
-        String s = raw
-                .replace('\u00A0', ' ')
-                .replace("\u200B", "")
-                .replace("\uFEFF", "");
-        return s.trim();
     }
 
     private static int intValue(Map<String, Object> map, String key, int def) {
@@ -806,17 +778,9 @@ public final class MCPAdapters {
         if (v == null) {
             return def != null ? def : new ArrayList<>();
         }
-        if (v instanceof List<?> list) {
-            List<String> out = new ArrayList<>();
-            for (Object item : list) {
-                if (item != null) {
-                    out.add(String.valueOf(item));
-                }
-            }
-            return out;
-        }
-        if (v instanceof String s && !s.isBlank()) {
-            return List.of(s);
+        List<String> parsed = TextParsingUtils.toStringList(v);
+        if (!parsed.isEmpty()) {
+            return parsed;
         }
         return def != null ? def : new ArrayList<>();
     }
@@ -829,7 +793,10 @@ public final class MCPAdapters {
         if (v instanceof Map<?, ?> raw) {
             Map<String, String> out = new LinkedHashMap<>();
             for (Map.Entry<?, ?> e : raw.entrySet()) {
-                out.put(String.valueOf(e.getKey()), e.getValue() != null ? String.valueOf(e.getValue()) : "");
+                out.put(
+                        String.valueOf(e.getKey()),
+                        e.getValue() != null ? TextParsingUtils.normalizeQuoted(String.valueOf(e.getValue())) : ""
+                );
             }
             return out;
         }

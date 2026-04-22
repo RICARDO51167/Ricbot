@@ -32,6 +32,7 @@ import ricbot.tool.web.WebFetchTool;
 import ricbot.tool.web.WebSearchTool;
 // 导入入站消息类
 import ricbot.domain.message.InboundMessage;
+import ricbot.domain.message.InboundMessages;
 // 导入消息总线类
 import ricbot.domain.message.MessageBus;
 // 导入配置类
@@ -481,16 +482,12 @@ public class SubagentManager implements AutoCloseable {
                 )
         );
 
-        // 创建入站消息对象
-        InboundMessage msg = new InboundMessage();
-        // 设置渠道为系统
-        msg.setChannel("system");
-        // 设置发送者为子代理
-        msg.setSenderId("subagent");
-        // 设置聊天ID为来源渠道和聊天ID的组合
-        msg.setChatId(origin.get("channel") + ":" + origin.get("chat_id"));
-        // 设置消息内容
-        msg.setContent(announceContent);
+        InboundMessage msg = InboundMessages.of(
+                "system",
+                "subagent",
+                origin.get("channel") + ":" + origin.get("chat_id"),
+                announceContent
+        );
 
         try {
             // 发布消息到消息总线

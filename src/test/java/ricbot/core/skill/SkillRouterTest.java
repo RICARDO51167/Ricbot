@@ -157,4 +157,45 @@ public class SkillRouterTest {
         assertTrue(result.renderedContext().contains("HIGH"), result.renderedContext());
         assertFalse(result.renderedContext().contains("LOW"), result.renderedContext());
     }
+
+    @Test
+    void selectAndRender_supportsYamlAndJsonFrontmatterLists(@TempDir Path workspace) throws Exception {
+        Path skillsDir = workspace.resolve("skills");
+        Files.createDirectories(skillsDir.resolve("base"));
+        Files.createDirectories(skillsDir.resolve("deploy"));
+
+        Files.writeString(skillsDir.resolve("base").resolve("SKILL.md"), """
+                ---
+                always: true
+                ---
+                Base rules.
+                """);
+
+        Files.writeString(skillsDir.resolve("deploy").resolve("SKILL.md"), """
+                ---
+                channels:
+                  - cli
+                tools:
+                  - exec
+                keywords: ["deploy", "release"]
+                ---
+                Deploy helper.
+                """);
+
+        SkillsLoader loader = new SkillsLoader(workspace, skillsDir, Set.of());
+        SkillRouter router = new SkillRouter(loader, 2, 10000);
+
+        SkillRoutingContext ctx = new SkillRoutingContext(
+                workspace,
+                "cli",
+                "c1",
+                "please deploy this release",
+                List.of("exec"),
+                Map.of(),
+                Map.of()
+        );
+
+        SkillRouter.SelectionResult result = router.selectAndRender(ctx);
+        assertTrue(result.renderedContext().contains("## Skill: deploy"), result.renderedContext());
+    }
 }

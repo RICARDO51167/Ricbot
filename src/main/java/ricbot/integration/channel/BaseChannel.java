@@ -1,6 +1,7 @@
 package ricbot.integration.channel;
 
 import ricbot.domain.message.InboundMessage;
+import ricbot.domain.message.InboundMessages;
 import ricbot.domain.message.MessageBus; // 导入消息总线类，用于发布入站消息
 import ricbot.domain.message.OutboundMessage; // 导出发消息类，用于发送出站消息
 import ricbot.integration.llm.api.GroqTranscriptionProvider; // 导入 Groq 语音转写提供者实现
@@ -9,7 +10,7 @@ import ricbot.integration.llm.api.TranscriptionProvider; // 导入语音转写�
 import ricbot.integration.channel.event.ChannelEvent; // 导入渠道事件类
 
 import java.nio.file.Path; // 导入文件路径类，用于处理音频文件路径
-import java.time.LocalDateTime; // 导入本地日期时间类，用于生成时间戳
+import java.time.LocalDateTime; // 导入本地日期时间类，用于时间戳处理
 import java.util.ArrayDeque; // 导入数组双端队列，用于维护最近的事件 ID 队列
 import java.util.HashMap; // 导入哈希映射，用于处理元数据
 import java.util.HashSet; // 导入哈希集合，用于快速查找最近的事件 ID
@@ -250,23 +251,22 @@ public abstract class BaseChannel {
             String senderName,
             String sessionKeyOverride
     ) throws Exception {
-        // 创建新的入站消息对象
-        InboundMessage msg = new InboundMessage();
-        msg.setChannel(getName()); // 设置消息来源渠道名称
-        msg.setSenderId(senderId); // 设置发送者 ID
-        msg.setChatId(chatId); // 设置聊天 ID
-        msg.setContent(content); // 设置消息内容
-        msg.setMedia(media); // 设置媒体文件列表
-        msg.setTimestamp(java.time.LocalDateTime.now()); // 设置当前时间为消息时间戳
-
         // 复制元数据，避免修改原始引用
         Map<String, Object> m = metadata != null ? new HashMap<>(metadata) : new HashMap<>();
         // 如果发送者名称不为空且非空白，将其加入元数据
         if (senderName != null && !senderName.isBlank()) {
             m.putIfAbsent("sender_name", senderName);
         }
-        msg.setMetadata(m); // 设置处理后的元数据
-        msg.setSessionKeyOverride(sessionKeyOverride); // 设置会话键覆盖值
+        InboundMessage msg = InboundMessages.of(
+                getName(),
+                senderId,
+                chatId,
+                content,
+                media,
+                m,
+                sessionKeyOverride,
+                java.time.LocalDateTime.now()
+        );
         bus.publishInbound(msg); // 通过消息总线发布入站消息
     }
 

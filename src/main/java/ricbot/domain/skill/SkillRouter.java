@@ -1,7 +1,6 @@
 package ricbot.domain.skill;
 
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import ricbot.infra.common.TextParsingUtils;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -22,8 +21,6 @@ public class SkillRouter {
 
     // 匹配模板变量的正则表达式，格式为 {{ variable_name }}
     private static final Pattern TEMPLATE_VAR = Pattern.compile("\\{\\{\\s*([a-zA-Z0-9_\\-\\.]+)\\s*\\}\\}");
-    private static final Pattern YAML_LIST_ITEM = Pattern.compile("^\\s*-\\s*(.+?)\\s*$");
-    private static final ObjectMapper MAPPER = new ObjectMapper().findAndRegisterModules();
 
     // 技能加载器，用于获取技能条目和文档
     private final SkillsLoader skillsLoader;
@@ -367,94 +364,7 @@ public class SkillRouter {
      * @return 解析后的字符串列表
      */
     private static List<String> parseList(String raw) {
-        if (raw == null) {
-            return List.of();
-        }
-        String s = raw.trim();
-        if (s.isEmpty()) {
-            return List.of();
-        }
-        if (s.startsWith("[") && s.endsWith("]")) {
-            try {
-                List<String> parsed = MAPPER.readValue(s, new TypeReference<>() {});
-                List<String> out = new ArrayList<>();
-                for (String v : parsed) {
-                    if (v != null && !v.isBlank()) {
-                        out.add(v.trim());
-                    }
-                }
-                return out;
-            } catch (Exception ignored) {
-                s = s.substring(1, s.length() - 1).trim();
-            }
-        }
-        if (s.contains("\n")) {
-            List<String> out = new ArrayList<>();
-            for (String line : s.split("\\R")) {
-                Matcher m = YAML_LIST_ITEM.matcher(line);
-                if (m.matches()) {
-                    String v = stripQuotes(m.group(1));
-                    if (!v.isBlank()) {
-                        out.add(v);
-                    }
-                }
-            }
-            if (!out.isEmpty()) {
-                return out;
-            }
-        }
-
-        return splitCsvLike(s);
-    }
-
-    private static List<String> splitCsvLike(String s) {
-        List<String> out = new ArrayList<>();
-        StringBuilder cur = new StringBuilder();
-        boolean inQuotes = false;
-        char quote = 0;
-        for (int i = 0; i < s.length(); i++) {
-            char c = s.charAt(i);
-            if ((c == '"' || c == '\'') && (i == 0 || s.charAt(i - 1) != '\\')) {
-                if (!inQuotes) {
-                    inQuotes = true;
-                    quote = c;
-                    continue;
-                }
-                if (quote == c) {
-                    inQuotes = false;
-                    continue;
-                }
-            }
-            if (!inQuotes && c == ',') {
-                String v = stripQuotes(cur.toString());
-                if (!v.isBlank()) {
-                    out.add(v);
-                }
-                cur.setLength(0);
-                continue;
-            }
-            cur.append(c);
-        }
-        String v = stripQuotes(cur.toString());
-        if (!v.isBlank()) {
-            out.add(v);
-        }
-        return out;
-    }
-
-    private static String stripQuotes(String v) {
-        if (v == null) {
-            return "";
-        }
-        String t = v.trim();
-        if (t.length() >= 2) {
-            char a = t.charAt(0);
-            char b = t.charAt(t.length() - 1);
-            if ((a == '"' && b == '"') || (a == '\'' && b == '\'')) {
-                return t.substring(1, t.length() - 1).trim();
-            }
-        }
-        return t;
+        return TextParsingUtils.parseStringList(raw);
     }
 
     /**
@@ -625,7 +535,7 @@ public class SkillRouter {
                     }
                 }
             } else if (v instanceof String s && !s.isBlank()) {
-                for (String p : splitCsvLike(s)) {
+                for (String p : TextParsingUtils.parseStringList(s)) {
                     out.add(p.toLowerCase(Locale.ROOT));
                 }
             }

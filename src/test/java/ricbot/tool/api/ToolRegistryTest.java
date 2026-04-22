@@ -117,6 +117,20 @@ public class ToolRegistryTest {
     }
 
     @Test
+    void toolNames_areStableAndSorted() {
+        ToolRegistry registry = new ToolRegistry();
+        registry.register(namedTool("zeta"));
+        registry.register(namedTool("alpha"));
+        registry.register(namedTool("mcp_demo_echo"));
+
+        assertEquals(List.of("alpha", "mcp_demo_echo", "zeta"), registry.toolNames());
+        List<Map<String, Object>> definitions = registry.getDefinitions();
+        assertEquals("alpha", schemaName(definitions.get(0)));
+        assertEquals("zeta", schemaName(definitions.get(1)));
+        assertEquals("mcp_demo_echo", schemaName(definitions.get(2)));
+    }
+
+    @Test
     void filesystemTools_rejectSymlinkEscapes(@TempDir Path workspace) throws Exception {
         Path outsideDir = workspace.resolveSibling("outside");
         Files.createDirectories(outsideDir);
@@ -147,5 +161,31 @@ public class ToolRegistryTest {
         String editResult = editTool.execute("read-link.txt", "top-secret", "changed", false);
         assertTrue(editResult.startsWith("错误："), editResult);
         assertEquals("top-secret", Files.readString(outsideFile));
+    }
+
+    private static Tool namedTool(String name) {
+        return new Tool() {
+            @Override
+            public String getName() {
+                return name;
+            }
+
+            @Override
+            public String getDescription() {
+                return "test";
+            }
+        };
+    }
+
+    @SuppressWarnings("unchecked")
+    private static String schemaName(Map<String, Object> schema) {
+        Object function = schema.get("function");
+        if (function instanceof Map<?, ?> fn) {
+            Object name = ((Map<String, Object>) fn).get("name");
+            if (name instanceof String s) {
+                return s;
+            }
+        }
+        return "";
     }
 }

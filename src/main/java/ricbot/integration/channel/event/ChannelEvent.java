@@ -1,9 +1,9 @@
 package ricbot.integration.channel.event;
 
 import ricbot.domain.message.InboundMessage;
+import ricbot.domain.message.InboundMessages;
 
 import java.time.LocalDateTime;
-import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -107,28 +107,6 @@ public interface ChannelEvent {
      * @return 转换后的 InboundMessage 对象
      */
     default InboundMessage toInboundMessage() {
-        // 创建新的入站消息实例
-        InboundMessage msg = new InboundMessage();
-        // 设置渠道来源
-        msg.setChannel(channel());
-        // 设置聊天会话ID
-        msg.setChatId(chatId());
-        // 设置发送者ID
-        msg.setSenderId(senderId());
-        // 设置消息文本内容
-        msg.setContent(text());
-        // 设置会话密钥覆盖值（如果有）
-        msg.setSessionKeyOverride(sessionKeyOverride());
-
-        // 如果存在时间戳，则设置到消息中
-        if (timestamp() != null) {
-            msg.setTimestamp(timestamp());
-        }
-
-        // 处理媒体资源列表，确保不为 null 并转换为可变列表
-        List<String> m = media();
-        msg.setMedia(m != null ? new ArrayList<>(m) : new ArrayList<>());
-
         // 处理元数据，复制现有元数据并确保可修改
         Map<String, Object> meta = metadata() != null ? new HashMap<>(metadata()) : new HashMap<>();
         // 强制写入事件类型，确保元数据中包含该字段
@@ -141,10 +119,15 @@ public interface ChannelEvent {
         if (senderName() != null && !senderName().isBlank()) {
             meta.putIfAbsent("sender_name", senderName());
         }
-        // 设置最终构建的元数据到消息对象
-        msg.setMetadata(meta);
-        // 返回构建完成的入站消息对象
-        return msg;
+        return InboundMessages.of(
+                channel(),
+                senderId(),
+                chatId(),
+                text(),
+                media(),
+                meta,
+                sessionKeyOverride(),
+                timestamp()
+        );
     }
 }
-

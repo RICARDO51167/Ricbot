@@ -8,11 +8,12 @@ import ricbot.tool.process.ExecTool;
 import ricbot.tool.search.GlobTool;
 import ricbot.tool.search.GrepTool;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class ToolRegistry {
 
     // 存储已注册的工具，键为工具名称，值为工具实例
-    private final Map<String, Tool> tools = new HashMap<>();
+    private final Map<String, Tool> tools = new ConcurrentHashMap<>();
 
     /**
      * 注册一个工具到注册表中
@@ -65,8 +66,11 @@ public class ToolRegistry {
     public List<Map<String, Object>> getDefinitions() {
         // 收集所有工具的原始定义
         List<Map<String, Object>> definitions = new ArrayList<>();
-        for (Tool tool : tools.values()) {
-            definitions.add(tool.toSchema());
+        for (String toolName : sortedToolNames()) {
+            Tool tool = tools.get(toolName);
+            if (tool != null) {
+                definitions.add(tool.toSchema());
+            }
         }
 
         // 分类存储内置工具和 MCP 工具
@@ -229,7 +233,13 @@ public class ToolRegistry {
      * @return 工具名称列表
      */
     public List<String> toolNames() {
-        return new ArrayList<>(tools.keySet());
+        return sortedToolNames();
+    }
+
+    private List<String> sortedToolNames() {
+        List<String> names = new ArrayList<>(tools.keySet());
+        names.sort(String::compareTo);
+        return names;
     }
 
     /**

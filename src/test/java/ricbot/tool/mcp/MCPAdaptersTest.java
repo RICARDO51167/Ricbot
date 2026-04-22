@@ -54,5 +54,19 @@ public class MCPAdaptersTest {
         assertEquals(List.of("toolA"), cfg.getEnabledTools());
         assertEquals(45, cfg.getToolTimeout());
     }
-}
 
+    @Test
+    void parseMcpServers_supportsQuotedStringsAndCsvLists() {
+        Map<String, Object> raw = new LinkedHashMap<>();
+        raw.put("demo", Map.of(
+                "command", "`node`",
+                "enabled_tools", "\"toolA\", 'toolB'"
+        ));
+
+        Map<String, Config.MCPServerConfig> parsed = MCPAdapters.parseMcpServers(raw);
+        Config.MCPServerConfig cfg = parsed.get("demo");
+
+        assertEquals("node", cfg.getCommand());
+        assertEquals(List.of("toolA", "toolB"), cfg.getEnabledTools());
+    }
+}

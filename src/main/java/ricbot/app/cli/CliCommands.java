@@ -4,6 +4,7 @@ import ricbot.app.bootstrap.Bootstrapper; // 导入 Bootstrapper 类，用于初
 import ricbot.domain.agent.AgentLoop; // 导入 AgentLoop 类，用于运行 Agent 逻辑
 
 import ricbot.domain.message.InboundMessage; // 导入入站消息类
+import ricbot.domain.message.InboundMessages;
 import ricbot.domain.message.MessageBus; // 导入消息总线类，用于消息传递
 import ricbot.domain.message.OutboundMessage; // 导出现站消息类
 import ricbot.infra.config.Config; // 导入配置类
@@ -274,12 +275,16 @@ public final class CliCommands {
 
                 StreamRenderer renderer = new StreamRenderer(markdown, true); // 创建流式渲染器
 
-                InboundMessage inbound = new InboundMessage(); // 创建入站消息对象
-                inbound.setChannel(cliChannel); // 设置通道
-                inbound.setSenderId("user"); // 设置发送者 ID
-                inbound.setChatId(cliChatId); // 设置聊天 ID
-                inbound.setContent(input); // 设置消息内容
-                inbound.setMetadata(Map.of("_wants_stream", true)); // 设置元数据，标记需要流式输出
+                InboundMessage inbound = InboundMessages.of(
+                        cliChannel,
+                        "user",
+                        cliChatId,
+                        input,
+                        List.of(),
+                        Map.of("_wants_stream", true),
+                        null,
+                        null
+                );
 
                 bus.publishInbound(inbound); // 发布入站消息到总线
 
@@ -865,13 +870,16 @@ public final class CliCommands {
         agentLoop.start();
 
         try {
-            InboundMessage inbound = new InboundMessage(); // 创建入站消息对象
-            inbound.setChannel(channel); // 设置通道
-            inbound.setSenderId("user"); // 设置发送者 ID
-            inbound.setChatId(chatId); // 设置聊天 ID
-            inbound.setContent(input); // 设置消息内容
-            inbound.setSessionKeyOverride(sessionKey); // 设置会话密钥覆盖
-            inbound.setMetadata(new HashMap<>(Map.of("_wants_stream", true))); // 设置元数据，标记需要流式输出
+            InboundMessage inbound = InboundMessages.of(
+                    channel,
+                    "user",
+                    chatId,
+                    input,
+                    List.of(),
+                    new HashMap<>(Map.of("_wants_stream", true)),
+                    sessionKey,
+                    null
+            );
 
             bus.publishInbound(inbound); // 发布入站消息
 

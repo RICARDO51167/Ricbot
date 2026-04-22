@@ -64,26 +64,6 @@ public class ContextBuilder {
     }
 
     /**
-     * 构建消息列表（简化版）
-     * 对应 Python: build_messages(...)
-     *
-     * @param history 历史消息列表
-     * @param currentMessage 当前用户消息
-     * @param channel 渠道信息
-     * @param chatId 聊天ID
-     * @return 组装好的消息列表
-     */
-    public List<Map<String, Object>> buildMessages(
-            List<Map<String, Object>> history,
-            String currentMessage,
-            String channel,
-            String chatId
-    ) {
-        // 调用全参版本，媒体、会话摘要设为null，角色默认为"user"
-        return buildMessages(history, currentMessage, null, channel, chatId, null, "user");
-    }
-
-    /**
      * 构建消息列表（完整版）
      * 补全版，兼容你前面 AgentLoop 用法
      *
@@ -108,6 +88,20 @@ public class ContextBuilder {
         return buildMessages(history, currentMessage, media, channel, chatId, sessionSummary, currentRole, null);
     }
 
+    /**
+     * 构建消息列表（完整版）
+     * 包含历史消息、系统提示、当前用户消息以及运行时上下文
+     *
+     * @param history 历史消息列表
+     * @param currentMessage 当前用户消息内容
+     * @param media 媒体文件路径或URL列表
+     * @param channel 渠道信息（如微信、钉钉等）
+     * @param chatId 聊天会话ID
+     * @param sessionSummary 会话摘要信息
+     * @param currentRole 当前消息发送者的角色，默认为 "user"
+     * @param promptContext 提示词上下文 bundle，用于注入结构化上下文
+     * @return 组装好的符合 LLM 接口规范的消息列表
+     */
     public List<Map<String, Object>> buildMessages(
             List<Map<String, Object>> history,
             String currentMessage,
@@ -118,24 +112,40 @@ public class ContextBuilder {
             String currentRole,
             PromptContextBundle promptContext
     ) {
+        // 初始化消息列表，用于存储最终发送给 LLM 的所有消息
         List<Map<String, Object>> messages = new ArrayList<>();
 
+        // 1. 构建运行时上下文（包含时间、时区、渠道、ChatID等信息）
         String runtime = buildRuntimeContext(channel, chatId, timezone);
+
+        // 2. 构建系统提示词，并作为第一条消息加入列表
+        // 系统提示词包含了身份定义、运行时上下文、会话摘要及结构化上下文
         messages.add(systemMessage(buildSystemPrompt(sessionSummary, runtime, channel, promptContext)));
 
+        // 3. 处理历史消息
+        // 如果历史消息不为空，则进行清洗（去除非法或不完整的消息）后加入列表
         if (history != null && !history.isEmpty()) {
             messages.addAll(sanitizeHistory(history));
         }
 
+        // 4. 处理当前用户消息
+        // 如果当前消息内容不为空，则构建对应的消息对象
         if (currentMessage != null) {
+            // 创建当前消息的 Map 对象
             Map<String, Object> current = new LinkedHashMap<>();
+            // 设置角色，如果未指定则默认为 "user"
             current.put("role", currentRole != null ? currentRole : "user");
 
+            // 构建消息内容，可能包含文本和媒体块
             Object content = buildUserContent(currentMessage, media);
+            // 将内容放入消息对象
             current.put("content", content);
+            // 将当前消息加入列表
             messages.add(current);
         }
 
+        // 5. 清洗并返回最终的消息列表
+        // 确保所有消息的内容字段非空，符合 LLM 提供商的要求
         return LLMProvider.sanitizeEmptyContent(messages);
     }
 
@@ -284,32 +294,47 @@ public class ContextBuilder {
 
     /**
      * 构建系统提示词
+     * 根据会话摘要、运行时上下文、渠道信息和结构化上下文，渲染最终的系统提示词
      *
-     * @param sessionSummary 会话摘要
+     * @param sessionSummary 会话摘要信息
+     * @param runtimeContext 运行时上下文字符串
+     * @param channel 渠道信息
+     * @param promptContext 提示词上下文 bundle，用于注入结构化上下文
      * @return 渲染后的系统提示词字符串
      */
-    private String buildSystemPrompt(String sessionSummary, String runtimeContext, String channel) {
-        return buildSystemPrompt(sessionSummary, runtimeContext, channel, null);
-    }
-
     private String buildSystemPrompt(String sessionSummary, String runtimeContext, String channel, PromptContextBundle promptContext) {
-        // 准备模板参数
+        // 初始化模板参数字典
         Map<String, Object> kwargs = new HashMap<>();
+
+        // 获取工作空间的绝对路径并规范化，如果 workspace 为空则设为空字符串
         String workspacePath = workspace != null ? workspace.toAbsolutePath().normalize().toString() : "";
         kwargs.put("workspace_path", workspacePath);
+
+        // 注入运行时上下文，如果为空则设为空字符串
         kwargs.put("runtime", runtimeContext != null ? runtimeContext : "");
+
+        // 平台策略当前未使用，设为空字符串
         kwargs.put("platform_policy", "");
+
+        // 注入渠道信息，如果为空则设为空字符串
         kwargs.put("channel", channel != null ? channel : "");
-        // 禁用的技能列表，如果为空则设为空字符串，否则用逗号连接
+
+        // 处理禁用的技能列表：如果列表为空或 null，则设为空字符串；否则用逗号连接各技能名称
         kwargs.put("disabled_skills", (disabledSkills == null || disabledSkills.isEmpty()) ? "" : String.join(", ", disabledSkills));
-        // 会话摘要，如果为null则设为空字符串
+
+        // 注入会话摘要，如果为 null 则设为空字符串
         kwargs.put("session_summary", (sessionSummary == null) ? "" : sessionSummary);
+
+        // 注入结构化上下文：如果 promptContext 不为空，则调用其 render 方法生成字符串，否则设为空字符串
         kwargs.put("structured_context", promptContext != null ? promptContext.render() : "");
 
         String system;
         try {
+            // 尝试使用 "agent/identity.md" 模板渲染系统提示词
+            // 第二个参数 true 表示可能启用某种缓存或特定渲染模式（具体取决于 PromptTemplates 实现）
             system = PromptTemplates.renderTemplate("agent/identity.md", true, kwargs);
         } catch (Exception e) {
+            // 如果模板渲染失败，记录异常并使用默认的系统提示词
             system = "You are ricbot.";
         }
         return system;

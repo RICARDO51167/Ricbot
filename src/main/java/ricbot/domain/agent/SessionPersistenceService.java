@@ -2,6 +2,7 @@ package ricbot.domain.agent;
 
 import ricbot.domain.message.InboundMessage;
 import ricbot.domain.message.OutboundMessage;
+import ricbot.domain.message.OutboundMessages;
 import ricbot.domain.session.Session;
 import ricbot.domain.session.SessionManager;
 import ricbot.infra.common.HelperUtils;
@@ -53,21 +54,12 @@ final class SessionPersistenceService {
         session.getMetadata().remove("_last_interrupt_reason");
         sessionManager.save(session);
 
-        OutboundMessage outbound = new OutboundMessage();
-        outbound.setChannel(channel);
-        outbound.setChatId(chatId);
-        outbound.setContent(outcome.finalContent());
-        outbound.setMetadata(new java.util.HashMap<>());
+        OutboundMessage outbound = OutboundMessages.of(channel, chatId, outcome.finalContent());
         return new PersistenceResult(session, outbound);
     }
 
     private OutboundMessage buildOutboundMessage(InboundMessage msg, String finalContent) {
-        OutboundMessage out = new OutboundMessage();
-        out.setChannel(msg.getChannel());
-        out.setChatId(msg.getChatId());
-        out.setContent(finalContent);
-        out.setMetadata(msg.getMetadata() != null ? new java.util.HashMap<>(msg.getMetadata()) : new java.util.HashMap<>());
-        return out;
+        return OutboundMessages.replyTo(msg, finalContent);
     }
 
     private void saveTurn(Session session, List<Map<String, Object>> messages, int skip) {
