@@ -395,15 +395,21 @@ public final class CliCommands {
         // 启动心跳服务，定期执行健康检查或维持连接
         heartbeat.start();
 
-        // 启动 OpenAI 兼容 API 服务，允许外部通过标准 OpenAI API格式调用 Ricbot
-        Config.GatewayConfig gateway = resolvedConfig.getGateway(); // 获取网关配置
+        // 启动 OpenAI 兼容 API 服务，允许外部通过标准 OpenAI API 格式调用 Ricbot
+        Config.GatewayConfig gateway = resolvedConfig.getGateway(); // 获取 gateway 配置（heartbeat 仍走这里）
+        Config.ApiConfig apiConfig = resolvedConfig.getApi();
+        String apiHost = apiConfig.getHost();
+        int apiPort = apiConfig.getPort() > 0 ? apiConfig.getPort() : gateway.getPort();
+        long apiTimeoutMillis = Math.max(1L, Math.round(apiConfig.getTimeout() * 1000));
         var apiServer = RicbotApiServer.createAndStart(
-                gateway.getPort(), // API 服务端口
+                apiHost, // API 监听主机
+                apiPort, // API 服务端口
                 agentLoop, // Agent 循环实例，用于处理请求
                 resolvedConfig.getAgents().getDefaults().getModel(), // 默认使用的模型名称
-                120_000L // 超时时间（毫秒）
+                apiTimeoutMillis, // 超时时间（毫秒）
+                apiConfig.getBearerToken() // 可选的 Bearer token
         );
-        System.out.println("OpenAI 兼容 API 服务已启动，端口：" + gateway.getPort());
+        System.out.println("OpenAI 兼容 API 服务已启动，监听：" + apiHost + ":" + apiPort);
 
         System.out.println("Ricbot 正在运行，按 Ctrl+C 停止。");
 

@@ -4,6 +4,8 @@ package ricbot.integration.channel;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ricbot.infra.common.CircuitBreaker;
 import ricbot.infra.common.RetryUtils;
+import ricbot.infra.config.RuntimePaths;
+import ricbot.infra.security.NetworkSecurity;
 import ricbot.domain.message.MessageBus;
 import ricbot.domain.message.OutboundMessage;
 
@@ -135,6 +137,7 @@ public class QQChannel extends BaseChannel {
     private final Map<String, String> chatTypeCache = new ConcurrentHashMap<>();
     private final Map<String, String> lastInboundMsgIdByChat = new ConcurrentHashMap<>();
     private final Path mediaRoot;
+    private final List<Path> allowedLocalMediaRoots;
 
     public QQChannel(Object config, MessageBus bus) {
         super(config, bus);
@@ -146,6 +149,7 @@ public class QQChannel extends BaseChannel {
                 .followRedirects(HttpClient.Redirect.NORMAL)
                 .build();
         this.mediaRoot = initMediaRoot();
+        this.allowedLocalMediaRoots = initAllowedLocalMediaRoots();
     }
 
     private Path initMediaRoot() {
@@ -153,7 +157,7 @@ public class QQChannel extends BaseChannel {
         if (config.getMediaDir() != null && !config.getMediaDir().isBlank()) {
             root = Path.of(config.getMediaDir()).toAbsolutePath().normalize();
         } else {
-            root = Path.of(System.getProperty("user.home"), ".nanobot", "media", "qq");
+            root = RuntimePaths.getMediaDir("qq").toAbsolutePath().normalize();
         }
 
         try {
@@ -162,6 +166,19 @@ public class QQChannel extends BaseChannel {
             throw new RuntimeException("创建 QQ 媒体目录失败：" + root, e);
         }
         return root;
+    }
+
+    private List<Path> initAllowedLocalMediaRoots() {
+        LinkedHashSet<Path> roots = new LinkedHashSet<>();
+        roots.add(mediaRoot.toAbsolutePath().normalize());
+        roots.add(defaultRuntimeMediaRoot());
+        return List.copyOf(roots);
+    }
+
+    private Path defaultRuntimeMediaRoot() {
+        return Path.of(System.getProperty("user.home"), ".ricbot", "media", "qq")
+                .toAbsolutePath()
+                .normalize();
     }
 
     @Override
@@ -790,14 +807,12 @@ public class QQChannel extends BaseChannel {
 
         try {
             if (!mediaRef.startsWith("http://") && !mediaRef.startsWith("https://")) {
-                Path localPath;
-                if (mediaRef.startsWith("file://")) {
-                    localPath = Path.of(URI.create(mediaRef));
-                } else {
-                    localPath = Path.of(mediaRef).toAbsolutePath().normalize();
-                }
+                Path localPath = resolveLocalMediaPath(mediaRef);
 
                 if (!Files.isRegularFile(localPath)) {
+                    return null;
+                }
+                if (!isAllowedLocalMediaPath(localPath)) {
                     return null;
                 }
 
@@ -805,7 +820,10 @@ public class QQChannel extends BaseChannel {
                 return new MediaBytes(data, localPath.getFileName().toString());
             }
 
-            // TODO: 这里最好接你前面已有的 SSRF / URL 校验模块
+            NetworkSecurity.ValidationResult urlCheck = validateRemoteMediaUrl(mediaRef);
+            if (!urlCheck.ok()) {
+                return null;
+            }
             HttpRequest request = HttpRequest.newBuilder(URI.create(mediaRef))
                     .timeout(Duration.ofSeconds(120))
                     .GET()
@@ -815,8 +833,12 @@ public class QQChannel extends BaseChannel {
             if (response.statusCode() >= 400 || response.body() == null || response.body().length == 0) {
                 return null;
             }
+            NetworkSecurity.ValidationResult redirectCheck = NetworkSecurity.validateResolvedUrl(response.uri().toString());
+            if (!redirectCheck.ok()) {
+                return null;
+            }
 
-            String path = URI.create(mediaRef).getPath();
+            String path = response.uri().getPath();
             String filename = (path == null || path.isBlank()) ? "file.bin" : Path.of(path).getFileName().toString();
 
             return new MediaBytes(response.body(), filename);
@@ -828,6 +850,36 @@ public class QQChannel extends BaseChannel {
 
     private <T> HttpResponse<T> sendHttp(HttpRequest request, HttpResponse.BodyHandler<T> handler) throws Exception {
         return RetryUtils.executeWithRetry(() -> circuitBreaker.execute(() -> httpClient.send(request, handler)));
+    }
+
+    Path resolveLocalMediaPath(String mediaRef) {
+        Path localPath;
+        if (mediaRef.startsWith("file://")) {
+            localPath = Path.of(URI.create(mediaRef));
+        } else {
+            Path raw = Path.of(mediaRef);
+            localPath = raw.isAbsolute() ? raw : mediaRoot.resolve(raw);
+        }
+        return localPath.toAbsolutePath().normalize();
+    }
+
+    boolean isAllowedLocalMediaPath(Path localPath) {
+        try {
+            Path candidate = localPath.toRealPath();
+            for (Path root : allowedLocalMediaRoots) {
+                Path allowedRoot = root.toRealPath();
+                if (candidate.equals(allowedRoot) || candidate.startsWith(allowedRoot)) {
+                    return true;
+                }
+            }
+        } catch (Exception ignored) {
+            return false;
+        }
+        return false;
+    }
+
+    NetworkSecurity.ValidationResult validateRemoteMediaUrl(String mediaRef) {
+        return NetworkSecurity.validateUrlTarget(mediaRef);
     }
 
     @Override

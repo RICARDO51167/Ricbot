@@ -1,5 +1,7 @@
 package ricbot.tool.filesystem;
 
+import ricbot.infra.fs.FsPathUtils;
+
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
@@ -28,7 +30,7 @@ public final class FileToolSupport {
      */
     public static Path resolvePath(Path workspace, String path) {
         // 将输入的路径字符串转换为 Path 对象
-        Path p = Path.of(path);
+        Path p = FsPathUtils.expandUser(path);
         // 如果路径不是绝对路径
         if (!p.isAbsolute()) {
             // 基于工作空间路径解析该相对路径
@@ -48,39 +50,15 @@ public final class FileToolSupport {
      * @throws IllegalArgumentException 如果路径不在允许范围内
      */
     public static void ensureAllowed(Path path, Path allowedDir, List<Path> extraAllowedDirs) {
-        // 获取待检查路径的绝对规范化路径
-        Path normalized = path.toAbsolutePath().normalize();
+        FsPathUtils.validateAccess(path, allowedDir, extraAllowedDirs, true);
+    }
 
-        // 如果没有设置任何允许的目录（主目录和额外目录均为空），则直接返回，不进行限制
-        if (allowedDir == null && (extraAllowedDirs == null || extraAllowedDirs.isEmpty())) {
-            return;
-        }
-
-        // 检查主允许目录
-        if (allowedDir != null) {
-            // 获取主允许目录的绝对规范化路径
-            Path base = allowedDir.toAbsolutePath().normalize();
-            // 如果待检查路径等于主允许目录或是其子路径，则通过校验
-            if (normalized.equals(base) || normalized.startsWith(base)) {
-                return;
-            }
-        }
-
-        // 检查额外允许目录列表
-        if (extraAllowedDirs != null) {
-            // 遍历每一个额外允许的目录
-            for (Path extra : extraAllowedDirs) {
-                // 获取当前额外允许目录的绝对规范化路径
-                Path base = extra.toAbsolutePath().normalize();
-                // 如果待检查路径等于当前额外允许目录或是其子路径，则通过校验
-                if (normalized.equals(base) || normalized.startsWith(base)) {
-                    return;
-                }
-            }
-        }
-
-        // 如果路径不在任何允许的目录下，抛出异常
-        throw new IllegalArgumentException("路径超出允许的目录范围: " + normalized);
+    /**
+     * 校验写入路径是否在允许范围内。
+     * 允许最终文件不存在，但会解析父目录的真实路径，拒绝借助符号链接越界写入。
+     */
+    public static void ensureAllowedForWrite(Path path, Path allowedDir, List<Path> extraAllowedDirs) {
+        FsPathUtils.validateAccess(path, allowedDir, extraAllowedDirs, true);
     }
 
     /**

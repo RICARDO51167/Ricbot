@@ -471,6 +471,7 @@ public final class ConfigLoader {
         config.getApi().setHost(string(api.get("host"), config.getApi().getHost()));
         config.getApi().setPort(intValue(api.get("port"), config.getApi().getPort()));
         config.getApi().setTimeout(doubleValue(api.get("timeout"), config.getApi().getTimeout()));
+        config.getApi().setBearerToken(string(api.get("bearer_token"), string(api.get("bearerToken"), config.getApi().getBearerToken())));
 
         return config;
     }
@@ -631,6 +632,7 @@ public final class ConfigLoader {
         api.put("host", config.getApi().getHost());
         api.put("port", config.getApi().getPort());
         api.put("timeout", config.getApi().getTimeout());
+        api.put("bearer_token", config.getApi().getBearerToken());
         root.put("api", api);
 
         return root;

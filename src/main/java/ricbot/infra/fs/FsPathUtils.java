@@ -1,7 +1,11 @@
 package ricbot.infra.fs;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -49,20 +53,42 @@ public final class FsPathUtils {
         Path resolved = p.toAbsolutePath().normalize();
 
         // 第四步：安全检查，验证路径是否在允许的目录范围内
-        if (allowedDir != null) {
-            // 检查是否在主允许目录下，或者在额外允许的目录列表中
-            if (!isUnder(resolved, allowedDir)
-                    && (extraAllowedDirs == null
-                    || extraAllowedDirs.stream().noneMatch(dir -> isUnder(resolved, dir)))) {
-                // 如果都不满足，抛出安全异常
-                throw new SecurityException(
-                        "Path " + path + " is outside allowed directory " + allowedDir
-                );
-            }
-        }
+        validateAccess(resolved, allowedDir, extraAllowedDirs, true);
 
         // 返回解析并校验后的路径
         return resolved;
+    }
+
+    /**
+     * 校验路径是否在允许目录内。
+     * 读取现有路径时会解析符号链接；创建新文件时会对父目录做真实路径校验，
+     * 以阻止通过工作区内的 symlink 越界访问。
+     */
+    public static void validateAccess(
+            Path path,
+            Path allowedDir,
+            List<Path> extraAllowedDirs,
+            boolean allowMissingLeaf
+    ) {
+        if (allowedDir == null && (extraAllowedDirs == null || extraAllowedDirs.isEmpty())) {
+            return;
+        }
+
+        List<Path> allowedRoots = new ArrayList<>();
+        if (allowedDir != null) {
+            allowedRoots.add(allowedDir);
+        }
+        if (extraAllowedDirs != null) {
+            allowedRoots.addAll(extraAllowedDirs);
+        }
+
+        for (Path root : allowedRoots) {
+            if (root != null && isUnder(path, root, allowMissingLeaf)) {
+                return;
+            }
+        }
+
+        throw new SecurityException("Path " + path + " is outside allowed directories");
     }
 
     /**
@@ -75,12 +101,21 @@ public final class FsPathUtils {
      * @return 如果 path 位于 directory 下则返回 true，否则返回 false
      */
     public static boolean isUnder(Path path, Path directory) {
-        // 将待检查路径转换为绝对路径并标准化
-        Path normalizedPath = path.toAbsolutePath().normalize();
-        // 将基准目录转换为绝对路径并标准化
-        Path normalizedDir = directory.toAbsolutePath().normalize();
-        // 判断标准化后的路径是否以标准化后的目录开头
-        return normalizedPath.startsWith(normalizedDir);
+        return isUnder(path, directory, false);
+    }
+
+    /**
+     * 判断路径是否位于指定目录下。
+     * allowMissingLeaf=true 时允许最后一个路径元素不存在，并对其父目录做真实路径校验。
+     */
+    public static boolean isUnder(Path path, Path directory, boolean allowMissingLeaf) {
+        try {
+            Path normalizedDir = resolveForComparison(directory, false);
+            Path normalizedPath = resolveForComparison(path, allowMissingLeaf);
+            return normalizedPath.equals(normalizedDir) || normalizedPath.startsWith(normalizedDir);
+        } catch (IOException e) {
+            return false;
+        }
     }
 
     /**
@@ -102,5 +137,19 @@ public final class FsPathUtils {
         }
         // 如果不是以 "~" 开头，直接创建路径对象
         return Paths.get(raw);
+    }
+
+    private static Path resolveForComparison(Path path, boolean allowMissingLeaf) throws IOException {
+        Path normalized = path.toAbsolutePath().normalize();
+        if (!allowMissingLeaf || Files.exists(normalized, LinkOption.NOFOLLOW_LINKS)) {
+            return normalized.toRealPath();
+        }
+
+        Path parent = normalized.getParent();
+        if (parent == null) {
+            return normalized;
+        }
+        Path realParent = parent.toRealPath();
+        return realParent.resolve(normalized.getFileName()).normalize();
     }
 }

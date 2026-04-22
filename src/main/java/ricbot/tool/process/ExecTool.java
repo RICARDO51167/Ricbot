@@ -11,6 +11,10 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -198,46 +202,61 @@ public class ExecTool extends Tool {
             // 构建进程
             ProcessBuilder pb = buildProcess(effectiveCommand, effectiveCwd, env);
             Process process = pb.start();
+            ExecutorService readerExecutor = Executors.newFixedThreadPool(2);
+            Future<String> stdoutFuture = readerExecutor.submit(() -> readAll(process.getInputStream()));
+            Future<String> stderrFuture = readerExecutor.submit(() -> readAll(process.getErrorStream()));
 
-            // 等待进程结束，如果超时则杀死进程
-            boolean finished = process.waitFor(effectiveTimeout, TimeUnit.SECONDS);
-            if (!finished) {
-                killProcess(process);
-                return "错误：命令执行超时（" + effectiveTimeout + " 秒）";
-            }
-
-            // 读取标准输出和标准错误
-            String stdout = readAll(process.getInputStream());
-            String stderr = readAll(process.getErrorStream());
-
-            StringBuilder output = new StringBuilder();
-
-            if (stdout != null && !stdout.isBlank()) {
-                output.append(stdout);
-            }
-            if (stderr != null && !stderr.isBlank()) {
-                if (!output.isEmpty()) {
-                    output.append("\n");
+            boolean finished = false;
+            try {
+                // 等待进程结束，如果超时则杀死进程
+                finished = process.waitFor(effectiveTimeout, TimeUnit.SECONDS);
+                if (!finished) {
+                    killProcess(process);
+                    process.waitFor(5, TimeUnit.SECONDS);
+                    awaitDrain(stdoutFuture, 5, TimeUnit.SECONDS);
+                    awaitDrain(stderrFuture, 5, TimeUnit.SECONDS);
+                    return "错误：命令执行超时（" + effectiveTimeout + " 秒）";
                 }
-                output.append(stderr);
-            }
 
-            String result = output.toString().trim();
-            if (result.isBlank()) {
-                result = "（无输出）";
-            }
+                // 并发读取标准输出和标准错误，避免管道写满导致的假超时
+                String stdout = stdoutFuture.get();
+                String stderr = stderrFuture.get();
 
-            // 截断过长的输出
-            if (result.length() > MAX_OUTPUT) {
-                result = result.substring(0, MAX_OUTPUT) + "\n...（已截断）";
-            }
+                StringBuilder output = new StringBuilder();
 
-            int exitCode = process.exitValue();
-            if (exitCode != 0) {
-                return "[退出码 " + exitCode + "]\n" + result;
-            }
-            return result;
+                if (stdout != null && !stdout.isBlank()) {
+                    output.append(stdout);
+                }
+                if (stderr != null && !stderr.isBlank()) {
+                    if (!output.isEmpty()) {
+                        output.append("\n");
+                    }
+                    output.append(stderr);
+                }
 
+                String result = output.toString().trim();
+                if (result.isBlank()) {
+                    result = "（无输出）";
+                }
+
+                // 截断过长的输出
+                if (result.length() > MAX_OUTPUT) {
+                    result = result.substring(0, MAX_OUTPUT) + "\n...（已截断）";
+                }
+
+                int exitCode = process.exitValue();
+                if (exitCode != 0) {
+                    return "[退出码 " + exitCode + "]\n" + result;
+                }
+                return result;
+            } finally {
+                stdoutFuture.cancel(!finished);
+                stderrFuture.cancel(!finished);
+                readerExecutor.shutdownNow();
+            }
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause() != null ? e.getCause() : e;
+            return "错误：" + cause.getMessage();
         } catch (Exception e) {
             return "错误：" + e.getMessage();
         }
@@ -424,6 +443,17 @@ public class ExecTool extends Tool {
         try (InputStream input = in; ByteArrayOutputStream out = new ByteArrayOutputStream()) {
             input.transferTo(out);
             return out.toString(StandardCharsets.UTF_8);
+        }
+    }
+
+    private void awaitDrain(Future<String> future, long timeout, TimeUnit unit) {
+        if (future == null) {
+            return;
+        }
+        try {
+            future.get(timeout, unit);
+        } catch (Exception ignored) {
+            future.cancel(true);
         }
     }
 

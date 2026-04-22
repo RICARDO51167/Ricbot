@@ -1332,8 +1332,9 @@ public class Config {
          * API 配置当前为薄壳字段集合。host/port/timeout 的默认值更偏开发环境本地部署。
          */
         private String host = "127.0.0.1";
-        private int port = 8080;
+        private int port = 0;
         private double timeout = 120.0;
+        private String bearerToken = "";
 
         public String getHost() {
             return host;
@@ -1357,6 +1358,14 @@ public class Config {
 
         public void setTimeout(double timeout) {
             this.timeout = timeout;
+        }
+
+        public String getBearerToken() {
+            return bearerToken;
+        }
+
+        public void setBearerToken(String bearerToken) {
+            this.bearerToken = bearerToken != null ? bearerToken : "";
         }
     }
 }

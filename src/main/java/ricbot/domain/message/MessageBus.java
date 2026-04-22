@@ -22,6 +22,8 @@ import java.util.concurrent.TimeUnit;
  */
 public class MessageBus {
 
+    static final int DEFAULT_CAPACITY = 1000;
+
     /**
      * 入站消息队列：
      * 外部通道把用户消息放进来，Agent 从这里取消息处理。
@@ -45,8 +47,8 @@ public class MessageBus {
      * </ul>
      */
     public MessageBus() {
-        this.inbound = new LinkedBlockingQueue<>();
-        this.outbound = new LinkedBlockingQueue<>();
+        this.inbound = new LinkedBlockingQueue<>(DEFAULT_CAPACITY);
+        this.outbound = new LinkedBlockingQueue<>(DEFAULT_CAPACITY);
     }
 
     /**
@@ -101,7 +103,11 @@ public class MessageBus {
     }
 
     public void sendOutbound(OutboundMessage msg) {
-        outbound.offer(msg);
+        try {
+            outbound.put(msg);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     public OutboundMessage pollOutboundNow() {

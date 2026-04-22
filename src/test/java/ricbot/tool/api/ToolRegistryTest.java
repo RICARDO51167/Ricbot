@@ -2,6 +2,7 @@ package ricbot.tool.api;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.api.Assumptions;
 import ricbot.tool.filesystem.EditFileTool;
 import ricbot.tool.filesystem.ReadFileTool;
 import ricbot.tool.filesystem.ListDirTool;
@@ -113,5 +114,38 @@ public class ToolRegistryTest {
         Object out = registry.execute("missing_tool", Map.of());
         // 断言返回的错误消息指出工具未找到
         assertTrue(String.valueOf(out).startsWith("Error: Tool 'missing_tool' not found."), String.valueOf(out));
+    }
+
+    @Test
+    void filesystemTools_rejectSymlinkEscapes(@TempDir Path workspace) throws Exception {
+        Path outsideDir = workspace.resolveSibling("outside");
+        Files.createDirectories(outsideDir);
+        Path outsideFile = outsideDir.resolve("secret.txt");
+        Files.writeString(outsideFile, "top-secret");
+
+        Path readLink = workspace.resolve("read-link.txt");
+        Path writeLinkDir = workspace.resolve("write-link-dir");
+        try {
+            Files.createSymbolicLink(readLink, outsideFile);
+            Files.createSymbolicLink(writeLinkDir, outsideDir);
+        } catch (UnsupportedOperationException | java.nio.file.FileSystemException e) {
+            Assumptions.assumeTrue(false, "当前环境不支持创建符号链接: " + e.getMessage());
+            return;
+        }
+
+        ReadFileTool readTool = new ReadFileTool(workspace, workspace, List.of());
+        WriteFileTool writeTool = new WriteFileTool(workspace, workspace);
+        EditFileTool editTool = new EditFileTool(workspace, workspace);
+
+        String readResult = readTool.execute("read-link.txt", 1, 20);
+        assertTrue(readResult.startsWith("错误："), readResult);
+
+        String writeResult = writeTool.execute("write-link-dir/new.txt", "escaped");
+        assertTrue(writeResult.startsWith("错误："), writeResult);
+        assertFalse(Files.exists(outsideDir.resolve("new.txt")));
+
+        String editResult = editTool.execute("read-link.txt", "top-secret", "changed", false);
+        assertTrue(editResult.startsWith("错误："), editResult);
+        assertEquals("top-secret", Files.readString(outsideFile));
     }
 }

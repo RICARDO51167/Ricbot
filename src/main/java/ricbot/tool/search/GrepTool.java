@@ -175,14 +175,8 @@ public class GrepTool extends Tool {
                             continue;
                         }
 
-                        // 安全检查：确保文件在允许的目录范围内
-                        if (allowedDir != null) {
-                            Path base = allowedDir.toAbsolutePath().normalize();
-                            // 如果文件不在 allowedDir 下，跳过
-                            if (!normalized.equals(base) && !normalized.startsWith(base)) {
-                                continue;
-                            }
-                        }
+                        // 安全检查：确保文件真实路径仍位于允许目录范围内
+                        FileToolSupport.ensureAllowed(normalized, allowedDir, List.of());
 
                         // 跳过二进制文件
                         if (FileToolSupport.isBinary(normalized)) {

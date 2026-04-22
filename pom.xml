@@ -121,6 +121,9 @@
                 <configuration>
                     <useModulePath>false</useModulePath>
                     <argLine>-Dfile.encoding=UTF-8</argLine>
+                    <systemPropertyVariables>
+                        <ricbot.log.file>${project.build.directory}/ricbot-test.log</ricbot.log.file>
+                    </systemPropertyVariables>
                 </configuration>
             </plugin>
 

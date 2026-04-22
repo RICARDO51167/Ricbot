@@ -116,15 +116,7 @@ public class GlobTool extends Tool {
                     try {
                         // 将路径转换为绝对路径并规范化
                         Path normalized = path.toAbsolutePath().normalize();
-
-                        // 再做一次防御性限制，确保路径在 allowedDir 内
-                        if (allowedDir != null) {
-                            Path base = allowedDir.toAbsolutePath().normalize();
-                            // 如果 normalized 既不等于 base 也不以 base 开头，则跳过
-                            if (!normalized.equals(base) && !normalized.startsWith(base)) {
-                                return;
-                            }
-                        }
+                        FileToolSupport.ensureAllowed(normalized, allowedDir, List.of());
 
                         // 计算相对于 root 的路径
                         Path relative = root.relativize(normalized);

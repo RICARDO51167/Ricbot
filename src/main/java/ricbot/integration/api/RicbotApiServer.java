@@ -16,8 +16,10 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.io.Writer;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.*;
@@ -54,23 +56,27 @@ public class RicbotApiServer {
     /**
      * 创建并启动 HTTP 服务。
      *
+     * @param host 监听主机
      * @param port 请求端口
      * @param agentLoop 已初始化好的 AgentLoop
      * @param modelName 对外报告的模型名
      * @param requestTimeoutMillis 单请求超时毫秒数
+     * @param bearerToken Bearer token，留空时仅在非 loopback 监听下强制鉴权
      */
     public static HttpServer createAndStart(
+            String host,
             int port,
             AgentLoop agentLoop,
             String modelName,
-            long requestTimeoutMillis
+            long requestTimeoutMillis,
+            String bearerToken
     ) throws IOException {
-        ApiAppContext appContext = new ApiAppContext(agentLoop, modelName, requestTimeoutMillis);
+        ApiAppContext appContext = new ApiAppContext(agentLoop, modelName, requestTimeoutMillis, host, bearerToken);
 
-        HttpServer server = HttpServer.create(new InetSocketAddress(port), 0);
+        HttpServer server = HttpServer.create(new InetSocketAddress(host, port), 0);
         server.createContext("/v1/chat/completions", new ChatCompletionsHandler(appContext));
         server.createContext("/v1/models", new ModelsHandler(appContext));
-        server.createContext("/health", new HealthHandler());
+        server.createContext("/health", new HealthHandler(appContext));
         server.setExecutor(Executors.newCachedThreadPool());
         server.start();
         return server;
@@ -89,12 +95,24 @@ public class RicbotApiServer {
         private final AgentLoop agentLoop;
         private final String modelName;
         private final long requestTimeoutMillis;
+        private final String bindHost;
+        private final String bearerToken;
+        private final boolean requireAuth;
         private final Map<String, ReentrantLock> sessionLocks = new ConcurrentHashMap<>();
 
-        public ApiAppContext(AgentLoop agentLoop, String modelName, long requestTimeoutMillis) {
+        public ApiAppContext(
+                AgentLoop agentLoop,
+                String modelName,
+                long requestTimeoutMillis,
+                String bindHost,
+                String bearerToken
+        ) {
             this.agentLoop = agentLoop;
             this.modelName = modelName != null ? modelName : "ricbot";
             this.requestTimeoutMillis = requestTimeoutMillis > 0 ? requestTimeoutMillis : 120_000L;
+            this.bindHost = bindHost != null && !bindHost.isBlank() ? bindHost : "127.0.0.1";
+            this.bearerToken = bearerToken != null ? bearerToken.trim() : "";
+            this.requireAuth = !this.bearerToken.isBlank() || !isLoopbackHost(this.bindHost);
         }
 
         public AgentLoop getAgentLoop() {
@@ -109,8 +127,39 @@ public class RicbotApiServer {
             return requestTimeoutMillis;
         }
 
+        public boolean isAuthorized(HttpExchange exchange) {
+            if (!requireAuth) {
+                return true;
+            }
+            if (bearerToken.isBlank()) {
+                return false;
+            }
+
+            String header = exchange.getRequestHeaders().getFirst("Authorization");
+            if (header == null || !header.regionMatches(true, 0, "Bearer ", 0, 7)) {
+                return false;
+            }
+
+            String provided = header.substring(7).trim();
+            return MessageDigest.isEqual(
+                    bearerToken.getBytes(StandardCharsets.UTF_8),
+                    provided.getBytes(StandardCharsets.UTF_8)
+            );
+        }
+
         public ReentrantLock getSessionLock(String sessionKey) {
             return sessionLocks.computeIfAbsent(sessionKey, k -> new ReentrantLock());
+        }
+
+        private static boolean isLoopbackHost(String host) {
+            if (host == null || host.isBlank()) {
+                return false;
+            }
+            try {
+                return InetAddress.getByName(host).isLoopbackAddress();
+            } catch (Exception e) {
+                return "localhost".equalsIgnoreCase(host);
+            }
         }
     }
 
@@ -252,6 +301,11 @@ public class RicbotApiServer {
         public void handle(HttpExchange exchange) throws IOException {
             if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
                 writeErrorJson(exchange, 405, "不支持的 HTTP 方法", "invalid_request_error");
+                return;
+            }
+
+            if (!appContext.isAuthorized(exchange)) {
+                writeErrorJson(exchange, 401, "缺少或无效的 Bearer token", "authentication_error");
                 return;
             }
 
@@ -457,6 +511,11 @@ public class RicbotApiServer {
                 return;
             }
 
+            if (!appContext.isAuthorized(exchange)) {
+                writeErrorJson(exchange, 401, "缺少或无效的 Bearer token", "authentication_error");
+                return;
+            }
+
             Map<String, Object> model = new LinkedHashMap<>();
             model.put("id", appContext.getModelName());
             model.put("object", "model");
@@ -475,10 +534,21 @@ public class RicbotApiServer {
      * GET /health
      */
     public static class HealthHandler implements HttpHandler {
+        private final ApiAppContext appContext;
+
+        public HealthHandler(ApiAppContext appContext) {
+            this.appContext = appContext;
+        }
+
         @Override
         public void handle(HttpExchange exchange) throws IOException {
             if (!"GET".equalsIgnoreCase(exchange.getRequestMethod())) {
                 writeErrorJson(exchange, 405, "不支持的 HTTP 方法", "invalid_request_error");
+                return;
+            }
+
+            if (!appContext.isAuthorized(exchange)) {
+                writeErrorJson(exchange, 401, "缺少或无效的 Bearer token", "authentication_error");
                 return;
             }
 

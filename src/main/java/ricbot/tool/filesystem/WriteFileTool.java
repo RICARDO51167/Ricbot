@@ -84,7 +84,7 @@ public class WriteFileTool extends Tool {
             // 解析并规范化目标路径
             Path target = FileToolSupport.resolvePath(workspace, path);
             // 校验路径是否在允许范围内
-            FileToolSupport.ensureAllowed(target, allowedDir, List.of());
+            FileToolSupport.ensureAllowedForWrite(target, allowedDir, List.of());
 
             // 写入文件内容
             FileToolSupport.writeText(target, content);
