@@ -137,6 +137,45 @@ public class FeishuChannel extends BaseChannel {
         }
     }
 
+    @SuppressWarnings("unchecked")
+    public void handleWebhookEvent(Map<String, Object> payload) throws Exception {
+        if (payload == null || payload.isEmpty()) {
+            return;
+        }
+
+        Map<String, Object> header = asMap(payload.get("header"));
+        Map<String, Object> event = asMap(payload.get("event"));
+        Map<String, Object> message = asMap(event.get("message"));
+        Map<String, Object> sender = asMap(event.get("sender"));
+        Map<String, Object> senderId = asMap(sender.get("sender_id"));
+
+        String userId = firstText(
+                senderId.get("user_id"),
+                senderId.get("open_id"),
+                senderId.get("union_id"),
+                event.get("open_id"),
+                event.get("user_id")
+        );
+        if (userId.isBlank() || !isAllowed(userId)) {
+            return;
+        }
+
+        String chatId = firstText(message.get("chat_id"), event.get("chat_id"), userId);
+        String messageType = firstText(message.get("message_type"), event.get("message_type"), "text");
+        String content = extractContentText(message.get("content"));
+        if (content.isBlank()) {
+            content = "[" + messageType + "]";
+        }
+
+        Map<String, Object> metadata = new HashMap<>();
+        metadata.put("feishu_event_id", firstText(header.get("event_id"), message.get("message_id")));
+        metadata.put("feishu_event_type", firstText(header.get("event_type"), payload.get("type")));
+        metadata.put("feishu_message_id", firstText(message.get("message_id")));
+        metadata.put("feishu_message_type", messageType);
+
+        handleMessage(userId, chatId, content, List.of(), metadata);
+    }
+
     /**
      * 获取访问令牌，支持缓存和自动刷新
      * @return 访问令牌
@@ -185,6 +224,51 @@ public class FeishuChannel extends BaseChannel {
     private <T> HttpResponse<T> sendHttp(HttpRequest request, HttpResponse.BodyHandler<T> handler) throws Exception {
         // 使用重试工具执行，内部包裹熔断器逻辑
         return RetryUtils.executeWithRetry(() -> circuitBreaker.execute(() -> httpClient.send(request, handler)));
+    }
+
+    private boolean isAllowed(String userId) {
+        List<String> allow = config.getAllowFrom();
+        return allow == null || allow.contains("*") || allow.contains(userId);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> asMap(Object value) {
+        return value instanceof Map<?, ?> map ? (Map<String, Object>) map : Map.of();
+    }
+
+    private static String firstText(Object... values) {
+        if (values == null) {
+            return "";
+        }
+        for (Object value : values) {
+            if (value != null) {
+                String text = String.valueOf(value);
+                if (!text.isBlank()) {
+                    return text;
+                }
+            }
+        }
+        return "";
+    }
+
+    @SuppressWarnings("unchecked")
+    private static String extractContentText(Object rawContent) {
+        if (rawContent == null) {
+            return "";
+        }
+        if (rawContent instanceof Map<?, ?> map) {
+            return firstText(((Map<String, Object>) map).get("text"), ((Map<String, Object>) map).get("content"));
+        }
+        String content = String.valueOf(rawContent);
+        if (content.isBlank()) {
+            return "";
+        }
+        try {
+            Map<String, Object> parsed = MAPPER.readValue(content, new TypeReference<>() {});
+            return firstText(parsed.get("text"), parsed.get("content"));
+        } catch (Exception ignored) {
+            return content;
+        }
     }
 
     /**

@@ -7,7 +7,7 @@ import java.util.*;
 /**
  * 渠道注册中心。
  *
- * 对应 Python: nanobot.channels.registry
+ * 对应 Python: ricbot.channels.registry
  *
  * Java 里没有 pkgutil / entry_points 那种完全等价机制，
  * 这里采用：
@@ -135,7 +135,7 @@ public final class ChannelRegistry {
      * 插件提供者 SPI。
      *
      * 外部插件只要实现这个接口，并在
-     * META-INF/services/nanobot.channels.ChannelRegistry$ChannelPluginProvider
+     * META-INF/services/ricbot.channels.ChannelRegistry$ChannelPluginProvider
      * 里注册，就能被发现。
      */
     public interface ChannelPluginProvider {

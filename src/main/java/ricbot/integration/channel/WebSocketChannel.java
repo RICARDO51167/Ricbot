@@ -24,7 +24,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * 对应 Python: websocket.py
  *
  * 主要职责：
- * 1. nanobot 自己作为 WebSocket 服务端
+ * 1. ricbot 自己作为 WebSocket 服务端
  * 2. 支持 client_id / token 握手校验
  * 3. 支持 token issue route
  * 4. 每个连接映射独立 session

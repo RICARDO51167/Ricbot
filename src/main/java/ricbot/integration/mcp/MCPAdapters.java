@@ -12,7 +12,7 @@ import java.util.concurrent.*;
 
 /**
  * MCP 适配层：
- * 负责连接 MCP Server，并把 MCP 的 tool/resource/prompt 包装成 nanobot Tool。
+ * 负责连接 MCP Server，并把 MCP 的 tool/resource/prompt 包装成 ricbot Tool。
  *
  * 对应 Python 文件 mcp.py。
  */
@@ -194,7 +194,7 @@ public final class MCPAdapters {
     }
 
     /**
-     * 把 MCP schema 规范化为更适合 nanobot / OpenAI function-tool 风格的 schema。
+     * 把 MCP schema 规范化为更适合 ricbot / OpenAI function-tool 风格的 schema。
      *
      * 主要处理：
      * - type: ["string", "null"]

@@ -165,7 +165,9 @@ public class WeixinChannel extends BaseChannel {
         if (config.getStateDir() != null && !config.getStateDir().isBlank()) {
             stateDir = Path.of(config.getStateDir()).toAbsolutePath().normalize();
         } else {
-            stateDir = Path.of(System.getProperty("user.home"), ".nanobot", "weixin");
+            Path newDir = Path.of(System.getProperty("user.home"), ".ricbot", "weixin");
+            Path legacyDir = Path.of(System.getProperty("user.home"), ".nanobot", "weixin");
+            stateDir = Files.exists(legacyDir) && !Files.exists(newDir) ? legacyDir : newDir;
         }
         Files.createDirectories(stateDir);
         return stateDir;
@@ -442,7 +444,7 @@ public class WeixinChannel extends BaseChannel {
             HttpResponse<byte[]> response = sendHttp(request, HttpResponse.BodyHandlers.ofByteArray());
             if (response.statusCode() >= 400) return null;
 
-            Path mediaDir = Path.of(System.getProperty("user.home"), ".nanobot", "media", "weixin");
+            Path mediaDir = Path.of(System.getProperty("user.home"), ".ricbot", "media", "weixin");
             Files.createDirectories(mediaDir);
 
             String suffix = switch (itemType) {

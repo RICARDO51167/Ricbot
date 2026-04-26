@@ -32,7 +32,7 @@ Ricbot 是一个面向“可工程化智能代理”的 Java 项目。它试图�
 2. 所有外部能力先标准化为 Tool / Provider / Channel / MCP 适配层。
 3. 所有长期状态尽量落到工作区文件中，便于调试、迁移与回溯。
 
-> 说明：仓库中仍可见部分旧命名与历史痕迹，例如注释里会出现 `nanobot`、部分测试目录仍使用 `core/transport` 命名。这些属于迁移中的遗留痕迹；当前运行时、入口类与主包名以 `ricbot` 为准。
+> 说明：当前运行时、入口类与主包名以 `ricbot` 为准。仓库中少量旧命名仅作为兼容入口保留，例如旧环境变量 fallback。
 
 ## 3. 核心能力总览
 
@@ -53,7 +53,7 @@ Ricbot 是一个面向“可工程化智能代理”的 Java 项目。它试图�
 | 多渠道入口 | QQ | 已支持 | 含网关连接、文本/附件处理、出站上传 |
 | 多渠道入口 | Weixin | 已支持 | 轮询收发、状态持久化、上下文 token/typing 维护 |
 | 多渠道入口 | Email | 已支持 | IMAP 轮询 + SMTP 回复 |
-| 多渠道入口 | Feishu / DingTalk | 部分支持 | 当前偏出站 HTTP 模式，启动日志已明确标注“仅 HTTP 模式” |
+| 多渠道入口 | Feishu / DingTalk | 部分支持 | 已支持出站 HTTP 与 webhook 事件解析核心；仍未内置公开 webhook server |
 | 多渠道入口 | WeCom | 部分支持 | 出站可发；入站接收依赖外部 Webhook / WebSocket 代理 |
 
 ### 3.2 Agent 运行时
@@ -131,11 +131,9 @@ Ricbot 是一个面向“可工程化智能代理”的 Java 项目。它试图�
 
 | 模块 | 当前状态 | 说明 |
 | --- | --- | --- |
-| `api.host` / `api.port` / `api.timeout` | 当前部分支持 | 配置模型已存在，但 `serve` 现在实际使用的是 `gateway.port`，`api.*` 未真正接线到启动路径 |
-| Dream 调度配置 | 当前部分支持 | `agents.defaults.dream` 已入配置模型，但后台调度当前固定为每 15 分钟一次，不读取 `dream.cron` |
-| Feishu / DingTalk / WeCom 入站 | 当前部分支持 | 出站较完整；部分入站仍需外部代理或尚未闭环 |
-| `streamableHttp` MCP | 当前部分支持 | 已有代码，但未见测试覆盖，不应视为生产级稳定实现 |
-| 配置/注释历史包袱 | 当前存在 | 注释、默认路径、Git 提交信息中仍可见 `nanobot` 历史痕迹 |
+| Feishu / DingTalk / WeCom 入站 | 当前部分支持 | Feishu/DingTalk 有 webhook 解析核心，WeCom 有可注入 client 的入站链路；仍需外部 HTTP/WebSocket 代理接入 |
+| `streamableHttp` MCP | 当前部分支持 | 已补基础 JSON-RPC over HTTP 集成测试；仍需覆盖更多 MCP 规范兼容场景 |
+| 配置/注释历史包袱 | 基本清理 | 仍保留少量旧变量/旧目录 fallback 以兼容已有用户配置 |
 
 ## 4. 项目架构
 
@@ -1454,20 +1452,16 @@ gateway.port
   - Session / Memory / Dream / Cron
   - MCP 基础接入
 - 半成品或部分支持能力：
-  - Feishu / DingTalk / WeCom 入站
-  - `api.*` 配置项真实接线
-  - Dream 自定义调度
-  - `streamableHttp` MCP 的稳定性验证
+  - Feishu / DingTalk / WeCom 入站公开服务接入
+  - `streamableHttp` MCP 的完整规范兼容性验证
   - OAuth 型 Provider 登录
 
 ### 后续规划建议
 
-1. 让 `api.host/api.port/api.timeout` 真正接入 `serve`
-2. 完整打通 Dream 调度配置
-3. 为 `streamableHttp`、渠道接入补测试
-4. 统一历史命名，清理 `nanobot` 遗留
-5. 增加 Web 控制台或管理页
-6. 增加更细粒度的 Tool 权限策略与审计
+1. 为 `streamableHttp`、渠道接入补测试
+2. 完成剩余历史兼容入口的迁移策略
+3. 增加 Web 控制台或管理页
+4. 增加更细粒度的 Tool 权限策略与审计
 
 ## 13. License / Contributing
 

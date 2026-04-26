@@ -183,6 +183,35 @@ public class DingTalkChannel extends BaseChannel {
         }
     }
 
+    @SuppressWarnings("unchecked")
+    public void handleWebhookEvent(Map<String, Object> payload) throws Exception {
+        if (payload == null || payload.isEmpty()) {
+            return;
+        }
+
+        String senderId = firstText(payload.get("senderStaffId"), payload.get("senderId"), payload.get("senderCorpId"));
+        if (senderId.isBlank() || !isAllowed(senderId)) {
+            return;
+        }
+
+        String chatId = firstText(payload.get("conversationId"), payload.get("chatId"), senderId);
+        String msgType = firstText(payload.get("msgtype"), payload.get("msgType"), "text");
+        Map<String, Object> text = payload.get("text") instanceof Map<?, ?> map
+                ? (Map<String, Object>) map
+                : Map.of();
+        String content = firstText(text.get("content"), payload.get("content"));
+        if (content.isBlank()) {
+            content = "[" + msgType + "]";
+        }
+
+        Map<String, Object> metadata = new HashMap<>();
+        metadata.put("dingtalk_msg_id", firstText(payload.get("msgId"), payload.get("messageId")));
+        metadata.put("dingtalk_msg_type", msgType);
+        metadata.put("sender_nick", firstText(payload.get("senderNick")));
+
+        handleMessage(senderId, chatId, content, List.of(), metadata);
+    }
+
     /**
      * 获取钉钉访问令牌，支持缓存和自动刷新。
      *
@@ -232,6 +261,26 @@ public class DingTalkChannel extends BaseChannel {
     private <T> HttpResponse<T> sendHttp(HttpRequest request, HttpResponse.BodyHandler<T> handler) throws Exception {
         // 使用 RetryUtils 执行带重试的操作，内部通过 CircuitBreaker 保护 httpClient.send 调用
         return RetryUtils.executeWithRetry(() -> circuitBreaker.execute(() -> httpClient.send(request, handler)));
+    }
+
+    private boolean isAllowed(String senderId) {
+        List<String> allow = config.getAllowFrom();
+        return allow == null || allow.contains("*") || allow.contains(senderId);
+    }
+
+    private static String firstText(Object... values) {
+        if (values == null) {
+            return "";
+        }
+        for (Object value : values) {
+            if (value != null) {
+                String text = String.valueOf(value);
+                if (!text.isBlank()) {
+                    return text;
+                }
+            }
+        }
+        return "";
     }
 
     /**

@@ -4,6 +4,8 @@ import ricbot.domain.skill.SkillsLoader;
 import ricbot.domain.skill.SkillRouter;
 import ricbot.infra.cron.CronService;
 import ricbot.infra.cron.CronTypes.CronJob;
+import ricbot.infra.cron.CronTypes.CronSchedule;
+import ricbot.infra.cron.CronTypes.ScheduleKind;
 import ricbot.tool.web.WebFetchTool;
 import ricbot.tool.web.WebSearchTool;
 import ricbot.domain.memory.Consolidator;
@@ -50,6 +52,8 @@ public class AgentLoop {
     private static final Logger log = LoggerFactory.getLogger(AgentLoop.class);
     /** 入站消息轮询超时 */
     private static final int INBOUND_POLL_TIMEOUT_MS = 500;
+    private static final long DEFAULT_DREAM_INTERVAL_MILLIS = TimeUnit.MINUTES.toMillis(15);
+    private static final long MIN_DREAM_DELAY_MILLIS = TimeUnit.SECONDS.toMillis(1);
 
     /** 统一会话的默认键值，当启用统一会话模式时使用 */
     public static final String UNIFIED_SESSION_KEY = "unified:default";
@@ -530,16 +534,7 @@ public class AgentLoop {
         
         // 如果启用了 Dream 配置，则调度定期执行 Dream 任务
         if (dreamConfig != null && dreamConfig.isEnabled()) {
-            // 每 15 分钟执行一次 Dream 任务，初始延迟也为 15 分钟
-            scheduler.scheduleWithFixedDelay(() -> {
-                try {
-                    // 执行 Dream 任务（记忆整理/反思）
-                    dream.run();
-                } catch (Exception e) {
-                    // 记录后台 Dream 任务出错的错误日志
-                    log.error("后台 Dream 任务出错", e);
-                }
-            }, 15, 15, TimeUnit.MINUTES);
+            scheduleNextDreamRun(computeDreamDelayMillis(dreamConfig, contextBuilder.getTimezone(), System.currentTimeMillis()));
         }
 
         // 如果设置了会话自动归档 TTL（大于 0），则调度定期执行自动归档扫描
@@ -570,6 +565,35 @@ public class AgentLoop {
     public SubagentManager getSubagents() { return subagents; }
     public SessionManager getSessions() { return sessionManager; }
     public Consolidator getConsolidator() { return consolidator; }
+
+    private void scheduleNextDreamRun(long delayMillis) {
+        scheduler.schedule(() -> {
+            try {
+                dream.run();
+            } catch (Exception e) {
+                log.error("后台 Dream 任务出错", e);
+            } finally {
+                if (running && dreamConfig != null && dreamConfig.isEnabled() && !scheduler.isShutdown()) {
+                    scheduleNextDreamRun(computeDreamDelayMillis(dreamConfig, contextBuilder.getTimezone(), System.currentTimeMillis()));
+                }
+            }
+        }, delayMillis, TimeUnit.MILLISECONDS);
+    }
+
+    public static long computeDreamDelayMillis(Config.DreamConfig dreamConfig, String timezone, long nowMs) {
+        if (dreamConfig == null || dreamConfig.getCron() == null || dreamConfig.getCron().isBlank()) {
+            return DEFAULT_DREAM_INTERVAL_MILLIS;
+        }
+
+        CronSchedule schedule = new CronSchedule(ScheduleKind.CRON);
+        schedule.setExpr(dreamConfig.getCron());
+        schedule.setTz(timezone);
+        Long nextRun = CronService.computeNextRun(schedule, nowMs);
+        if (nextRun == null) {
+            return DEFAULT_DREAM_INTERVAL_MILLIS;
+        }
+        return Math.max(MIN_DREAM_DELAY_MILLIS, nextRun - nowMs);
+    }
 
     // ---------------------------------------------------------------------
     // Dispatch / processing

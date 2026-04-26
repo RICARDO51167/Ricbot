@@ -10,7 +10,7 @@ import java.util.*;
  * 对应 Python: onboard.py
  *
  * 主要目标：
- * 1. 交互式配置 nanobot
+ * 1. 交互式配置 ricbot
  * 2. 支持主菜单与分区配置
  * 3. 支持字段浏览、输入、保存、放弃
  *

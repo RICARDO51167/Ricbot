@@ -10,7 +10,7 @@ usage() {
 选项：
   -L, --socket       tmux socket 名称（传给 tmux -L）
   -S, --socket-path  tmux socket 路径（传给 tmux -S）
-  -A, --all          扫描 NANOBOT_TMUX_SOCKET_DIR 下的所有 socket
+  -A, --all          扫描 RICBOT_TMUX_SOCKET_DIR 下的所有 socket
   -q, --query        用不区分大小写的子串过滤会话名
   -h, --help         显示本帮助
 USAGE
@@ -20,7 +20,7 @@ socket_name=""
 socket_path=""
 query=""
 scan_all=false
-socket_dir="${NANOBOT_TMUX_SOCKET_DIR:-${TMPDIR:-/tmp}/nanobot-tmux-sockets}"
+socket_dir="${RICBOT_TMUX_SOCKET_DIR:-${NANOBOT_TMUX_SOCKET_DIR:-${TMPDIR:-/tmp}/ricbot-tmux-sockets}}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in

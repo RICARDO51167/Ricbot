@@ -32,7 +32,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * 4. 将消息路由到正确渠道
  * 5. 做发送失败重试
  *
- * 对应 Python: nanobot.channels.manager.ChannelManager
+ * 对应 Python: ricbot.channels.manager.ChannelManager
  */
 @Slf4j
 public class ChannelManager {

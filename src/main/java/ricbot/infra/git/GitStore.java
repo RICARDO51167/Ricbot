@@ -139,8 +139,8 @@ public class GitStore {
 
             // 提交初始更改
             git.commit()
-                    .setMessage("init: nanobot memory store") // 设置提交消息
-                    .setAuthor("ricbot", "nanobot@dream") // 设置作者信息
+                    .setMessage("init: ricbot memory store") // 设置提交消息
+                    .setAuthor("ricbot", "ricbot@dream") // 设置作者信息
                     .call();
 
             // 关闭 Git 对象
@@ -179,7 +179,7 @@ public class GitStore {
             // 执行提交操作
             RevCommit commit = git.commit()
                     .setMessage(message) // 设置提交消息
-                    .setAuthor("ricbot", "nanobot@dream") // 设置作者信息
+                    .setAuthor("ricbot", "ricbot@dream") // 设置作者信息
                     .call();
 
             // 返回提交 ID 的前 8 位作为短哈希
@@ -376,7 +376,7 @@ public class GitStore {
             // 提交回滚更改
             RevCommit reverted = git.commit()
                     .setMessage("revert memory files to " + commit) // 设置提交消息
-                    .setAuthor("ricbot", "nanobot@dream") // 设置作者信息
+                    .setAuthor("ricbot", "ricbot@dream") // 设置作者信息
                     .call();
             // 返回新提交的短哈希
             return reverted.getId().name().substring(0, 8);
