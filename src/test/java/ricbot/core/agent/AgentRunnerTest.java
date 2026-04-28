@@ -173,6 +173,72 @@ public class AgentRunnerTest {
     }
 
     @Test
+    void runner_serializesSideEffectTools_evenWhenConcurrentModeIsEnabled() throws Exception {
+        ToolRegistry tools = new ToolRegistry();
+        tools.register(new Tool() {
+            @Override
+            public String getName() {
+                return "mutate";
+            }
+
+            @Override
+            public String getDescription() {
+                return "side effect";
+            }
+
+            @Override
+            public List<ToolParam> getParams() {
+                return List.of(new ToolParam("value", "string", "value", true));
+            }
+
+            @Override
+            public Object execute(Map<String, Object> params) {
+                return "ok:" + params.get("value");
+            }
+        });
+
+        AtomicInteger calls = new AtomicInteger(0);
+        LLMProvider provider = new LLMProvider("k", "http://localhost") {
+            @Override
+            public LLMResponse chat(
+                    List<Map<String, Object>> messages,
+                    List<Map<String, Object>> toolsDef,
+                    String model,
+                    Integer maxTokens,
+                    Double temperature,
+                    String reasoningEffort,
+                    Object toolChoice
+            ) {
+                int n = calls.incrementAndGet();
+                if (n == 1) {
+                    return new LLMResponse()
+                            .setContent("")
+                            .setToolCalls(List.of(
+                                    new ToolCallRequest("call_1", "mutate", Map.of("value", "a")),
+                                    new ToolCallRequest("call_2", "mutate", Map.of("value", "b"))
+                            ))
+                            .setFinishReason("tool_calls");
+                }
+                return new LLMResponse().setContent("ok").setFinishReason("stop");
+            }
+        };
+
+        AgentRunResult result = new AgentRunner(provider).run(new AgentRunSpec()
+                .setInitialMessages(List.of(Map.of("role", "user", "content", "go")))
+                .setTools(tools)
+                .setModel("gpt-4o-mini")
+                .setMaxIterations(3)
+                .setConcurrentTools(true));
+
+        Map<String, Object> batch = result.getRunEvents().stream()
+                .filter(e -> "tool_batch".equals(e.get("type")))
+                .findFirst()
+                .orElseThrow();
+        assertEquals("sequential", String.valueOf(batch.get("execution_mode")));
+        assertEquals("side_effect", String.valueOf(result.getToolEvents().get(0).get("risk")));
+    }
+
+    @Test
     void openaiSse_toolCalls_areParsed() throws Exception {
         Stream<String> lines = Stream.of(
                 "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"list_dir\",\"arguments\":\"{\\\"path\\\":\\\".\\\"}\"}}]}}]}",

@@ -28,6 +28,7 @@ final class AgentRequestContext {
     private final AgentHook hook;
     // 标记用户是否早期持久化，可能影响会话保存策略
     private final boolean userPersistedEarly;
+    private final Map<String, Object> contextTrace;
 
     /**
      * 构造函数，初始化代理请求上下文的所有字段
@@ -53,6 +54,21 @@ final class AgentRequestContext {
             AgentHook hook,
             boolean userPersistedEarly
     ) {
+        this(message, sessionKey, session, combinedContext, promptContext, history, initialMessages, hook, userPersistedEarly, Map.of());
+    }
+
+    AgentRequestContext(
+            InboundMessage message,
+            String sessionKey,
+            Session session,
+            String combinedContext,
+            PromptContextBundle promptContext,
+            List<Map<String, Object>> history,
+            List<Map<String, Object>> initialMessages,
+            AgentHook hook,
+            boolean userPersistedEarly,
+            Map<String, Object> contextTrace
+    ) {
         this.message = message; // 赋值入站消息
         this.sessionKey = sessionKey; // 赋值会话键
         this.session = session; // 赋值会话对象
@@ -62,6 +78,7 @@ final class AgentRequestContext {
         this.initialMessages = initialMessages; // 赋值初始消息列表
         this.hook = hook; // 赋值代理钩子
         this.userPersistedEarly = userPersistedEarly; // 赋值用户早期持久化标志
+        this.contextTrace = contextTrace != null ? contextTrace : Map.of();
     }
 
     /**
@@ -143,5 +160,9 @@ final class AgentRequestContext {
      */
     boolean userPersistedEarly() {
         return userPersistedEarly;
+    }
+
+    Map<String, Object> contextTrace() {
+        return contextTrace;
     }
 }

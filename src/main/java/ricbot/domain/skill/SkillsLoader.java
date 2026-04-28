@@ -84,6 +84,19 @@ public class SkillsLoader {
                 row.put("missing_bins", String.join(",", availability.missingBins()));
                 row.put("missing_env", String.join(",", availability.missingEnv()));
             }
+            SkillContract contract = contract(doc);
+            if (!contract.version().isBlank()) {
+                row.put("version", contract.version());
+            }
+            if (!contract.risk().isBlank()) {
+                row.put("risk", contract.risk());
+            }
+            if (!contract.permissions().isEmpty()) {
+                row.put("permissions", String.join(",", contract.permissions()));
+            }
+            if (!contract.tools().isEmpty()) {
+                row.put("tools", String.join(",", contract.tools()));
+            }
             out.add(row);
         }
         return out;
@@ -185,6 +198,16 @@ public class SkillsLoader {
     public record SkillAvailability(boolean available, List<String> missingBins, List<String> missingEnv) {
     }
 
+    public record SkillContract(
+            String version,
+            String risk,
+            List<String> permissions,
+            List<String> tools,
+            List<String> requiresBins,
+            List<String> requiresEnv
+    ) {
+    }
+
     public boolean isDisabled(String name) {
         return disabledSkills.contains(normalizeSkillName(name));
     }
@@ -209,6 +232,24 @@ public class SkillsLoader {
             }
         }
         return new SkillAvailability(missing.isEmpty() && missingEnv.isEmpty(), List.copyOf(missing), List.copyOf(missingEnv));
+    }
+
+    public SkillContract contract(SkillDocument doc) {
+        if (doc == null || doc.frontmatter() == null) {
+            return new SkillContract("", "unknown", List.of(), List.of(), List.of(), List.of());
+        }
+        Map<String, String> fm = doc.frontmatter();
+        Map<String, Object> metadata = metadataRicbotOrRoot(doc);
+        List<String> permissions = firstList(fm.get("permissions"), metadata.get("permissions"));
+        List<String> tools = firstList(fm.get("tools"), metadata.get("tools"));
+        List<String> bins = requiredBins(doc);
+        List<String> env = requiredEnv(doc);
+        String version = firstString(fm.get("version"), metadata.get("version"));
+        String risk = firstString(fm.get("risk"), metadata.get("risk"));
+        if (risk.isBlank()) {
+            risk = inferRisk(permissions, tools);
+        }
+        return new SkillContract(version, risk, permissions, tools, bins, env);
     }
 
     /**
@@ -418,12 +459,25 @@ public class SkillsLoader {
                 desc = fm.get("desc");
             }
             SkillAvailability availability = availability(doc);
+            SkillContract contract = contract(doc);
             boolean disabled = isDisabled(e.name());
             boolean available = !disabled && availability.available();
             StringBuilder line = new StringBuilder();
             line.append("  <skill name=\"").append(escapeXml(e.name())).append("\"");
             line.append(" source=\"").append(escapeXml(e.source())).append("\"");
             line.append(" available=\"").append(available).append("\"");
+            if (!contract.version().isBlank()) {
+                line.append(" version=\"").append(escapeXml(contract.version())).append("\"");
+            }
+            if (!contract.risk().isBlank()) {
+                line.append(" risk=\"").append(escapeXml(contract.risk())).append("\"");
+            }
+            if (!contract.permissions().isEmpty()) {
+                line.append(" permissions=\"").append(escapeXml(String.join(",", contract.permissions()))).append("\"");
+            }
+            if (!contract.tools().isEmpty()) {
+                line.append(" tools=\"").append(escapeXml(String.join(",", contract.tools()))).append("\"");
+            }
             if (disabled) {
                 line.append(" disabled=\"true\"");
             }
@@ -614,18 +668,13 @@ public class SkillsLoader {
         if (metadata == null || metadata.isBlank()) {
             return List.of();
         }
-        try {
-            Map<String, Object> root = MAPPER.readValue(metadata, new TypeReference<>() {});
-            Object ricbot = root.get("ricbot");
-            if (ricbot instanceof Map<?, ?> ricbotMap) {
-                Object requires = ricbotMap.get("requires");
-                return parseRequiredBins(requires);
-            }
-            return parseRequiredBins(root.get("requires"));
-        } catch (Exception e) {
-            log.debug("解析技能 metadata 失败: {}", doc.entry() != null ? doc.entry().name() : "(unknown)", e);
-            return List.of();
+        Map<String, Object> root = parseMetadata(doc);
+        Object ricbot = root.get("ricbot");
+        if (ricbot instanceof Map<?, ?> ricbotMap) {
+            Object requires = ricbotMap.get("requires");
+            return parseRequiredBins(requires);
         }
+        return parseRequiredBins(root.get("requires"));
     }
 
     private List<String> requiredEnv(SkillDocument doc) {
@@ -640,18 +689,69 @@ public class SkillsLoader {
         if (metadata == null || metadata.isBlank()) {
             return List.of();
         }
-        try {
-            Map<String, Object> root = MAPPER.readValue(metadata, new TypeReference<>() {});
-            Object ricbot = root.get("ricbot");
-            if (ricbot instanceof Map<?, ?> ricbotMap) {
-                Object requires = ricbotMap.get("requires");
-                return parseRequiredEnv(requires);
-            }
-            return parseRequiredEnv(root.get("requires"));
-        } catch (Exception e) {
-            log.debug("解析技能 metadata env 依赖失败: {}", doc.entry() != null ? doc.entry().name() : "(unknown)", e);
-            return List.of();
+        Map<String, Object> root = parseMetadata(doc);
+        Object ricbot = root.get("ricbot");
+        if (ricbot instanceof Map<?, ?> ricbotMap) {
+            Object requires = ricbotMap.get("requires");
+            return parseRequiredEnv(requires);
         }
+        return parseRequiredEnv(root.get("requires"));
+    }
+
+    private Map<String, Object> metadataRicbotOrRoot(SkillDocument doc) {
+        Map<String, Object> root = parseMetadata(doc);
+        Object ricbot = root.get("ricbot");
+        if (ricbot instanceof Map<?, ?> ricbotMap) {
+            Map<String, Object> out = new LinkedHashMap<>();
+            for (Map.Entry<?, ?> entry : ricbotMap.entrySet()) {
+                if (entry.getKey() != null) {
+                    out.put(String.valueOf(entry.getKey()), entry.getValue());
+                }
+            }
+            return out;
+        }
+        return root;
+    }
+
+    private Map<String, Object> parseMetadata(SkillDocument doc) {
+        if (doc == null || doc.frontmatter() == null) {
+            return Map.of();
+        }
+        String metadata = doc.frontmatter().get("metadata");
+        if (metadata == null || metadata.isBlank()) {
+            return Map.of();
+        }
+        try {
+            return MAPPER.readValue(metadata, new TypeReference<>() {});
+        } catch (Exception e) {
+            log.debug("解析技能 metadata 失败: {}", doc.entry() != null ? doc.entry().name() : "(unknown)", e);
+            return Map.of();
+        }
+    }
+
+    private List<String> firstList(Object primary, Object fallback) {
+        List<String> first = normalizeStringList(primary);
+        return !first.isEmpty() ? first : normalizeStringList(fallback);
+    }
+
+    private String firstString(Object primary, Object fallback) {
+        String first = primary != null ? String.valueOf(primary).trim() : "";
+        if (!first.isBlank()) {
+            return first;
+        }
+        return fallback != null ? String.valueOf(fallback).trim() : "";
+    }
+
+    private String inferRisk(List<String> permissions, List<String> tools) {
+        String joined = String.join(",", permissions) + "," + String.join(",", tools);
+        String lower = joined.toLowerCase(Locale.ROOT);
+        if (lower.contains("exec") || lower.contains("shell") || lower.contains("write") || lower.contains("network")) {
+            return "elevated";
+        }
+        if (lower.contains("read")) {
+            return "low";
+        }
+        return "unknown";
     }
 
     private List<String> parseRequiredEnv(Object raw) {

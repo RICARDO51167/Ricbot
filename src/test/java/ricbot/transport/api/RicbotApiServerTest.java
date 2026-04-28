@@ -251,6 +251,78 @@ public class RicbotApiServerTest {
         assertEquals(404, missing.getResponseCode(), missing.responseText());
     }
 
+    @Test
+    void sessionsTrace_returnsLastRunTrace(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildLoop(workspace);
+        var app = new RicbotApiServer.ApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "");
+        var chatHandler = new RicbotApiServer.ChatCompletionsHandler(app);
+        var sessionsHandler = new RicbotApiServer.SessionsHandler(app);
+
+        try {
+            TestExchange chat = postExchange("/v1/chat/completions", Map.of(
+                    "model", "gpt-4o-mini",
+                    "session_id", "trace-test",
+                    "messages", List.of(Map.of("role", "user", "content", "ping"))
+            ));
+            chatHandler.handle(chat);
+            assertEquals(200, chat.getResponseCode(), chat.responseText());
+
+            TestExchange trace = getExchange("/v1/sessions/trace-test/trace");
+            sessionsHandler.handle(trace);
+            assertEquals(200, trace.getResponseCode(), trace.responseText());
+            Map<String, Object> json = MAPPER.readValue(trace.responseText(), new TypeReference<>() {});
+            assertEquals("trace-test", String.valueOf(json.get("session_id")));
+            Map<String, Object> runTrace = (Map<String, Object>) json.get("run_trace");
+            assertEquals("stop", String.valueOf(runTrace.get("stop_reason")));
+            List<?> events = (List<?>) runTrace.get("events");
+            assertFalse(events.isEmpty(), trace.responseText());
+            Map<String, Object> contextTrace = (Map<String, Object>) json.get("context_trace");
+            assertEquals("interactive", String.valueOf(contextTrace.get("mode")));
+            assertTrue(contextTrace.containsKey("prompt_context_budget"), trace.responseText());
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void mcpHandler_returnsDashboard(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildLoop(workspace);
+        var app = new RicbotApiServer.ApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "");
+        var handler = new RicbotApiServer.McpHandler(app);
+
+        try {
+            TestExchange exchange = getExchange("/v1/mcp");
+            handler.handle(exchange);
+
+            assertEquals(200, exchange.getResponseCode(), exchange.responseText());
+            Map<String, Object> json = MAPPER.readValue(exchange.responseText(), new TypeReference<>() {});
+            assertTrue(json.containsKey("configured_count"), exchange.responseText());
+            assertTrue(json.containsKey("servers"), exchange.responseText());
+            assertTrue(json.containsKey("tools"), exchange.responseText());
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void memoryHandler_returnsGovernanceReport(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildLoop(workspace);
+        var app = new RicbotApiServer.ApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "");
+        var handler = new RicbotApiServer.MemoryHandler(app);
+
+        try {
+            TestExchange exchange = getExchange("/v1/memory");
+            handler.handle(exchange);
+
+            assertEquals(200, exchange.getResponseCode(), exchange.responseText());
+            Map<String, Object> json = MAPPER.readValue(exchange.responseText(), new TypeReference<>() {});
+            assertTrue(json.containsKey("entries_count"), exchange.responseText());
+            assertTrue(json.containsKey("candidates"), exchange.responseText());
+        } finally {
+            loop.stop();
+        }
+    }
+
     private static TestExchange postExchange(String path, Map<String, Object> body) throws Exception {
         String json = MAPPER.writeValueAsString(body);
         return new TestExchange("POST", URI.create("http://localhost" + path), json);

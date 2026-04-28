@@ -7,6 +7,7 @@ import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
 import lombok.extern.slf4j.Slf4j;
 import ricbot.domain.agent.AgentLoop;
+import ricbot.domain.agent.SessionRuntimeKeys;
 import ricbot.domain.hook.AgentHook;
 import ricbot.domain.hook.AgentHookContext;
 import ricbot.domain.message.OutboundMessage;
@@ -84,6 +85,9 @@ public class RicbotApiServer {
         HttpServer server = HttpServer.create(new InetSocketAddress(bindHost, port), 0);
         server.createContext("/v1/chat/completions", new ChatCompletionsHandler(appContext));
         server.createContext("/v1/models", new ModelsHandler(appContext));
+        server.createContext("/v1/sessions", new SessionsHandler(appContext));
+        server.createContext("/v1/mcp", new McpHandler(appContext));
+        server.createContext("/v1/memory", new MemoryHandler(appContext));
         server.createContext("/health", new HealthHandler(appContext));
         server.createContext("/", new WebUiHandler());
         server.setExecutor(Executors.newCachedThreadPool());
@@ -666,6 +670,156 @@ public class RicbotApiServer {
             }
 
             writeJson(exchange, 200, Map.of("status", "ok"));
+        }
+    }
+
+    /**
+     * GET /v1/sessions/{session_id}/trace
+     */
+    public static class SessionsHandler implements HttpHandler {
+        private final ApiAppContext appContext;
+
+        public SessionsHandler(ApiAppContext appContext) {
+            this.appContext = appContext;
+        }
+
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!"GET".equalsIgnoreCase(exchange.getRequestMethod())) {
+                writeErrorJson(exchange, 405, "不支持的 HTTP 方法", "invalid_request_error");
+                return;
+            }
+
+            if (!appContext.isAuthorized(exchange)) {
+                writeErrorJson(exchange, 401, "缺少或无效的 Bearer token", "authentication_error");
+                return;
+            }
+
+            String path = exchange.getRequestURI() != null ? exchange.getRequestURI().getPath() : "";
+            String sessionId = parseTraceSessionId(path);
+            if (sessionId == null || sessionId.isBlank()) {
+                writeErrorJson(exchange, 404, "资源不存在", "not_found");
+                return;
+            }
+
+            String sessionKey = "api:" + sessionId;
+            Session session = appContext.getAgentLoop().getSessions().getOrCreate(sessionKey);
+            Map<String, Object> metadata = session.getMetadata();
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("session_id", sessionId);
+            body.put("session_key", sessionKey);
+            body.put("message_count", session.getMessages().size());
+            body.put("updated_at", session.getUpdatedAt() != null ? session.getUpdatedAt().toString() : "");
+            body.put("run_trace", metadata.getOrDefault(SessionRuntimeKeys.RUN_TRACE_KEY, Map.of()));
+            body.put("context_trace", metadata.getOrDefault(SessionRuntimeKeys.CONTEXT_TRACE_KEY, Map.of()));
+            body.put("tool_trace", metadata.getOrDefault(SessionRuntimeKeys.TOOL_TRACE_KEY, List.of()));
+            body.put("task_state", metadata.getOrDefault(SessionRuntimeKeys.TASK_STATE_KEY, Map.of()));
+            writeJson(exchange, 200, body);
+        }
+
+        private static String parseTraceSessionId(String path) {
+            String prefix = "/v1/sessions/";
+            String suffix = "/trace";
+            if (path == null || !path.startsWith(prefix) || !path.endsWith(suffix)) {
+                return null;
+            }
+            String encoded = path.substring(prefix.length(), path.length() - suffix.length());
+            if (encoded.isBlank() || encoded.contains("/") || encoded.contains("..")) {
+                return null;
+            }
+            return java.net.URLDecoder.decode(encoded, StandardCharsets.UTF_8);
+        }
+    }
+
+    /**
+     * GET /v1/mcp
+     */
+    public static class McpHandler implements HttpHandler {
+        private final ApiAppContext appContext;
+
+        public McpHandler(ApiAppContext appContext) {
+            this.appContext = appContext;
+        }
+
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!"GET".equalsIgnoreCase(exchange.getRequestMethod())) {
+                writeErrorJson(exchange, 405, "不支持的 HTTP 方法", "invalid_request_error");
+                return;
+            }
+
+            if (!appContext.isAuthorized(exchange)) {
+                writeErrorJson(exchange, 401, "缺少或无效的 Bearer token", "authentication_error");
+                return;
+            }
+
+            writeJson(exchange, 200, appContext.getAgentLoop().getMcpLoader().dashboard(2));
+        }
+    }
+
+    /**
+     * GET /v1/memory
+     * POST /v1/memory/candidates/{id}/approve
+     * POST /v1/memory/candidates/{id}/reject
+     */
+    public static class MemoryHandler implements HttpHandler {
+        private final ApiAppContext appContext;
+
+        public MemoryHandler(ApiAppContext appContext) {
+            this.appContext = appContext;
+        }
+
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!appContext.isAuthorized(exchange)) {
+                writeErrorJson(exchange, 401, "缺少或无效的 Bearer token", "authentication_error");
+                return;
+            }
+
+            String method = exchange.getRequestMethod();
+            String path = exchange.getRequestURI() != null ? exchange.getRequestURI().getPath() : "";
+            if ("GET".equalsIgnoreCase(method) && "/v1/memory".equals(path)) {
+                writeJson(exchange, 200, appContext.getAgentLoop().getMemoryStore().memoryGovernanceReport());
+                return;
+            }
+
+            if ("POST".equalsIgnoreCase(method)) {
+                CandidateAction action = parseCandidateAction(path);
+                if (action != null) {
+                    boolean ok = switch (action.action()) {
+                        case "approve" -> appContext.getAgentLoop().getMemoryStore().approveMemoryCandidate(action.id());
+                        case "reject" -> appContext.getAgentLoop().getMemoryStore().rejectMemoryCandidate(action.id());
+                        default -> false;
+                    };
+                    if (!ok) {
+                        writeErrorJson(exchange, 404, "候选记忆不存在", "not_found");
+                        return;
+                    }
+                    writeJson(exchange, 200, appContext.getAgentLoop().getMemoryStore().memoryGovernanceReport());
+                    return;
+                }
+            }
+
+            writeErrorJson(exchange, 404, "资源不存在", "not_found");
+        }
+
+        private static CandidateAction parseCandidateAction(String path) {
+            String prefix = "/v1/memory/candidates/";
+            if (path == null || !path.startsWith(prefix)) {
+                return null;
+            }
+            String rest = path.substring(prefix.length());
+            String[] parts = rest.split("/");
+            if (parts.length != 2 || parts[0].isBlank() || parts[1].isBlank()) {
+                return null;
+            }
+            if (!"approve".equals(parts[1]) && !"reject".equals(parts[1])) {
+                return null;
+            }
+            return new CandidateAction(java.net.URLDecoder.decode(parts[0], StandardCharsets.UTF_8), parts[1]);
+        }
+
+        private record CandidateAction(String id, String action) {
         }
     }
 

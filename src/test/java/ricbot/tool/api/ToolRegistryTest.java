@@ -164,6 +164,9 @@ public class ToolRegistryTest {
         Files.writeString(skillDir.resolve("SKILL.md"), """
                 ---
                 description: Demo skill
+                version: 1.2.3
+                permissions: read, write
+                tools: read_file, write_file
                 ---
                 Demo body.
                 """);
@@ -174,7 +177,44 @@ public class ToolRegistryTest {
         Object out = registry.execute("read_skill", Map.of("name", "demo"));
 
         assertTrue(String.valueOf(out).contains("# Skill: demo"), String.valueOf(out));
+        assertTrue(String.valueOf(out).contains("version: 1.2.3"), String.valueOf(out));
+        assertTrue(String.valueOf(out).contains("risk: elevated"), String.valueOf(out));
+        assertTrue(String.valueOf(out).contains("permissions: read, write"), String.valueOf(out));
         assertTrue(String.valueOf(out).contains("Demo body."), String.valueOf(out));
+    }
+
+    @Test
+    void readSkillTool_supportsSectionAndChunkReads(@TempDir Path workspace) throws Exception {
+        Path skillDir = workspace.resolve("skills").resolve("demo");
+        Files.createDirectories(skillDir);
+        Files.writeString(skillDir.resolve("SKILL.md"), """
+                ---
+                description: Demo skill
+                ---
+                # Demo
+
+                Intro.
+
+                ## Usage
+
+                First line.
+                Second line.
+
+                ## Examples
+
+                Example body.
+                """);
+
+        ToolRegistry registry = new ToolRegistry();
+        registry.register(new ReadSkillTool(new SkillsLoader(workspace, null, Set.of())));
+
+        Object out = registry.execute("read_skill", Map.of("name", "demo", "section", "Usage", "max_chars", 18));
+        String text = String.valueOf(out);
+
+        assertTrue(text.contains("section: Usage"), text);
+        assertTrue(text.contains("truncated: true"), text);
+        assertTrue(text.contains("## Usage"), text);
+        assertFalse(text.contains("## Examples"), text);
     }
 
     @Test

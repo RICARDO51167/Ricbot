@@ -570,6 +570,10 @@ public class AgentLoop {
     public Dream getDream() { return dream; }
     public SubagentManager getSubagents() { return subagents; }
     public SessionManager getSessions() { return sessionManager; }
+
+    public MCPLoader getMcpLoader() { return mcpLoader; }
+
+    public MemoryStore getMemoryStore() { return memoryStore; }
     public Consolidator getConsolidator() { return consolidator; }
 
     private void scheduleNextDreamRun(long delayMillis) {

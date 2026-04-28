@@ -146,6 +146,59 @@ final class PromptContextBundle {
         return sb.toString().trim();
     }
 
+    Map<String, Object> budgetTrace() {
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("total_char_limit", totalCharLimit);
+        List<Map<String, Object>> sectionReports = new ArrayList<>();
+        int estimatedTotalChars = 0;
+        for (String key : ORDER) {
+            List<String> items = sections.getOrDefault(key, List.of());
+            SectionBudget budget = sectionBudgets.getOrDefault(
+                    key,
+                    new SectionBudget(DEFAULT_SECTION_ITEM_LIMIT, DEFAULT_SECTION_CHAR_LIMIT)
+            );
+            int emitted = 0;
+            int emittedChars = 0;
+            boolean truncated = false;
+            for (String item : items) {
+                if (emitted >= budget.maxItems() || estimatedTotalChars >= totalCharLimit) {
+                    truncated = true;
+                    break;
+                }
+                int renderedChars = ("- " + item + "\n").length();
+                int remainingSection = budget.maxChars() - emittedChars;
+                int remainingTotal = totalCharLimit - estimatedTotalChars;
+                int allowed = Math.min(remainingSection, remainingTotal);
+                if (allowed <= 0) {
+                    truncated = true;
+                    break;
+                }
+                emitted++;
+                int used = Math.min(renderedChars, allowed);
+                emittedChars += used;
+                estimatedTotalChars += used;
+                if (renderedChars > allowed) {
+                    truncated = true;
+                    break;
+                }
+            }
+
+            Map<String, Object> section = new LinkedHashMap<>();
+            section.put("name", key);
+            section.put("candidates", items.size());
+            section.put("emitted", emitted);
+            section.put("omitted", Math.max(0, items.size() - emitted));
+            section.put("max_items", budget.maxItems());
+            section.put("max_chars", budget.maxChars());
+            section.put("estimated_chars", emittedChars);
+            section.put("truncated", truncated || emitted < items.size());
+            sectionReports.add(section);
+        }
+        out.put("estimated_rendered_chars", estimatedTotalChars);
+        out.put("sections", sectionReports);
+        return out;
+    }
+
     private static void appendBudgetNotice(StringBuilder sb, int remainingItems) {
         if (remainingItems > 0) {
             sb.append("- ").append(TRUNCATED_MARKER).append(" ")

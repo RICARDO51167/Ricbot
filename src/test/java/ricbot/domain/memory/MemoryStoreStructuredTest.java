@@ -139,6 +139,48 @@ class MemoryStoreStructuredTest {
     }
 
     @Test
+    void sensitiveMemoryCandidatesRequireApprovalBeforeDrain(@TempDir Path workspace) {
+        MemoryStore store = new MemoryStore(workspace);
+
+        store.appendMemoryCandidates(List.of(
+                new MemoryEntry()
+                        .setType(MemoryEntry.TYPE_FACT)
+                        .setSummary("api key 是 secret-value")
+                        .setDetails("contains token")
+                        .setImportance(0.9d)
+        ));
+
+        List<MemoryEntry> candidates = store.readMemoryCandidates();
+        assertEquals(1, candidates.size());
+        MemoryEntry pending = candidates.get(0);
+        assertEquals(MemoryEntry.SENSITIVITY_SENSITIVE, pending.getSensitivity());
+        assertEquals(MemoryEntry.APPROVAL_PENDING, pending.getApprovalStatus());
+        assertTrue(store.drainMemoryCandidates().isEmpty());
+
+        assertTrue(store.approveMemoryCandidate(pending.getId()));
+        List<MemoryEntry> drained = store.drainMemoryCandidates();
+        assertEquals(1, drained.size());
+        assertEquals(MemoryEntry.APPROVAL_APPROVED, drained.get(0).getApprovalStatus());
+    }
+
+    @Test
+    void expiredMemoriesAreNotRecalled(@TempDir Path workspace) {
+        MemoryStore store = new MemoryStore(workspace);
+
+        store.mergeMemoryEntries(List.of(
+                new MemoryEntry()
+                        .setType(MemoryEntry.TYPE_PROJECT)
+                        .setScope(MemoryEntry.SCOPE_LONG_TERM)
+                        .setSummary("项目使用临时数据库")
+                        .setImportance(1.0d)
+                        .setConfidence(1.0d)
+                        .setExpiresAt(java.time.Instant.now().minusSeconds(60).toString())
+        ));
+
+        assertTrue(store.recallMemories("临时数据库", "", 3).isEmpty());
+    }
+
+    @Test
     void rebuildMarkdownViewsIfNeeded_rebuildsWhenStructuredEntriesAreNewer(@TempDir Path workspace) throws Exception {
         MemoryStore store = new MemoryStore(workspace);
 

@@ -35,7 +35,8 @@ class SessionPersistenceServiceTest {
                 List.of(Map.of("role", "assistant", "content", "old reply")),
                 List.of(),
                 null,
-                true
+                true,
+                Map.of("history_selected", 1, "combined_context_chars", 42)
         );
         ExecutionOutcome outcome = new ExecutionOutcome(
                 new AgentRunResult()
@@ -72,6 +73,8 @@ class SessionPersistenceServiceTest {
         assertTrue(toolContent.contains("(truncated)"));
         assertEquals("done", session.getMessages().get(2).get("content"));
         assertTrue(session.getMetadata().containsKey(SessionRuntimeKeys.TOOL_TRACE_KEY));
+        assertTrue(session.getMetadata().containsKey(SessionRuntimeKeys.CONTEXT_TRACE_KEY));
+        assertEquals(42, ((Map<?, ?>) session.getMetadata().get(SessionRuntimeKeys.CONTEXT_TRACE_KEY)).get("combined_context_chars"));
         assertEquals("completed", String.valueOf(((Map<?, ?>) session.getMetadata().get(SessionRuntimeKeys.TASK_STATE_KEY)).get("status")));
         assertFalse(session.getMetadata().containsKey(SessionRuntimeKeys.PENDING_USER_TURN_KEY));
         assertFalse(session.getMetadata().containsKey(SessionRuntimeKeys.RUNTIME_CHECKPOINT_KEY));

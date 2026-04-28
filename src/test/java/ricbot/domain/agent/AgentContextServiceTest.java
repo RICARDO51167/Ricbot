@@ -101,6 +101,12 @@ class AgentContextServiceTest {
         assertEquals(1, request.history().size());
         assertNotNull(request.hook());
         assertFalse(request.promptContext().isEmpty());
+        assertEquals(1, request.contextTrace().get("history_selected"));
+        assertTrue(request.contextTrace().containsKey("prompt_context_budget"));
+        Map<String, Object> budget = (Map<String, Object>) request.contextTrace().get("prompt_context_budget");
+        assertTrue(budget.containsKey("sections"));
+        Map<String, Object> skillTrace = (Map<String, Object>) request.contextTrace().get("skills");
+        assertEquals(1, skillTrace.get("selected_count"));
         String systemPrompt = String.valueOf(request.initialMessages().get(0).get("content"));
         assertTrue(systemPrompt.contains("remember this"));
         assertEquals(systemPrompt.indexOf("remember this"), systemPrompt.lastIndexOf("remember this"));

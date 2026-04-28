@@ -373,6 +373,31 @@ public class SkillRouterTest {
     }
 
     @Test
+    void skillsSummary_includesContractFields(@TempDir Path workspace) throws Exception {
+        Path skillsDir = workspace.resolve("skills");
+        Files.createDirectories(skillsDir.resolve("contract"));
+        Files.writeString(skillsDir.resolve("contract").resolve("SKILL.md"), """
+                ---
+                description: Contract skill.
+                metadata: |
+                  {"ricbot":{"version":"2.0.0","risk":"high","permissions":["network","write"],"tools":["web_fetch"],"requires":{"bins":["definitely_missing_contract_bin"],"env":["DEFINITELY_MISSING_CONTRACT_ENV"]}}}
+                ---
+                Contract body.
+                """);
+
+        SkillsLoader loader = new SkillsLoader(workspace, skillsDir, Set.of());
+        String summary = loader.buildSkillsSummary();
+
+        assertTrue(summary.contains("name=\"contract\""), summary);
+        assertTrue(summary.contains("version=\"2.0.0\""), summary);
+        assertTrue(summary.contains("risk=\"high\""), summary);
+        assertTrue(summary.contains("permissions=\"network,write\""), summary);
+        assertTrue(summary.contains("tools=\"web_fetch\""), summary);
+        assertTrue(summary.contains("missing_bins=\"definitely_missing_contract_bin\""), summary);
+        assertTrue(summary.contains("missing_env=\"DEFINITELY_MISSING_CONTRACT_ENV\""), summary);
+    }
+
+    @Test
     void selectAndRender_truncatesOversizedSkillInsteadOfDroppingIt(@TempDir Path workspace) throws Exception {
         Path skillsDir = workspace.resolve("skills");
         Files.createDirectories(skillsDir.resolve("large"));

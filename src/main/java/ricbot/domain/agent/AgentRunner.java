@@ -77,6 +77,8 @@ public class AgentRunner implements AutoCloseable {
      * @throws Exception 异常
      */
     public AgentRunResult run(AgentRunSpec spec) throws Exception {
+        String runId = UUID.randomUUID().toString();
+        Instant runStartedAt = Instant.now();
         // 初始化消息列表，如果 spec 中有初始消息则使用，否则为空列表
         List<Map<String, Object>> messages = new ArrayList<>(
                 spec.getInitialMessages() != null ? spec.getInitialMessages() : List.of()
@@ -88,6 +90,7 @@ public class AgentRunner implements AutoCloseable {
         List<String> toolsUsed = new ArrayList<>();
         // 记录工具执行事件列表
         List<Map<String, Object>> toolEvents = new ArrayList<>();
+        List<Map<String, Object>> runEvents = new ArrayList<>();
         // 标记是否有消息注入
         boolean hadInjections = false;
         // 最终内容
@@ -104,6 +107,7 @@ public class AgentRunner implements AutoCloseable {
         int toolErrorTurns = 0;
         // 消息注入的轮数计数器
         int injectionRounds = 0;
+        int iterationsCompleted = 0;
 
         // 获取钩子实现
         AgentHook hook = spec.getHook();
@@ -113,6 +117,7 @@ public class AgentRunner implements AutoCloseable {
 
         // 开始主循环，最多执行 spec.getMaxIterations() 次
         for (int iteration = 1; iteration <= spec.getMaxIterations(); iteration++) {
+            iterationsCompleted = iteration;
             // 创建钩子上下文，设置当前消息、迭代次数和会话 key
             AgentHookContext context = newHookContext(messages, iteration, spec.getSessionKey());
 
@@ -122,6 +127,11 @@ public class AgentRunner implements AutoCloseable {
             }
 
             LLMResponse response; // 声明 LLM 响应变量
+            Instant modelStartedAt = Instant.now();
+            runEvents.add(runEvent("model_request", iteration, Map.of(
+                    "message_count", messages.size(),
+                    "tool_definition_count", toolDefinitions.size()
+            )));
             try {
                 response = requestModel(spec, messages, toolDefinitions, hook, iteration);
             } catch (Exception e) {
@@ -137,8 +147,20 @@ public class AgentRunner implements AutoCloseable {
                 result.setError(e.getMessage());
                 result.setToolsUsed(toolsUsed);
                 result.setToolEvents(toolEvents);
+                runEvents.add(runEvent("model_error", iteration, Map.of(
+                        "error", e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName(),
+                        "duration_ms", Duration.between(modelStartedAt, Instant.now()).toMillis()
+                )));
+                finishRunResult(result, runId, runStartedAt, iterationsCompleted, runEvents);
                 return result; // 直接返回错误结果
             }
+            runEvents.add(runEvent("model_response", iteration, Map.of(
+                    "finish_reason", response.getFinishReason() != null ? response.getFinishReason() : "",
+                    "content_chars", response.getContent() != null ? response.getContent().length() : 0,
+                    "tool_call_count", response.getToolCalls() != null ? response.getToolCalls().size() : 0,
+                    "usage", response.getUsage() != null ? response.getUsage() : Map.of(),
+                    "duration_ms", Duration.between(modelStartedAt, Instant.now()).toMillis()
+            )));
 
             // 更新上下文中的响应、工具调用和使用量信息
             context.setResponse(response)
@@ -185,9 +207,20 @@ public class AgentRunner implements AutoCloseable {
 
             // 执行工具：根据配置选择并发或顺序执行
             int toolEventStart = toolEvents.size();
-            List<Map<String, Object>> toolResults = spec.isConcurrentTools()
-                    ? executeToolsConcurrent(tools, response.getToolCalls(), toolsUsed, toolEvents, spec)
-                    : executeToolsSequential(tools, response.getToolCalls(), toolsUsed, toolEvents, spec);
+            List<String> requestedToolNames = response.getToolCalls().stream().map(ToolCallRequest::getName).toList();
+            boolean concurrent = spec.isConcurrentTools() && tools != null && tools.canRunConcurrently(requestedToolNames);
+            runEvents.add(runEvent("tool_batch", iteration, Map.of(
+                    "tool_call_count", requestedToolNames.size(),
+                    "execution_mode", concurrent ? "concurrent" : "sequential",
+                    "tools", requestedToolNames
+            )));
+            List<Map<String, Object>> toolResults = concurrent
+                    ? executeToolsConcurrent(tools, response.getToolCalls(), toolsUsed, toolEvents, spec, iteration)
+                    : executeToolsSequential(tools, response.getToolCalls(), toolsUsed, toolEvents, spec, iteration);
+            final int eventIteration = iteration;
+            runEvents.addAll(toolEvents.subList(toolEventStart, toolEvents.size()).stream()
+                    .map(event -> runEvent("tool_call", eventIteration, event))
+                    .toList());
 
             // 将工具执行结果加入消息历史
             messages.addAll(toolResults);
@@ -251,7 +284,33 @@ public class AgentRunner implements AutoCloseable {
         result.setHadInjections(hadInjections);
         result.setToolsUsed(toolsUsed);
         result.setToolEvents(toolEvents);
+        finishRunResult(result, runId, runStartedAt, iterationsCompleted, runEvents);
         return result; // 返回结果
+    }
+
+    private void finishRunResult(
+            AgentRunResult result,
+            String runId,
+            Instant startedAt,
+            int iterations,
+            List<Map<String, Object>> runEvents
+    ) {
+        result.setRunId(runId);
+        result.setStartedAt(startedAt.toString());
+        result.setEndedAt(Instant.now().toString());
+        result.setIterations(iterations);
+        result.setRunEvents(runEvents);
+    }
+
+    private Map<String, Object> runEvent(String type, int iteration, Map<String, Object> values) {
+        Map<String, Object> event = new LinkedHashMap<>();
+        event.put("type", type);
+        event.put("iteration", iteration);
+        event.put("at", Instant.now().toString());
+        if (values != null) {
+            event.putAll(values);
+        }
+        return event;
     }
 
     private AgentHookContext newHookContext(List<Map<String, Object>> messages, int iteration, String sessionKey) {
@@ -393,13 +452,14 @@ public class AgentRunner implements AutoCloseable {
             List<ToolCallRequest> toolCalls,
             List<String> toolsUsed,
             List<Map<String, Object>> toolEvents,
-            AgentRunSpec spec
+            AgentRunSpec spec,
+            int iteration
     ) {
         List<Map<String, Object>> results = new ArrayList<>();
 
         // 遍历每个工具调用
         for (ToolCallRequest toolCall : toolCalls) {
-            ToolExecution out = executeSingleTool(tools, toolCall, spec); // 执行单个工具
+            ToolExecution out = executeSingleTool(tools, toolCall, spec, iteration); // 执行单个工具
             toolsUsed.add(out.name()); // 记录工具名
             toolEvents.add(out.event()); // 记录事件
             results.add(out.toolMsg()); // 添加结果消息
@@ -423,14 +483,15 @@ public class AgentRunner implements AutoCloseable {
             List<ToolCallRequest> toolCalls,
             List<String> toolsUsed,
             List<Map<String, Object>> toolEvents,
-            AgentRunSpec spec
+            AgentRunSpec spec,
+            int iteration
     ) {
         CompletionService<IndexedToolExecution> cs = new ExecutorCompletionService<>(toolExecutor);
         int submitted = 0;
         for (int i = 0; i < toolCalls.size(); i++) {
             ToolCallRequest toolCall = toolCalls.get(i);
             int index = i;
-            cs.submit(() -> new IndexedToolExecution(index, executeSingleTool(tools, toolCall, spec)));
+            cs.submit(() -> new IndexedToolExecution(index, executeSingleTool(tools, toolCall, spec, iteration)));
             submitted++;
         }
 
@@ -473,7 +534,7 @@ public class AgentRunner implements AutoCloseable {
      * @param spec 运行规格
      * @return ToolExecution 包含工具名、结果消息和事件
      */
-    private ToolExecution executeSingleTool(ToolRegistry tools, ToolCallRequest toolCall, AgentRunSpec spec) {
+    private ToolExecution executeSingleTool(ToolRegistry tools, ToolCallRequest toolCall, AgentRunSpec spec, int iteration) {
         String toolName = toolCall.getName(); // 获取工具名
         if (spec.getToolLifecycleCallback() != null) {
             spec.getToolLifecycleCallback().onToolStart(toolName, toolCall.getArguments());
@@ -522,7 +583,15 @@ public class AgentRunner implements AutoCloseable {
         event.put("name", toolName);
         event.put("status", status);
         event.put("detail", detail);
+        event.put("iteration", iteration);
         event.put("tool_call_id", toolCall.getId());
+        if (tools != null) {
+            ToolRegistry.ToolPolicy policy = tools.policyFor(toolName);
+            event.put("read_only", policy.readOnly());
+            event.put("exclusive", policy.exclusive());
+            event.put("concurrent_safe", policy.concurrentSafe());
+            event.put("risk", policy.risk());
+        }
         event.put("arguments_summary", summarizeArgs(toolCall.getArguments()));
         event.put("result_summary", summarizeResult(contentObj));
         event.put("duration_ms", Duration.between(startedAt, Instant.now()).toMillis());

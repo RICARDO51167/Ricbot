@@ -60,6 +60,8 @@ final class SessionPersistenceService {
         saveTurn(session, outcome.runResult().getMessages(), saveSkip);
         // 更新工具调用轨迹
         updateToolTrace(session, outcome.runResult());
+        updateRunTrace(session, outcome.runResult());
+        updateContextTrace(session, request.contextTrace());
         // 更新任务状态（完成或阻塞）
         updateTaskState(session, outcome);
         appendMemoryCandidates(request.message(), outcome);
@@ -99,6 +101,8 @@ final class SessionPersistenceService {
         saveTurn(session, outcome.runResult().getMessages(), 1 + request.history().size());
         // 更新工具调用轨迹
         updateToolTrace(session, outcome.runResult());
+        updateRunTrace(session, outcome.runResult());
+        updateContextTrace(session, request.contextTrace());
         // 更新任务状态
         updateTaskState(session, outcome);
         // 清理会话元数据中的临时运行时键
@@ -222,6 +226,33 @@ final class SessionPersistenceService {
                 SessionRuntimeKeys.TOOL_TRACE_KEY,
                 new java.util.ArrayList<>(traces.subList(Math.max(0, traces.size() - keep), traces.size()))
         );
+    }
+
+    private void updateRunTrace(Session session, AgentRunResult result) {
+        if (result == null) {
+            return;
+        }
+        Map<String, Object> trace = new LinkedHashMap<>();
+        trace.put("run_id", result.getRunId());
+        trace.put("started_at", result.getStartedAt());
+        trace.put("ended_at", result.getEndedAt());
+        trace.put("iterations", result.getIterations());
+        trace.put("stop_reason", result.getStopReason());
+        trace.put("error", result.getError());
+        trace.put("tools_used", result.getToolsUsed());
+        trace.put("usage", result.getUsage());
+
+        List<Map<String, Object>> events = result.getRunEvents() != null ? result.getRunEvents() : List.of();
+        int keep = Math.min(80, events.size());
+        trace.put("events", new java.util.ArrayList<>(events.subList(Math.max(0, events.size() - keep), events.size())));
+        session.getMetadata().put(SessionRuntimeKeys.RUN_TRACE_KEY, trace);
+    }
+
+    private void updateContextTrace(Session session, Map<String, Object> contextTrace) {
+        if (contextTrace == null || contextTrace.isEmpty()) {
+            return;
+        }
+        session.getMetadata().put(SessionRuntimeKeys.CONTEXT_TRACE_KEY, new LinkedHashMap<>(contextTrace));
     }
 
     /**

@@ -287,6 +287,7 @@ public class MemoryStore {
                 if (candidate == null || candidate.getSummary() == null || candidate.getSummary().isBlank()) {
                     continue;
                 }
+                applyCandidateGovernance(candidate);
                 MemoryEntry current = byKey.get(candidate.dedupeKey());
                 if (current == null) {
                     byKey.put(candidate.dedupeKey(), candidate);
@@ -298,6 +299,10 @@ public class MemoryStore {
                     }
                     current.getTags().addAll(candidate.getTags());
                     current.setTags(current.getTags().stream().distinct().toList());
+                    if (MemoryEntry.SENSITIVITY_SENSITIVE.equals(candidate.getSensitivity())) {
+                        current.setSensitivity(MemoryEntry.SENSITIVITY_SENSITIVE);
+                        current.setApprovalStatus(MemoryEntry.APPROVAL_PENDING);
+                    }
                     current.touch();
                 }
             }
@@ -316,17 +321,26 @@ public class MemoryStore {
 
     public List<MemoryEntry> drainMemoryCandidates() {
         List<MemoryEntry> entries = readMemoryCandidates();
+        List<MemoryEntry> approved = entries.stream()
+                .filter(entry -> MemoryEntry.APPROVAL_APPROVED.equals(entry.getApprovalStatus()))
+                .filter(entry -> !entry.isExpired())
+                .toList();
+        List<MemoryEntry> retained = entries.stream()
+                .filter(entry -> !MemoryEntry.APPROVAL_APPROVED.equals(entry.getApprovalStatus()))
+                .filter(entry -> !MemoryEntry.APPROVAL_REJECTED.equals(entry.getApprovalStatus()))
+                .filter(entry -> !entry.isExpired())
+                .toList();
         if (!entries.isEmpty()) {
             try {
-                Files.writeString(memoryCandidatesFile, "", StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+                writeMemoryCandidateFile(retained);
             } catch (IOException e) {
-                log.warn("清空即时记忆候选失败: {}", memoryCandidatesFile, e);
+                log.warn("更新即时记忆候选失败: {}", memoryCandidatesFile, e);
             }
         }
-        return entries;
+        return approved;
     }
 
-    private List<MemoryEntry> readMemoryCandidates() {
+    public List<MemoryEntry> readMemoryCandidates() {
         if (!Files.exists(memoryCandidatesFile)) {
             return List.of();
         }
@@ -347,6 +361,66 @@ public class MemoryStore {
             log.warn("读取即时记忆候选失败: {}", memoryCandidatesFile, e);
         }
         return entries;
+    }
+
+    public boolean approveMemoryCandidate(String id) {
+        return updateMemoryCandidateApproval(id, MemoryEntry.APPROVAL_APPROVED);
+    }
+
+    public boolean rejectMemoryCandidate(String id) {
+        return updateMemoryCandidateApproval(id, MemoryEntry.APPROVAL_REJECTED);
+    }
+
+    public Map<String, Object> memoryGovernanceReport() {
+        List<MemoryEntry> entries = readMemoryEntries();
+        List<MemoryEntry> candidates = readMemoryCandidates();
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("entries_count", entries.size());
+        out.put("active_count", entries.stream().filter(MemoryEntry::isActive).count());
+        out.put("expired_count", entries.stream().filter(MemoryEntry::isExpired).count());
+        out.put("candidates_count", candidates.size());
+        out.put("pending_candidates", candidates.stream().filter(MemoryEntry::requiresApproval).count());
+        out.put("sensitive_candidates", candidates.stream()
+                .filter(entry -> MemoryEntry.SENSITIVITY_SENSITIVE.equals(entry.getSensitivity()))
+                .count());
+        out.put("candidates", candidates.stream().map(MemoryEntry::toMap).toList());
+        return out;
+    }
+
+    private boolean updateMemoryCandidateApproval(String id, String approvalStatus) {
+        if (id == null || id.isBlank()) {
+            return false;
+        }
+        List<MemoryEntry> candidates = new ArrayList<>(readMemoryCandidates());
+        boolean updated = false;
+        for (MemoryEntry candidate : candidates) {
+            if (id.equals(candidate.getId())) {
+                candidate.setApprovalStatus(approvalStatus);
+                candidate.touch();
+                updated = true;
+            }
+        }
+        if (!updated) {
+            return false;
+        }
+        try {
+            writeMemoryCandidateFile(candidates);
+        } catch (IOException e) {
+            throw new RuntimeException("更新即时记忆候选失败: " + memoryCandidatesFile, e);
+        }
+        return true;
+    }
+
+    private void writeMemoryCandidateFile(List<MemoryEntry> candidates) throws IOException {
+        Files.createDirectories(memoryCandidatesFile.getParent());
+        StringBuilder sb = new StringBuilder();
+        for (MemoryEntry candidate : candidates != null ? candidates : List.<MemoryEntry>of()) {
+            if (candidate == null || candidate.getSummary() == null || candidate.getSummary().isBlank()) {
+                continue;
+            }
+            sb.append(MAPPER.writeValueAsString(candidate.toMap())).append("\n");
+        }
+        Files.writeString(memoryCandidatesFile, sb.toString(), StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
     }
 
     /**
@@ -426,6 +500,9 @@ public class MemoryStore {
         for (MemoryEntry candidate : candidates != null ? candidates : List.<MemoryEntry>of()) {
             // 跳过无效或摘要为空的候选条目
             if (candidate == null || candidate.getSummary() == null || candidate.getSummary().isBlank()) {
+                continue;
+            }
+            if (!MemoryEntry.APPROVAL_APPROVED.equals(candidate.getApprovalStatus()) || candidate.isExpired()) {
                 continue;
             }
             // 获取候选条目的去重键
@@ -592,6 +669,47 @@ public class MemoryStore {
             writeMemoryEntries(allEntries);
         }
         return selected;
+    }
+
+    private void applyCandidateGovernance(MemoryEntry candidate) {
+        if (candidate.getSource() == null || candidate.getSource().isBlank()) {
+            candidate.setSource("candidate");
+        }
+        if (candidate.getSourceDetail() == null || candidate.getSourceDetail().isBlank()) {
+            candidate.setSourceDetail("user_turn");
+        }
+        if (candidate.getCreatedAt() == null || candidate.getCreatedAt().isBlank()) {
+            candidate.setCreatedAt(Instant.now().toString());
+        }
+        if (candidate.getScope().equals(MemoryEntry.SCOPE_SHORT_TERM) && candidate.getExpiresAt() == null) {
+            candidate.setExpiresAt(Instant.now().plus(java.time.Duration.ofDays(7)).toString());
+        }
+        if (isSensitiveMemory(candidate)) {
+            candidate.setSensitivity(MemoryEntry.SENSITIVITY_SENSITIVE);
+            candidate.setApprovalStatus(MemoryEntry.APPROVAL_PENDING);
+            if (!candidate.getTags().contains("sensitive")) {
+                List<String> tags = new ArrayList<>(candidate.getTags());
+                tags.add("sensitive");
+                candidate.setTags(tags);
+            }
+        } else if (candidate.getApprovalStatus() == null || candidate.getApprovalStatus().isBlank()) {
+            candidate.setApprovalStatus(MemoryEntry.APPROVAL_APPROVED);
+        }
+    }
+
+    private boolean isSensitiveMemory(MemoryEntry entry) {
+        String text = ((entry.getSummary() != null ? entry.getSummary() : "") + " " + (entry.getDetails() != null ? entry.getDetails() : ""))
+                .toLowerCase(Locale.ROOT);
+        return text.contains("api key")
+                || text.contains("apikey")
+                || text.contains("token")
+                || text.contains("password")
+                || text.contains("secret")
+                || text.contains("密钥")
+                || text.contains("密码")
+                || text.contains("令牌")
+                || text.contains("身份证")
+                || text.contains("银行卡");
     }
 
     /**

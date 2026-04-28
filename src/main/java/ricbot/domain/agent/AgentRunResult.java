@@ -60,6 +60,19 @@ public class AgentRunResult {
      */
     private List<Map<String, Object>> toolEvents = new ArrayList<>();
 
+    /**
+     * 单次运行的结构化事件轨迹。
+     */
+    private List<Map<String, Object>> runEvents = new ArrayList<>();
+
+    private String runId;
+
+    private String startedAt;
+
+    private String endedAt;
+
+    private int iterations;
+
     public void setToolsUsed(List<String> toolsUsed) {
         this.toolsUsed = toolsUsed != null ? toolsUsed : new ArrayList<>();
     }
@@ -76,6 +89,11 @@ public class AgentRunResult {
 
     public AgentRunResult setToolEvents(List<Map<String, Object>> toolEvents) {
         this.toolEvents = toolEvents != null ? toolEvents : new ArrayList<>();
+        return this;
+    }
+
+    public AgentRunResult setRunEvents(List<Map<String, Object>> runEvents) {
+        this.runEvents = runEvents != null ? runEvents : new ArrayList<>();
         return this;
     }
 }

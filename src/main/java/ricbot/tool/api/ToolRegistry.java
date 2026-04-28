@@ -116,6 +116,34 @@ public class ToolRegistry {
         return tools.get(name);
     }
 
+    public ToolPolicy policyFor(String name) {
+        Tool tool = tools.get(name);
+        if (tool == null) {
+            return new ToolPolicy(name, false, false, true, "missing");
+        }
+        boolean readOnly = tool.isReadOnly();
+        boolean exclusive = tool.isExclusive();
+        return new ToolPolicy(
+                name,
+                readOnly,
+                exclusive,
+                !exclusive && readOnly,
+                readOnly ? "read_only" : "side_effect"
+        );
+    }
+
+    public boolean canRunConcurrently(Collection<String> names) {
+        if (names == null || names.isEmpty()) {
+            return true;
+        }
+        for (String name : names) {
+            if (!policyFor(name).concurrentSafe()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     /**
      * 从工具的模式（Schema）中提取工具名称
      * 支持两种格式：直接包含 "name" 字段，或包含在 "function" 对象中的 "name" 字段
@@ -313,6 +341,8 @@ public class ToolRegistry {
      * @param error 错误信息，如果没有错误则为 null
      */
     public record PrepareResult(Tool tool, Object params, String error) {}
+
+    public record ToolPolicy(String name, boolean readOnly, boolean exclusive, boolean concurrentSafe, String risk) {}
 
     @RequiredArgsConstructor
     private static final class LegacyToolExecutor<T extends Tool> {

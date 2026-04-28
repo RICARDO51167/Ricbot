@@ -24,6 +24,13 @@ public class MemoryEntry {
     public static final String STATUS_MERGED = "merged";
     public static final String STATUS_DISCARDED = "discarded";
 
+    public static final String SENSITIVITY_NORMAL = "normal";
+    public static final String SENSITIVITY_SENSITIVE = "sensitive";
+
+    public static final String APPROVAL_APPROVED = "approved";
+    public static final String APPROVAL_PENDING = "pending";
+    public static final String APPROVAL_REJECTED = "rejected";
+
     private String id = UUID.randomUUID().toString();
     private String type = TYPE_FACT;
     private String scope = SCOPE_SHORT_TERM;
@@ -36,6 +43,10 @@ public class MemoryEntry {
     private String createdAt = Instant.now().toString();
     private String updatedAt = Instant.now().toString();
     private String source = "";
+    private String sourceDetail = "";
+    private String expiresAt;
+    private String sensitivity = SENSITIVITY_NORMAL;
+    private String approvalStatus = APPROVAL_APPROVED;
     private String status = STATUS_ACTIVE;
     private List<String> aliases = new ArrayList<>();
     private List<String> tags = new ArrayList<>();
@@ -57,6 +68,10 @@ public class MemoryEntry {
         entry.createdAt = stringValue(raw.get("created_at"), entry.createdAt);
         entry.updatedAt = stringValue(raw.get("updated_at"), entry.updatedAt);
         entry.source = stringValue(raw.get("source"), "");
+        entry.sourceDetail = stringValue(raw.get("source_detail"), "");
+        entry.expiresAt = blankToNull(stringValue(raw.get("expires_at"), null));
+        entry.sensitivity = normalizeSensitivity(stringValue(raw.get("sensitivity"), entry.sensitivity));
+        entry.approvalStatus = normalizeApprovalStatus(stringValue(raw.get("approval_status"), entry.approvalStatus));
         entry.status = normalizeStatus(stringValue(raw.get("status"), entry.status));
         entry.aliases = toStringList(raw.get("aliases"));
         entry.tags = toStringList(raw.get("tags"));
@@ -77,6 +92,10 @@ public class MemoryEntry {
         out.put("created_at", createdAt);
         out.put("updated_at", updatedAt);
         out.put("source", source);
+        out.put("source_detail", sourceDetail);
+        out.put("expires_at", expiresAt);
+        out.put("sensitivity", sensitivity);
+        out.put("approval_status", approvalStatus);
         out.put("status", status);
         out.put("aliases", aliases != null ? aliases : List.of());
         out.put("tags", tags != null ? tags : List.of());
@@ -105,6 +124,12 @@ public class MemoryEntry {
         if (!isActive()) {
             return false;
         }
+        if (isExpired()) {
+            return false;
+        }
+        if (!APPROVAL_APPROVED.equals(approvalStatus)) {
+            return false;
+        }
         if (SCOPE_DISCARDABLE.equals(scope)) {
             return false;
         }
@@ -113,6 +138,21 @@ public class MemoryEntry {
 
     public boolean isUserProfile() {
         return TYPE_PREFERENCE.equals(type) || TYPE_PERSON.equals(type);
+    }
+
+    public boolean isExpired() {
+        if (expiresAt == null || expiresAt.isBlank()) {
+            return false;
+        }
+        try {
+            return Instant.parse(expiresAt).isBefore(Instant.now());
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    public boolean requiresApproval() {
+        return SENSITIVITY_SENSITIVE.equals(sensitivity) || APPROVAL_PENDING.equals(approvalStatus);
     }
 
     public boolean isSoulEntry() {
@@ -215,6 +255,20 @@ public class MemoryEntry {
             return status;
         }
         return STATUS_ACTIVE;
+    }
+
+    public static String normalizeSensitivity(String sensitivity) {
+        if (SENSITIVITY_SENSITIVE.equals(sensitivity) || SENSITIVITY_NORMAL.equals(sensitivity)) {
+            return sensitivity;
+        }
+        return SENSITIVITY_NORMAL;
+    }
+
+    public static String normalizeApprovalStatus(String status) {
+        if (APPROVAL_APPROVED.equals(status) || APPROVAL_PENDING.equals(status) || APPROVAL_REJECTED.equals(status)) {
+            return status;
+        }
+        return APPROVAL_APPROVED;
     }
 
     public String getId() {
@@ -328,6 +382,42 @@ public class MemoryEntry {
 
     public MemoryEntry setSource(String source) {
         this.source = source != null ? source : "";
+        return this;
+    }
+
+    public String getSourceDetail() {
+        return sourceDetail;
+    }
+
+    public MemoryEntry setSourceDetail(String sourceDetail) {
+        this.sourceDetail = sourceDetail != null ? sourceDetail : "";
+        return this;
+    }
+
+    public String getExpiresAt() {
+        return expiresAt;
+    }
+
+    public MemoryEntry setExpiresAt(String expiresAt) {
+        this.expiresAt = blankToNull(expiresAt);
+        return this;
+    }
+
+    public String getSensitivity() {
+        return sensitivity;
+    }
+
+    public MemoryEntry setSensitivity(String sensitivity) {
+        this.sensitivity = normalizeSensitivity(sensitivity);
+        return this;
+    }
+
+    public String getApprovalStatus() {
+        return approvalStatus;
+    }
+
+    public MemoryEntry setApprovalStatus(String approvalStatus) {
+        this.approvalStatus = normalizeApprovalStatus(approvalStatus);
         return this;
     }
 

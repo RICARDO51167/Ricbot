@@ -162,6 +162,44 @@ public class MCPLoader implements AutoCloseable {
         return statuses;
     }
 
+    public synchronized Map<String, Object> dashboard(int healthTimeoutSeconds) {
+        Map<String, Config.MCPServerConfig> parsed = MCPAdapters.parseMcpServers(serverConfigs);
+        Map<String, String> statuses = getServerStatuses();
+        Map<String, MCPAdapters.MCPServerHealth> healthByName = new LinkedHashMap<>();
+        for (MCPAdapters.MCPServerHealth health : MCPAdapters.healthReport(connections, healthTimeoutSeconds)) {
+            healthByName.put(health.name(), health);
+        }
+
+        List<Map<String, Object>> servers = new ArrayList<>();
+        Set<String> names = new TreeSet<>();
+        names.addAll(parsed.keySet());
+        names.addAll(statuses.keySet());
+        for (String name : names) {
+            Config.MCPServerConfig cfg = parsed.get(name);
+            MCPAdapters.MCPServerHealth health = healthByName.get(name);
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("name", name);
+            row.put("status", statuses.getOrDefault(name, "disconnected"));
+            row.put("health", health != null ? health.status() : statuses.getOrDefault(name, "disconnected"));
+            row.put("tool_count", health != null ? health.toolCount() : countRegisteredTools(name));
+            row.put("registered_count", countRegisteredTools(name));
+            row.put("error", health != null ? health.error() : "");
+            if (cfg != null) {
+                row.put("type", resolveType(cfg));
+                row.put("tool_timeout", cfg.getToolTimeout());
+                row.put("enabled_tools", cfg.getEnabledTools());
+            }
+            servers.add(row);
+        }
+
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("configured_count", parsed.size());
+        body.put("connected_count", connections.size());
+        body.put("servers", servers);
+        body.put("tools", registeredMcpTools());
+        return body;
+    }
+
     /**
      * 获取所有已建立的 MCP 服务器连接
      *
@@ -170,6 +208,59 @@ public class MCPLoader implements AutoCloseable {
     public synchronized Map<String, MCPServerConnection> getConnections() {
         // 返回一个不可修改的 LinkedHashMap 副本，防止外部修改内部状态
         return Collections.unmodifiableMap(new LinkedHashMap<>(connections));
+    }
+
+    private List<Map<String, Object>> registeredMcpTools() {
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (String toolName : registry.toolNames()) {
+            if (!toolName.startsWith("mcp_")) {
+                continue;
+            }
+            ToolRegistry.ToolPolicy policy = registry.policyFor(toolName);
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("name", toolName);
+            row.put("server", serverNameFromTool(toolName));
+            row.put("read_only", policy.readOnly());
+            row.put("exclusive", policy.exclusive());
+            row.put("concurrent_safe", policy.concurrentSafe());
+            row.put("risk", policy.risk());
+            out.add(row);
+        }
+        return out;
+    }
+
+    private int countRegisteredTools(String serverName) {
+        String prefix = "mcp_" + serverName + "_";
+        int count = 0;
+        for (String toolName : registry.toolNames()) {
+            if (toolName.startsWith(prefix)) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private String serverNameFromTool(String toolName) {
+        if (toolName == null || !toolName.startsWith("mcp_")) {
+            return "";
+        }
+        String rest = toolName.substring("mcp_".length());
+        int idx = rest.indexOf('_');
+        return idx > 0 ? rest.substring(0, idx) : rest;
+    }
+
+    private String resolveType(Config.MCPServerConfig cfg) {
+        String type = cfg.getType();
+        if (type != null && !type.isBlank()) {
+            return type;
+        }
+        if (cfg.getCommand() != null && !cfg.getCommand().isBlank()) {
+            return "stdio";
+        }
+        if (cfg.getUrl() != null && !cfg.getUrl().isBlank()) {
+            return cfg.getUrl().replaceAll("/+$", "").endsWith("/sse") ? "sse" : "streamableHttp";
+        }
+        return "unknown";
     }
 
     /**
