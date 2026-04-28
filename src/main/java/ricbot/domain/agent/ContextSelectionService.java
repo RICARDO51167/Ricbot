@@ -27,6 +27,7 @@ final class ContextSelectionService {
     
     // 工具调用轨迹摘要器，用于生成工具调用的简要描述
     private final ToolTraceSummarizer toolTraceSummarizer;
+    private final int contextWindowTokens;
 
     /**
      * 构造函数，初始化记忆存储和工具轨迹摘要器。
@@ -35,8 +36,13 @@ final class ContextSelectionService {
      * @param toolTraceSummarizer 工具轨迹摘要器实例
      */
     ContextSelectionService(MemoryStore memoryStore, ToolTraceSummarizer toolTraceSummarizer) {
+        this(memoryStore, toolTraceSummarizer, 0);
+    }
+
+    ContextSelectionService(MemoryStore memoryStore, ToolTraceSummarizer toolTraceSummarizer, int contextWindowTokens) {
         this.memoryStore = memoryStore;
         this.toolTraceSummarizer = toolTraceSummarizer;
+        this.contextWindowTokens = contextWindowTokens;
     }
 
     /**
@@ -61,7 +67,7 @@ final class ContextSelectionService {
         List<Map<String, Object>> history = selectHistory(sessionMessages, currentMessage, taskState, historyWindowMessages);
         
         // 创建上下文 bundle 用于收集各类上下文信息
-        PromptContextBundle bundle = new PromptContextBundle();
+        PromptContextBundle bundle = PromptContextBundle.forContextWindow(contextWindowTokens);
 
         // 如果存在归档摘要且不为空，则添加到上下文中
         if (preparedInputs.archivedSummary() != null && !preparedInputs.archivedSummary().isBlank()) {
@@ -82,6 +88,9 @@ final class ContextSelectionService {
             }
             if (!taskState.nextAction().isBlank()) {
                 bundle.addItem("task_state", "next_action: " + taskState.nextAction());
+            }
+            for (TaskState.TaskStep step : taskState.steps()) {
+                bundle.addItem("task_state", "step " + step.id() + ": " + step.title() + " [" + step.status() + "]");
             }
         }
 
@@ -166,7 +175,7 @@ final class ContextSelectionService {
             String role = String.valueOf(msg.getOrDefault("role", ""));
             String content = String.valueOf(msg.getOrDefault("content", ""));
             
-            // 计算重叠得分、近期加分和角色权重
+            // 计算重叠得分、近期加分和角色权重。角色权重只作为轻微 tie-breaker，避免旧用户消息因角色过度入选。
             double score = overlapScore(queryTokens, tokenize(content));
             score += recencyBonus(i, older.size());
             score += roleWeight(role);
@@ -265,14 +274,49 @@ final class ContextSelectionService {
             return out;
         }
         
-        // 使用正则表达式分割文本，并转换为小写
-        for (String token : TOKEN_SPLIT.split(text.toLowerCase(Locale.ROOT))) {
+        String normalized = text.toLowerCase(Locale.ROOT);
+        for (String token : TOKEN_SPLIT.split(normalized)) {
             // 只保留长度大于等于2的 token
             if (token.length() >= 2) {
                 out.add(token);
             }
         }
+        addCjkNgrams(normalized, out);
         return out;
+    }
+
+    private void addCjkNgrams(String text, Set<String> out) {
+        StringBuilder cjk = new StringBuilder();
+        for (int i = 0; i < text.length(); i++) {
+            char ch = text.charAt(i);
+            if (isCjk(ch)) {
+                cjk.append(ch);
+            } else {
+                addNgrams(cjk, out);
+                cjk.setLength(0);
+            }
+        }
+        addNgrams(cjk, out);
+    }
+
+    private void addNgrams(StringBuilder cjk, Set<String> out) {
+        int len = cjk.length();
+        for (int n : List.of(2, 3)) {
+            if (len < n) {
+                continue;
+            }
+            for (int i = 0; i <= len - n; i++) {
+                out.add(cjk.substring(i, i + n));
+            }
+        }
+    }
+
+    private boolean isCjk(char ch) {
+        Character.UnicodeScript script = Character.UnicodeScript.of(ch);
+        return script == Character.UnicodeScript.HAN
+                || script == Character.UnicodeScript.HIRAGANA
+                || script == Character.UnicodeScript.KATAKANA
+                || script == Character.UnicodeScript.HANGUL;
     }
 
     /**
@@ -290,8 +334,10 @@ final class ContextSelectionService {
         // 计算命中次数
         long hits = contentTokens.stream().filter(queryTokens::contains).count();
         
-        // 返回命中率
-        return (double) hits / Math.max(1d, queryTokens.size());
+        // 同时考虑 query 覆盖率和内容覆盖率，降低长文本只碰巧命中少量词时的得分。
+        double queryCoverage = (double) hits / Math.max(1d, queryTokens.size());
+        double contentCoverage = (double) hits / Math.max(1d, Math.min(contentTokens.size(), queryTokens.size() * 2));
+        return (queryCoverage * 0.75d) + (contentCoverage * 0.25d);
     }
 
     /**
@@ -306,7 +352,7 @@ final class ContextSelectionService {
             return 0d;
         }
         // 线性加分，最大为 0.5
-        return 0.5d * ((double) (index + 1) / (double) total);
+        return 0.35d * ((double) (index + 1) / (double) total);
     }
 
     /**
@@ -317,13 +363,13 @@ final class ContextSelectionService {
      */
     private double roleWeight(String role) {
         if ("user".equals(role)) {
-            return 0.6d; // 用户消息权重最高
+            return 0.2d;
         }
         if ("assistant".equals(role)) {
-            return 0.3d; // 助手消息权重次之
+            return 0.12d;
         }
         if ("tool".equals(role)) {
-            return 0.1d; // 工具消息权重最低
+            return 0.04d;
         }
         return 0d;
     }

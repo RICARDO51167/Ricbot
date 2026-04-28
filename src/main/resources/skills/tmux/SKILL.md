@@ -1,6 +1,7 @@
 ---
 name: tmux
 description: 通过发送按键并抓取窗格输出来远程控制 tmux 会话，用于交互式 CLI。
+keywords: tmux, tty, 交互式, 终端会话, repl, attach, capture-pane
 metadata: {"ricbot":{"emoji":"🧵","os":["darwin","linux"],"requires":{"bins":["tmux"]}}}
 ---
 

@@ -67,6 +67,78 @@ class MemoryStoreStructuredTest {
     }
 
     @Test
+    void sessionSummariesAreTypedAndStillRecallable(@TempDir Path workspace) {
+        MemoryStore store = new MemoryStore(workspace);
+
+        store.appendSessionSummary("用户讨论过 MCP streamable HTTP 超时");
+
+        List<Map<String, Object>> unprocessed = store.readUnprocessedHistory(0);
+        assertEquals(1, unprocessed.size());
+        assertEquals("session_summary", unprocessed.get(0).get("type"));
+
+        List<String> recalled = store.recallArchivedHistory("MCP 超时", 3);
+        assertEquals(1, recalled.size());
+        assertTrue(recalled.get(0).contains("session summary"), recalled.get(0));
+        assertTrue(recalled.get(0).contains("MCP streamable HTTP 超时"), recalled.get(0));
+    }
+
+    @Test
+    void recallMemories_usesChineseNgramsAndFieldWeights(@TempDir Path workspace) {
+        MemoryStore store = new MemoryStore(workspace);
+
+        MemoryEntry target = new MemoryEntry()
+                .setType(MemoryEntry.TYPE_PROJECT)
+                .setScope(MemoryEntry.SCOPE_LONG_TERM)
+                .setSummary("项目使用飞书审批流程")
+                .setDetails("相关实现位于渠道集成模块")
+                .setImportance(0.7d)
+                .setConfidence(0.9d)
+                .setTags(List.of("feishu"));
+        MemoryEntry unrelated = new MemoryEntry()
+                .setType(MemoryEntry.TYPE_PROJECT)
+                .setScope(MemoryEntry.SCOPE_LONG_TERM)
+                .setSummary("项目使用 Java 17")
+                .setDetails("构建基于 Maven")
+                .setImportance(0.9d)
+                .setConfidence(0.9d);
+        store.mergeMemoryEntries(List.of(unrelated, target));
+
+        List<MemoryEntry> recalled = store.recallMemories("继续做飞书审批", "", 1);
+
+        assertEquals(1, recalled.size());
+        assertEquals("项目使用飞书审批流程", recalled.get(0).getSummary());
+        assertEquals(1, store.readMemoryEntries().stream()
+                .filter(entry -> "项目使用飞书审批流程".equals(entry.getSummary()))
+                .findFirst()
+                .orElseThrow()
+                .getAccessCount());
+    }
+
+    @Test
+    void appendMemoryCandidates_dedupesBeforeDreamDrain(@TempDir Path workspace) {
+        MemoryStore store = new MemoryStore(workspace);
+
+        store.appendMemoryCandidates(List.of(
+                new MemoryEntry()
+                        .setType(MemoryEntry.TYPE_PREFERENCE)
+                        .setSummary("用户偏好简短回答")
+                        .setDetails("first")
+                        .setImportance(0.6d),
+                new MemoryEntry()
+                        .setType(MemoryEntry.TYPE_PREFERENCE)
+                        .setSummary("用户偏好简短回答")
+                        .setDetails("second")
+                        .setImportance(0.9d)
+        ));
+
+        List<MemoryEntry> drained = store.drainMemoryCandidates();
+        assertEquals(1, drained.size());
+        assertEquals("用户偏好简短回答", drained.get(0).getSummary());
+        assertEquals(0.9d, drained.get(0).getImportance(), 0.001d);
+        assertTrue(store.drainMemoryCandidates().isEmpty());
+    }
+
+    @Test
     void rebuildMarkdownViewsIfNeeded_rebuildsWhenStructuredEntriesAreNewer(@TempDir Path workspace) throws Exception {
         MemoryStore store = new MemoryStore(workspace);
 

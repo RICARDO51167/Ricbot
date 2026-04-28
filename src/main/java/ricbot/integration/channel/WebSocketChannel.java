@@ -76,6 +76,10 @@ public class WebSocketChannel extends BaseChannel {
     public interface WsServer {
         void start(String host, int port, String path, WsServerListener listener) throws Exception;
         void stop() throws Exception;
+
+        default boolean supportsHttpGet() {
+            return false;
+        }
     }
 
     public interface WsServerListener {
@@ -126,6 +130,7 @@ public class WebSocketChannel extends BaseChannel {
         if (server == null) {
             server = new JavaWebSocketServer(new InetSocketAddress(config.getHost(), config.getPort()));
         }
+        validateTokenIssueRoute(server);
         try {
             server.start(config.getHost(), config.getPort(), expectedPath(), new WsServerListener() {
                 @Override
@@ -152,6 +157,18 @@ public class WebSocketChannel extends BaseChannel {
         } catch (Exception e) {
             running = false;
             throw e;
+        }
+    }
+
+    private void validateTokenIssueRoute(WsServer server) {
+        if (!hasTokenIssueRoute()) {
+            return;
+        }
+        if (config.getTokenIssueSecret() == null || config.getTokenIssueSecret().isBlank()) {
+            throw new IllegalStateException("websocket.token_issue_secret 不能为空");
+        }
+        if (server == null || !server.supportsHttpGet()) {
+            throw new IllegalStateException("当前 WebSocket server 不支持 token_issue_path 的 HTTP GET 路由");
         }
     }
 
@@ -383,6 +400,10 @@ public class WebSocketChannel extends BaseChannel {
                 && config.getTokenIssuePath().equals(path);
     }
 
+    private boolean hasTokenIssueRoute() {
+        return config.getTokenIssuePath() != null && !config.getTokenIssuePath().isBlank();
+    }
+
     private boolean validateConnectionToken(String tokenValue) {
         if (!config.isWebsocketRequiresToken()) {
             return true;
@@ -413,7 +434,7 @@ public class WebSocketChannel extends BaseChannel {
 
     private static boolean issueRouteSecretMatches(Map<String, String> headers, String configuredSecret) {
         if (configuredSecret == null || configuredSecret.isBlank()) {
-            return true;
+            return false;
         }
 
         String authorization = header(headers, "Authorization");

@@ -7,6 +7,13 @@ import java.util.Map;
 
 // 提示词上下文包，用于管理和渲染不同部分的上下文信息
 final class PromptContextBundle {
+    private static final int DEFAULT_SECTION_ITEM_LIMIT = 8;
+    private static final int DEFAULT_SECTION_CHAR_LIMIT = 1_600;
+    private static final int BASE_TOTAL_CHAR_LIMIT = 7_000;
+    private static final int MIN_TOTAL_CHAR_LIMIT = 4_000;
+    private static final int MAX_TOTAL_CHAR_LIMIT = 24_000;
+    private static final int BASE_CONTEXT_WINDOW_TOKENS = 32_000;
+    private static final String TRUNCATED_MARKER = "... [truncated]";
 
     // 定义上下文部分的固定顺序
     static final List<String> ORDER = List.of(
@@ -17,14 +24,47 @@ final class PromptContextBundle {
             "tool_trace"        // 工具调用轨迹
     );
 
+    private static final Map<String, SectionBudget> SECTION_BUDGETS = Map.of(
+            "recent_history", new SectionBudget(3, 900),
+            "task_state", new SectionBudget(12, 1_200),
+            "user_profile", new SectionBudget(8, 1_600),
+            "memory_recall", new SectionBudget(8, 2_400),
+            "tool_trace", new SectionBudget(4, 1_200)
+    );
+
     // 使用 LinkedHashMap 保持插入顺序，存储各个部分的内容列表
     private final Map<String, List<String>> sections = new LinkedHashMap<>();
+    private final int totalCharLimit;
+    private final Map<String, SectionBudget> sectionBudgets;
 
     // 构造函数，初始化所有预定义的上下文部分为空列表
     PromptContextBundle() {
+        this(BASE_TOTAL_CHAR_LIMIT, SECTION_BUDGETS);
+    }
+
+    private PromptContextBundle(int totalCharLimit, Map<String, SectionBudget> sectionBudgets) {
+        this.totalCharLimit = totalCharLimit;
+        this.sectionBudgets = sectionBudgets != null ? sectionBudgets : SECTION_BUDGETS;
         for (String key : ORDER) {
             sections.put(key, new ArrayList<>());
         }
+    }
+
+    static PromptContextBundle forContextWindow(int contextWindowTokens) {
+        if (contextWindowTokens <= 0) {
+            return new PromptContextBundle();
+        }
+        double scale = Math.sqrt((double) contextWindowTokens / BASE_CONTEXT_WINDOW_TOKENS);
+        int total = clamp((int) Math.round(BASE_TOTAL_CHAR_LIMIT * scale), MIN_TOTAL_CHAR_LIMIT, MAX_TOTAL_CHAR_LIMIT);
+
+        Map<String, SectionBudget> budgets = new LinkedHashMap<>();
+        for (Map.Entry<String, SectionBudget> entry : SECTION_BUDGETS.entrySet()) {
+            SectionBudget base = entry.getValue();
+            int maxItems = clamp((int) Math.round(base.maxItems() * scale), Math.min(2, base.maxItems()), Math.max(base.maxItems(), 24));
+            int maxChars = clamp((int) Math.round(base.maxChars() * scale), 500, 8_000);
+            budgets.put(entry.getKey(), new SectionBudget(maxItems, maxChars));
+        }
+        return new PromptContextBundle(total, budgets);
     }
 
     // 向指定部分添加一项内容
@@ -66,12 +106,74 @@ final class PromptContextBundle {
             }
             // 添加部分标题
             sb.append("## ").append(key).append("\n");
-            // 添加该部分下的每一项内容，格式为 "- 内容"
+            SectionBudget budget = sectionBudgets.getOrDefault(
+                    key,
+                    new SectionBudget(DEFAULT_SECTION_ITEM_LIMIT, DEFAULT_SECTION_CHAR_LIMIT)
+            );
+            int sectionChars = 0;
+            int emitted = 0;
             for (String item : items) {
-                sb.append("- ").append(item).append("\n");
+                if (emitted >= budget.maxItems()) {
+                    appendBudgetNotice(sb, items.size() - emitted);
+                    break;
+                }
+                if (sb.length() >= totalCharLimit) {
+                    appendBudgetNotice(sb, items.size() - emitted);
+                    break;
+                }
+
+                String rendered = "- " + item + "\n";
+                int remainingSection = budget.maxChars() - sectionChars;
+                int remainingTotal = totalCharLimit - sb.length();
+                int allowed = Math.min(remainingSection, remainingTotal);
+                if (allowed <= 0) {
+                    appendBudgetNotice(sb, items.size() - emitted);
+                    break;
+                }
+
+                if (rendered.length() > allowed) {
+                    sb.append(truncateLine(rendered, allowed));
+                    appendBudgetNotice(sb, items.size() - emitted);
+                    break;
+                }
+
+                sb.append(rendered);
+                sectionChars += rendered.length();
+                emitted++;
             }
         }
         // 返回修剪后的字符串，去除首尾空白
         return sb.toString().trim();
+    }
+
+    private static void appendBudgetNotice(StringBuilder sb, int remainingItems) {
+        if (remainingItems > 0) {
+            sb.append("- ").append(TRUNCATED_MARKER).append(" ")
+                    .append(remainingItems)
+                    .append(" more item(s)\n");
+        }
+    }
+
+    private static String truncateLine(String value, int maxChars) {
+        if (maxChars <= TRUNCATED_MARKER.length() + 4) {
+            return "- " + TRUNCATED_MARKER + "\n";
+        }
+        String prefix = value.substring(0, Math.max(0, maxChars - TRUNCATED_MARKER.length() - 1)).stripTrailing();
+        return prefix + " " + TRUNCATED_MARKER + "\n";
+    }
+
+    int totalCharLimit() {
+        return totalCharLimit;
+    }
+
+    SectionBudget sectionBudget(String section) {
+        return sectionBudgets.getOrDefault(section, new SectionBudget(DEFAULT_SECTION_ITEM_LIMIT, DEFAULT_SECTION_CHAR_LIMIT));
+    }
+
+    private static int clamp(int value, int min, int max) {
+        return Math.max(min, Math.min(max, value));
+    }
+
+    record SectionBudget(int maxItems, int maxChars) {
     }
 }

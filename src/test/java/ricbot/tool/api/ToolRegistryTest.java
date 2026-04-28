@@ -10,11 +10,14 @@ import ricbot.tool.filesystem.WriteFileTool;
 import ricbot.tool.process.ExecTool;
 import ricbot.tool.search.GlobTool;
 import ricbot.tool.search.GrepTool;
+import ricbot.domain.skill.SkillsLoader;
+import ricbot.tool.skill.ReadSkillTool;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -152,6 +155,26 @@ public class ToolRegistryTest {
 
         Object out = registry.execute("echo_map", Map.of("value", "ok"));
         assertEquals("value=ok", out);
+    }
+
+    @Test
+    void readSkillTool_returnsFullSkillDocument(@TempDir Path workspace) throws Exception {
+        Path skillDir = workspace.resolve("skills").resolve("demo");
+        Files.createDirectories(skillDir);
+        Files.writeString(skillDir.resolve("SKILL.md"), """
+                ---
+                description: Demo skill
+                ---
+                Demo body.
+                """);
+
+        ToolRegistry registry = new ToolRegistry();
+        registry.register(new ReadSkillTool(new SkillsLoader(workspace, null, Set.of())));
+
+        Object out = registry.execute("read_skill", Map.of("name", "demo"));
+
+        assertTrue(String.valueOf(out).contains("# Skill: demo"), String.valueOf(out));
+        assertTrue(String.valueOf(out).contains("Demo body."), String.valueOf(out));
     }
 
     @Test

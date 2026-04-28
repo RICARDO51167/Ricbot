@@ -145,6 +145,39 @@ public class WebSocketChannelTest {
     }
 
     @Test
+    void start_rejectsTokenIssueRouteWithoutSecretOrHttpGetSupport() {
+        MessageBus bus = new MessageBus();
+        WebSocketChannel.WebSocketConfig missingSecret = new WebSocketChannel.WebSocketConfig();
+        missingSecret.setEnabled(true);
+        missingSecret.setPath("/ws");
+        missingSecret.setTokenIssuePath("/issue");
+        WebSocketChannel missingSecretChannel = new WebSocketChannel(missingSecret, bus);
+        missingSecretChannel.setServer(new CapturingServer());
+
+        IllegalStateException missingSecretError = assertThrows(IllegalStateException.class, missingSecretChannel::start);
+        assertTrue(missingSecretError.getMessage().contains("token_issue_secret"), missingSecretError.getMessage());
+
+        WebSocketChannel.WebSocketConfig unsupportedServer = new WebSocketChannel.WebSocketConfig();
+        unsupportedServer.setEnabled(true);
+        unsupportedServer.setPath("/ws");
+        unsupportedServer.setTokenIssuePath("/issue");
+        unsupportedServer.setTokenIssueSecret("secret");
+        WebSocketChannel unsupportedChannel = new WebSocketChannel(unsupportedServer, bus);
+        unsupportedChannel.setServer(new WebSocketChannel.WsServer() {
+            @Override
+            public void start(String host, int port, String path, WebSocketChannel.WsServerListener listener) {
+            }
+
+            @Override
+            public void stop() {
+            }
+        });
+
+        IllegalStateException unsupportedError = assertThrows(IllegalStateException.class, unsupportedChannel::start);
+        assertTrue(unsupportedError.getMessage().contains("HTTP GET"), unsupportedError.getMessage());
+    }
+
+    @Test
     void open_rejectsWrongPathAndUnauthorizedTokenIssueRequest() throws Exception {
         MessageBus bus = new MessageBus();
         WebSocketChannel.WebSocketConfig config = new WebSocketChannel.WebSocketConfig();
@@ -195,6 +228,11 @@ public class WebSocketChannelTest {
 
         @Override
         public void stop() {
+        }
+
+        @Override
+        public boolean supportsHttpGet() {
+            return true;
         }
     }
 

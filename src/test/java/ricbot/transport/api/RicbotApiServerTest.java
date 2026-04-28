@@ -222,9 +222,42 @@ public class RicbotApiServerTest {
         }
     }
 
+    @Test
+    void createAndStart_rejectsPublicBindWithoutBearerToken(@TempDir Path workspace) {
+        AgentLoop loop = buildLoop(workspace);
+        try {
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class, () ->
+                    RicbotApiServer.createAndStart("0.0.0.0", 0, loop, "gpt-4o-mini", 20_000, "")
+            );
+            assertTrue(ex.getMessage().contains("api.bearer_token"), ex.getMessage());
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void webUiHandler_servesIndexAndRejectsUnknownPaths() throws Exception {
+        var handler = new RicbotApiServer.WebUiHandler();
+
+        TestExchange index = getExchange("/");
+        handler.handle(index);
+        assertEquals(200, index.getResponseCode(), index.responseText());
+        assertTrue(index.getResponseHeaders().getFirst("Content-Type").startsWith("text/html"), index.getResponseHeaders().toString());
+        assertTrue(index.responseText().contains("<title>Ricbot</title>"), index.responseText());
+        assertTrue(index.responseText().contains("/v1/chat/completions"), index.responseText());
+
+        TestExchange missing = getExchange("/missing.js");
+        handler.handle(missing);
+        assertEquals(404, missing.getResponseCode(), missing.responseText());
+    }
+
     private static TestExchange postExchange(String path, Map<String, Object> body) throws Exception {
         String json = MAPPER.writeValueAsString(body);
         return new TestExchange("POST", URI.create("http://localhost" + path), json);
+    }
+
+    private static TestExchange getExchange(String path) {
+        return new TestExchange("GET", URI.create("http://localhost" + path), "");
     }
 
     private static AgentLoop buildLoop(Path workspace) {

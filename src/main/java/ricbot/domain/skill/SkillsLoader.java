@@ -1,5 +1,8 @@
 package ricbot.domain.skill;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.*;
@@ -17,6 +20,7 @@ import java.util.jar.JarFile;
 public class SkillsLoader {
 
     private static final Logger log = LoggerFactory.getLogger(SkillsLoader.class);
+    private static final ObjectMapper MAPPER = new ObjectMapper().findAndRegisterModules();
 
     // 开发环境下的内置技能目录路径，默认为 src/main/resources/skills
     private static final Path DEV_BUILTIN_SKILLS_DIR =
@@ -48,7 +52,7 @@ public class SkillsLoader {
     public SkillsLoader(Path workspace, Path builtinSkillsDir, Set<String> disabledSkills) {
         this.workspaceSkills = workspace.resolve("skills");
         this.builtinSkills = builtinSkillsDir != null ? builtinSkillsDir : resolveBuiltinSkillsDir();
-        this.disabledSkills = disabledSkills != null ? disabledSkills : new HashSet<>();
+        this.disabledSkills = normalizeSkillNames(disabledSkills);
     }
 
     /**
@@ -60,15 +64,25 @@ public class SkillsLoader {
     public List<Map<String, String>> listSkills(boolean filterUnavailable) {
         List<Map<String, String>> out = new ArrayList<>();
         for (SkillEntry e : listSkillEntries()) {
-            if (filterUnavailable && disabledSkills.contains(e.name())) {
+            if (filterUnavailable && isDisabled(e.name())) {
+                continue;
+            }
+            SkillDocument doc = loadSkillDocument(e);
+            SkillAvailability availability = availability(doc);
+            if (filterUnavailable && !availability.available()) {
                 continue;
             }
             Map<String, String> row = new HashMap<>();
             row.put("name", e.name());
             row.put("path", e.path().toString());
             row.put("source", e.source());
-            if (!filterUnavailable && disabledSkills.contains(e.name())) {
+            if (!filterUnavailable && isDisabled(e.name())) {
                 row.put("disabled", "true");
+            }
+            if (!filterUnavailable && !availability.available()) {
+                row.put("unavailable", "true");
+                row.put("missing_bins", String.join(",", availability.missingBins()));
+                row.put("missing_env", String.join(",", availability.missingEnv()));
             }
             out.add(row);
         }
@@ -166,6 +180,35 @@ public class SkillsLoader {
      * @param raw        原始文件内容
      */
     public record SkillDocument(SkillEntry entry, Map<String, String> frontmatter, String body, String raw) {
+    }
+
+    public record SkillAvailability(boolean available, List<String> missingBins, List<String> missingEnv) {
+    }
+
+    public boolean isDisabled(String name) {
+        return disabledSkills.contains(normalizeSkillName(name));
+    }
+
+    public boolean isAvailable(SkillEntry entry) {
+        return availability(loadSkillDocument(entry)).available();
+    }
+
+    public SkillAvailability availability(SkillDocument doc) {
+        List<String> required = requiredBins(doc);
+        List<String> missing = new ArrayList<>();
+        for (String bin : required) {
+            if (!isExecutableOnPath(bin)) {
+                missing.add(bin);
+            }
+        }
+        List<String> requiredEnv = requiredEnv(doc);
+        List<String> missingEnv = new ArrayList<>();
+        for (String env : requiredEnv) {
+            if (System.getenv(env) == null || System.getenv(env).isBlank()) {
+                missingEnv.add(env);
+            }
+        }
+        return new SkillAvailability(missing.isEmpty() && missingEnv.isEmpty(), List.copyOf(missing), List.copyOf(missingEnv));
     }
 
     /**
@@ -348,7 +391,7 @@ public class SkillsLoader {
             if (doc == null) {
                 continue;
             }
-            if (disabledSkills.contains(entry.name())) {
+            if (isDisabled(entry.name())) {
                 continue;
             }
             String always = doc.frontmatter() != null ? doc.frontmatter().get("always") : null;
@@ -366,24 +409,37 @@ public class SkillsLoader {
      */
     public String buildSkillsSummary() {
         List<String> lines = new ArrayList<>();
+        lines.add("<skills>");
         for (SkillEntry e : listSkillEntries()) {
-            if (disabledSkills.contains(e.name())) {
-                continue;
-            }
             SkillDocument doc = loadSkillDocument(e);
             Map<String, String> fm = doc != null && doc.frontmatter() != null ? doc.frontmatter() : Map.of();
-            // 优先获取 description，其次获取 desc
             String desc = fm.get("description");
             if (desc == null || desc.isBlank()) {
                 desc = fm.get("desc");
             }
-            // 根据是否有描述构建不同的格式
-            if (desc != null && !desc.isBlank()) {
-                lines.add("- " + e.name() + " — " + desc + " (" + e.source() + ")");
-            } else {
-                lines.add("- " + e.name() + " (" + e.source() + ")");
+            SkillAvailability availability = availability(doc);
+            boolean disabled = isDisabled(e.name());
+            boolean available = !disabled && availability.available();
+            StringBuilder line = new StringBuilder();
+            line.append("  <skill name=\"").append(escapeXml(e.name())).append("\"");
+            line.append(" source=\"").append(escapeXml(e.source())).append("\"");
+            line.append(" available=\"").append(available).append("\"");
+            if (disabled) {
+                line.append(" disabled=\"true\"");
             }
+            if (desc != null && !desc.isBlank()) {
+                line.append(" description=\"").append(escapeXml(desc)).append("\"");
+            }
+            if (!availability.missingBins().isEmpty()) {
+                line.append(" missing_bins=\"").append(escapeXml(String.join(",", availability.missingBins()))).append("\"");
+            }
+            if (!availability.missingEnv().isEmpty()) {
+                line.append(" missing_env=\"").append(escapeXml(String.join(",", availability.missingEnv()))).append("\"");
+            }
+            line.append(" />");
+            lines.add(line.toString());
         }
+        lines.add("</skills>");
         return String.join("\n", lines);
     }
 
@@ -396,7 +452,7 @@ public class SkillsLoader {
         StringBuilder sb = new StringBuilder();
         sb.append("Available Skills:\n");
         for (SkillEntry e : listSkillEntries()) {
-            if (disabledSkills.contains(e.name())) {
+            if (isDisabled(e.name())) {
                 continue;
             }
             SkillDocument doc = loadSkillDocument(e);
@@ -546,6 +602,163 @@ public class SkillsLoader {
         return null;
     }
 
+    private List<String> requiredBins(SkillDocument doc) {
+        if (doc == null || doc.frontmatter() == null) {
+            return List.of();
+        }
+        List<String> fromRequires = parseRequiredBins(doc.frontmatter().get("requires"));
+        if (!fromRequires.isEmpty()) {
+            return fromRequires;
+        }
+        String metadata = doc.frontmatter().get("metadata");
+        if (metadata == null || metadata.isBlank()) {
+            return List.of();
+        }
+        try {
+            Map<String, Object> root = MAPPER.readValue(metadata, new TypeReference<>() {});
+            Object ricbot = root.get("ricbot");
+            if (ricbot instanceof Map<?, ?> ricbotMap) {
+                Object requires = ricbotMap.get("requires");
+                return parseRequiredBins(requires);
+            }
+            return parseRequiredBins(root.get("requires"));
+        } catch (Exception e) {
+            log.debug("解析技能 metadata 失败: {}", doc.entry() != null ? doc.entry().name() : "(unknown)", e);
+            return List.of();
+        }
+    }
+
+    private List<String> requiredEnv(SkillDocument doc) {
+        if (doc == null || doc.frontmatter() == null) {
+            return List.of();
+        }
+        List<String> fromRequires = parseRequiredEnv(doc.frontmatter().get("requires"));
+        if (!fromRequires.isEmpty()) {
+            return fromRequires;
+        }
+        String metadata = doc.frontmatter().get("metadata");
+        if (metadata == null || metadata.isBlank()) {
+            return List.of();
+        }
+        try {
+            Map<String, Object> root = MAPPER.readValue(metadata, new TypeReference<>() {});
+            Object ricbot = root.get("ricbot");
+            if (ricbot instanceof Map<?, ?> ricbotMap) {
+                Object requires = ricbotMap.get("requires");
+                return parseRequiredEnv(requires);
+            }
+            return parseRequiredEnv(root.get("requires"));
+        } catch (Exception e) {
+            log.debug("解析技能 metadata env 依赖失败: {}", doc.entry() != null ? doc.entry().name() : "(unknown)", e);
+            return List.of();
+        }
+    }
+
+    private List<String> parseRequiredEnv(Object raw) {
+        if (raw == null) {
+            return List.of();
+        }
+        if (raw instanceof Map<?, ?> map) {
+            Object env = map.get("env");
+            return normalizeStringList(env);
+        }
+        if (raw instanceof String s) {
+            String trimmed = s.trim();
+            if (trimmed.startsWith("{")) {
+                try {
+                    Map<String, Object> parsed = MAPPER.readValue(trimmed, new TypeReference<>() {});
+                    return parseRequiredEnv(parsed);
+                } catch (Exception ignored) {
+                    return List.of();
+                }
+            }
+        }
+        return List.of();
+    }
+
+    private List<String> parseRequiredBins(Object raw) {
+        if (raw == null) {
+            return List.of();
+        }
+        if (raw instanceof Map<?, ?> map) {
+            Object bins = map.get("bins");
+            return normalizeStringList(bins);
+        }
+        if (raw instanceof String s) {
+            String trimmed = s.trim();
+            if (trimmed.startsWith("{")) {
+                try {
+                    Map<String, Object> parsed = MAPPER.readValue(trimmed, new TypeReference<>() {});
+                    return parseRequiredBins(parsed);
+                } catch (Exception ignored) {
+                    return List.of();
+                }
+            }
+            return normalizeStringList(s);
+        }
+        return List.of();
+    }
+
+    private List<String> normalizeStringList(Object raw) {
+        if (raw == null) {
+            return List.of();
+        }
+        List<String> out = new ArrayList<>();
+        if (raw instanceof List<?> list) {
+            for (Object item : list) {
+                if (item != null) {
+                    String value = String.valueOf(item).trim();
+                    if (!value.isBlank() && !out.contains(value)) {
+                        out.add(value);
+                    }
+                }
+            }
+            return List.copyOf(out);
+        }
+        String value = String.valueOf(raw).trim();
+        if (value.isBlank()) {
+            return List.of();
+        }
+        if (value.startsWith("[") && value.endsWith("]")) {
+            try {
+                List<String> parsed = MAPPER.readValue(value, new TypeReference<>() {});
+                return normalizeStringList(parsed);
+            } catch (Exception ignored) {
+            }
+        }
+        for (String part : value.split(",")) {
+            String normalized = part.trim();
+            if (!normalized.isBlank() && !out.contains(normalized)) {
+                out.add(normalized);
+            }
+        }
+        return List.copyOf(out);
+    }
+
+    private boolean isExecutableOnPath(String bin) {
+        if (bin == null || bin.isBlank()) {
+            return false;
+        }
+        Path direct = Path.of(bin);
+        if (direct.isAbsolute() || bin.contains("/") || bin.contains("\\")) {
+            return Files.isRegularFile(direct) && Files.isExecutable(direct);
+        }
+        String path = System.getenv("PATH");
+        if (path == null || path.isBlank()) {
+            return false;
+        }
+        for (String dir : path.split(java.io.File.pathSeparator)) {
+            if (dir == null || dir.isBlank()) {
+                continue;
+            }
+            Path candidate = Path.of(dir).resolve(bin);
+            if (Files.isRegularFile(candidate) && Files.isExecutable(candidate)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private void scanDir(Path base, String source, Map<String, SkillEntry> out, Set<String> skipNames) {
         if (!Files.exists(base)) {
             return;
@@ -608,6 +821,35 @@ public class SkillsLoader {
             pos = lineEnd;
         }
         return null;
+    }
+
+    private static Set<String> normalizeSkillNames(Set<String> names) {
+        if (names == null || names.isEmpty()) {
+            return new HashSet<>();
+        }
+        Set<String> out = new HashSet<>();
+        for (String name : names) {
+            String normalized = normalizeSkillName(name);
+            if (!normalized.isBlank()) {
+                out.add(normalized);
+            }
+        }
+        return out;
+    }
+
+    private static String normalizeSkillName(String name) {
+        return name != null ? name.trim().toLowerCase(Locale.ROOT) : "";
+    }
+
+    private static String escapeXml(String value) {
+        if (value == null) {
+            return "";
+        }
+        return value
+                .replace("&", "&amp;")
+                .replace("\"", "&quot;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;");
     }
 
     private record FrontmatterBlock(String frontmatter, int bodyStartIndex) {

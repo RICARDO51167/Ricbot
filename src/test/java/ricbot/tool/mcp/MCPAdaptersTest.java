@@ -1,8 +1,7 @@
-package ricbot.tool.mcp;
+package ricbot.integration.mcp;
 
 import org.junit.jupiter.api.Test;
 import ricbot.infra.config.Config;
-import ricbot.integration.mcp.MCPAdapters;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -68,5 +67,85 @@ public class MCPAdaptersTest {
 
         assertEquals("node", cfg.getCommand());
         assertEquals(List.of("toolA", "toolB"), cfg.getEnabledTools());
+    }
+
+    @Test
+    void healthReport_returnsStructuredStatus() {
+        MCPServerConnection ok = connectionWithSession(new StubSession(false));
+        MCPServerConnection broken = connectionWithSession(new StubSession(true));
+
+        List<MCPAdapters.MCPServerHealth> report = MCPAdapters.healthReport(
+                Map.of("ok", ok, "broken", broken),
+                1
+        );
+
+        assertEquals(2, report.size());
+        MCPAdapters.MCPServerHealth brokenHealth = report.stream()
+                .filter(h -> "broken".equals(h.name()))
+                .findFirst()
+                .orElseThrow();
+        MCPAdapters.MCPServerHealth okHealth = report.stream()
+                .filter(h -> "ok".equals(h.name()))
+                .findFirst()
+                .orElseThrow();
+
+        assertEquals("ok", okHealth.status());
+        assertEquals(1, okHealth.toolCount());
+        assertEquals("error", brokenHealth.status());
+        assertTrue(brokenHealth.error().contains("boom"), brokenHealth.error());
+    }
+
+    private static MCPServerConnection connectionWithSession(MCPClientSession session) {
+        return new MCPServerConnection() {
+            @Override
+            public MCPClientSession getSession() {
+                return session;
+            }
+
+            @Override
+            public void close() {
+            }
+        };
+    }
+
+    private record StubSession(boolean fail) implements MCPClientSession {
+        @Override
+        public void initialize() {
+        }
+
+        @Override
+        public MCPToolResult callTool(String toolName, Map<String, Object> arguments) {
+            return null;
+        }
+
+        @Override
+        public MCPResourceResult readResource(String uri) {
+            return null;
+        }
+
+        @Override
+        public MCPPromptResult getPrompt(String promptName, Map<String, Object> arguments) {
+            return null;
+        }
+
+        @Override
+        public List<MCPToolDefinition> listTools() throws Exception {
+            if (fail) {
+                throw new IllegalStateException("boom");
+            }
+            MCPToolDefinition tool = new MCPToolDefinition();
+            tool.setName("echo");
+            return List.of(tool);
+        }
+
+        @Override
+        public List<MCPResourceDefinition> listResources() {
+            return List.of();
+        }
+
+        @Override
+        public List<MCPPromptDefinition> listPrompts() {
+            return List.of();
+        }
     }
 }

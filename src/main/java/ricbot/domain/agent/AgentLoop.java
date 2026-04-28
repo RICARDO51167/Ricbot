@@ -24,6 +24,7 @@ import ricbot.tool.process.ExecTool;
 import ricbot.tool.process.SpawnTool;
 import ricbot.tool.search.GlobTool;
 import ricbot.tool.search.GrepTool;
+import ricbot.tool.skill.ReadSkillTool;
 import ricbot.integration.mcp.MCPLoader;
 import ricbot.integration.command.CommandRouter;
 import ricbot.domain.message.InboundMessage;
@@ -278,7 +279,11 @@ public class AgentLoop {
         ToolContextApplier toolContextApplier = new ToolContextInjector(this.tools);
         this.hookFactory = new AgentHookFactory(this.bus, toolContextApplier);
         this.sessionPreparationService = new SessionPreparationService(this.sessionManager, this.autoCompact, this.consolidator);
-        ContextSelectionService contextSelectionService = new ContextSelectionService(this.memoryStore, new ToolTraceSummarizer());
+        ContextSelectionService contextSelectionService = new ContextSelectionService(
+                this.memoryStore,
+                new ToolTraceSummarizer(),
+                this.contextWindowTokens
+        );
         this.agentContextService = new AgentContextService(
                 this.workspace,
                 this.contextBuilder,
@@ -302,7 +307,7 @@ public class AgentLoop {
                 this.contextWindowTokens,
                 this.contextBlockLimit
         );
-        this.sessionPersistenceService = new SessionPersistenceService(this.sessionManager, this.maxToolResultChars);
+        this.sessionPersistenceService = new SessionPersistenceService(this.sessionManager, this.maxToolResultChars, this.memoryStore);
         this.mcpLoader = new MCPLoader(this.tools, this.mcpServers);
         this.commandRouter = new CommandRouter();
         this.agentCommands = new AgentCommands(
@@ -361,6 +366,7 @@ public class AgentLoop {
         Path allowedDir = (restrictToWorkspace || execConfig.isSandbox()) ? workspace : null;
 
         // 注册文件系统工具
+        tools.register(new ReadSkillTool(skillsLoader));
         tools.register(new ReadFileTool(workspace, allowedDir, List.of()));
         tools.register(new ListDirTool(workspace, allowedDir));
         tools.register(new WriteFileTool(workspace, allowedDir));

@@ -21,6 +21,9 @@ public class SkillRouter {
 
     // 匹配模板变量的正则表达式，格式为 {{ variable_name }}
     private static final Pattern TEMPLATE_VAR = Pattern.compile("\\{\\{\\s*([a-zA-Z0-9_\\-\\.]+)\\s*\\}\\}");
+    private static final Pattern EXPLICIT_SKILL_TRIGGER = Pattern.compile("(?<![\\p{Alnum}_-])[$@]([\\p{Alnum}_-]+)");
+    private static final String TRUNCATED_MARKER = "\n\n... [skill truncated]";
+    private static final int EXPLICIT_TRIGGER_SCORE = 10_000;
 
     // 技能加载器，用于获取技能条目和文档
     private final SkillsLoader skillsLoader;
@@ -53,6 +56,7 @@ public class SkillRouter {
     public SelectionResult selectAndRender(SkillRoutingContext ctx) {
         // 获取所有技能条目
         List<SkillsLoader.SkillEntry> entries = skillsLoader.listSkillEntries();
+        Set<String> explicit = extractExplicitSkillTriggers(ctx);
 
         // 存储始终需要加载的技能文档
         List<SkillsLoader.SkillDocument> always = new ArrayList<>();
@@ -62,6 +66,14 @@ public class SkillRouter {
 
         // 遍历所有技能条目
         for (SkillsLoader.SkillEntry entry : entries) {
+            if (skillsLoader.isDisabled(entry.name())) {
+                decisions.add(new SkillDecision(entry.name(), 0, List.of("disabled"), false, false));
+                continue;
+            }
+            if (!skillsLoader.isAvailable(entry)) {
+                decisions.add(new SkillDecision(entry.name(), 0, List.of("unavailable"), false, false));
+                continue;
+            }
             // 加载技能文档
             SkillsLoader.SkillDocument doc = skillsLoader.loadSkillDocument(entry);
             if (doc == null) {
@@ -78,9 +90,14 @@ public class SkillRouter {
 
             ScoreResult scored = score(meta, ctx);
             int score = scored.score();
+            List<String> reasons = new ArrayList<>(scored.reasons());
+            if (explicit.contains(entry.name().toLowerCase(Locale.ROOT))) {
+                score += EXPLICIT_TRIGGER_SCORE;
+                reasons.add("explicit trigger +" + EXPLICIT_TRIGGER_SCORE);
+            }
             // 只有评分大于0的技能才作为候选
             if (score > 0) {
-                candidates.add(new ScoredSkill(doc, meta, score, scored.reasons()));
+                candidates.add(new ScoredSkill(doc, meta, score, reasons));
             }
         }
 
@@ -119,6 +136,56 @@ public class SkillRouter {
             decisions.add(new SkillDecision(name, s.score(), s.reasons(), false, includedSelected.contains(name)));
         }
 
+        return new SelectionResult(
+                rendered.includedAlways(),
+                rendered.includedSelected(),
+                rendered.text(),
+                decisions,
+                rendered.missingVariables()
+        );
+    }
+
+    public SelectionResult selectAndRenderProgressive(SkillRoutingContext ctx) {
+        List<SkillsLoader.SkillEntry> entries = skillsLoader.listSkillEntries();
+        Set<String> explicit = extractExplicitSkillTriggers(ctx);
+
+        List<SkillsLoader.SkillDocument> always = new ArrayList<>();
+        List<SkillsLoader.SkillDocument> selected = new ArrayList<>();
+        List<SkillDecision> decisions = new ArrayList<>();
+
+        for (SkillsLoader.SkillEntry entry : entries) {
+            if (skillsLoader.isDisabled(entry.name())) {
+                decisions.add(new SkillDecision(entry.name(), 0, List.of("disabled"), false, false));
+                continue;
+            }
+            if (!skillsLoader.isAvailable(entry)) {
+                decisions.add(new SkillDecision(entry.name(), 0, List.of("unavailable"), false, false));
+                continue;
+            }
+            SkillsLoader.SkillDocument doc = skillsLoader.loadSkillDocument(entry);
+            if (doc == null) {
+                continue;
+            }
+            SkillMeta meta = SkillMeta.from(doc);
+            if (meta.always) {
+                always.add(doc);
+                continue;
+            }
+            if (explicit.contains(entry.name().toLowerCase(Locale.ROOT))) {
+                selected.add(doc);
+                decisions.add(new SkillDecision(entry.name(), EXPLICIT_TRIGGER_SCORE, List.of("explicit trigger +" + EXPLICIT_TRIGGER_SCORE), false, true));
+            } else {
+                decisions.add(new SkillDecision(entry.name(), 0, List.of("summary only"), false, false));
+            }
+        }
+
+        Map<String, String> vars = buildVariables(ctx);
+        RenderAllResult rendered = renderAll(always, selected, vars);
+        Set<String> includedAlways = new HashSet<>(rendered.includedAlways());
+        for (SkillsLoader.SkillDocument doc : always) {
+            String name = doc.entry().name();
+            decisions.add(new SkillDecision(name, 0, List.of("always=true"), true, includedAlways.contains(name)));
+        }
         return new SelectionResult(
                 rendered.includedAlways(),
                 rendered.includedSelected(),
@@ -263,6 +330,16 @@ public class SkillRouter {
             chunk.append("## Skill: ").append(name).append("\n\n").append(renderedBody.trim());
 
             if (budget != Integer.MAX_VALUE && sb.length() + chunk.length() > budget) {
+                int remaining = budget - sb.length();
+                if (remaining <= 0) {
+                    break;
+                }
+                String truncated = truncateChunk(chunk.toString(), remaining);
+                if (!truncated.isBlank()) {
+                    sb.append(truncated);
+                    seen.add(name);
+                    includedNames.add(name);
+                }
                 break;
             }
 
@@ -270,6 +347,19 @@ public class SkillRouter {
             seen.add(name);
             includedNames.add(name);
         }
+    }
+
+    private static String truncateChunk(String chunk, int maxChars) {
+        if (chunk == null || chunk.isBlank() || maxChars <= 0) {
+            return "";
+        }
+        if (chunk.length() <= maxChars) {
+            return chunk;
+        }
+        if (maxChars <= TRUNCATED_MARKER.length() + 12) {
+            return chunk.substring(0, Math.max(0, maxChars)).stripTrailing();
+        }
+        return chunk.substring(0, Math.max(0, maxChars - TRUNCATED_MARKER.length())).stripTrailing() + TRUNCATED_MARKER;
     }
 
     /**
@@ -541,6 +631,21 @@ public class SkillRouter {
             Object one = ctx.metadata().get("tool");
             if (one instanceof String s && !s.isBlank()) {
                 out.add(s.trim().toLowerCase(Locale.ROOT));
+            }
+        }
+        return out;
+    }
+
+    private static Set<String> extractExplicitSkillTriggers(SkillRoutingContext ctx) {
+        Set<String> out = new HashSet<>();
+        if (ctx == null || ctx.message() == null || ctx.message().isBlank()) {
+            return out;
+        }
+        Matcher matcher = EXPLICIT_SKILL_TRIGGER.matcher(ctx.message());
+        while (matcher.find()) {
+            String name = matcher.group(1);
+            if (name != null && !name.isBlank()) {
+                out.add(name.trim().toLowerCase(Locale.ROOT));
             }
         }
         return out;

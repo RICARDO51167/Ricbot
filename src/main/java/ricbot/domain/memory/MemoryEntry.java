@@ -32,6 +32,7 @@ public class MemoryEntry {
     private double importance = 0.5d;
     private double confidence = 0.5d;
     private String lastUsedAt;
+    private int accessCount = 0;
     private String createdAt = Instant.now().toString();
     private String updatedAt = Instant.now().toString();
     private String source = "";
@@ -52,6 +53,7 @@ public class MemoryEntry {
         entry.importance = normalizeScore(raw.get("importance"), 0.5d);
         entry.confidence = normalizeScore(raw.get("confidence"), 0.5d);
         entry.lastUsedAt = blankToNull(stringValue(raw.get("last_used_at"), null));
+        entry.accessCount = normalizeCount(raw.get("access_count"));
         entry.createdAt = stringValue(raw.get("created_at"), entry.createdAt);
         entry.updatedAt = stringValue(raw.get("updated_at"), entry.updatedAt);
         entry.source = stringValue(raw.get("source"), "");
@@ -71,6 +73,7 @@ public class MemoryEntry {
         out.put("importance", importance);
         out.put("confidence", confidence);
         out.put("last_used_at", lastUsedAt);
+        out.put("access_count", accessCount);
         out.put("created_at", createdAt);
         out.put("updated_at", updatedAt);
         out.put("source", source);
@@ -86,6 +89,7 @@ public class MemoryEntry {
 
     public void markUsed() {
         this.lastUsedAt = Instant.now().toString();
+        this.accessCount = Math.max(0, accessCount) + 1;
         touch();
     }
 
@@ -160,6 +164,19 @@ public class MemoryEntry {
             return 1d;
         }
         return value;
+    }
+
+    private static int normalizeCount(Object raw) {
+        if (raw instanceof Number n) {
+            return Math.max(0, n.intValue());
+        }
+        if (raw != null) {
+            try {
+                return Math.max(0, Integer.parseInt(String.valueOf(raw)));
+            } catch (Exception ignored) {
+            }
+        }
+        return 0;
     }
 
     private static List<String> toStringList(Object raw) {
@@ -271,6 +288,15 @@ public class MemoryEntry {
 
     public MemoryEntry setLastUsedAt(String lastUsedAt) {
         this.lastUsedAt = blankToNull(lastUsedAt);
+        return this;
+    }
+
+    public int getAccessCount() {
+        return accessCount;
+    }
+
+    public MemoryEntry setAccessCount(int accessCount) {
+        this.accessCount = Math.max(0, accessCount);
         return this;
     }
 

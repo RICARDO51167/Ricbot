@@ -1,6 +1,7 @@
 ---
 name: clawhub
 description: 从公共技能注册表 ClawHub 搜索并安装代理技能。
+keywords: clawhub, 技能搜索, 搜索技能, 安装技能, 可用技能, skill registry, agent skills
 homepage: https://clawhub.ai
 metadata: {"ricbot":{"emoji":"🦞"}}
 ---

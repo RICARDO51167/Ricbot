@@ -17,6 +17,12 @@
 ## Structured Context
 {{ structured_context }}
 
+## Skills Context
+{{ skills_context }}
+
+## Session Context
+{{ session_summary }}
+
 ## 执行规则
 
 - 先行动，别复述。如果能用工具完成，就立刻执行——不要用“计划/承诺”结束一轮回复。

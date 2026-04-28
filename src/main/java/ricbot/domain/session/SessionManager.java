@@ -241,7 +241,7 @@ public class SessionManager {
                     }
                 } else {
                     // 否则视为消息内容
-                    messages.add(data);
+                    messages.add(SessionMessage.fromMap(data).toMap());
                 }
             }
 

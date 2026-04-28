@@ -28,6 +28,7 @@ import ricbot.tool.process.ExecTool;
 import ricbot.tool.search.GlobTool;
 // 导入内容搜索工具类
 import ricbot.tool.search.GrepTool;
+import ricbot.tool.skill.ReadSkillTool;
 import ricbot.tool.web.WebFetchTool;
 import ricbot.tool.web.WebSearchTool;
 // 导入入站消息类
@@ -326,6 +327,7 @@ public class SubagentManager implements AutoCloseable {
         ToolRegistry tools = new ToolRegistry();
         Path allowedDir = resolveAllowedDir();
 
+        tools.register(new ReadSkillTool(skillsLoader));
         tools.register(new ReadFileTool(workspace, allowedDir, List.of()));
         tools.register(new WriteFileTool(workspace, allowedDir));
         tools.register(new EditFileTool(workspace, allowedDir));

@@ -198,4 +198,207 @@ public class SkillRouterTest {
         SkillRouter.SelectionResult result = router.selectAndRender(ctx);
         assertTrue(result.renderedContext().contains("## Skill: deploy"), result.renderedContext());
     }
+
+    @Test
+    void selectAndRender_skipsDisabledSkills(@TempDir Path workspace) throws Exception {
+        Path skillsDir = workspace.resolve("skills");
+        Files.createDirectories(skillsDir.resolve("disabled-always"));
+        Files.createDirectories(skillsDir.resolve("disabled-match"));
+        Files.createDirectories(skillsDir.resolve("enabled"));
+
+        Files.writeString(skillsDir.resolve("disabled-always").resolve("SKILL.md"), """
+                ---
+                always: true
+                ---
+                Disabled always body.
+                """);
+
+        Files.writeString(skillsDir.resolve("disabled-match").resolve("SKILL.md"), """
+                ---
+                keywords: build
+                ---
+                Disabled keyword body.
+                """);
+
+        Files.writeString(skillsDir.resolve("enabled").resolve("SKILL.md"), """
+                ---
+                keywords: build
+                ---
+                Enabled body.
+                """);
+
+        SkillsLoader loader = new SkillsLoader(workspace, skillsDir, Set.of("DISABLED-ALWAYS", "disabled-match"));
+        SkillRouter router = new SkillRouter(loader, 3, 10000);
+
+        SkillRoutingContext ctx = new SkillRoutingContext(
+                workspace,
+                "cli",
+                "c1",
+                "please build",
+                List.of("exec"),
+                Map.of(),
+                Map.of()
+        );
+
+        SkillRouter.SelectionResult result = router.selectAndRender(ctx);
+        assertFalse(result.renderedContext().contains("Disabled always body"), result.renderedContext());
+        assertFalse(result.renderedContext().contains("Disabled keyword body"), result.renderedContext());
+        assertTrue(result.renderedContext().contains("Enabled body"), result.renderedContext());
+    }
+
+    @Test
+    void selectAndRender_selectsBuiltinStyleChineseKeywords(@TempDir Path workspace) throws Exception {
+        Path skillsDir = workspace.resolve("skills");
+        Files.createDirectories(skillsDir.resolve("weather"));
+
+        Files.writeString(skillsDir.resolve("weather").resolve("SKILL.md"), """
+                ---
+                name: weather
+                description: 获取当前天气与预报。
+                keywords: weather, 天气, 预报
+                ---
+                Weather helper.
+                """);
+
+        SkillsLoader loader = new SkillsLoader(workspace, skillsDir, Set.of());
+        SkillRouter router = new SkillRouter(loader, 3, 10000);
+
+        SkillRoutingContext ctx = new SkillRoutingContext(
+                workspace,
+                "cli",
+                "c1",
+                "帮我查一下上海天气",
+                List.of("exec"),
+                Map.of(),
+                Map.of()
+        );
+
+        SkillRouter.SelectionResult result = router.selectAndRender(ctx);
+        assertTrue(result.renderedContext().contains("Weather helper."), result.renderedContext());
+    }
+
+    @Test
+    void selectAndRender_skipsSkillsWithMissingRequiredBins(@TempDir Path workspace) throws Exception {
+        Path skillsDir = workspace.resolve("skills");
+        Files.createDirectories(skillsDir.resolve("missing-bin"));
+        Files.createDirectories(skillsDir.resolve("missing-env"));
+        Files.createDirectories(skillsDir.resolve("plain"));
+
+        Files.writeString(skillsDir.resolve("missing-bin").resolve("SKILL.md"), """
+                ---
+                keywords: deploy
+                metadata: {"ricbot":{"requires":{"bins":["definitely_missing_ricbot_bin"]}}}
+                ---
+                Missing bin body.
+                """);
+
+        Files.writeString(skillsDir.resolve("missing-env").resolve("SKILL.md"), """
+                ---
+                keywords: deploy
+                metadata: {"ricbot":{"requires":{"env":["DEFINITELY_MISSING_RICBOT_ENV"]}}}
+                ---
+                Missing env body.
+                """);
+
+        Files.writeString(skillsDir.resolve("plain").resolve("SKILL.md"), """
+                ---
+                keywords: deploy
+                ---
+                Plain body.
+                """);
+
+        SkillsLoader loader = new SkillsLoader(workspace, skillsDir, Set.of());
+        SkillRouter router = new SkillRouter(loader, 3, 10000);
+
+        SkillRoutingContext ctx = new SkillRoutingContext(
+                workspace,
+                "cli",
+                "c1",
+                "please deploy",
+                List.of("exec"),
+                Map.of(),
+                Map.of()
+        );
+
+        SkillRouter.SelectionResult result = router.selectAndRender(ctx);
+        assertFalse(result.renderedContext().contains("Missing bin body"), result.renderedContext());
+        assertFalse(result.renderedContext().contains("Missing env body"), result.renderedContext());
+        assertTrue(result.renderedContext().contains("Plain body."), result.renderedContext());
+
+        List<Map<String, String>> all = loader.listSkills(false);
+        Map<String, String> missing = all.stream()
+                .filter(row -> "missing-bin".equals(row.get("name")))
+                .findFirst()
+                .orElseThrow();
+        assertEquals("true", missing.get("unavailable"));
+        assertEquals("definitely_missing_ricbot_bin", missing.get("missing_bins"));
+        Map<String, String> missingEnv = all.stream()
+                .filter(row -> "missing-env".equals(row.get("name")))
+                .findFirst()
+                .orElseThrow();
+        assertEquals("true", missingEnv.get("unavailable"));
+        assertEquals("DEFINITELY_MISSING_RICBOT_ENV", missingEnv.get("missing_env"));
+        assertFalse(loader.listSkills(true).stream().anyMatch(row -> "missing-bin".equals(row.get("name"))));
+        assertFalse(loader.listSkills(true).stream().anyMatch(row -> "missing-env".equals(row.get("name"))));
+    }
+
+    @Test
+    void selectAndRender_supportsExplicitSkillTrigger(@TempDir Path workspace) throws Exception {
+        Path skillsDir = workspace.resolve("skills");
+        Files.createDirectories(skillsDir.resolve("demo"));
+
+        Files.writeString(skillsDir.resolve("demo").resolve("SKILL.md"), """
+                ---
+                keywords: unrelated
+                ---
+                Demo body.
+                """);
+
+        SkillsLoader loader = new SkillsLoader(workspace, skillsDir, Set.of());
+        SkillRouter router = new SkillRouter(loader, 1, 10000);
+
+        SkillRouter.SelectionResult result = router.selectAndRender(new SkillRoutingContext(
+                workspace,
+                "cli",
+                "c1",
+                "please use $demo",
+                List.of(),
+                Map.of(),
+                Map.of()
+        ));
+
+        assertTrue(result.renderedContext().contains("Demo body."), result.renderedContext());
+        assertTrue(result.decisions().stream()
+                .anyMatch(d -> "demo".equals(d.name()) && d.reasons().stream().anyMatch(r -> r.contains("explicit trigger"))));
+    }
+
+    @Test
+    void selectAndRender_truncatesOversizedSkillInsteadOfDroppingIt(@TempDir Path workspace) throws Exception {
+        Path skillsDir = workspace.resolve("skills");
+        Files.createDirectories(skillsDir.resolve("large"));
+
+        Files.writeString(skillsDir.resolve("large").resolve("SKILL.md"), """
+                ---
+                keywords: large
+                ---
+                %s
+                """.formatted("x".repeat(500)));
+
+        SkillsLoader loader = new SkillsLoader(workspace, skillsDir, Set.of());
+        SkillRouter router = new SkillRouter(loader, 1, 160);
+
+        SkillRouter.SelectionResult result = router.selectAndRender(new SkillRoutingContext(
+                workspace,
+                "cli",
+                "c1",
+                "large",
+                List.of(),
+                Map.of(),
+                Map.of()
+        ));
+
+        assertTrue(result.renderedContext().contains("## Skill: large"), result.renderedContext());
+        assertTrue(result.renderedContext().contains("[skill truncated]"), result.renderedContext());
+        assertTrue(result.selectedSkills().contains("large"));
+    }
 }

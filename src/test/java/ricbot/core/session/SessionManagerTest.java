@@ -45,5 +45,18 @@ public class SessionManagerTest {
         // 断言第二条消息的角色是 "assistant"
         assertEquals("assistant", String.valueOf(reloaded.getMessages().get(1).get("role")));
     }
-}
 
+    @Test
+    void saveAndReload_normalizesInvalidMessageRoles(@TempDir Path workspace) {
+        SessionManager sm = new SessionManager(workspace);
+        Session session = sm.getOrCreate("cli:roles");
+        session.addMessage(java.util.Map.of("role", "bad-role", "content", "hi"));
+        sm.save(session);
+
+        sm.invalidate("cli:roles");
+        Session reloaded = sm.getOrCreate("cli:roles");
+
+        assertEquals("user", reloaded.getMessages().get(0).get("role"));
+        assertTrue(reloaded.getMessages().get(0).containsKey("timestamp"));
+    }
+}

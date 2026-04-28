@@ -201,39 +201,23 @@ public class Session {
      * @param content 消息内容
      */
     public void addMessage(String role, Object content) {
-        Map<String, Object> msg = new HashMap<>();
-        msg.put(KEY_ROLE, role);
-        msg.put(KEY_CONTENT, content);
-        addMessage(msg);
+        addMessage(SessionMessage.of(role, content).toMap());
     }
 
     public void addMessage(Map<String, Object> message) {
         if (message == null) {
             return;
         }
-        Map<String, Object> msg = new HashMap<>(message);
-        msg.putIfAbsent(KEY_TIMESTAMP, Instant.now().toString());
-        messages.add(msg);
+        messages.add(SessionMessage.fromMap(message).toMap());
         updatedAt = Instant.now();
     }
 
     public void addToolMessage(String toolCallId, String name, Object content) {
-        Map<String, Object> msg = new HashMap<>();
-        msg.put(KEY_ROLE, "tool");
-        msg.put(KEY_TOOL_CALL_ID, toolCallId);
-        msg.put(KEY_NAME, name);
-        msg.put(KEY_CONTENT, content);
-        addMessage(msg);
+        addMessage(SessionMessage.tool(toolCallId, name, content).toMap());
     }
 
     public void addAssistantMessage(String content, List<Map<String, Object>> toolCalls) {
-        Map<String, Object> msg = new HashMap<>();
-        msg.put(KEY_ROLE, "assistant");
-        msg.put(KEY_CONTENT, content);
-        if (toolCalls != null && !toolCalls.isEmpty()) {
-            msg.put(KEY_TOOL_CALLS, toolCalls);
-        }
-        addMessage(msg);
+        addMessage(SessionMessage.assistant(content, toolCalls).toMap());
     }
 
     /**
@@ -320,23 +304,14 @@ public class Session {
             if (msg == null) {
                 continue;
             }
-            String role = msg.get(KEY_ROLE) != null ? String.valueOf(msg.get(KEY_ROLE)) : "";
+            SessionMessage typed = SessionMessage.fromMap(msg);
+            String role = typed.role();
 
-            if ("assistant".equals(role)) {
-                Object toolCallsObj = msg.get(KEY_TOOL_CALLS);
-                if (toolCallsObj instanceof List<?> toolCalls) {
-                    for (Object tcObj : toolCalls) {
-                        if (tcObj instanceof Map<?, ?> tc) {
-                            Object id = tc.get(KEY_ID);
-                            if (id != null) {
-                                declared.add(String.valueOf(id));
-                            }
-                        }
-                    }
-                }
-            } else if ("tool".equals(role)) {
-                Object tid = msg.get(KEY_TOOL_CALL_ID);
-                if (tid != null && !declared.contains(String.valueOf(tid))) {
+            if (SessionMessage.ROLE_ASSISTANT.equals(role)) {
+                declared.addAll(typed.toolCallIds());
+            } else if (SessionMessage.ROLE_TOOL.equals(role)) {
+                String tid = typed.toolCallId();
+                if (!tid.isBlank() && !declared.contains(tid)) {
                     start = i + 1;
                     declared.clear();
                 }

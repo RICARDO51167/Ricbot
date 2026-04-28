@@ -1,9 +1,12 @@
 package ricbot.domain.agent;
 
 import ricbot.domain.message.InboundMessage;
+import ricbot.domain.memory.MemoryEntry;
+import ricbot.domain.memory.MemoryStore;
 import ricbot.domain.message.OutboundMessage;
 import ricbot.domain.message.OutboundMessages;
 import ricbot.domain.session.Session;
+import ricbot.domain.session.SessionMessage;
 import ricbot.domain.session.SessionManager;
 import ricbot.infra.common.HelperUtils;
 
@@ -23,6 +26,7 @@ final class SessionPersistenceService {
     private final int maxToolResultChars;
     // 工具轨迹摘要器，用于生成工具调用的简要记录
     private final ToolTraceSummarizer toolTraceSummarizer = new ToolTraceSummarizer();
+    private final MemoryStore memoryStore;
 
     /**
      * 构造函数
@@ -31,8 +35,13 @@ final class SessionPersistenceService {
      * @param maxToolResultChars  工具结果最大字符数限制
      */
     SessionPersistenceService(SessionManager sessionManager, int maxToolResultChars) {
+        this(sessionManager, maxToolResultChars, null);
+    }
+
+    SessionPersistenceService(SessionManager sessionManager, int maxToolResultChars, MemoryStore memoryStore) {
         this.sessionManager = sessionManager;
         this.maxToolResultChars = maxToolResultChars;
+        this.memoryStore = memoryStore;
     }
 
     /**
@@ -53,6 +62,7 @@ final class SessionPersistenceService {
         updateToolTrace(session, outcome.runResult());
         // 更新任务状态（完成或阻塞）
         updateTaskState(session, outcome);
+        appendMemoryCandidates(request.message(), outcome);
 
         // 清理会话元数据中的临时运行时键
         session.getMetadata().remove(SessionRuntimeKeys.PENDING_USER_TURN_KEY);
@@ -155,6 +165,7 @@ final class SessionPersistenceService {
 
         // 创建一个新的 LinkedHashMap 以保留插入顺序并复制原始数据
         Map<String, Object> entry = new LinkedHashMap<>(raw);
+        entry = SessionMessage.fromMap(entry).toMap();
         // 获取角色和内容
         Object role = entry.get("role");
         Object content = entry.get("content");
@@ -232,5 +243,78 @@ final class SessionPersistenceService {
         }
         // 持久化任务状态到会话
         taskState.persist(session);
+    }
+
+    private void appendMemoryCandidates(InboundMessage message, ExecutionOutcome outcome) {
+        if (memoryStore == null || message == null || message.getContent() == null) {
+            return;
+        }
+        List<MemoryEntry> candidates = extractMemoryCandidates(message.getContent());
+        if (!candidates.isEmpty()) {
+            memoryStore.appendMemoryCandidates(candidates);
+        }
+    }
+
+    private List<MemoryEntry> extractMemoryCandidates(String userText) {
+        String text = userText != null ? userText.trim() : "";
+        if (text.length() < 6 || text.length() > 500) {
+            return List.of();
+        }
+
+        List<MemoryEntry> out = new java.util.ArrayList<>();
+        String lower = text.toLowerCase(java.util.Locale.ROOT);
+        if (containsAny(text, "我喜欢", "我偏好", "我希望", "以后请", "记住")
+                || containsAny(lower, "i prefer", "remember that", "please remember")) {
+            out.add(new MemoryEntry()
+                    .setType(MemoryEntry.TYPE_PREFERENCE)
+                    .setScope(MemoryEntry.SCOPE_LONG_TERM)
+                    .setSummary(text)
+                    .setDetails("即时候选：来自用户明确偏好或记忆请求")
+                    .setImportance(0.75d)
+                    .setConfidence(0.75d)
+                    .setSource("candidate")
+                    .setTags(List.of("user")));
+            return out;
+        }
+
+        if (containsAny(text, "项目", "代码库", "仓库")
+                && containsAny(text, "使用", "基于", "采用", "需要", "约定", "规范")) {
+            out.add(new MemoryEntry()
+                    .setType(MemoryEntry.TYPE_PROJECT)
+                    .setScope(MemoryEntry.SCOPE_LONG_TERM)
+                    .setSummary(text)
+                    .setDetails("即时候选：来自用户描述的项目事实")
+                    .setImportance(0.70d)
+                    .setConfidence(0.70d)
+                    .setSource("candidate")
+                    .setTags(List.of("project")));
+            return out;
+        }
+
+        if (containsAny(text, "流程", "步骤", "规范", "约定")
+                || containsAny(lower, "workflow", "convention", "standard")) {
+            out.add(new MemoryEntry()
+                    .setType(MemoryEntry.TYPE_WORKFLOW)
+                    .setScope(MemoryEntry.SCOPE_LONG_TERM)
+                    .setSummary(text)
+                    .setDetails("即时候选：来自用户描述的流程或约定")
+                    .setImportance(0.68d)
+                    .setConfidence(0.68d)
+                    .setSource("candidate")
+                    .setTags(List.of("workflow")));
+        }
+        return out;
+    }
+
+    private boolean containsAny(String text, String... needles) {
+        if (text == null || needles == null) {
+            return false;
+        }
+        for (String needle : needles) {
+            if (needle != null && !needle.isBlank() && text.contains(needle)) {
+                return true;
+            }
+        }
+        return false;
     }
 }

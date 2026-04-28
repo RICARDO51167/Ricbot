@@ -49,4 +49,16 @@ class ConfigLoaderTest {
         assertNotNull(reloaded);
         assertEquals(new Config().getAgents().getDefaults().getModel(), reloaded.getAgents().getDefaults().getModel());
     }
+
+    @Test
+    void resolveConfigEnvVars_keepsMissingPlaceholdersButResolvesPresentOnes() {
+        Config config = new Config();
+        config.getProviders().getOpenai().setApiKey("${PATH}");
+        config.getChannels().getQq().setAppId("${DEFINITELY_MISSING_RICBOT_ENV}");
+
+        Config resolved = ConfigLoader.resolveConfigEnvVars(config);
+
+        assertNotEquals("${PATH}", resolved.getProviders().getOpenai().getApiKey());
+        assertEquals("${DEFINITELY_MISSING_RICBOT_ENV}", resolved.getChannels().getQq().getAppId());
+    }
 }

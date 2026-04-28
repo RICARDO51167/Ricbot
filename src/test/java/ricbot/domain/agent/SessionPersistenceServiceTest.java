@@ -2,6 +2,7 @@ package ricbot.domain.agent;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import ricbot.domain.memory.MemoryStore;
 import ricbot.domain.message.InboundMessage;
 import ricbot.domain.session.Session;
 import ricbot.domain.session.SessionManager;
@@ -109,5 +110,39 @@ class SessionPersistenceServiceTest {
 
         assertEquals(1, session.getMessages().size());
         assertEquals("hello", session.getMessages().get(0).get("content"));
+    }
+
+    @Test
+    void persistInteractiveTurn_appendsImmediateMemoryCandidates(@TempDir Path workspace) {
+        SessionManager sessions = new SessionManager(workspace);
+        MemoryStore memoryStore = new MemoryStore(workspace);
+        SessionPersistenceService service = new SessionPersistenceService(sessions, 100, memoryStore);
+        Session session = new Session("cli:direct");
+
+        AgentRequestContext request = new AgentRequestContext(
+                new InboundMessage("cli", "user", "direct", "我偏好简短回答"),
+                "cli:direct",
+                session,
+                "",
+                new PromptContextBundle(),
+                List.of(),
+                List.of(),
+                null,
+                false
+        );
+        ExecutionOutcome outcome = new ExecutionOutcome(
+                new AgentRunResult()
+                        .setMessages(List.of(
+                                Map.of("role", "system", "content", "ignored"),
+                                Map.of("role", "user", "content", "我偏好简短回答"),
+                                Map.of("role", "assistant", "content", "记住了")
+                        ))
+                        .setFinalContent("记住了"),
+                "记住了"
+        );
+
+        service.persistInteractiveTurn(request, outcome);
+
+        assertEquals(1, memoryStore.drainMemoryCandidates().size());
     }
 }

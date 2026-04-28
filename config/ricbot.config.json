@@ -22,26 +22,17 @@
       "enable": false
     },
     "exec": {
-      "enable": true,
+      "enable": false,
       "timeout": 60,
       "sandbox": false,
       "path_append": "",
       "allowed_env_keys": []
     },
-    "mcpServers": {
-      "bing-cn-mcp-server": {
-        "type": "sse",
-        "url": "https://mcp.api-inference.modelscope.net/d7d3fcdbba934a/sse"
-      },
-      "12306-mcp": {
-        "type": "sse",
-        "url": "https://mcp.api-inference.modelscope.net/5b130bddcf2a46/sse"
-      }
-    }
+    "mcpServers": {}
   },
   "channels": {
     "qq": {
-      "enabled": true,
+      "enabled": false,
       "app_id": "${RICBOT_QQ_APP_ID}",
       "secret": "${RICBOT_QQ_SECRET}",
       "allow_from": ["*"],

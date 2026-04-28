@@ -54,10 +54,23 @@ public class Dream {
         log.info("Dream: 开始记忆整合...");
 
         try {
+            List<MemoryEntry> candidates = store.drainMemoryCandidates();
+            if (!candidates.isEmpty()) {
+                List<MemoryEntry> before = store.readMemoryEntries();
+                store.mergeMemoryEntries(candidates);
+                appendAudit("candidates", candidates, before, store.readMemoryEntries(), 0, "merged_candidates");
+                ensureGitInitialized();
+                store.getGit().autoCommit("dream: merge memory candidates");
+                log.info("Dream: 已合并 {} 条即时记忆候选。", candidates.size());
+            }
+
             // 1. 获取最近尚未被 Dream 处理的会话片段
             List<Map<String, Object>> newHistory = store.getUnprocessedHistory();
             // 检查获取到的历史记录是否为空或 null
             if (newHistory == null || newHistory.isEmpty()) {
+                if (!candidates.isEmpty()) {
+                    return DreamRunResult.updated("merged_candidates");
+                }
                 // 如果没有新的历史记录需要处理，记录日志并返回无操作结果
                 log.info("Dream: 没有新的历史记录需要处理。");
                 return DreamRunResult.noop("no_history");
@@ -153,7 +166,9 @@ public class Dream {
             // 如果解析到了非空的结构化记忆条目
             if (!memoryEntries.isEmpty()) {
                 // 合并记忆条目到存储中
+                List<MemoryEntry> before = store.readMemoryEntries();
                 store.mergeMemoryEntries(memoryEntries);
+                appendAudit("llm_structured", memoryEntries, before, store.readMemoryEntries(), newHistory.size(), "updated");
                 // 确保 Git 仓库已初始化
                 ensureGitInitialized();
                 // 自动提交 Git 变更，备注为更新结构化记忆
@@ -179,6 +194,15 @@ public class Dream {
             }
             // 解析并保存更新内容到对应的记忆文件中
             parseAndSaveUpdates(parsed);
+            store.appendDreamAudit(Map.of(
+                    "source", "llm_markdown",
+                    "status", "updated",
+                    "history_count", newHistory.size(),
+                    "memory_entry_candidates", 0,
+                    "added", 0,
+                    "updated", 0,
+                    "discarded", 0
+            ));
 
             // 5.1 写入版本快照，支持 /dream-log 与 /dream-restore
             // 确保 Git 仓库已初始化
@@ -224,8 +248,13 @@ public class Dream {
             Object content = msg.get("content");
             // 将内容对象转换为字符串
             String text = stringifyContent(content);
-            // 拼接角色和内容到结果中
-            sb.append(role).append(": ").append(text).append("\n");
+            String type = msg.get("type") != null ? String.valueOf(msg.get("type")) : "text";
+            if ("session_summary".equals(type)) {
+                sb.append("archived_session_summary: ").append(text).append("\n");
+            } else {
+                // 拼接角色和内容到结果中
+                sb.append(role).append(": ").append(text).append("\n");
+            }
             // 获取工具调用信息
             Object toolCalls = msg.get("tool_calls");
             // 如果存在工具调用，将其拼接到结果中
@@ -581,6 +610,51 @@ public class Dream {
         }
         // 其他类型，直接转换为字符串
         return String.valueOf(content);
+    }
+
+    private void appendAudit(
+            String source,
+            List<MemoryEntry> candidates,
+            List<MemoryEntry> before,
+            List<MemoryEntry> after,
+            int historyCount,
+            String status
+    ) {
+        Map<String, MemoryEntry> beforeByKey = new LinkedHashMap<>();
+        for (MemoryEntry entry : before != null ? before : List.<MemoryEntry>of()) {
+            if (entry != null) {
+                beforeByKey.put(entry.dedupeKey(), entry);
+            }
+        }
+
+        int added = 0;
+        int updated = 0;
+        int discarded = 0;
+        for (MemoryEntry candidate : candidates != null ? candidates : List.<MemoryEntry>of()) {
+            if (candidate == null || candidate.getSummary() == null || candidate.getSummary().isBlank()) {
+                continue;
+            }
+            if (MemoryEntry.STATUS_DISCARDED.equals(candidate.getStatus())) {
+                discarded++;
+            }
+            if (beforeByKey.containsKey(candidate.dedupeKey())) {
+                updated++;
+            } else {
+                added++;
+            }
+        }
+
+        store.appendDreamAudit(Map.of(
+                "source", source,
+                "status", status,
+                "history_count", historyCount,
+                "memory_entry_candidates", candidates != null ? candidates.size() : 0,
+                "total_before", before != null ? before.size() : 0,
+                "total_after", after != null ? after.size() : 0,
+                "added", added,
+                "updated", updated,
+                "discarded", discarded
+        ));
     }
 
     /**

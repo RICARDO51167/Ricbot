@@ -44,6 +44,8 @@ public class MemoryStore {
     private final Path memoryFile;
     // 结构化记忆文件路径 (memory/memory_entries.jsonl)
     private final Path memoryEntriesFile;
+    private final Path memoryCandidatesFile;
+    private final Path dreamAuditFile;
     // 历史记录文件路径 (memory/history.jsonl)
     private final Path historyFile;
     // 旧版历史记录文件路径 (memory/HISTORY.md)
@@ -84,6 +86,8 @@ public class MemoryStore {
         // 初始化各文件路径
         this.memoryFile = memoryDir.resolve("MEMORY.md");
         this.memoryEntriesFile = memoryDir.resolve("memory_entries.jsonl");
+        this.memoryCandidatesFile = memoryDir.resolve("candidates.jsonl");
+        this.dreamAuditFile = memoryDir.resolve("dream_audit.jsonl");
         this.historyFile = memoryDir.resolve("history.jsonl");
         this.legacyHistoryFile = memoryDir.resolve("HISTORY.md");
         this.soulFile = workspace.resolve("SOUL.md");
@@ -269,6 +273,82 @@ public class MemoryStore {
         return entries;
     }
 
+    public void appendMemoryCandidates(List<MemoryEntry> candidates) {
+        if (candidates == null || candidates.isEmpty()) {
+            return;
+        }
+        try {
+            Files.createDirectories(memoryCandidatesFile.getParent());
+            Map<String, MemoryEntry> byKey = new LinkedHashMap<>();
+            for (MemoryEntry existing : readMemoryCandidates()) {
+                byKey.put(existing.dedupeKey(), existing);
+            }
+            for (MemoryEntry candidate : candidates) {
+                if (candidate == null || candidate.getSummary() == null || candidate.getSummary().isBlank()) {
+                    continue;
+                }
+                MemoryEntry current = byKey.get(candidate.dedupeKey());
+                if (current == null) {
+                    byKey.put(candidate.dedupeKey(), candidate);
+                } else {
+                    current.setImportance(Math.max(current.getImportance(), candidate.getImportance()));
+                    current.setConfidence(Math.max(current.getConfidence(), candidate.getConfidence()));
+                    if (current.getDetails().isBlank() && !candidate.getDetails().isBlank()) {
+                        current.setDetails(candidate.getDetails());
+                    }
+                    current.getTags().addAll(candidate.getTags());
+                    current.setTags(current.getTags().stream().distinct().toList());
+                    current.touch();
+                }
+            }
+            StringBuilder sb = new StringBuilder();
+            for (MemoryEntry candidate : byKey.values()) {
+                if (candidate == null || candidate.getSummary() == null || candidate.getSummary().isBlank()) {
+                    continue;
+                }
+                sb.append(MAPPER.writeValueAsString(candidate.toMap())).append("\n");
+            }
+            Files.writeString(memoryCandidatesFile, sb.toString(), StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+        } catch (IOException e) {
+            throw new RuntimeException("写入即时记忆候选失败: " + memoryCandidatesFile, e);
+        }
+    }
+
+    public List<MemoryEntry> drainMemoryCandidates() {
+        List<MemoryEntry> entries = readMemoryCandidates();
+        if (!entries.isEmpty()) {
+            try {
+                Files.writeString(memoryCandidatesFile, "", StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+            } catch (IOException e) {
+                log.warn("清空即时记忆候选失败: {}", memoryCandidatesFile, e);
+            }
+        }
+        return entries;
+    }
+
+    private List<MemoryEntry> readMemoryCandidates() {
+        if (!Files.exists(memoryCandidatesFile)) {
+            return List.of();
+        }
+        List<MemoryEntry> entries = new ArrayList<>();
+        try (BufferedReader reader = Files.newBufferedReader(memoryCandidatesFile)) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (line.isBlank()) {
+                    continue;
+                }
+                Map<String, Object> parsed = MAPPER.readValue(line, new TypeReference<>() {});
+                MemoryEntry entry = MemoryEntry.fromMap(parsed);
+                if (entry.getSummary() != null && !entry.getSummary().isBlank()) {
+                    entries.add(entry);
+                }
+            }
+        } catch (Exception e) {
+            log.warn("读取即时记忆候选失败: {}", memoryCandidatesFile, e);
+        }
+        return entries;
+    }
+
     /**
      * 写入结构化记忆条目
      * @param entries 记忆条目列表
@@ -288,6 +368,44 @@ public class MemoryStore {
         } catch (IOException e) {
             throw new RuntimeException("写入结构化记忆失败: " + memoryEntriesFile, e);
         }
+    }
+
+    public void appendDreamAudit(Map<String, Object> event) {
+        if (event == null || event.isEmpty()) {
+            return;
+        }
+        Map<String, Object> row = new LinkedHashMap<>(event);
+        row.putIfAbsent("timestamp", Instant.now().toString());
+        try {
+            Files.createDirectories(dreamAuditFile.getParent());
+            Files.writeString(
+                    dreamAuditFile,
+                    MAPPER.writeValueAsString(row) + "\n",
+                    StandardOpenOption.CREATE,
+                    StandardOpenOption.APPEND
+            );
+        } catch (IOException e) {
+            log.warn("写入 Dream 审计失败: {}", dreamAuditFile, e);
+        }
+    }
+
+    public List<Map<String, Object>> readDreamAudit() {
+        if (!Files.exists(dreamAuditFile)) {
+            return List.of();
+        }
+        List<Map<String, Object>> out = new ArrayList<>();
+        try (BufferedReader reader = Files.newBufferedReader(dreamAuditFile)) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (line.isBlank()) {
+                    continue;
+                }
+                out.add(MAPPER.readValue(line, new TypeReference<>() {}));
+            }
+        } catch (Exception e) {
+            log.warn("读取 Dream 审计失败: {}", dreamAuditFile, e);
+        }
+        return out;
     }
 
     /**
@@ -439,21 +557,18 @@ public class MemoryStore {
             if (entry == null || !entry.isRecallable()) {
                 continue;
             }
-            // 构建用于匹配的文本 haystack（包含摘要、详情和标签）
-            String haystack = (entry.getSummary() + "\n" + entry.getDetails() + "\n" + String.join(" ", entry.getTags())).toLowerCase(Locale.ROOT);
-            // 对 haystack 进行分词
-            Set<String> memoryTokens = tokenize(haystack);
-            // 计算查询 token 在记忆 token 中出现的次数
-            long hits = memoryTokens.stream().filter(queryTokens::contains).count();
             // 基础评分：重要性 * 2 + 置信度
             double score = entry.getImportance() * 2.0d + entry.getConfidence();
             // 如果查询 token 不为空，增加基于匹配比例的评分
             if (!queryTokens.isEmpty()) {
-                score += (double) hits / Math.max(1d, queryTokens.size()) * 4.0d;
+                score += weightedRecallScore(queryTokens, entry);
             }
             // 如果是长期范围，额外增加评分
             if (MemoryEntry.SCOPE_LONG_TERM.equals(entry.getScope())) {
                 score += 1.5d;
+            }
+            if (entry.getAccessCount() > 0) {
+                score += Math.min(1.0d, Math.log1p(entry.getAccessCount()) / 3.0d);
             }
             // 添加带评分的记忆条目
             scored.add(new ScoredMemory(entry, score));
@@ -505,8 +620,7 @@ public class MemoryStore {
                 // 解析 JSONL 行
                 Map<String, Object> parsed = MAPPER.readValue(line, new TypeReference<>() {});
                 String type = String.valueOf(parsed.getOrDefault("type", ""));
-                // 只处理 text 或 raw_archive 类型
-                if (!"text".equals(type) && !"raw_archive".equals(type)) {
+                if (!"text".equals(type) && !"session_summary".equals(type) && !"raw_archive".equals(type)) {
                     continue;
                 }
                 // 渲染归档历史内容
@@ -551,6 +665,13 @@ public class MemoryStore {
         entry.put("type", "text");
         entry.put("content", content != null ? content : "");
         // 调用通用方法追加条目
+        appendHistoryEntry(entry);
+    }
+
+    public void appendSessionSummary(String content) {
+        Map<String, Object> entry = new LinkedHashMap<>();
+        entry.put("type", "session_summary");
+        entry.put("content", content != null ? content : "");
         appendHistoryEntry(entry);
     }
 
@@ -663,6 +784,7 @@ public class MemoryStore {
                 Map<String, Object> entry = new LinkedHashMap<>();
                 // 放入游标值
                 entry.put("cursor", cursor);
+                entry.put("type", String.valueOf(parsed.getOrDefault("type", "text")));
                 // 放入时间戳，转换为字符串，默认为空串
                 entry.put("timestamp", String.valueOf(parsed.getOrDefault("timestamp", "")));
 
@@ -782,6 +904,10 @@ public class MemoryStore {
         if ("text".equals(type)) {
             return rawContent != null ? String.valueOf(rawContent) : "";
         }
+        if ("session_summary".equals(type)) {
+            String content = rawContent != null ? String.valueOf(rawContent) : "";
+            return content.isBlank() ? "" : "session summary: " + content;
+        }
         if (!"raw_archive".equals(type) || !(rawContent instanceof Map<?, ?> map)) {
             return rawContent != null ? String.valueOf(rawContent) : "";
         }
@@ -851,12 +977,66 @@ public class MemoryStore {
         if (text == null || text.isBlank()) {
             return out;
         }
-        for (String token : text.toLowerCase(Locale.ROOT).split("[^\\p{IsAlphabetic}\\p{IsDigit}_]+")) {
+        String normalized = text.toLowerCase(Locale.ROOT);
+        for (String token : normalized.split("[^\\p{IsAlphabetic}\\p{IsDigit}_]+")) {
             if (token.length() >= 2) {
                 out.add(token);
             }
         }
+        addCjkNgrams(normalized, out);
         return out;
+    }
+
+    private double weightedRecallScore(Set<String> queryTokens, MemoryEntry entry) {
+        double summary = overlapScore(queryTokens, tokenize(entry.getSummary())) * 4.0d;
+        double details = overlapScore(queryTokens, tokenize(entry.getDetails())) * 2.0d;
+        double tags = overlapScore(queryTokens, tokenize(String.join(" ", entry.getTags()))) * 1.5d;
+        double aliases = overlapScore(queryTokens, tokenize(String.join(" ", entry.getAliases()))) * 1.2d;
+        return summary + details + tags + aliases;
+    }
+
+    private double overlapScore(Set<String> queryTokens, Set<String> contentTokens) {
+        if (queryTokens.isEmpty() || contentTokens.isEmpty()) {
+            return 0d;
+        }
+        long hits = contentTokens.stream().filter(queryTokens::contains).count();
+        double queryCoverage = (double) hits / Math.max(1d, queryTokens.size());
+        double contentCoverage = (double) hits / Math.max(1d, Math.min(contentTokens.size(), queryTokens.size() * 2));
+        return (queryCoverage * 0.75d) + (contentCoverage * 0.25d);
+    }
+
+    private void addCjkNgrams(String text, Set<String> out) {
+        StringBuilder cjk = new StringBuilder();
+        for (int i = 0; i < text.length(); i++) {
+            char ch = text.charAt(i);
+            if (isCjk(ch)) {
+                cjk.append(ch);
+            } else {
+                addNgrams(cjk, out);
+                cjk.setLength(0);
+            }
+        }
+        addNgrams(cjk, out);
+    }
+
+    private void addNgrams(StringBuilder cjk, Set<String> out) {
+        int len = cjk.length();
+        for (int n : List.of(2, 3)) {
+            if (len < n) {
+                continue;
+            }
+            for (int i = 0; i <= len - n; i++) {
+                out.add(cjk.substring(i, i + n));
+            }
+        }
+    }
+
+    private boolean isCjk(char ch) {
+        Character.UnicodeScript script = Character.UnicodeScript.of(ch);
+        return script == Character.UnicodeScript.HAN
+                || script == Character.UnicodeScript.HIRAGANA
+                || script == Character.UnicodeScript.KATAKANA
+                || script == Character.UnicodeScript.HANGUL;
     }
 
     /**

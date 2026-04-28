@@ -229,11 +229,8 @@ public final class ConfigLoader {
                 String name = m.group(1);
                 // 获取环境变量值
                 String value = System.getenv(name);
-                // 如果环境变量未设置，抛出异常
                 if (value == null) {
-                    throw new IllegalArgumentException(
-                            "配置引用的环境变量 '" + name + "' 未设置"
-                    );
+                    value = m.group(0);
                 }
                 // 替换占位符，使用 quoteReplacement 防止特殊字符干扰
                 m.appendReplacement(sb, Matcher.quoteReplacement(value));

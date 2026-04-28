@@ -19,6 +19,7 @@ import java.io.OutputStreamWriter;
 import java.io.Writer;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.URLConnection;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Instant;
@@ -73,12 +74,18 @@ public class RicbotApiServer {
             long requestTimeoutMillis,
             String bearerToken
     ) throws IOException {
-        ApiAppContext appContext = new ApiAppContext(agentLoop, modelName, requestTimeoutMillis, host, bearerToken);
+        String bindHost = host != null && !host.isBlank() ? host : "127.0.0.1";
+        String token = bearerToken != null ? bearerToken.trim() : "";
+        if (!ApiAppContext.isLoopbackHost(bindHost) && token.isBlank()) {
+            throw new IllegalArgumentException("API 监听非本地地址时必须配置 api.bearer_token");
+        }
+        ApiAppContext appContext = new ApiAppContext(agentLoop, modelName, requestTimeoutMillis, bindHost, token);
 
-        HttpServer server = HttpServer.create(new InetSocketAddress(host, port), 0);
+        HttpServer server = HttpServer.create(new InetSocketAddress(bindHost, port), 0);
         server.createContext("/v1/chat/completions", new ChatCompletionsHandler(appContext));
         server.createContext("/v1/models", new ModelsHandler(appContext));
         server.createContext("/health", new HealthHandler(appContext));
+        server.createContext("/", new WebUiHandler());
         server.setExecutor(Executors.newCachedThreadPool());
         server.start();
         return server;
@@ -223,7 +230,7 @@ public class RicbotApiServer {
          * @param host 主机地址字符串
          * @return 如果是回环地址返回 true，否则返回 false
          */
-        private static boolean isLoopbackHost(String host) {
+        static boolean isLoopbackHost(String host) {
             // 空字符串视为非回环
             if (host == null || host.isBlank()) {
                 return false;
@@ -662,6 +669,81 @@ public class RicbotApiServer {
         }
     }
 
+    /**
+     * GET / and /app/* serve the bundled web UI.
+     */
+    public static class WebUiHandler implements HttpHandler {
+        private static final String INDEX_RESOURCE = "webui/index.html";
+
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!"GET".equalsIgnoreCase(exchange.getRequestMethod()) && !"HEAD".equalsIgnoreCase(exchange.getRequestMethod())) {
+                writeErrorJson(exchange, 405, "不支持的 HTTP 方法", "invalid_request_error");
+                return;
+            }
+
+            String path = exchange.getRequestURI() != null ? exchange.getRequestURI().getPath() : "/";
+            String resource = resolveResource(path);
+            if (resource == null) {
+                writeErrorJson(exchange, 404, "资源不存在", "not_found");
+                return;
+            }
+
+            byte[] bytes;
+            try (InputStream in = RicbotApiServer.class.getClassLoader().getResourceAsStream(resource)) {
+                if (in == null) {
+                    writeErrorJson(exchange, 404, "资源不存在", "not_found");
+                    return;
+                }
+                bytes = in.readAllBytes();
+            }
+
+            Headers headers = exchange.getResponseHeaders();
+            headers.set("Content-Type", contentType(resource));
+            headers.set("Cache-Control", "no-store");
+            headers.set("X-Content-Type-Options", "nosniff");
+            exchange.sendResponseHeaders(200, "HEAD".equalsIgnoreCase(exchange.getRequestMethod()) ? -1 : bytes.length);
+            if (!"HEAD".equalsIgnoreCase(exchange.getRequestMethod())) {
+                try (OutputStream os = exchange.getResponseBody()) {
+                    os.write(bytes);
+                }
+            } else {
+                exchange.close();
+            }
+        }
+
+        private static String resolveResource(String path) {
+            if (path == null || path.isBlank() || "/".equals(path) || "/app".equals(path) || "/app/".equals(path)) {
+                return INDEX_RESOURCE;
+            }
+            if (!path.startsWith("/app/")) {
+                return null;
+            }
+            String relative = path.substring("/app/".length());
+            if (relative.isBlank() || relative.contains("..") || relative.startsWith("/")) {
+                return INDEX_RESOURCE;
+            }
+            return "webui/" + relative;
+        }
+
+        private static String contentType(String resource) {
+            String guessed = URLConnection.guessContentTypeFromName(resource);
+            if (guessed != null) {
+                return guessed + "; charset=utf-8";
+            }
+            if (resource.endsWith(".js")) {
+                return "text/javascript; charset=utf-8";
+            }
+            if (resource.endsWith(".css")) {
+                return "text/css; charset=utf-8";
+            }
+            if (resource.endsWith(".html")) {
+                return "text/html; charset=utf-8";
+            }
+            return "application/octet-stream";
+        }
+    }
+
     // ---------------------------------------------------------------------
     // Timeout helper
     // ---------------------------------------------------------------------
@@ -700,6 +782,11 @@ public class RicbotApiServer {
             // 确保执行器被关闭，释放线程资源
             // shutdownNow 尝试停止所有正在执行的任务
             executor.shutdownNow();
+            try {
+                executor.awaitTermination(Math.max(100L, Math.min(timeoutMillis, 1_000L)), TimeUnit.MILLISECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
         }
     }
 

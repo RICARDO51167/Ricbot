@@ -52,8 +52,7 @@ record AgentContextService(Path workspace, ContextBuilder contextBuilder, Memory
         // 应用工具上下文，设置通道、聊天ID和消息ID
         toolContextApplier.apply(msg.getChannel(), msg.getChatId(), messageIdOf(msg));
 
-        // 执行技能路由选择并渲染结果，基于当前消息和工作空间信息
-        SkillRouter.SelectionResult selected = skillRouter.selectAndRender(new SkillRoutingContext(
+        SkillRoutingContext skillRoutingContext = new SkillRoutingContext(
                 workspace,
                 msg.getChannel(),
                 msg.getChatId(),
@@ -61,7 +60,8 @@ record AgentContextService(Path workspace, ContextBuilder contextBuilder, Memory
                 tools.toolNames(),
                 msg.getMetadata(),
                 Map.of()
-        ));
+        );
+        SkillRouter.SelectionResult selected = skillRouter.selectAndRenderProgressive(skillRoutingContext);
 
         // 根据会话准备输入（如归档摘要、任务状态快照、最近工具追踪）、消息内容等选择上下文
         ContextSelectionService.SelectionResult selection = contextSelectionService.select(
@@ -75,11 +75,10 @@ record AgentContextService(Path workspace, ContextBuilder contextBuilder, Memory
                 historyWindowMessages
         );
 
-        // 合并技能上下文、结构化上下文和选定的上下文，形成最终的上下文字符串
-        String combinedContext = combineContext(
-                selection.bundle().render(),
-                selected.renderedContext()
-        );
+        // 合并后的上下文用于诊断/测试；实际 system prompt 中结构化上下文和技能上下文分槽注入，避免重复。
+        String structuredContext = selection.bundle().render();
+        String skillContext = skillsContext(selected.renderedContext());
+        String combinedContext = combineContext(structuredContext, skillContext);
 
         // 获取经过筛选的历史消息列表
         List<Map<String, Object>> history = selection.history();
@@ -91,7 +90,8 @@ record AgentContextService(Path workspace, ContextBuilder contextBuilder, Memory
                 msg.getMedia(),
                 msg.getChannel(),
                 msg.getChatId(),
-                combinedContext,
+                "",
+                skillContext,
                 "user",
                 selection.bundle()
         );
@@ -174,6 +174,23 @@ record AgentContextService(Path workspace, ContextBuilder contextBuilder, Memory
         StringBuilder sb = new StringBuilder();
         for (String block : blocks) {
             appendBlock(sb, block);
+        }
+        return sb.toString();
+    }
+
+    private String skillsContext(String loadedSkillsContext) {
+        String summary = skillsLoader.buildSkillsSummary();
+        StringBuilder sb = new StringBuilder();
+        if (summary != null && !summary.isBlank()) {
+            sb.append("## Skills Summary\n");
+            sb.append("Only summary metadata is loaded by default. Use the read_skill tool to load a skill's full SKILL.md before following it, unless the skill is already included below.\n");
+            sb.append(summary);
+        }
+        if (loadedSkillsContext != null && !loadedSkillsContext.isBlank()) {
+            if (!sb.isEmpty()) {
+                sb.append("\n\n");
+            }
+            sb.append("## Loaded Skills\n").append(loadedSkillsContext);
         }
         return sb.toString();
     }

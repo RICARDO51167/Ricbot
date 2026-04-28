@@ -285,7 +285,7 @@ public final class MCPAdapters {
      */
     public static class MCPToolWrapper extends Tool {
 
-        private final MCPClientSession session;
+        private final MCPServerConnection connection;
         private final String originalName;
         private final String name;
         private final String description;
@@ -293,12 +293,12 @@ public final class MCPAdapters {
         private final int toolTimeout;
 
         public MCPToolWrapper(
-                MCPClientSession session,
+                MCPServerConnection connection,
                 String serverName,
                 MCPToolDefinition toolDef,
                 int toolTimeout
         ) {
-            this.session = session;
+            this.connection = connection;
             this.originalName = toolDef.getName();
             this.name = "mcp_" + serverName + "_" + toolDef.getName();
             this.description = toolDef.getDescription() != null
@@ -326,7 +326,7 @@ public final class MCPAdapters {
         @Override
         public Object execute(Map<String, Object> kwargs) {
             try {
-                MCPToolResult result = awaitMcpCall(() -> session.callTool(originalName, kwargs), toolTimeout);
+                MCPToolResult result = awaitMcpCall(() -> connection.getSession().callTool(originalName, kwargs), toolTimeout);
 
                 List<String> parts = new ArrayList<>();
                 for (Object block : result.getContent()) {
@@ -360,6 +360,22 @@ public final class MCPAdapters {
                         return "Error: MCP tool call was cancelled.";
                     }
                 }
+                if (connection instanceof ReconnectingMCPServerConnection reconnecting && reconnecting.reconnect()) {
+                    try {
+                        MCPToolResult result = awaitMcpCall(() -> connection.getSession().callTool(originalName, kwargs), toolTimeout);
+                        List<String> parts = new ArrayList<>();
+                        for (Object block : result.getContent()) {
+                            if (block instanceof MCPTextContent text) {
+                                parts.add(text.getText());
+                            } else {
+                                parts.add(String.valueOf(block));
+                            }
+                        }
+                        return parts.isEmpty() ? "(no output)" : String.join("\n", parts);
+                    } catch (Exception retryError) {
+                        log.error("MCP 工具 '{}' 自动重连后仍执行失败: {}: {}", name, retryError.getClass().getSimpleName(), retryError.getMessage(), retryError);
+                    }
+                }
                 log.error("MCP 工具 '{}' 执行失败: {}: {}", name, e.getClass().getSimpleName(), e.getMessage(), e);
                 return "Error: MCP tool call failed: " + e.getClass().getSimpleName();
             }
@@ -375,19 +391,19 @@ public final class MCPAdapters {
      */
     public static class MCPResourceWrapper extends Tool {
 
-        private final MCPClientSession session;
+        private final MCPServerConnection connection;
         private final String uri;
         private final String name;
         private final String description;
         private final int resourceTimeout;
 
         public MCPResourceWrapper(
-                MCPClientSession session,
+                MCPServerConnection connection,
                 String serverName,
                 MCPResourceDefinition resourceDef,
                 int resourceTimeout
         ) {
-            this.session = session;
+            this.connection = connection;
             this.uri = resourceDef.getUri();
             this.name = "mcp_" + serverName + "_resource_" + resourceDef.getName();
 
@@ -417,7 +433,7 @@ public final class MCPAdapters {
         @Override
         public Object execute(Map<String, Object> kwargs) {
             try {
-                MCPResourceResult result = awaitMcpCall(() -> session.readResource(uri), resourceTimeout);
+                MCPResourceResult result = awaitMcpCall(() -> connection.getSession().readResource(uri), resourceTimeout);
 
                 List<String> parts = new ArrayList<>();
                 for (Object block : result.getContents()) {
@@ -458,7 +474,7 @@ public final class MCPAdapters {
      */
     public static class MCPPromptWrapper extends Tool {
 
-        private final MCPClientSession session;
+        private final MCPServerConnection connection;
         private final String promptName;
         private final String name;
         private final String description;
@@ -466,12 +482,12 @@ public final class MCPAdapters {
         private final int promptTimeout;
 
         public MCPPromptWrapper(
-                MCPClientSession session,
+                MCPServerConnection connection,
                 String serverName,
                 MCPPromptDefinition promptDef,
                 int promptTimeout
         ) {
-            this.session = session;
+            this.connection = connection;
             this.promptName = promptDef.getName();
             this.name = "mcp_" + serverName + "_prompt_" + promptDef.getName();
 
@@ -525,25 +541,9 @@ public final class MCPAdapters {
         @Override
         public Object execute(Map<String, Object> kwargs) {
             try {
-                MCPPromptResult result = awaitMcpCall(() -> session.getPrompt(promptName, kwargs), promptTimeout);
+                MCPPromptResult result = awaitMcpCall(() -> connection.getSession().getPrompt(promptName, kwargs), promptTimeout);
 
-                List<String> parts = new ArrayList<>();
-                for (MCPPromptMessage message : result.getMessages()) {
-                    Object content = message.getContent();
-                    if (content instanceof MCPTextContent text) {
-                        parts.add(text.getText());
-                    } else if (content instanceof List<?> list) {
-                        for (Object block : list) {
-                            if (block instanceof MCPTextContent t) {
-                                parts.add(t.getText());
-                            } else {
-                                parts.add(String.valueOf(block));
-                            }
-                        }
-                    } else {
-                        parts.add(String.valueOf(content));
-                    }
-                }
+                List<String> parts = getStrings(result);
 
                 return parts.isEmpty() ? "（无输出）" : String.join("\n", parts);
 
@@ -562,6 +562,27 @@ public final class MCPAdapters {
                 return "（MCP prompt 调用失败：" + e.getClass().getSimpleName() + "）";
             }
         }
+    }
+
+    private static List<String> getStrings(MCPPromptResult result) {
+        List<String> parts = new ArrayList<>();
+        for (MCPPromptMessage message : result.getMessages()) {
+            Object content = message.getContent();
+            if (content instanceof MCPTextContent text) {
+                parts.add(text.getText());
+            } else if (content instanceof List<?> list) {
+                for (Object block : list) {
+                    if (block instanceof MCPTextContent t) {
+                        parts.add(t.getText());
+                    } else {
+                        parts.add(String.valueOf(block));
+                    }
+                }
+            } else {
+                parts.add(String.valueOf(content));
+            }
+        }
+        return parts;
     }
 
     // =========================================================
@@ -608,6 +629,58 @@ public final class MCPAdapters {
         return serverConnections;
     }
 
+    public static List<MCPServerHealth> healthReport(Map<String, MCPServerConnection> connections, int timeoutSeconds) {
+        if (connections == null || connections.isEmpty()) {
+            return List.of();
+        }
+        List<MCPServerHealth> out = new ArrayList<>();
+        int timeout = Math.max(1, timeoutSeconds);
+        for (Map.Entry<String, MCPServerConnection> entry : new TreeMap<>(connections).entrySet()) {
+            String name = entry.getKey();
+            MCPServerConnection connection = entry.getValue();
+            if (connection == null) {
+                out.add(new MCPServerHealth(name, "disconnected", 0, "no connection"));
+                continue;
+            }
+            try {
+                List<MCPToolDefinition> tools = awaitMcpCall(() -> connection.getSession().listTools(), timeout);
+                out.add(new MCPServerHealth(name, "ok", tools != null ? tools.size() : 0, ""));
+            } catch (TimeoutException e) {
+                out.add(new MCPServerHealth(name, "timeout", 0, "health check timed out after " + timeout + "s"));
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                out.add(new MCPServerHealth(name, "interrupted", 0, "health check interrupted"));
+            } catch (Exception e) {
+                Throwable cause = e instanceof ExecutionException ee && ee.getCause() != null ? ee.getCause() : e;
+                if (connection instanceof ReconnectingMCPServerConnection reconnecting && reconnecting.reconnect()) {
+                    try {
+                        List<MCPToolDefinition> tools = awaitMcpCall(() -> connection.getSession().listTools(), timeout);
+                        out.add(new MCPServerHealth(name, "reconnected", tools != null ? tools.size() : 0, ""));
+                        continue;
+                    } catch (Exception retryError) {
+                        Throwable retryCause = retryError instanceof ExecutionException ee && ee.getCause() != null ? ee.getCause() : retryError;
+                        out.add(new MCPServerHealth(name, "error", 0, retryCause.getClass().getSimpleName() + ": " + retryCause.getMessage()));
+                        continue;
+                    }
+                }
+                out.add(new MCPServerHealth(name, "error", 0, cause.getClass().getSimpleName() + ": " + cause.getMessage()));
+            }
+        }
+        return out;
+    }
+
+    private static MCPServerConnection connectTransport(String name, Config.MCPServerConfig cfg, String transportType) {
+        return switch (transportType) {
+            case "stdio" -> MCPTransportFactory.connectStdio(cfg);
+            case "sse" -> MCPTransportFactory.connectSse(cfg);
+            case "streamableHttp" -> MCPTransportFactory.connectStreamableHttp(cfg);
+            default -> {
+                log.warn("MCP 服务器 '{}': 未知的传输类型：'{}'", name, transportType);
+                yield null;
+            }
+        };
+    }
+
     /**
      * 连接单个 MCP server。
      */
@@ -634,15 +707,7 @@ public final class MCPAdapters {
                 }
             }
 
-            connection = switch (transportType) {
-                case "stdio" -> MCPTransportFactory.connectStdio(cfg);
-                case "sse" -> MCPTransportFactory.connectSse(cfg);
-                case "streamableHttp" -> MCPTransportFactory.connectStreamableHttp(cfg);
-                default -> {
-                    log.warn("MCP 服务器 '{}': 未知的传输类型：'{}'", name, transportType);
-                    yield null;
-                }
-            };
+            connection = connectTransport(name, cfg, transportType);
 
             if (connection == null) {
                 return new ServerConnectResult(name, null);
@@ -650,6 +715,7 @@ public final class MCPAdapters {
 
             MCPClientSession session = connection.getSession();
             session.initialize();
+            MCPServerConnection managedConnection = new ReconnectingMCPServerConnection(name, cfg, transportType, connection);
 
             int registeredCount = 0;
 
@@ -677,7 +743,7 @@ public final class MCPAdapters {
                 }
 
                 MCPToolWrapper wrapper = new MCPToolWrapper(
-                        session,
+                        managedConnection,
                         name,
                         toolDef,
                         cfg.getToolTimeout()
@@ -713,7 +779,7 @@ public final class MCPAdapters {
             try {
                 for (MCPResourceDefinition resource : session.listResources()) {
                     MCPResourceWrapper wrapper = new MCPResourceWrapper(
-                            session, name, resource, cfg.getToolTimeout()
+                            managedConnection, name, resource, cfg.getToolTimeout()
                     );
                     registry.register(wrapper);
                     registeredCount++;
@@ -726,7 +792,7 @@ public final class MCPAdapters {
             try {
                 for (MCPPromptDefinition prompt : session.listPrompts()) {
                     MCPPromptWrapper wrapper = new MCPPromptWrapper(
-                            session, name, prompt, cfg.getToolTimeout()
+                            managedConnection, name, prompt, cfg.getToolTimeout()
                     );
                     registry.register(wrapper);
                     registeredCount++;
@@ -737,7 +803,7 @@ public final class MCPAdapters {
             }
 
             log.info("MCP 服务器 '{}': 已连接，已注册能力数：{}", name, registeredCount);
-            return new ServerConnectResult(name, connection);
+            return new ServerConnectResult(name, managedConnection);
 
         } catch (Exception e) {
             String text = String.valueOf(e.getMessage()).toLowerCase();
@@ -775,6 +841,70 @@ public final class MCPAdapters {
     }
 
     public record ServerConnectResult(String name, MCPServerConnection connection) {
+    }
+
+    public record MCPServerHealth(String name, String status, int toolCount, String error) {
+    }
+
+    private static final class ReconnectingMCPServerConnection implements MCPServerConnection {
+        private final String name;
+        private final Config.MCPServerConfig cfg;
+        private final String transportType;
+        private MCPServerConnection delegate;
+
+        private ReconnectingMCPServerConnection(
+                String name,
+                Config.MCPServerConfig cfg,
+                String transportType,
+                MCPServerConnection delegate
+        ) {
+            this.name = name;
+            this.cfg = cfg;
+            this.transportType = transportType;
+            this.delegate = delegate;
+        }
+
+        @Override
+        public synchronized MCPClientSession getSession() {
+            return delegate.getSession();
+        }
+
+        synchronized boolean reconnect() {
+            MCPServerConnection next = null;
+            try {
+                next = connectTransport(name, cfg, transportType);
+                if (next == null) {
+                    return false;
+                }
+                next.getSession().initialize();
+                MCPServerConnection old = delegate;
+                delegate = next;
+                closeQuietly(old);
+                log.info("MCP 服务器 '{}': 自动重连成功", name);
+                return true;
+            } catch (Exception e) {
+                closeQuietly(next);
+                log.warn("MCP 服务器 '{}': 自动重连失败: {}", name, e.getMessage(), e);
+                return false;
+            }
+        }
+
+        @Override
+        public synchronized void close() throws Exception {
+            if (delegate != null) {
+                delegate.close();
+            }
+        }
+
+        private void closeQuietly(MCPServerConnection connection) {
+            if (connection == null) {
+                return;
+            }
+            try {
+                connection.close();
+            } catch (Exception ignored) {
+            }
+        }
     }
 
     private static String stringValue(Map<String, Object> map, String key, String def) {

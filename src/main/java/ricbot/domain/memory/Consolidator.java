@@ -153,7 +153,7 @@ public class Consolidator {
                 return "(nothing)";
             }
 
-            store.appendHistory(normalized);
+            store.appendSessionSummary(normalized);
             return normalized;
         } catch (Exception e) {
             log.warn("会话整合失败，转为原始消息存入历史", e);

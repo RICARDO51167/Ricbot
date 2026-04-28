@@ -29,7 +29,13 @@ class AgentContextServiceTest {
         Files.createDirectories(workspace.resolve("memory"));
         Files.createDirectories(workspace.resolve("skills").resolve("demo"));
         Files.createDirectories(workspace.resolve("skills").resolve("unused"));
-        Files.writeString(workspace.resolve("skills").resolve("demo").resolve("SKILL.md"), "Demo skill body");
+        Files.writeString(workspace.resolve("skills").resolve("demo").resolve("SKILL.md"), """
+                ---
+                description: Demo skill.
+                keywords: demo
+                ---
+                Demo skill body
+                """);
         Files.writeString(workspace.resolve("skills").resolve("unused").resolve("SKILL.md"), """
                 ---
                 keywords: qq
@@ -88,14 +94,70 @@ class AgentContextServiceTest {
         assertEquals("cli:direct:m-1", appliedContext.get());
         assertTrue(request.combinedContext().contains("remember this"));
         assertTrue(request.combinedContext().contains("summary block"));
-        assertTrue(request.combinedContext().contains("Demo skill body"));
+        assertTrue(request.combinedContext().contains("<skill name=\"demo\""));
+        assertFalse(request.combinedContext().contains("Demo skill body"));
         assertFalse(request.combinedContext().contains("Unused skill body"));
-        assertFalse(request.combinedContext().contains("Available Skills:"));
+        assertTrue(request.combinedContext().contains("Use the read_skill tool"));
         assertEquals(1, request.history().size());
         assertNotNull(request.hook());
         assertFalse(request.promptContext().isEmpty());
+        String systemPrompt = String.valueOf(request.initialMessages().get(0).get("content"));
+        assertTrue(systemPrompt.contains("remember this"));
+        assertEquals(systemPrompt.indexOf("remember this"), systemPrompt.lastIndexOf("remember this"));
+        assertTrue(systemPrompt.contains("<skill name=\"demo\""));
+        assertFalse(systemPrompt.contains("Demo skill body"));
+        assertTrue(systemPrompt.contains("## Skills Context"));
+        assertTrue(systemPrompt.indexOf("## Skills Context") < systemPrompt.indexOf("<skill name=\"demo\""));
         Map<String, Object> current = request.initialMessages().get(request.initialMessages().size() - 1);
         assertEquals("user", current.get("role"));
         assertEquals("please use demo", current.get("content"));
+    }
+
+    @Test
+    void buildInteractiveRequest_loadsExplicitSkillTrigger(@TempDir Path workspace) throws Exception {
+        Files.createDirectories(workspace.resolve("skills").resolve("demo"));
+        Files.writeString(workspace.resolve("skills").resolve("demo").resolve("SKILL.md"), """
+                ---
+                description: Demo skill.
+                ---
+                Demo skill body
+                """);
+
+        ContextBuilder contextBuilder = new ContextBuilder(workspace, "UTC", List.of());
+        MemoryStore memoryStore = new MemoryStore(workspace);
+        SkillsLoader skillsLoader = new SkillsLoader(workspace, null, Set.of());
+        ToolRegistry tools = new ToolRegistry();
+        AgentContextService service = new AgentContextService(
+                workspace,
+                contextBuilder,
+                memoryStore,
+                skillsLoader,
+                new SkillRouter(skillsLoader, 3, 12_000),
+                tools,
+                new AgentHookFactory(new MessageBus(), (channel, chatId, messageId) -> {}),
+                (channel, chatId, messageId) -> {},
+                new java.util.ArrayList<>(),
+                new ContextSelectionService(memoryStore, new ToolTraceSummarizer())
+        );
+
+        Session session = new Session("cli:direct");
+        PreparedSessionContext prepared = new PreparedSessionContext(
+                "cli:direct",
+                session,
+                "",
+                TaskState.fromSession(session),
+                null,
+                false
+        );
+
+        AgentRequestContext request = service.buildInteractiveRequest(
+                new InboundMessage("cli", "user", "direct", "please use $demo"),
+                prepared,
+                List.of(),
+                20
+        );
+
+        assertTrue(request.combinedContext().contains("## Loaded Skills"), request.combinedContext());
+        assertTrue(request.combinedContext().contains("Demo skill body"), request.combinedContext());
     }
 }
