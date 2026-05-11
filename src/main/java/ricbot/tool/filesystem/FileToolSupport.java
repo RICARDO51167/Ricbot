@@ -3,6 +3,7 @@ package ricbot.tool.filesystem;
 import ricbot.infra.fs.FsPathUtils;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.ArrayList;
@@ -14,6 +15,8 @@ import java.util.Locale;
  * 文件工具公共辅助类，提供路径解析、权限校验、文件读写、二进制检测、目录列表等通用功能。
  */
 public final class FileToolSupport {
+    public static final long MAX_TEXT_FILE_BYTES = 2L * 1024L * 1024L;
+    private static final int BINARY_SAMPLE_BYTES = 8192;
 
     // 私有构造函数，防止外部实例化此类
     private FileToolSupport() {
@@ -69,6 +72,10 @@ public final class FileToolSupport {
      * @throws IOException 如果发生 I/O 错误
      */
     public static String readText(Path path) throws IOException {
+        long size = Files.size(path);
+        if (size > MAX_TEXT_FILE_BYTES) {
+            throw new IOException("文件超过文本工具大小限制：" + MAX_TEXT_FILE_BYTES + " bytes");
+        }
         // 使用 UTF-8 编码读取文件所有内容并返回字符串
         return Files.readString(path, StandardCharsets.UTF_8);
     }
@@ -81,6 +88,11 @@ public final class FileToolSupport {
      * @throws IOException 如果发生 I/O 错误
      */
     public static void writeText(Path path, String content) throws IOException {
+        String safeContent = content != null ? content : "";
+        long bytes = safeContent.getBytes(StandardCharsets.UTF_8).length;
+        if (bytes > MAX_TEXT_FILE_BYTES) {
+            throw new IOException("写入内容超过文本工具大小限制：" + MAX_TEXT_FILE_BYTES + " bytes");
+        }
         // 获取文件的父目录路径
         Path parent = path.getParent();
         // 如果父目录存在且不为 null
@@ -92,7 +104,7 @@ public final class FileToolSupport {
         Files.writeString(
                 path,
                 // 如果内容为 null，则写入空字符串，否则写入原内容
-                content != null ? content : "",
+                safeContent,
                 // 指定字符集为 UTF-8
                 StandardCharsets.UTF_8,
                 // 如果文件不存在则创建
@@ -112,11 +124,10 @@ public final class FileToolSupport {
      * @return 如果是二进制文件返回 true，否则返回 false
      */
     public static boolean isBinary(Path path) {
-        try {
-            // 读取文件的所有字节
-            byte[] bytes = Files.readAllBytes(path);
-            // 确定采样长度，最多取前 1024 字节
-            int sample = Math.min(bytes.length, 1024);
+        try (InputStream input = Files.newInputStream(path)) {
+            byte[] bytes = input.readNBytes(BINARY_SAMPLE_BYTES);
+            // 确定采样长度，最多取前 BINARY_SAMPLE_BYTES 字节
+            int sample = Math.min(bytes.length, BINARY_SAMPLE_BYTES);
             // 遍历采样范围内的字节
             for (int i = 0; i < sample; i++) {
                 byte b = bytes[i];

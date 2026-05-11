@@ -126,6 +126,26 @@ public class RicbotApiServerTest {
     }
 
     @Test
+    void chatCompletions_rejectsOversizedRequestBody(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildLoop(workspace);
+        var app = new RicbotApiServer.ApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "");
+        var handler = new RicbotApiServer.ChatCompletionsHandler(app);
+
+        try {
+            TestExchange exchange = postExchangeRaw("/v1/chat/completions", " ".repeat(2 * 1024 * 1024 + 1));
+
+            handler.handle(exchange);
+
+            assertEquals(413, exchange.getResponseCode(), exchange.responseText());
+            Map<String, Object> json = MAPPER.readValue(exchange.responseText(), new TypeReference<>() {});
+            Map<String, Object> err = (Map<String, Object>) json.get("error");
+            assertEquals("invalid_request_error", String.valueOf(err.get("type")));
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
     void chatCompletions_timeout_returnsTimeoutError(@TempDir Path workspace) throws Exception {
         AgentLoop loop = buildSlowLoop(workspace, 200);
         var app = new RicbotApiServer.ApiAppContext(loop, "gpt-4o-mini", 50, "127.0.0.1", "");
@@ -326,6 +346,10 @@ public class RicbotApiServerTest {
     private static TestExchange postExchange(String path, Map<String, Object> body) throws Exception {
         String json = MAPPER.writeValueAsString(body);
         return new TestExchange("POST", URI.create("http://localhost" + path), json);
+    }
+
+    private static TestExchange postExchangeRaw(String path, String body) {
+        return new TestExchange("POST", URI.create("http://localhost" + path), body);
     }
 
     private static TestExchange getExchange(String path) {

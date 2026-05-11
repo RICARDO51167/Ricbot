@@ -26,6 +26,7 @@ import java.security.MessageDigest;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -56,6 +57,9 @@ public class RicbotApiServer {
     public static final String API_CHAT_ID = "default";
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final int MAX_SESSION_LOCKS = 4096;
+    private static final long SESSION_LOCK_IDLE_MILLIS = TimeUnit.MINUTES.toMillis(10);
+    private static final long SESSION_LOCK_CLEANUP_INTERVAL_MILLIS = TimeUnit.SECONDS.toMillis(30);
 
     /**
      * 创建并启动 HTTP 服务。
@@ -90,7 +94,7 @@ public class RicbotApiServer {
         server.createContext("/v1/memory", new MemoryHandler(appContext));
         server.createContext("/health", new HealthHandler(appContext));
         server.createContext("/", new WebUiHandler());
-        server.setExecutor(Executors.newCachedThreadPool());
+        server.setExecutor(RicbotApiSupport.newApiExecutor());
         server.start();
         return server;
     }
@@ -127,7 +131,8 @@ public class RicbotApiServer {
         // 是否强制要求身份验证（取决于 token 是否存在或是否为回环地址）
         private final boolean requireAuth;
         // 会话锁映射表，用于保证同一会话的并发安全
-        private final Map<String, ReentrantLock> sessionLocks = new ConcurrentHashMap<>();
+        private final Map<String, SessionLockEntry> sessionLocks = new ConcurrentHashMap<>();
+        private volatile long lastLockCleanupMillis = 0L;
 
         /**
          * 构造函数，初始化应用上下文。
@@ -224,8 +229,82 @@ public class RicbotApiServer {
          * @param sessionKey 会话唯一标识键
          * @return 对应的 ReentrantLock 实例
          */
-        public ReentrantLock getSessionLock(String sessionKey) {
-            return sessionLocks.computeIfAbsent(sessionKey, k -> new ReentrantLock());
+        public SessionLockLease acquireSessionLock(String sessionKey) {
+            cleanupSessionLocksIfNeeded();
+            String key = sessionKey != null && !sessionKey.isBlank() ? sessionKey : API_SESSION_KEY;
+            SessionLockEntry entry = sessionLocks.computeIfAbsent(key, k -> new SessionLockEntry());
+            entry.acquire();
+            return new SessionLockLease(key, entry);
+        }
+
+        private void cleanupSessionLocksIfNeeded() {
+            long now = System.currentTimeMillis();
+            if (sessionLocks.size() < MAX_SESSION_LOCKS
+                    && now - lastLockCleanupMillis < SESSION_LOCK_CLEANUP_INTERVAL_MILLIS) {
+                return;
+            }
+            lastLockCleanupMillis = now;
+            for (Map.Entry<String, SessionLockEntry> item : sessionLocks.entrySet()) {
+                SessionLockEntry entry = item.getValue();
+                if (entry.users.get() != 0 || now - entry.lastAccessMillis < SESSION_LOCK_IDLE_MILLIS) {
+                    continue;
+                }
+                if (!entry.lock.tryLock()) {
+                    continue;
+                }
+                try {
+                    if (entry.users.get() == 0 && now - entry.lastAccessMillis >= SESSION_LOCK_IDLE_MILLIS) {
+                        sessionLocks.remove(item.getKey(), entry);
+                    }
+                } finally {
+                    entry.lock.unlock();
+                }
+            }
+        }
+
+        public static final class SessionLockLease implements AutoCloseable {
+            private final String key;
+            private final SessionLockEntry entry;
+            private boolean closed;
+
+            private SessionLockLease(String key, SessionLockEntry entry) {
+                this.key = key;
+                this.entry = entry;
+            }
+
+            public String key() {
+                return key;
+            }
+
+            @Override
+            public void close() {
+                if (closed) {
+                    return;
+                }
+                closed = true;
+                entry.release();
+            }
+        }
+
+        private static final class SessionLockEntry {
+            private final ReentrantLock lock = new ReentrantLock();
+            private final AtomicInteger users = new AtomicInteger();
+            private volatile long lastAccessMillis = System.currentTimeMillis();
+
+            private void acquire() {
+                users.incrementAndGet();
+                lastAccessMillis = System.currentTimeMillis();
+                lock.lock();
+            }
+
+            private void release() {
+                try {
+                    lastAccessMillis = System.currentTimeMillis();
+                    lock.unlock();
+                } finally {
+                    users.decrementAndGet();
+                }
+            }
         }
 
         /**
@@ -347,9 +426,7 @@ public class RicbotApiServer {
      * 读取请求体并转字符串。
      */
     public static String readRequestBody(HttpExchange exchange) throws IOException {
-        try (InputStream is = exchange.getRequestBody()) {
-            return new String(is.readAllBytes(), StandardCharsets.UTF_8);
-        }
+        return RicbotApiSupport.readRequestBody(exchange);
     }
 
     /**
@@ -414,12 +491,9 @@ public class RicbotApiServer {
                 ParsedMessages parsed = parseIncomingMessages(messages);
                 String modelName = validateRequestedModel(body.get("model"));
                 String sessionKey = resolveSessionKey(body);
-                ReentrantLock sessionLock = appContext.getSessionLock(sessionKey);
-
                 log.info("API 请求 sessionKey={} 内容={}", sessionKey, abbreviate(parsed.currentUserContent(), 80));
 
-                sessionLock.lock();
-                try {
+                try (ApiAppContext.SessionLockLease ignored = appContext.acquireSessionLock(sessionKey)) {
                     if (streamEnabled) {
                         handleStreaming(exchange, parsed, sessionKey, modelName);
                         return;
@@ -438,14 +512,14 @@ public class RicbotApiServer {
                 } catch (Exception e) {
                     log.error("处理 chat completions 同步请求失败: sessionKey={}", sessionKey, e);
                     writeErrorJson(exchange, 500, "服务器内部错误", "internal_error");
-                } finally {
-                    sessionLock.unlock();
                 }
             }
 
             private Map<String, Object> readJsonRequestBody(HttpExchange exchange) throws IOException {
                 try {
                     return MAPPER.readValue(readRequestBody(exchange), Map.class);
+                } catch (RicbotApiSupport.PayloadTooLargeException e) {
+                    throw new InvalidRequestException(413, e.getMessage(), "invalid_request_error");
                 } catch (Exception e) {
                     throw invalidRequest("JSON 请求体无效");
                 }
@@ -583,15 +657,30 @@ public class RicbotApiServer {
                         }
                     };
 
-                    // 调用 AgentLoop 处理直接请求，传入流式钩子
-                    appContext.getAgentLoop().processDirect(
-                            parsed.currentUserContent(), // 用户当前输入内容
-                            sessionKey,                  // 会话键
-                            "api",                       // 渠道标识
-                            API_CHAT_ID,                 // 聊天 ID
-                            Map.of("_wants_stream", true), // 额外参数，标记需要流式
-                            List.of(streamHook)          // 注册的钩子列表
-                    );
+                    try {
+                        runWithTimeout(
+                                () -> {
+                                    appContext.getAgentLoop().processDirect(
+                                            parsed.currentUserContent(),
+                                            sessionKey,
+                                            "api",
+                                            API_CHAT_ID,
+                                            Map.of("_wants_stream", true),
+                                            List.of(streamHook)
+                                    );
+                                    return null;
+                                },
+                                appContext.getRequestTimeoutMillis()
+                        );
+                    } catch (TimeoutException e) {
+                        ensureRoleChunk(writer, streamId, modelName, wroteRole);
+                        writeSse(writer, streamChunk(
+                                streamId,
+                                modelName,
+                                "请求超时（" + (appContext.getRequestTimeoutMillis() / 1000.0) + " 秒）",
+                                null
+                        ));
+                    }
 
                     // 再次确保角色块已写入（防止没有产生任何流式内容时的情况）
                     ensureRoleChunk(writer, streamId, modelName, wroteRole);

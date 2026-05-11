@@ -39,6 +39,7 @@ public class ExecTool extends Tool {
     private static final int MAX_TIMEOUT = 600;
     // 最大输出字符数
     private static final int MAX_OUTPUT = 10_000;
+    private static final int MAX_CAPTURE_BYTES = 64 * 1024;
 
     // 默认超时时间
     private final int timeout;
@@ -203,8 +204,8 @@ public class ExecTool extends Tool {
             ProcessBuilder pb = buildProcess(effectiveCommand, effectiveCwd, env);
             Process process = pb.start();
             ExecutorService readerExecutor = Executors.newFixedThreadPool(2);
-            Future<String> stdoutFuture = readerExecutor.submit(() -> readAll(process.getInputStream()));
-            Future<String> stderrFuture = readerExecutor.submit(() -> readAll(process.getErrorStream()));
+            Future<StreamOutput> stdoutFuture = readerExecutor.submit(() -> readAll(process.getInputStream()));
+            Future<StreamOutput> stderrFuture = readerExecutor.submit(() -> readAll(process.getErrorStream()));
 
             boolean finished = false;
             try {
@@ -219,19 +220,25 @@ public class ExecTool extends Tool {
                 }
 
                 // 并发读取标准输出和标准错误，避免管道写满导致的假超时
-                String stdout = stdoutFuture.get();
-                String stderr = stderrFuture.get();
+                StreamOutput stdout = stdoutFuture.get();
+                StreamOutput stderr = stderrFuture.get();
 
                 StringBuilder output = new StringBuilder();
 
-                if (stdout != null && !stdout.isBlank()) {
-                    output.append(stdout);
+                if (stdout != null && !stdout.text().isBlank()) {
+                    output.append(stdout.text());
                 }
-                if (stderr != null && !stderr.isBlank()) {
+                if (stderr != null && !stderr.text().isBlank()) {
                     if (!output.isEmpty()) {
                         output.append("\n");
                     }
-                    output.append(stderr);
+                    output.append(stderr.text());
+                }
+                if ((stdout != null && stdout.truncated()) || (stderr != null && stderr.truncated())) {
+                    if (!output.isEmpty()) {
+                        output.append("\n");
+                    }
+                    output.append("...（输出过长，已停止继续保留完整内容）");
                 }
 
                 String result = output.toString().trim();
@@ -439,14 +446,29 @@ public class ExecTool extends Tool {
      * @return 字符串内容
      * @throws Exception 异常
      */
-    private String readAll(InputStream in) throws Exception {
+    private StreamOutput readAll(InputStream in) throws Exception {
         try (InputStream input = in; ByteArrayOutputStream out = new ByteArrayOutputStream()) {
-            input.transferTo(out);
-            return out.toString(StandardCharsets.UTF_8);
+            byte[] buffer = new byte[8192];
+            int stored = 0;
+            boolean truncated = false;
+            int read;
+            while ((read = input.read(buffer)) != -1) {
+                if (stored < MAX_CAPTURE_BYTES) {
+                    int keep = Math.min(read, MAX_CAPTURE_BYTES - stored);
+                    out.write(buffer, 0, keep);
+                    stored += keep;
+                    if (keep < read) {
+                        truncated = true;
+                    }
+                } else {
+                    truncated = true;
+                }
+            }
+            return new StreamOutput(out.toString(StandardCharsets.UTF_8), truncated);
         }
     }
 
-    private void awaitDrain(Future<String> future, long timeout, TimeUnit unit) {
+    private void awaitDrain(Future<?> future, long timeout, TimeUnit unit) {
         if (future == null) {
             return;
         }
@@ -455,6 +477,9 @@ public class ExecTool extends Tool {
         } catch (Exception ignored) {
             future.cancel(true);
         }
+    }
+
+    private record StreamOutput(String text, boolean truncated) {
     }
 
     private String wrapSandboxCommand(String sandbox, String command, String workspace, String cwd) {

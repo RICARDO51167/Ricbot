@@ -44,6 +44,7 @@ public class QQChannelTest {
     void onMessage_downloadsAttachmentsAndPublishesInboundMessage(@TempDir Path workspace) throws Exception {
         QQChannel.QQConfig config = new QQChannel.QQConfig();
         config.setAckMessage("");
+        config.setAllowFrom(List.of("*"));
         config.setMediaDir(workspace.resolve("media").toString());
 
         MessageBus bus = new MessageBus();

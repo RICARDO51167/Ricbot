@@ -19,6 +19,7 @@ class WecomChannelTest {
         WecomChannel.WecomConfig config = new WecomChannel.WecomConfig();
         config.setBotId("bot-1");
         config.setSecret("secret-1");
+        config.setAllowFrom(List.of("*"));
 
         MessageBus bus = new MessageBus();
         WecomChannel channel = new WecomChannel(config, bus);
@@ -53,6 +54,7 @@ class WecomChannelTest {
         WecomChannel.WecomConfig config = new WecomChannel.WecomConfig();
         config.setBotId("bot-1");
         config.setSecret("secret-1");
+        config.setAllowFrom(List.of("*"));
         config.setWelcomeMessage("welcome");
 
         MessageBus bus = new MessageBus();

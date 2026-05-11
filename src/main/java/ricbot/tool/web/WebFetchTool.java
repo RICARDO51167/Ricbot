@@ -143,8 +143,8 @@ public class WebFetchTool extends Tool {
         try {
             // 构建 HTTP 客户端
             HttpClient client = WebToolSupport.buildClient(proxy);
-            // 构造 Jina AI 的代理 URL，去除原 URL 的协议头
-            String jinaUrl = "https://r.jina.ai/http://" + stripScheme(url);
+            // Jina Reader 要求在完整目标 URL 前添加 https://r.jina.ai/ 前缀。
+            String jinaUrl = "https://r.jina.ai/" + url;
 
             // 从 Jina AI 服务获取文本内容，设置20秒超时
             String text = WebToolSupport.fetchText(
@@ -201,19 +201,6 @@ public class WebFetchTool extends Tool {
             // 发生异常时返回错误 JSON
             return toErrorJson("抓取失败：" + e.getMessage(), url);
         }
-    }
-
-    /**
-     * 去除 URL 中的协议头 (http:// 或 https://)
-     * @param url 原始 URL
-     * @return 去除协议头后的 URL
-     */
-    private static String stripScheme(String url) {
-        if (url == null) {
-            return ""; // 如果 URL 为空，返回空字符串
-        }
-        // 使用正则替换掉开头的 http:// 或 https://
-        return url.replaceFirst("^https?://", "");
     }
 
     /**

@@ -143,6 +143,10 @@ public abstract class BaseChannel {
         if (request == null) {
             throw new IllegalArgumentException("InboundDispatchRequest must not be null");
         }
+        if (!isAllowedSource(request.senderId(), request.chatId())) {
+            log.warn("渠道 {} 拒绝未授权入站消息：senderId={}, chatId={}", getName(), request.senderId(), request.chatId());
+            return;
+        }
 
         // 2. 深拷贝元数据，避免修改原始请求中的 Map，保证线程安全及数据隔离
         Map<String, Object> metadata = copyMetadata(request.metadata());
@@ -256,6 +260,10 @@ public abstract class BaseChannel {
         if (!acceptEvent(event.eventId())) {
             return;
         }
+        if (!isAllowedSource(event.senderId(), event.chatId())) {
+            log.warn("渠道 {} 拒绝未授权事件：senderId={}, chatId={}", getName(), event.senderId(), event.chatId());
+            return;
+        }
 
         InboundMessage msg = event.toInboundMessage();
 
@@ -367,6 +375,25 @@ public abstract class BaseChannel {
      */
     private List<String> safeMedia(List<String> media) {
         return media == null ? Collections.emptyList() : media;
+    }
+
+    protected boolean isAllowedSource(String senderId, String chatId) {
+        List<String> allow = getAllowFrom();
+        if (allow == null || allow.contains("*")) {
+            return true;
+        }
+        String sender = senderId != null ? senderId.trim() : "";
+        String chat = chatId != null ? chatId.trim() : "";
+        for (String item : allow) {
+            if (item == null) {
+                continue;
+            }
+            String allowed = item.trim();
+            if (allowed.equals(sender) || allowed.equals(chat)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

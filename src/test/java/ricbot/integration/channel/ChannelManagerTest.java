@@ -1,9 +1,11 @@
 package ricbot.integration.channel;
 
 import org.junit.jupiter.api.Test;
+import ricbot.domain.message.InboundMessage;
 import ricbot.domain.message.MessageBus;
 import ricbot.domain.message.OutboundMessage;
 import ricbot.infra.config.Config;
+import ricbot.integration.channel.event.IncomingMessageEvent;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -113,6 +115,42 @@ class ChannelManagerTest {
         }
     }
 
+    @Test
+    void baseChannel_rejectsInboundMessageWhenSenderIsNotAllowed() throws Exception {
+        MessageBus bus = new MessageBus();
+        RecordingWebSocketChannel channel = new RecordingWebSocketChannel(
+                websocketConfigWithAllowFrom(List.of("allowed-user")),
+                bus
+        );
+
+        channel.publishInbound("blocked-user", "chat-1", "hidden");
+        assertNull(bus.consumeInbound(100, TimeUnit.MILLISECONDS));
+
+        channel.publishInbound("allowed-user", "chat-1", "visible");
+        InboundMessage inbound = bus.consumeInbound(1, TimeUnit.SECONDS);
+        assertNotNull(inbound);
+        assertEquals("allowed-user", inbound.getSenderId());
+        assertEquals("visible", inbound.getContent());
+    }
+
+    @Test
+    void baseChannel_rejectsChannelEventsWhenSenderIsNotAllowed() throws Exception {
+        MessageBus bus = new MessageBus();
+        RecordingWebSocketChannel channel = new RecordingWebSocketChannel(
+                websocketConfigWithAllowFrom(List.of("allowed-user")),
+                bus
+        );
+
+        channel.publishIncomingEvent("blocked-user", "chat-1", "hidden");
+        assertNull(bus.consumeInbound(100, TimeUnit.MILLISECONDS));
+
+        channel.publishIncomingEvent("allowed-user", "chat-1", "visible");
+        InboundMessage inbound = bus.consumeInbound(1, TimeUnit.SECONDS);
+        assertNotNull(inbound);
+        assertEquals("allowed-user", inbound.getSenderId());
+        assertEquals("visible", inbound.getContent());
+    }
+
     private static OutboundMessage outbound(String channel, String chatId, String content, Map<String, Object> metadata) {
         OutboundMessage msg = new OutboundMessage();
         msg.setChannel(channel);
@@ -120,6 +158,12 @@ class ChannelManagerTest {
         msg.setContent(content);
         msg.setMetadata(metadata);
         return msg;
+    }
+
+    private static WebSocketChannel.WebSocketConfig websocketConfigWithAllowFrom(List<String> allowFrom) {
+        WebSocketChannel.WebSocketConfig config = new WebSocketChannel.WebSocketConfig();
+        config.setAllowFrom(allowFrom);
+        return config;
     }
 
     static class RecordingWebSocketChannel extends BaseChannel {
@@ -168,6 +212,25 @@ class ChannelManagerTest {
             lastDeltaMetadata = metadata != null ? new LinkedHashMap<>(metadata) : Map.of();
             deltaCount.incrementAndGet();
             deltaLatch.countDown();
+        }
+
+        void publishInbound(String senderId, String chatId, String content) throws Exception {
+            handleMessage(senderId, chatId, content, List.of(), Map.of());
+        }
+
+        void publishIncomingEvent(String senderId, String chatId, String content) throws Exception {
+            publishEvent(new IncomingMessageEvent(
+                    getName(),
+                    chatId,
+                    senderId,
+                    senderId,
+                    content,
+                    List.of(),
+                    Map.of(),
+                    null,
+                    "event-" + senderId + "-" + content,
+                    null
+            ));
         }
 
         void expectSends(int expected) {

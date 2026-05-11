@@ -21,6 +21,17 @@ public class ExecToolTest {
     }
 
     @Test
+    void hugeOutput_isDrainedButNotFullyCaptured(@TempDir Path workspace) {
+        ExecTool tool = new ExecTool(5, workspace.toString(), null, null, true, "", "", List.of());
+
+        String result = tool.execute("i=0; while [ \"$i\" -lt 20000 ]; do echo line-$i; i=$((i+1)); done", null, 5);
+
+        assertFalse(result.startsWith("错误：命令执行超时"), result);
+        assertTrue(result.contains("line-0"), result);
+        assertTrue(result.contains("已截断") || result.contains("输出过长"), result);
+    }
+
+    @Test
     void longRunningCommand_stillTimesOut(@TempDir Path workspace) {
         ExecTool tool = new ExecTool(1, workspace.toString(), null, null, true, "", "", List.of());
 
