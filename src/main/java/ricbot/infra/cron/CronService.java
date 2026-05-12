@@ -38,6 +38,8 @@ import java.util.function.Supplier;
 public class CronService implements AutoCloseable {
 
     private static final Logger log = LoggerFactory.getLogger(CronService.class); // 初始化日志记录器
+    private static final TypeReference<Map<String, Object>> JSON_OBJECT_TYPE = new TypeReference<>() {
+    };
 
     /**
      * 单条 job 最多保留多少条运行历史
@@ -238,7 +240,7 @@ public class CronService implements AutoCloseable {
             try {
                 String raw = Files.readString(storePath); // 读取存储文件的原始内容
                 // 将 JSON 字符串反序列化为 Map 对象，以便提取字段
-                Map<String, Object> data = mapper.readValue(raw, new TypeReference<>() {});
+                Map<String, Object> data = mapper.readValue(raw, JSON_OBJECT_TYPE);
 
                 // 提取版本号，如果不存在或不是数字类型则默认为 null
                 Number versionNum = data.get("version") instanceof Number n ? n : null;
@@ -253,9 +255,7 @@ public class CronService implements AutoCloseable {
                     for (Object item : list) {
                         // 检查每一项是否是 Map 类型（即原始的任务数据）
                         if (item instanceof Map<?, ?> rawJob) {
-                            @SuppressWarnings("unchecked")
-                            // 将原始 Map 强制转换为 String-Object 类型的 Map，方便后续处理
-                            Map<String, Object> jobMap = (Map<String, Object>) rawJob;
+                            Map<String, Object> jobMap = asMap(rawJob);
                             try {
                                 // 尝试从 Map 构建 CronJob 对象
                                 CronJob job = CronJob.fromMap(jobMap);
@@ -325,15 +325,14 @@ public class CronService implements AutoCloseable {
                         }
 
                         // 将 JSON 行反序列化为 Map，提取 action 类型和参数
-                        Map<String, Object> action = mapper.readValue(line, new TypeReference<>() {});
+                        Map<String, Object> action = mapper.readValue(line, JSON_OBJECT_TYPE);
                         
                         // 获取操作类型，如 "add", "update", "del"
                         String type = String.valueOf(action.get("action"));
                         
                         // 获取操作参数，确保其为 Map 类型，否则默认为空 Map
-                        @SuppressWarnings("unchecked")
                         Map<String, Object> params = action.get("params") instanceof Map<?, ?> p
-                                ? (Map<String, Object>) p
+                                ? asMap(p)
                                 : Collections.emptyMap();
 
                         // 根据操作类型执行相应的逻辑
@@ -1282,4 +1281,14 @@ public class CronService implements AutoCloseable {
     }
 
     public static final UnchangedSentinel UNCHANGED = new UnchangedSentinel();
+
+    private static Map<String, Object> asMap(Map<?, ?> raw) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        for (Map.Entry<?, ?> entry : raw.entrySet()) {
+            if (entry.getKey() != null) {
+                out.put(String.valueOf(entry.getKey()), entry.getValue());
+            }
+        }
+        return out;
+    }
 }

@@ -112,7 +112,6 @@ record SessionPreparationService(SessionManager sessionManager, AutoCompact auto
         return prepared.withTaskStateSnapshot(taskState).withUserPersistedEarly();
     }
 
-    @SuppressWarnings("unchecked")
     void restoreRuntimeCheckpoint(Session session) {
         // 从会话元数据中获取运行时检查点对象
         Object raw = session.getMetadata().get(SessionRuntimeKeys.RUNTIME_CHECKPOINT_KEY);
@@ -121,8 +120,8 @@ record SessionPreparationService(SessionManager sessionManager, AutoCompact auto
             return;
         }
 
-        // 将原始对象强制转换为 Map<String, Object> 以便后续处理
-        Map<String, Object> checkpoint = (Map<String, Object>) rawMap;
+        // 将原始对象复制为 Map<String, Object> 以便后续处理
+        Map<String, Object> checkpoint = copyObjectMap(rawMap);
         // 提取检查点中的各个组成部分：助手消息、已完成的工具结果、待处理的工具调用、任务状态
         Object assistantMessage = checkpoint.get("assistant_message");
         Object completedToolResults = checkpoint.get("completed_tool_results");
@@ -131,14 +130,14 @@ record SessionPreparationService(SessionManager sessionManager, AutoCompact auto
 
         // 如果存在助手消息且为 Map 类型，将其添加到会话消息列表中
         if (assistantMessage instanceof Map<?, ?> assistant) {
-            session.getMessages().add(new LinkedHashMap<>((Map<String, Object>) assistant));
+            session.getMessages().add(copyObjectMap(assistant));
         }
 
         // 如果存在已完成的工具结果列表，遍历并添加每个有效的结果消息到会话中
         if (completedToolResults instanceof List<?> completed) {
             for (Object item : completed) {
                 if (item instanceof Map<?, ?> result) {
-                    session.getMessages().add(new LinkedHashMap<>((Map<String, Object>) result));
+                    session.getMessages().add(copyObjectMap(result));
                 }
             }
         }
@@ -153,7 +152,7 @@ record SessionPreparationService(SessionManager sessionManager, AutoCompact auto
 
                 // 提取工具调用的函数定义，如果不存在则创建空 Map
                 Map<String, Object> function = toolCall.get("function") instanceof Map<?, ?> fn
-                        ? (Map<String, Object>) fn
+                        ? copyObjectMap(fn)
                         : new LinkedHashMap<>();
 
                 // 构建表示工具执行中断的消息对象
@@ -169,7 +168,7 @@ record SessionPreparationService(SessionManager sessionManager, AutoCompact auto
 
         // 如果存在任务状态且为 Map 类型，将其恢复至会话元数据中
         if (taskState instanceof Map<?, ?> taskMap) {
-            session.getMetadata().put(SessionRuntimeKeys.TASK_STATE_KEY, new LinkedHashMap<>((Map<String, Object>) taskMap));
+            session.getMetadata().put(SessionRuntimeKeys.TASK_STATE_KEY, copyObjectMap(taskMap));
         }
 
         // 清理元数据中的临时标记和已恢复的检查点数据
@@ -234,6 +233,16 @@ record SessionPreparationService(SessionManager sessionManager, AutoCompact auto
             case "timeout" -> "错误：任务在该工具执行完成前因超时而中断。";
             default -> "错误：任务在该工具执行完成前被中断。";
         };
+    }
+
+    private static Map<String, Object> copyObjectMap(Map<?, ?> raw) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        for (Map.Entry<?, ?> entry : raw.entrySet()) {
+            if (entry.getKey() != null) {
+                out.put(String.valueOf(entry.getKey()), entry.getValue());
+            }
+        }
+        return out;
     }
 
     private static String trim(String s) {

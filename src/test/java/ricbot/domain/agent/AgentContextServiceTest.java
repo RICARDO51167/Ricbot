@@ -25,7 +25,6 @@ import static org.junit.jupiter.api.Assertions.*;
 class AgentContextServiceTest {
 
     @Test
-    @SuppressWarnings("unchecked")
     void buildInteractiveRequest_combinesMemorySkillsSummaryAndBuildsHook(@TempDir Path workspace) throws Exception {
         Files.createDirectories(workspace.resolve("memory"));
         Files.createDirectories(workspace.resolve("skills").resolve("demo"));
@@ -104,9 +103,9 @@ class AgentContextServiceTest {
         assertFalse(request.promptContext().isEmpty());
         assertEquals(1, request.contextTrace().get("history_selected"));
         assertTrue(request.contextTrace().containsKey("prompt_context_budget"));
-        Map<String, Object> budget = (Map<String, Object>) request.contextTrace().get("prompt_context_budget");
+        Map<?, ?> budget = (Map<?, ?>) request.contextTrace().get("prompt_context_budget");
         assertTrue(budget.containsKey("sections"));
-        Map<String, Object> skillTrace = (Map<String, Object>) request.contextTrace().get("skills");
+        Map<?, ?> skillTrace = (Map<?, ?>) request.contextTrace().get("skills");
         assertEquals(1, skillTrace.get("selected_count"));
         String systemPrompt = String.valueOf(request.initialMessages().get(0).get("content"));
         assertTrue(systemPrompt.contains("remember this"));

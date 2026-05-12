@@ -1017,7 +1017,6 @@ public class MemoryStore {
         }
     }
 
-    @SuppressWarnings("unchecked")
     private String renderArchivedHistoryContent(String type, Object rawContent) {
         if ("text".equals(type)) {
             return rawContent != null ? String.valueOf(rawContent) : "";
@@ -1039,9 +1038,9 @@ public class MemoryStore {
                 if (!(item instanceof Map<?, ?> rawMessage)) {
                     continue;
                 }
-                Map<String, Object> message = (Map<String, Object>) rawMessage;
-                String role = String.valueOf(message.getOrDefault("role", ""));
-                String content = normalizeArchivedMessageContent(message.get("content"));
+                Object roleObj = rawMessage.get("role");
+                String role = roleObj != null ? String.valueOf(roleObj) : "";
+                String content = normalizeArchivedMessageContent(rawMessage.get("content"));
                 if (content.isBlank()) {
                     continue;
                 }

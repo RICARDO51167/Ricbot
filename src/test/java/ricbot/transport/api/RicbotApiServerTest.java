@@ -32,7 +32,6 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-@SuppressWarnings("unchecked")
 public class RicbotApiServerTest {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -119,7 +118,7 @@ public class RicbotApiServerTest {
 
             assertEquals(400, exchange.getResponseCode(), exchange.responseText());
             Map<String, Object> json = MAPPER.readValue(exchange.responseText(), new TypeReference<>() {});
-            Map<String, Object> err = (Map<String, Object>) json.get("error");
+            Map<?, ?> err = (Map<?, ?>) json.get("error");
             assertEquals("invalid_request_error", String.valueOf(err.get("type")));
         } finally {
             loop.stop();
@@ -139,7 +138,7 @@ public class RicbotApiServerTest {
 
             assertEquals(413, exchange.getResponseCode(), exchange.responseText());
             Map<String, Object> json = MAPPER.readValue(exchange.responseText(), new TypeReference<>() {});
-            Map<String, Object> err = (Map<String, Object>) json.get("error");
+            Map<?, ?> err = (Map<?, ?>) json.get("error");
             assertEquals("invalid_request_error", String.valueOf(err.get("type")));
         } finally {
             loop.stop();
@@ -164,7 +163,7 @@ public class RicbotApiServerTest {
 
             assertEquals(504, exchange.getResponseCode(), exchange.responseText());
             Map<String, Object> json = MAPPER.readValue(exchange.responseText(), new TypeReference<>() {});
-            Map<String, Object> err = (Map<String, Object>) json.get("error");
+            Map<?, ?> err = (Map<?, ?>) json.get("error");
             assertEquals("timeout_error", String.valueOf(err.get("type")));
         } finally {
             loop.stop();
@@ -293,11 +292,11 @@ public class RicbotApiServerTest {
             assertEquals(200, trace.getResponseCode(), trace.responseText());
             Map<String, Object> json = MAPPER.readValue(trace.responseText(), new TypeReference<>() {});
             assertEquals("trace-test", String.valueOf(json.get("session_id")));
-            Map<String, Object> runTrace = (Map<String, Object>) json.get("run_trace");
+            Map<?, ?> runTrace = (Map<?, ?>) json.get("run_trace");
             assertEquals("stop", String.valueOf(runTrace.get("stop_reason")));
             List<?> events = (List<?>) runTrace.get("events");
             assertFalse(events.isEmpty(), trace.responseText());
-            Map<String, Object> contextTrace = (Map<String, Object>) json.get("context_trace");
+            Map<?, ?> contextTrace = (Map<?, ?>) json.get("context_trace");
             assertEquals("interactive", String.valueOf(contextTrace.get("mode")));
             assertTrue(contextTrace.containsKey("prompt_context_budget"), trace.responseText());
         } finally {

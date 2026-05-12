@@ -20,6 +20,8 @@ public abstract class LLMProvider {
 
     // JSON 对象映射器，用于序列化和反序列化
     protected static final ObjectMapper MAPPER = new ObjectMapper();
+    protected static final TypeReference<Map<String, Object>> JSON_OBJECT_TYPE = new TypeReference<>() {
+    };
 
     // 聊天重试的延迟时间列表（秒），分别为第1、2、3次重试的等待时间
     protected static final List<Integer> CHAT_RETRY_DELAYS = List.of(1, 2, 4);
@@ -188,7 +190,6 @@ public abstract class LLMProvider {
      * 对应 Python: _sanitize_empty_content(messages)
      * 清洗消息列表中的空内容
      */
-    @SuppressWarnings("unchecked")
     public static List<Map<String, Object>> sanitizeEmptyContent(List<Map<String, Object>> messages) {
         // 初始化结果列表
         List<Map<String, Object>> result = new ArrayList<>();
@@ -234,7 +235,9 @@ public abstract class LLMProvider {
                         // 创建新的 Map 并复制原始数据
                         Map<String, Object> dict = new LinkedHashMap<>();
                         for (Map.Entry<?, ?> e : raw.entrySet()) {
-                            dict.put(String.valueOf(e.getKey()), e.getValue());
+                            if (e.getKey() != null) {
+                                dict.put(String.valueOf(e.getKey()), e.getValue());
+                            }
                         }
 
                         // 获取类型字段
@@ -297,7 +300,6 @@ public abstract class LLMProvider {
      * 对应 Python: _tool_name(tool)
      * 从工具定义中提取工具名称
      */
-    @SuppressWarnings("unchecked")
     public static String toolName(Map<String, Object> tool) {
         // 尝试直接从 name 字段获取
         Object name = tool.get("name");
@@ -306,8 +308,9 @@ public abstract class LLMProvider {
         }
         // 尝试从 function.name 字段获取
         Object fn = tool.get("function");
-        if (fn instanceof Map<?, ?> map) {
-            Object fname = ((Map<String, Object>) map).get("name");
+        Map<String, Object> function = asObjectMap(fn);
+        if (function != null) {
+            Object fname = function.get("name");
             if (fname instanceof String s) {
                 return s;
             }
@@ -320,17 +323,16 @@ public abstract class LLMProvider {
      * 对应 Python: _extract_error_type_code(payload)
      * 从负载中提取错误类型和代码
      */
-    @SuppressWarnings("unchecked")
     public static String[] extractErrorTypeCode(Object payload) {
         Map<String, Object> data = null;
 
         // 如果负载是 Map 类型，直接使用
-        if (payload instanceof Map<?, ?> map) {
-            data = (Map<String, Object>) map;
+        if (payload instanceof Map<?, ?>) {
+            data = asObjectMap(payload);
         } else if (payload instanceof String text && !text.isBlank()) {
             // 如果负载是字符串，尝试解析为 JSON
             try {
-                data = MAPPER.readValue(text, new TypeReference<>() {});
+                data = MAPPER.readValue(text, JSON_OBJECT_TYPE);
             } catch (Exception ignored) {
                 // 解析失败忽略
             }
@@ -347,15 +349,29 @@ public abstract class LLMProvider {
         Object codeValue = data.get("code");
 
         // 如果存在 error 对象，优先从中提取 type 和 code
-        if (errorObj instanceof Map<?, ?> errMap) {
-            Object t = ((Map<String, Object>) errMap).get("type");
-            Object c = ((Map<String, Object>) errMap).get("code");
+        Map<String, Object> error = asObjectMap(errorObj);
+        if (error != null) {
+            Object t = error.get("type");
+            Object c = error.get("code");
             if (t != null) typeValue = t;
             if (c != null) codeValue = c;
         }
 
         // 规范化并返回错误类型和代码
         return new String[]{normalizeErrorToken(typeValue), normalizeErrorToken(codeValue)};
+    }
+
+    private static Map<String, Object> asObjectMap(Object value) {
+        if (!(value instanceof Map<?, ?> raw)) {
+            return null;
+        }
+        Map<String, Object> out = new LinkedHashMap<>();
+        for (Map.Entry<?, ?> entry : raw.entrySet()) {
+            if (entry.getKey() != null) {
+                out.put(String.valueOf(entry.getKey()), entry.getValue());
+            }
+        }
+        return out;
     }
 
     /**

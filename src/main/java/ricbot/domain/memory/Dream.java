@@ -1,5 +1,7 @@
 package ricbot.domain.memory;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import ricbot.infra.template.PromptTemplates;
 import ricbot.integration.llm.api.LLMProvider;
 import ricbot.integration.llm.api.LLMResponse;
@@ -7,8 +9,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -32,6 +32,9 @@ public class Dream {
     private static final Pattern HEADING = Pattern.compile("^\\s{0,3}(#{2,6})\\s*([^#].*?)\\s*$");
     private static final Pattern FENCE_START = Pattern.compile("^\\s*```\\s*(\\w+)?\\s*$");
     private static final Pattern FENCE_END = Pattern.compile("^\\s*```\\s*$");
+    private static final ObjectMapper MAPPER = new ObjectMapper().findAndRegisterModules();
+    private static final TypeReference<Map<String, Object>> JSON_OBJECT_TYPE = new TypeReference<>() {
+    };
 
     public Dream(LLMProvider provider, String model, MemoryStore store) {
         this.provider = provider;
@@ -309,10 +312,8 @@ public class Dream {
             return List.of();
         }
         try {
-            // 创建 ObjectMapper 实例并注册模块以支持更多数据类型
-            com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper().findAndRegisterModules();
             // 将文本解析为 Map 对象
-            Map<?, ?> parsed = mapper.readValue(text, Map.class);
+            Map<String, Object> parsed = MAPPER.readValue(text, JSON_OBJECT_TYPE);
             // 获取 "entries" 字段
             Object entriesObj = parsed.get("entries");
             // 如果 "entries" 不是 List 类型，返回空列表
@@ -327,9 +328,7 @@ public class Dream {
                 if (!(item instanceof Map<?, ?> raw)) {
                     continue;
                 }
-                // 强制转换为 Map<String, Object>
-                @SuppressWarnings("unchecked")
-                Map<String, Object> map = (Map<String, Object>) raw;
+                Map<String, Object> map = copyObjectMap(raw);
                 // 从 Map 创建 MemoryEntry 对象
                 MemoryEntry entry = MemoryEntry.fromMap(map);
                 // 如果摘要为空或空白，跳过该条目
@@ -469,9 +468,7 @@ public class Dream {
             return null;
         }
         try {
-            // 创建 ObjectMapper 实例
-            @SuppressWarnings("unchecked")
-            Map<String, Object> map = new com.fasterxml.jackson.databind.ObjectMapper().readValue(trimmed, Map.class);
+            Map<String, Object> map = MAPPER.readValue(trimmed, JSON_OBJECT_TYPE);
             // 从 Map 中提取各部分内容，支持多种键名
             String memory = pickString(map, "memory_md", "MEMORY.md", "memory");
             String user = pickString(map, "user_md", "USER.md", "user");
@@ -586,9 +583,7 @@ public class Dream {
                 if (!(itemObj instanceof Map<?, ?> rawItem)) {
                     continue;
                 }
-                // 强制转换为 Map
-                @SuppressWarnings("unchecked")
-                Map<String, Object> item = (Map<String, Object>) rawItem;
+                Map<String, Object> item = copyObjectMap(rawItem);
                 // 获取类型字段
                 String type = item.get("type") != null ? String.valueOf(item.get("type")) : "";
                 // 如果是文本类型
@@ -610,6 +605,16 @@ public class Dream {
         }
         // 其他类型，直接转换为字符串
         return String.valueOf(content);
+    }
+
+    private static Map<String, Object> copyObjectMap(Map<?, ?> raw) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        for (Map.Entry<?, ?> entry : raw.entrySet()) {
+            if (entry.getKey() != null) {
+                out.put(String.valueOf(entry.getKey()), entry.getValue());
+            }
+        }
+        return out;
     }
 
     private void appendAudit(

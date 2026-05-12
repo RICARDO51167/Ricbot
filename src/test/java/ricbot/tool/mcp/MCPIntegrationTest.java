@@ -16,6 +16,7 @@ import java.net.InetSocketAddress;
 import java.net.SocketException;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Executors;
@@ -293,9 +294,17 @@ public class MCPIntegrationTest {
             return Map.of("content", List.of(String.valueOf(args.getOrDefault("text", ""))));
         }
 
-        @SuppressWarnings("unchecked")
         private static Map<String, Object> asObjectMap(Object value) {
-            return value instanceof Map<?, ?> map ? (Map<String, Object>) map : Map.of();
+            if (!(value instanceof Map<?, ?> map)) {
+                return Map.of();
+            }
+            Map<String, Object> out = new LinkedHashMap<>();
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                if (entry.getKey() != null) {
+                    out.put(String.valueOf(entry.getKey()), entry.getValue());
+                }
+            }
+            return out;
         }
     }
 

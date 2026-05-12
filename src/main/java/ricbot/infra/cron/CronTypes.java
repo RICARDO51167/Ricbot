@@ -242,7 +242,6 @@ public final class CronTypes {
          * @param map 源数据 Map
          * @return 构建好的 CronSchedule 对象
          */
-        @SuppressWarnings("unchecked")
         public static CronSchedule fromMap(Map<String, Object> map) {
             if (map == null) {
                 return new CronSchedule(ScheduleKind.EVERY);
@@ -636,7 +635,6 @@ public final class CronTypes {
          * @param map 源数据 Map
          * @return 构建好的 CronJobState 对象
          */
-        @SuppressWarnings("unchecked")
         public static CronJobState fromMap(Map<String, Object> map) {
             CronJobState s = new CronJobState();
             if (map == null) {
@@ -655,8 +653,7 @@ public final class CronTypes {
             if (historyObj instanceof List<?> list) {
                 for (Object item : list) {
                     if (item instanceof Map<?, ?> raw) {
-                        @SuppressWarnings("unchecked")
-                        Map<String, Object> recMap = (Map<String, Object>) raw;
+                        Map<String, Object> recMap = asMap(raw);
                         // 递归构建 CronRunRecord
                         CronRunRecord rec = CronRunRecord.fromMap(recMap);
                         if (rec != null) {
@@ -805,7 +802,6 @@ public final class CronTypes {
          * @param map 源数据 Map
          * @return 构建好的 CronJob 对象，如果 map 为 null 则返回 null
          */
-        @SuppressWarnings("unchecked")
         public static CronJob fromMap(Map<String, Object> map) {
             if (map == null) {
                 return null;
@@ -820,7 +816,7 @@ public final class CronTypes {
             // 解析 schedule 嵌套对象
             Object scheduleObj = map.get("schedule");
             if (scheduleObj instanceof Map<?, ?> rawSchedule) {
-                job.setSchedule(CronSchedule.fromMap((Map<String, Object>) rawSchedule));
+                job.setSchedule(CronSchedule.fromMap(asMap(rawSchedule)));
             } else {
                 // 如果缺失或格式不对，使用默认值
                 job.setSchedule(new CronSchedule(ScheduleKind.EVERY));
@@ -829,7 +825,7 @@ public final class CronTypes {
             // 解析 payload 嵌套对象
             Object payloadObj = map.get("payload");
             if (payloadObj instanceof Map<?, ?> rawPayload) {
-                job.setPayload(CronPayload.fromMap((Map<String, Object>) rawPayload));
+                job.setPayload(CronPayload.fromMap(asMap(rawPayload)));
             } else {
                 // 如果缺失或格式不对，使用默认值
                 job.setPayload(new CronPayload());
@@ -838,7 +834,7 @@ public final class CronTypes {
             // 解析 state 嵌套对象
             Object stateObj = map.get("state");
             if (stateObj instanceof Map<?, ?> rawState) {
-                job.setState(CronJobState.fromMap((Map<String, Object>) rawState));
+                job.setState(CronJobState.fromMap(asMap(rawState)));
             } else {
                 // 如果缺失或格式不对，使用默认值
                 job.setState(new CronJobState());
@@ -1008,5 +1004,15 @@ public final class CronTypes {
      */
     private static String defaultString(String value) {
         return value == null ? "" : value;
+    }
+
+    private static Map<String, Object> asMap(Map<?, ?> raw) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        for (Map.Entry<?, ?> entry : raw.entrySet()) {
+            if (entry.getKey() != null) {
+                out.put(String.valueOf(entry.getKey()), entry.getValue());
+            }
+        }
+        return out;
     }
 }

@@ -261,10 +261,27 @@ public class NotebookEditTool extends FsTool {
      * @param cellsObj 原始对象
      * @return 单元格列表
      */
-    @SuppressWarnings("unchecked")
     private static List<Map<String, Object>> castCells(Object cellsObj) {
-        // 强制转换对象为 List<Map<String, Object>> 类型
-        return (List<Map<String, Object>>) cellsObj;
+        List<Map<String, Object>> cells = new ArrayList<>();
+        if (!(cellsObj instanceof List<?> list)) {
+            return cells;
+        }
+        for (Object item : list) {
+            if (item instanceof Map<?, ?> raw) {
+                cells.add(copyObjectMap(raw));
+            }
+        }
+        return cells;
+    }
+
+    private static Map<String, Object> copyObjectMap(Map<?, ?> raw) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        for (Map.Entry<?, ?> entry : raw.entrySet()) {
+            if (entry.getKey() != null) {
+                out.put(String.valueOf(entry.getKey()), entry.getValue());
+            }
+        }
+        return out;
     }
 
     /**

@@ -314,7 +314,6 @@ record AgentContextService(Path workspace, ContextBuilder contextBuilder, Memory
      * @param session 会话对象
      * @return 工具追踪记录列表，每个元素为Map结构
      */
-    @SuppressWarnings("unchecked")
     private List<Map<String, Object>> recentToolTrace(Session session) {
         if (session == null) {
             return List.of();
@@ -329,7 +328,17 @@ record AgentContextService(Path workspace, ContextBuilder contextBuilder, Memory
         // 遍历列表，将每个Map元素转换为LinkedHashMap以保持顺序
         for (Object item : list) {
             if (item instanceof Map<?, ?> map) {
-                out.add(new LinkedHashMap<>((Map<String, Object>) map));
+                out.add(copyObjectMap(map));
+            }
+        }
+        return out;
+    }
+
+    private static Map<String, Object> copyObjectMap(Map<?, ?> raw) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        for (Map.Entry<?, ?> entry : raw.entrySet()) {
+            if (entry.getKey() != null) {
+                out.put(String.valueOf(entry.getKey()), entry.getValue());
             }
         }
         return out;

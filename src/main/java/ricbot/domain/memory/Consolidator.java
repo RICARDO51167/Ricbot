@@ -353,11 +353,9 @@ public class Consolidator {
                 if (!(itemObj instanceof Map<?, ?> rawItem)) {
                     continue;
                 }
-                @SuppressWarnings("unchecked")
-                Map<String, Object> item = (Map<String, Object>) rawItem;
-                String type = item.get("type") != null ? String.valueOf(item.get("type")) : "";
+                String type = rawItem.get("type") != null ? String.valueOf(rawItem.get("type")) : "";
                 if ("text".equals(type)) {
-                    sb.append(item.get("text") != null ? String.valueOf(item.get("text")) : "");
+                    sb.append(rawItem.get("text") != null ? String.valueOf(rawItem.get("text")) : "");
                     sb.append("\n");
                 } else if ("image_url".equals(type)) {
                     sb.append("[image]").append("\n");

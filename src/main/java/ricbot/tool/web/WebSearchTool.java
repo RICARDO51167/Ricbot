@@ -420,11 +420,15 @@ public class WebSearchTool extends Tool {
      * @param obj 待转换对象
      * @return 转换后的 Map，如果转换失败则返回空 LinkedHashMap
      */
-    @SuppressWarnings("unchecked")
     private static Map<String, Object> asMap(Object obj) {
-        if (obj instanceof Map<?, ?> m) {
-            // 如果对象是 Map 类型，则创建一个新的 LinkedHashMap 并返回
-            return new LinkedHashMap<>((Map<String, Object>) m);
+        if (obj instanceof Map<?, ?> raw) {
+            Map<String, Object> out = new LinkedHashMap<>();
+            for (Map.Entry<?, ?> entry : raw.entrySet()) {
+                if (entry.getKey() != null) {
+                    out.put(String.valueOf(entry.getKey()), entry.getValue());
+                }
+            }
+            return out;
         }
         // 否则返回空的 LinkedHashMap
         return new LinkedHashMap<>();
@@ -435,7 +439,6 @@ public class WebSearchTool extends Tool {
      * @param obj 待转换对象
      * @return 转换后的 List，包含多个 Map
      */
-    @SuppressWarnings("unchecked")
     private static List<Map<String, Object>> asListOfMaps(Object obj) {
         // 初始化结果列表
         List<Map<String, Object>> list = new ArrayList<>();
@@ -444,7 +447,7 @@ public class WebSearchTool extends Tool {
             for (Object item : raw) {
                 // 如果列表项是 Map 类型，则转换后添加到结果列表
                 if (item instanceof Map<?, ?> m) {
-                    list.add(new LinkedHashMap<>((Map<String, Object>) m));
+                    list.add(asMap(m));
                 }
             }
         }

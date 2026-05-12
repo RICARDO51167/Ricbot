@@ -72,7 +72,6 @@ public final class MCPAdapters {
         }
     }
 
-    @SuppressWarnings("unchecked")
     /**
      * 解析原始配置 Map，将其转换为 MCP 服务器配置对象。
      *
@@ -107,10 +106,7 @@ public final class MCPAdapters {
             }
 
             // 将原始 Map 转换为字符串键的 Map，便于后续处理
-            Map<String, Object> cfg = new LinkedHashMap<>();
-            for (Map.Entry<?, ?> e : map.entrySet()) {
-                cfg.put(String.valueOf(e.getKey()), e.getValue());
-            }
+            Map<String, Object> cfg = copyObjectMap(map);
 
             // 创建新的 MCP 服务器配置对象
             Config.MCPServerConfig server = new Config.MCPServerConfig();
@@ -163,7 +159,6 @@ public final class MCPAdapters {
      *
      * -> 返回 {"type":"string"}, true
      */
-    @SuppressWarnings("unchecked")
     public static NullableBranch extractNullableBranch(Object options) {
         if (!(options instanceof List<?> list)) {
             return null;
@@ -177,13 +172,14 @@ public final class MCPAdapters {
                 return null;
             }
 
-            Object type = ((Map<String, Object>) map).get("type");
+            Map<String, Object> branch = copyObjectMap(map);
+            Object type = branch.get("type");
             if ("null".equals(type)) {
                 sawNull = true;
                 continue;
             }
 
-            nonNull.add((Map<String, Object>) map);
+            nonNull.add(branch);
         }
 
         if (sawNull && nonNull.size() == 1) {
@@ -201,7 +197,6 @@ public final class MCPAdapters {
      * - oneOf / anyOf 中的 nullable 分支
      * - 递归处理 properties / items
      */
-    @SuppressWarnings("unchecked")
     public static Map<String, Object> normalizeSchemaForOpenAI(Object schema) {
         if (!(schema instanceof Map<?, ?>)) {
             return new HashMap<>(Map.of(
@@ -210,7 +205,7 @@ public final class MCPAdapters {
             ));
         }
 
-        Map<String, Object> normalized = new HashMap<>((Map<String, Object>) schema);
+        Map<String, Object> normalized = new HashMap<>(copyObjectMap((Map<?, ?>) schema));
 
         Object rawType = normalized.get("type");
         if (rawType instanceof List<?> typeList) {
@@ -251,6 +246,9 @@ public final class MCPAdapters {
         if (propertiesObj instanceof Map<?, ?> properties) {
             Map<String, Object> newProps = new HashMap<>();
             for (Map.Entry<?, ?> entry : properties.entrySet()) {
+                if (entry.getKey() == null) {
+                    continue;
+                }
                 Object value = entry.getValue();
                 if (value instanceof Map<?, ?>) {
                     newProps.put(String.valueOf(entry.getKey()), normalizeSchemaForOpenAI(value));
@@ -951,6 +949,9 @@ public final class MCPAdapters {
         if (v instanceof Map<?, ?> raw) {
             Map<String, String> out = new LinkedHashMap<>();
             for (Map.Entry<?, ?> e : raw.entrySet()) {
+                if (e.getKey() == null) {
+                    continue;
+                }
                 out.put(
                         String.valueOf(e.getKey()),
                         e.getValue() != null ? TextParsingUtils.normalizeQuoted(String.valueOf(e.getValue())) : ""
@@ -959,5 +960,15 @@ public final class MCPAdapters {
             return out;
         }
         return def != null ? def : new HashMap<>();
+    }
+
+    private static Map<String, Object> copyObjectMap(Map<?, ?> raw) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        for (Map.Entry<?, ?> entry : raw.entrySet()) {
+            if (entry.getKey() != null) {
+                out.put(String.valueOf(entry.getKey()), entry.getValue());
+            }
+        }
+        return out;
     }
 }

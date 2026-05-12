@@ -3,6 +3,7 @@ package ricbot.domain.agent;
 import org.junit.jupiter.api.Test;
 import ricbot.domain.session.Session;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -21,13 +22,14 @@ class TaskStateTest {
         state.markCompleted("done");
         state.persist(session);
 
-        @SuppressWarnings("unchecked")
-        Map<String, Object> raw = (Map<String, Object>) session.getMetadata().get(SessionRuntimeKeys.TASK_STATE_KEY);
+        Object rawObj = session.getMetadata().get(SessionRuntimeKeys.TASK_STATE_KEY);
+        assertTrue(rawObj instanceof Map<?, ?>);
+        Map<?, ?> raw = (Map<?, ?>) rawObj;
         assertEquals("completed", raw.get("status"));
         assertTrue(raw.get("plan") instanceof List<?>);
         assertTrue(raw.get("steps") instanceof List<?>);
 
-        TaskState restored = TaskState.fromMap(raw);
+        TaskState restored = TaskState.fromMap(copyObjectMap(raw));
         assertFalse(restored.plan().isEmpty());
         assertFalse(restored.steps().isEmpty());
         assertTrue(restored.steps().stream().allMatch(step -> "completed".equals(step.status())));
@@ -80,5 +82,15 @@ class TaskStateTest {
         assertEquals("MCP 检查", state.parallelTasks().get(0).label());
         assertTrue(state.transitions().stream().anyMatch(t -> "parallel_start".equals(t.event())));
         assertTrue(state.toMap().get("parallel_tasks") instanceof List<?>);
+    }
+
+    private static Map<String, Object> copyObjectMap(Map<?, ?> raw) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        for (Map.Entry<?, ?> entry : raw.entrySet()) {
+            if (entry.getKey() != null) {
+                out.put(String.valueOf(entry.getKey()), entry.getValue());
+            }
+        }
+        return out;
     }
 }

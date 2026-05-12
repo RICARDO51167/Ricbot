@@ -230,9 +230,17 @@ public class FeishuChannel extends BaseChannel {
         return allow == null || allow.contains("*") || allow.contains(userId);
     }
 
-    @SuppressWarnings("unchecked")
     private static Map<String, Object> asMap(Object value) {
-        return value instanceof Map<?, ?> map ? (Map<String, Object>) map : Map.of();
+        if (!(value instanceof Map<?, ?> raw)) {
+            return Map.of();
+        }
+        Map<String, Object> out = new LinkedHashMap<>();
+        for (Map.Entry<?, ?> entry : raw.entrySet()) {
+            if (entry.getKey() != null) {
+                out.put(String.valueOf(entry.getKey()), entry.getValue());
+            }
+        }
+        return out;
     }
 
     private static List<String> toStringList(Object value) {

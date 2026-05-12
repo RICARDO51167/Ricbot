@@ -42,6 +42,9 @@ public final class MCPTransportFactory {
     private MCPTransportFactory() {
     }
 
+    private static final TypeReference<Map<String, Object>> JSON_OBJECT_TYPE = new TypeReference<>() {
+    };
+
     /**
      * 创建基于标准输入输出（stdio）的 MCP 服务器连接
      *
@@ -237,7 +240,6 @@ public final class MCPTransportFactory {
          * @throws Exception 列出异常
          */
         @Override
-        @SuppressWarnings("unchecked")
         public List<MCPToolDefinition> listTools() throws Exception {
             // 调用 tools/list 方法
             Map<String, Object> result = call("tools/list", Collections.emptyMap(), cfg.getToolTimeout());
@@ -264,7 +266,6 @@ public final class MCPTransportFactory {
          * @throws Exception 列出异常
          */
         @Override
-        @SuppressWarnings("unchecked")
         public List<MCPResourceDefinition> listResources() throws Exception {
             // 调用 resources/list 方法
             Map<String, Object> result = call("resources/list", Collections.emptyMap(), cfg.getToolTimeout());
@@ -291,7 +292,6 @@ public final class MCPTransportFactory {
          * @throws Exception 列出异常
          */
         @Override
-        @SuppressWarnings("unchecked")
         public List<MCPPromptDefinition> listPrompts() throws Exception {
             // 调用 prompts/list 方法
             Map<String, Object> result = call("prompts/list", Collections.emptyMap(), cfg.getToolTimeout());
@@ -377,7 +377,6 @@ public final class MCPTransportFactory {
          * @return 响应结果
          * @throws Exception 调用异常
          */
-        @SuppressWarnings("unchecked")
         private synchronized Map<String, Object> call(String method, Map<String, Object> params, int timeoutSeconds) throws Exception {
             // 确保进程已启动
             ensureProcess();
@@ -426,7 +425,7 @@ public final class MCPTransportFactory {
                 // 解析 JSON 响应
                 Map<String, Object> response;
                 try {
-                    response = MAPPER.readValue(line, new TypeReference<>() {});
+                    response = MAPPER.readValue(line, JSON_OBJECT_TYPE);
                 } catch (Exception ignored) {
                     // 解析失败，继续读取
                     continue;
@@ -448,7 +447,7 @@ public final class MCPTransportFactory {
                     Object result = response.get("result");
                     // 返回结果映射
                     if (result instanceof Map<?, ?> map) {
-                        return (Map<String, Object>) map;
+                        return copyObjectMap(map);
                     }
                     return new LinkedHashMap<>();
                 }
@@ -662,7 +661,6 @@ public final class MCPTransportFactory {
          * @throws Exception 列出异常
          */
         @Override
-        @SuppressWarnings("unchecked")
         public List<MCPToolDefinition> listTools() throws Exception {
             // 调用 tools/list 方法
             Map<String, Object> result = call("tools/list", Collections.emptyMap(), cfg.getToolTimeout());
@@ -689,7 +687,6 @@ public final class MCPTransportFactory {
          * @throws Exception 列出异常
          */
         @Override
-        @SuppressWarnings("unchecked")
         public List<MCPResourceDefinition> listResources() throws Exception {
             // 调用 resources/list 方法
             Map<String, Object> result = call("resources/list", Collections.emptyMap(), cfg.getToolTimeout());
@@ -716,7 +713,6 @@ public final class MCPTransportFactory {
          * @throws Exception 列出异常
          */
         @Override
-        @SuppressWarnings("unchecked")
         public List<MCPPromptDefinition> listPrompts() throws Exception {
             // 调用 prompts/list 方法
             Map<String, Object> result = call("prompts/list", Collections.emptyMap(), cfg.getToolTimeout());
@@ -840,7 +836,7 @@ public final class MCPTransportFactory {
             }
             if (p.startsWith("{") && p.endsWith("}")) {
                 try {
-                    Map<?, ?> map = MAPPER.readValue(p, Map.class);
+                    Map<String, Object> map = MAPPER.readValue(p, JSON_OBJECT_TYPE);
                     Object v = map.get("endpoint");
                     if (v == null) v = map.get("url");
                     if (v == null) v = map.get("uri");
@@ -934,7 +930,6 @@ public final class MCPTransportFactory {
          * @return 响应结果
          * @throws Exception 调用异常
          */
-        @SuppressWarnings("unchecked")
         private Map<String, Object> call(String method, Map<String, Object> params, int timeoutSeconds) throws Exception {
             // 确保 SSE 循环已启动
             ensureSseLoop();
@@ -970,7 +965,7 @@ public final class MCPTransportFactory {
                 // 解析 JSON 响应
                 Map<String, Object> response;
                 try {
-                    response = MAPPER.readValue(line, new TypeReference<>() {});
+                    response = MAPPER.readValue(line, JSON_OBJECT_TYPE);
                 } catch (Exception ignored) {
                     // 解析失败，继续获取
                     continue;
@@ -992,7 +987,7 @@ public final class MCPTransportFactory {
                     Object result = response.get("result");
                     // 返回结果映射
                     if (result instanceof Map<?, ?> map) {
-                        return (Map<String, Object>) map;
+                        return copyObjectMap(map);
                     }
                     return new LinkedHashMap<>();
                 }
@@ -1124,7 +1119,6 @@ public final class MCPTransportFactory {
         }
 
         @Override
-        @SuppressWarnings("unchecked")
         public List<MCPToolDefinition> listTools() throws Exception {
             Object tools = call("tools/list", Collections.emptyMap(), cfg.getToolTimeout()).get("tools");
             if (!(tools instanceof List<?> list)) {
@@ -1140,7 +1134,6 @@ public final class MCPTransportFactory {
         }
 
         @Override
-        @SuppressWarnings("unchecked")
         public List<MCPResourceDefinition> listResources() throws Exception {
             Object resources = call("resources/list", Collections.emptyMap(), cfg.getToolTimeout()).get("resources");
             if (!(resources instanceof List<?> list)) {
@@ -1156,7 +1149,6 @@ public final class MCPTransportFactory {
         }
 
         @Override
-        @SuppressWarnings("unchecked")
         public List<MCPPromptDefinition> listPrompts() throws Exception {
             Object prompts = call("prompts/list", Collections.emptyMap(), cfg.getToolTimeout()).get("prompts");
             if (!(prompts instanceof List<?> list)) {
@@ -1179,7 +1171,6 @@ public final class MCPTransportFactory {
             ), cfg.getToolTimeout());
         }
 
-        @SuppressWarnings("unchecked")
         private Map<String, Object> call(String method, Map<String, Object> params, int timeoutSeconds) throws Exception {
             long id = idGen.getAndIncrement();
             Map<String, Object> response = postJson(Map.of(
@@ -1195,7 +1186,7 @@ public final class MCPTransportFactory {
 
             Object result = response.get("result");
             if (result instanceof Map<?, ?> map) {
-                return (Map<String, Object>) map;
+                return copyObjectMap(map);
             }
             return new LinkedHashMap<>();
         }
@@ -1218,11 +1209,21 @@ public final class MCPTransportFactory {
             if (bodyText.isBlank()) {
                 return new LinkedHashMap<>();
             }
-            return MAPPER.readValue(bodyText, new TypeReference<>() {});
+            return MAPPER.readValue(bodyText, JSON_OBJECT_TYPE);
         }
 
         @Override
         public void close() {
         }
+    }
+
+    private static Map<String, Object> copyObjectMap(Map<?, ?> raw) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        for (Map.Entry<?, ?> entry : raw.entrySet()) {
+            if (entry.getKey() != null) {
+                out.put(String.valueOf(entry.getKey()), entry.getValue());
+            }
+        }
+        return out;
     }
 }

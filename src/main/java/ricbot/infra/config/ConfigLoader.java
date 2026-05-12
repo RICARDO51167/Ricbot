@@ -22,6 +22,8 @@ public final class ConfigLoader {
 
     // Jackson ObjectMapper 实例，用于 JSON 序列化和反序列化，并自动注册找到的模块
     private static final ObjectMapper MAPPER = new ObjectMapper().findAndRegisterModules();
+    private static final TypeReference<Map<String, Object>> JSON_OBJECT_TYPE = new TypeReference<>() {
+    };
     
     // 正则表达式模式，用于匹配配置文件中的环境变量占位符，格式为 ${VAR_NAME}
     private static final Pattern ENV_PATTERN = Pattern.compile("\\$\\{([A-Za-z_][A-Za-z0-9_]*)\\}");
@@ -115,7 +117,7 @@ public final class ConfigLoader {
         if (Files.exists(path)) {
             try {
                 // 将 JSON 文件读取为 Map 结构
-                Map<String, Object> raw = MAPPER.readValue(path.toFile(), new TypeReference<>() {});
+                Map<String, Object> raw = MAPPER.readValue(path.toFile(), JSON_OBJECT_TYPE);
                 // 执行配置迁移逻辑（处理旧版本配置结构）
                 raw = migrateConfig(raw);
                 // 将 Map 转换为 Config 对象
@@ -191,9 +193,7 @@ public final class ConfigLoader {
         Map<String, Object> raw = configToMap(safeConfig(config));
         // 递归解析 Map 中的环境变量
         Object resolved = resolveEnvVars(raw);
-        @SuppressWarnings("unchecked")
-        // 强制转换回 Map 类型
-        Map<String, Object> map = (Map<String, Object>) resolved;
+        Map<String, Object> map = asMap(resolved);
         // 将解析后的 Map 转换回 Config 对象
         return mapToConfig(map);
     }
@@ -259,7 +259,9 @@ public final class ConfigLoader {
         if (obj instanceof Map<?, ?> rawMap) {
             Map<String, Object> out = new LinkedHashMap<>();
             for (Map.Entry<?, ?> entry : rawMap.entrySet()) {
-                out.put(String.valueOf(entry.getKey()), resolveEnvVars(entry.getValue()));
+                if (entry.getKey() != null) {
+                    out.put(String.valueOf(entry.getKey()), resolveEnvVars(entry.getValue()));
+                }
             }
             return out;
         }
@@ -287,7 +289,6 @@ public final class ConfigLoader {
      * @param data 原始配置 Map
      * @return 迁移后的配置 Map
      */
-    @SuppressWarnings("unchecked")
     private static Map<String, Object> migrateConfig(Map<String, Object> data) {
         // 如果数据为空，返回空 Map
         if (data == null) {
@@ -301,12 +302,14 @@ public final class ConfigLoader {
             return data;
         }
 
-        Map<String, Object> tools = (Map<String, Object>) rawTools;
+        Map<String, Object> tools = asMap(rawTools);
+        data.put("tools", tools);
         // 获取 tools.exec 节点
         Object execObj = tools.get("exec");
         // 如果 exec 是 Map 类型
         if (execObj instanceof Map<?, ?> rawExec) {
-            Map<String, Object> exec = (Map<String, Object>) rawExec;
+            Map<String, Object> exec = asMap(rawExec);
+            tools.put("exec", exec);
             // 检查是否存在旧的 restrictToWorkspace 字段，且新位置不存在该字段
             if (exec.containsKey("restrictToWorkspace") && !tools.containsKey("restrictToWorkspace")) {
                 // 将旧字段移动到新位置
@@ -341,7 +344,6 @@ public final class ConfigLoader {
      * @param data 包含配置数据的 Map
      * @return Config 对象
      */
-    @SuppressWarnings("unchecked")
     private static Config mapToConfig(Map<String, Object> data) {
         // 创建新的 Config 实例
         Config config = new Config();
@@ -693,10 +695,15 @@ public final class ConfigLoader {
      * @param o 待转换的对象
      * @return Map<String, Object>
      */
-    @SuppressWarnings("unchecked")
     private static Map<String, Object> asMap(Object o) {
-        if (o instanceof Map<?, ?> m) {
-            return (Map<String, Object>) m;
+        if (o instanceof Map<?, ?> raw) {
+            Map<String, Object> out = new LinkedHashMap<>();
+            for (Map.Entry<?, ?> entry : raw.entrySet()) {
+                if (entry.getKey() != null) {
+                    out.put(String.valueOf(entry.getKey()), entry.getValue());
+                }
+            }
+            return out;
         }
         return new LinkedHashMap<>();
     }
@@ -707,11 +714,13 @@ public final class ConfigLoader {
      * @param o 待转换的对象
      * @return Map<String, String>
      */
-    @SuppressWarnings("unchecked")
     private static Map<String, String> stringMap(Object o) {
         Map<String, String> out = new LinkedHashMap<>();
         if (o instanceof Map<?, ?> m) {
             for (Map.Entry<?, ?> e : m.entrySet()) {
+                if (e.getKey() == null) {
+                    continue;
+                }
                 // 将 key 和 value 都转换为 String，value 为 null 时保留 null
                 out.put(String.valueOf(e.getKey()), e.getValue() != null ? String.valueOf(e.getValue()) : null);
             }
@@ -725,7 +734,6 @@ public final class ConfigLoader {
      * @param o 待转换的对象
      * @return List<String>
      */
-    @SuppressWarnings("unchecked")
     private static List<String> stringList(Object o) {
         List<String> out = new ArrayList<>();
         if (o instanceof List<?> list) {

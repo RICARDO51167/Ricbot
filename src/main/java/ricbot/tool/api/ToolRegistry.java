@@ -220,9 +220,7 @@ public class ToolRegistry {
             );
         }
 
-        // 类型转换和参数校验
-        @SuppressWarnings("unchecked")
-        Map<String, Object> params = (Map<String, Object>) rawParams;
+        Map<String, Object> params = copyObjectMap((Map<?, ?>) rawParams);
         Map<String, Object> castParams = tool.castParams(params);
         List<String> errors = tool.validateParams(castParams);
 
@@ -246,10 +244,10 @@ public class ToolRegistry {
         PrepareResult pr = prepareCall(name, rawParams);
         if (pr.error() != null) return pr.error();
 
-        // 获取转换后的参数并执行具体逻辑
-        @SuppressWarnings("unchecked")
-        Map<String, Object> params = (Map<String, Object>) pr.params();
-        return execute(name, params);
+        if (!(pr.params() instanceof Map<?, ?> raw)) {
+            return invalidParameterShapeMessage(name, pr.params());
+        }
+        return execute(name, copyObjectMap(raw));
     }
 
     /**
@@ -343,6 +341,16 @@ public class ToolRegistry {
     public record PrepareResult(Tool tool, Object params, String error) {}
 
     public record ToolPolicy(String name, boolean readOnly, boolean exclusive, boolean concurrentSafe, String risk) {}
+
+    private static Map<String, Object> copyObjectMap(Map<?, ?> raw) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        for (Map.Entry<?, ?> entry : raw.entrySet()) {
+            if (entry.getKey() != null) {
+                out.put(String.valueOf(entry.getKey()), entry.getValue());
+            }
+        }
+        return out;
+    }
 
     @RequiredArgsConstructor
     private static final class LegacyToolExecutor<T extends Tool> {

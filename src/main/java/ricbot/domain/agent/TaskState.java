@@ -35,9 +35,7 @@ final class TaskState {
         }
         Object raw = session.getMetadata().get(SessionRuntimeKeys.TASK_STATE_KEY);
         if (raw instanceof Map<?, ?> map) {
-            @SuppressWarnings("unchecked")
-            Map<String, Object> taskMap = (Map<String, Object>) map;
-            return fromMap(taskMap);
+            return fromMap(copyObjectMap(map));
         }
         return new TaskState();
     }
@@ -466,6 +464,16 @@ final class TaskState {
         }
         String trimmed = value.trim();
         return trimmed.length() <= max ? trimmed : trimmed.substring(0, max) + "...";
+    }
+
+    private static Map<String, Object> copyObjectMap(Map<?, ?> raw) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        for (Map.Entry<?, ?> entry : raw.entrySet()) {
+            if (entry.getKey() != null) {
+                out.put(String.valueOf(entry.getKey()), entry.getValue());
+            }
+        }
+        return out;
     }
 
     private void touch() {

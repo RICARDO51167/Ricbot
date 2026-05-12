@@ -435,17 +435,24 @@ public class RicbotApiServer {
     /**
      * 安全读取 Map 字段。
      */
-    @SuppressWarnings("unchecked")
     public static Map<String, Object> asMap(Object value) {
-        return value instanceof Map<?, ?> ? (Map<String, Object>) value : null;
+        if (!(value instanceof Map<?, ?> raw)) {
+            return null;
+        }
+        Map<String, Object> out = new LinkedHashMap<>();
+        for (Map.Entry<?, ?> entry : raw.entrySet()) {
+            if (entry.getKey() != null) {
+                out.put(String.valueOf(entry.getKey()), entry.getValue());
+            }
+        }
+        return out;
     }
 
     /**
      * 安全读取 List 字段。
      */
-    @SuppressWarnings("unchecked")
     public static List<Object> asList(Object value) {
-        return value instanceof List<?> ? (List<Object>) value : null;
+        return value instanceof List<?> list ? new ArrayList<>(list) : null;
     }
 
     // ---------------------------------------------------------------------
@@ -1011,10 +1018,12 @@ public class RicbotApiServer {
      * @throws Exception 如果任务执行异常或超时
      */
     public static Object runWithTimeout(CallableTask task, long timeoutMillis) throws Exception {
-        // 创建单线程执行器，确保任务在独立线程中运行
-        ExecutorService executor = Executors.newSingleThreadExecutor();
+        ExecutorService executor = Executors.newSingleThreadExecutor(r -> {
+            Thread t = new Thread(r, "ricbot-api-agent-timeout");
+            t.setDaemon(true);
+            return t;
+        });
         try {
-            // 提交任务并获取 Future 对象，用于后续获取结果或取消任务
             Future<Object> future = executor.submit(task::call);
             try {
                 // 等待任务完成，如果在指定时间内未完成则抛出 TimeoutException
@@ -1025,8 +1034,6 @@ public class RicbotApiServer {
                 future.cancel(true);
             }
         } finally {
-            // 确保执行器被关闭，释放线程资源
-            // shutdownNow 尝试停止所有正在执行的任务
             executor.shutdownNow();
             try {
                 executor.awaitTermination(Math.max(100L, Math.min(timeoutMillis, 1_000L)), TimeUnit.MILLISECONDS);

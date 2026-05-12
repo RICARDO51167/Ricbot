@@ -342,10 +342,15 @@ public class SessionManager {
      * @param o 待转换对象
      * @return Map<String, Object>
      */
-    @SuppressWarnings("unchecked")
     private static Map<String, Object> castMap(Object o) {
         if (o instanceof Map<?, ?> m) {
-            return (Map<String, Object>) m;
+            Map<String, Object> out = new LinkedHashMap<>();
+            for (Map.Entry<?, ?> entry : m.entrySet()) {
+                if (entry.getKey() != null) {
+                    out.put(String.valueOf(entry.getKey()), entry.getValue());
+                }
+            }
+            return out;
         }
         return new LinkedHashMap<>();
     }

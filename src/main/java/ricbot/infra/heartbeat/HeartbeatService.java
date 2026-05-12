@@ -552,9 +552,7 @@ public class HeartbeatService {
             // 尝试从 arguments 字段获取参数
             Object args = first.get("arguments");
             if (args instanceof Map<?, ?> map) {
-                @SuppressWarnings("unchecked")
-                Map<String, Object> cast = (Map<String, Object>) map;
-                return cast;
+                return copyObjectMap(map);
             }
 
             // 尝试从 function.arguments 字段获取参数
@@ -562,9 +560,7 @@ public class HeartbeatService {
             if (function instanceof Map<?, ?> fnMap) {
                 Object fnArgs = ((Map<?, ?>) fnMap).get("arguments");
                 if (fnArgs instanceof Map<?, ?> argMap) {
-                    @SuppressWarnings("unchecked")
-                    Map<String, Object> cast = (Map<String, Object>) argMap;
-                    return cast;
+                    return copyObjectMap(argMap);
                 }
             }
 
@@ -578,7 +574,6 @@ public class HeartbeatService {
          * @param raw 原始响应对象
          * @return 适配后的 ProviderResponse 对象
          */
-        @SuppressWarnings("unchecked")
         public static ProviderResponse from(Object raw) {
             // 创建新的 ProviderResponse 对象
             ProviderResponse r = new ProviderResponse();
@@ -632,7 +627,7 @@ public class HeartbeatService {
                     // 遍历工具调用列表
                     for (Object item : list) {
                         if (item instanceof Map<?, ?> m) {
-                            result.add((Map<String, Object>) m);
+                            result.add(copyObjectMap(m));
                         }
                     }
                     // 设置工具调用列表
@@ -662,7 +657,7 @@ public class HeartbeatService {
                     // 遍历工具调用列表
                     for (Object item : list) {
                         if (item instanceof Map<?, ?> m) {
-                            result.add((Map<String, Object>) m);
+                            result.add(copyObjectMap(m));
                         } else {
                             // 再做一层反射适配
                             Map<String, Object> converted = new LinkedHashMap<>();
@@ -756,5 +751,15 @@ public class HeartbeatService {
             t.setDaemon(true);
             return t;
         });
+    }
+
+    private static Map<String, Object> copyObjectMap(Map<?, ?> raw) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        for (Map.Entry<?, ?> entry : raw.entrySet()) {
+            if (entry.getKey() != null) {
+                out.put(String.valueOf(entry.getKey()), entry.getValue());
+            }
+        }
+        return out;
     }
 }

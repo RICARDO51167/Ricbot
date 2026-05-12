@@ -18,6 +18,9 @@ import java.util.*;
  */
 public class AzureOpenAIProvider extends LLMProvider {
 
+    private static final TypeReference<Map<String, Object>> JSON_OBJECT_TYPE = new TypeReference<>() {
+    };
+
     // HTTP 客户端实例，用于发送请求
     private final HttpClient client;
     // Azure OpenAI API 版本
@@ -129,12 +132,11 @@ public class AzureOpenAIProvider extends LLMProvider {
      * @return LLM 响应
      * @throws Exception 异常
      */
-    @SuppressWarnings("unchecked")
     private LLMResponse parseAzureResponse(String json) throws Exception {
         // 将 JSON 字符串解析为 Map
-        Map<String, Object> map = MAPPER.readValue(json, new TypeReference<>() {});
+        Map<String, Object> map = MAPPER.readValue(json, JSON_OBJECT_TYPE);
         // 获取 choices 列表
-        List<Map<String, Object>> choices = (List<Map<String, Object>>) map.get("choices");
+        List<Map<String, Object>> choices = asObjectMapList(map.get("choices"));
         // 如果 choices 为空，则返回错误响应
         if (choices == null || choices.isEmpty()) {
             return new LLMResponse().setFinishReason("error").setContent("Azure OpenAI 返回的选择为空");
@@ -143,41 +145,55 @@ public class AzureOpenAIProvider extends LLMProvider {
         // 获取第一个 choice
         Map<String, Object> first = choices.get(0);
         // 获取 message 对象
-        Map<String, Object> message = (Map<String, Object>) first.get("message");
+        Map<String, Object> message = asObjectMap(first.get("message"));
+        if (message == null) {
+            return new LLMResponse().setFinishReason("error").setContent("Azure OpenAI 返回的消息为空");
+        }
         // 获取内容
-        String content = (String) message.get("content");
+        Object contentObj = message.get("content");
+        String content = contentObj != null ? String.valueOf(contentObj) : "";
         // 获取结束原因
-        String finishReason = (String) first.get("finish_reason");
+        Object finishReasonObj = first.get("finish_reason");
+        String finishReason = finishReasonObj != null ? String.valueOf(finishReasonObj) : null;
 
         // 初始化工具调用列表
         List<ToolCallRequest> toolCalls = new ArrayList<>();
         // 获取原始工具调用数据
-        List<Map<String, Object>> tcRaw = (List<Map<String, Object>>) message.get("tool_calls");
+        List<Map<String, Object>> tcRaw = asObjectMapList(message.get("tool_calls"));
         // 如果存在工具调用，则解析
         if (tcRaw != null) {
             for (Map<String, Object> tc : tcRaw) {
                 // 获取工具调用 ID
-                String id = (String) tc.get("id");
+                String id = stringValue(tc.get("id"));
                 // 获取函数对象
-                Map<String, Object> func = (Map<String, Object>) tc.get("function");
+                Map<String, Object> func = asObjectMap(tc.get("function"));
+                if (func == null) {
+                    continue;
+                }
                 // 获取函数名称
-                String name = (String) func.get("name");
+                String name = stringValue(func.get("name"));
                 // 获取参数字符串
-                String argsJson = (String) func.get("arguments");
+                String argsJson = stringValue(func.get("arguments"));
                 // 将参数字符串解析为 Map
-                Map<String, Object> args = MAPPER.readValue(argsJson, new TypeReference<>() {});
+                Map<String, Object> args = parseToolArguments(argsJson);
                 // 添加工具调用请求到列表
                 toolCalls.add(new ToolCallRequest(id, name, args));
             }
         }
 
         // 获取使用情况数据
-        Map<String, Object> usageRaw = (Map<String, Object>) map.get("usage");
+        Map<String, Object> usageRaw = asObjectMap(map.get("usage"));
         Map<String, Integer> usage = new HashMap<>();
         // 如果存在使用情况数据，则提取提示令牌和完成令牌数量
         if (usageRaw != null) {
-            usage.put("prompt_tokens", (Integer) usageRaw.get("prompt_tokens"));
-            usage.put("completion_tokens", (Integer) usageRaw.get("completion_tokens"));
+            Integer promptTokens = toInt(usageRaw.get("prompt_tokens"));
+            Integer completionTokens = toInt(usageRaw.get("completion_tokens"));
+            if (promptTokens != null) {
+                usage.put("prompt_tokens", promptTokens);
+            }
+            if (completionTokens != null) {
+                usage.put("completion_tokens", completionTokens);
+            }
         }
 
         // 构建并返回 LLM 响应
@@ -259,5 +275,61 @@ public class AzureOpenAIProvider extends LLMProvider {
 
         // 消费 SSE 流并返回结果
         return OpenAIResponsesSupport.consumeSSE(response.body(), onDelta, onEnd);
+    }
+
+    private static Map<String, Object> parseToolArguments(String argsJson) throws Exception {
+        if (argsJson == null || argsJson.isBlank()) {
+            return new LinkedHashMap<>();
+        }
+        try {
+            return MAPPER.readValue(argsJson, JSON_OBJECT_TYPE);
+        } catch (Exception ignored) {
+            return new LinkedHashMap<>();
+        }
+    }
+
+    private static String stringValue(Object value) {
+        return value != null ? String.valueOf(value) : "";
+    }
+
+    private static Integer toInt(Object value) {
+        if (value instanceof Number number) {
+            return number.intValue();
+        }
+        if (value == null) {
+            return null;
+        }
+        try {
+            return Integer.parseInt(String.valueOf(value));
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private static Map<String, Object> asObjectMap(Object value) {
+        if (!(value instanceof Map<?, ?> raw)) {
+            return null;
+        }
+        Map<String, Object> out = new LinkedHashMap<>();
+        for (Map.Entry<?, ?> entry : raw.entrySet()) {
+            if (entry.getKey() != null) {
+                out.put(String.valueOf(entry.getKey()), entry.getValue());
+            }
+        }
+        return out;
+    }
+
+    private static List<Map<String, Object>> asObjectMapList(Object value) {
+        if (!(value instanceof List<?> list)) {
+            return null;
+        }
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (Object item : list) {
+            Map<String, Object> map = asObjectMap(item);
+            if (map != null) {
+                out.add(map);
+            }
+        }
+        return out;
     }
 }

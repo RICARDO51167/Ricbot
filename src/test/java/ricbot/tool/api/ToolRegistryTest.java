@@ -264,11 +264,10 @@ public class ToolRegistryTest {
         };
     }
 
-    @SuppressWarnings("unchecked")
     private static String schemaName(Map<String, Object> schema) {
         Object function = schema.get("function");
         if (function instanceof Map<?, ?> fn) {
-            Object name = ((Map<String, Object>) fn).get("name");
+            Object name = fn.get("name");
             if (name instanceof String s) {
                 return s;
             }

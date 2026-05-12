@@ -25,6 +25,8 @@ import org.slf4j.LoggerFactory;
 public class OpenAICompatProvider extends LLMProvider {
 
     private static final Logger log = LoggerFactory.getLogger(OpenAICompatProvider.class);
+    private static final TypeReference<Map<String, Object>> JSON_OBJECT_TYPE = new TypeReference<>() {
+    };
 
     // 模型名称
     private final String model;
@@ -227,7 +229,7 @@ public class OpenAICompatProvider extends LLMProvider {
         }
 
         // 将 JSON 解析为 Map
-        Map<String, Object> payload = MAPPER.readValue(json, new TypeReference<>() {});
+        Map<String, Object> payload = MAPPER.readValue(json, JSON_OBJECT_TYPE);
         // 获取 choices 字段
         Object choicesObj = payload.get("choices");
         // 检查 choices 是否存在且非空
@@ -242,8 +244,7 @@ public class OpenAICompatProvider extends LLMProvider {
             return new LLMResponse().setFinishReason("error").setContent("响应格式无效：choices[0] 不是对象。");
         }
 
-        @SuppressWarnings("unchecked")
-        Map<String, Object> first = (Map<String, Object>) firstRaw;
+        Map<String, Object> first = castMap(firstRaw);
 
         // 获取 finish_reason，默认为 "stop"
         String finishReason = first.get("finish_reason") != null ? String.valueOf(first.get("finish_reason")) : "stop";
@@ -259,7 +260,8 @@ public class OpenAICompatProvider extends LLMProvider {
         Map<String, Integer> usage = new LinkedHashMap<>();
         // 获取 usage 字段
         Object usageObj = payload.get("usage");
-        if (usageObj instanceof Map<?, ?> rawUsage) {
+        Map<String, Object> rawUsage = castMap(usageObj);
+        if (!rawUsage.isEmpty()) {
             // 提取 prompt_tokens
             Integer prompt = toInt(rawUsage.get("prompt_tokens"));
             // 提取 completion_tokens
@@ -546,8 +548,7 @@ public class OpenAICompatProvider extends LLMProvider {
             if (!(item instanceof Map<?, ?> raw)) {
                 continue;
             }
-            @SuppressWarnings("unchecked")
-            Map<String, Object> call = (Map<String, Object>) raw;
+            Map<String, Object> call = castMap(raw);
             // 获取工具调用 ID
             String id = call.get("id") != null ? String.valueOf(call.get("id")) : null;
 
@@ -562,7 +563,7 @@ public class OpenAICompatProvider extends LLMProvider {
             // 如果参数是字符串，尝试解析为 JSON
             if (argObj instanceof String s && !s.isBlank()) {
                 try {
-                    args = MAPPER.readValue(s, new TypeReference<>() {});
+                    args = MAPPER.readValue(s, JSON_OBJECT_TYPE);
                 } catch (Exception ignored) {
                     // 忽略解析异常
                 }
@@ -586,12 +587,13 @@ public class OpenAICompatProvider extends LLMProvider {
      * @param obj 输入对象
      * @return 转换后的 Map
      */
-    @SuppressWarnings("unchecked")
     private static Map<String, Object> castMap(Object obj) {
         if (obj instanceof Map<?, ?> raw) {
             Map<String, Object> out = new LinkedHashMap<>();
             for (Map.Entry<?, ?> e : raw.entrySet()) {
-                out.put(String.valueOf(e.getKey()), e.getValue());
+                if (e.getKey() != null) {
+                    out.put(String.valueOf(e.getKey()), e.getValue());
+                }
             }
             return out;
         }

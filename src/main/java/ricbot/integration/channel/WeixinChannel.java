@@ -193,9 +193,7 @@ public class WeixinChannel extends BaseChannel {
             if (ticketsObj instanceof Map<?, ?> map) {
                 for (Map.Entry<?, ?> e : map.entrySet()) {
                     if (e.getValue() instanceof Map<?, ?> inner) {
-                        @SuppressWarnings("unchecked")
-                        Map<String, Object> cast = (Map<String, Object>) inner;
-                        typingTickets.put(String.valueOf(e.getKey()), cast);
+                        typingTickets.put(String.valueOf(e.getKey()), copyObjectMap(inner));
                     }
                 }
             }
@@ -227,7 +225,6 @@ public class WeixinChannel extends BaseChannel {
     // Polling
     // ------------------------------------------------------------------
 
-    @SuppressWarnings("unchecked")
     private void pollOnce() {
         if (!running) return;
         if (System.currentTimeMillis() < sessionPauseUntilMillis) return;
@@ -258,15 +255,13 @@ public class WeixinChannel extends BaseChannel {
 
             for (Object mObj : messages) {
                 if (!(mObj instanceof Map<?, ?> raw)) continue;
-                Map<String, Object> msg = (Map<String, Object>) raw;
-                handleInboundMessage(msg);
+                handleInboundMessage(copyObjectMap(raw));
             }
 
         } catch (Exception ignored) {
         }
     }
 
-    @SuppressWarnings("unchecked")
     private void handleInboundMessage(Map<String, Object> msg) {
         String messageId = stringValue(msg.get("message_id"));
         if (!messageId.isBlank()) {
@@ -292,7 +287,7 @@ public class WeixinChannel extends BaseChannel {
         if (itemsObj instanceof List<?> items) {
             for (Object itemObj : items) {
                 if (!(itemObj instanceof Map<?, ?> raw)) continue;
-                Map<String, Object> item = (Map<String, Object>) raw;
+                Map<String, Object> item = copyObjectMap(raw);
 
                 Number itemType = number(item.get("item_type"));
                 if (itemType == null) continue;
@@ -592,6 +587,16 @@ public class WeixinChannel extends BaseChannel {
 
     private static Number number(Object value) {
         return value instanceof Number n ? n : null;
+    }
+
+    private static Map<String, Object> copyObjectMap(Map<?, ?> raw) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        for (Map.Entry<?, ?> entry : raw.entrySet()) {
+            if (entry.getKey() != null) {
+                out.put(String.valueOf(entry.getKey()), entry.getValue());
+            }
+        }
+        return out;
     }
 
     private <T> HttpResponse<T> sendHttp(HttpRequest request, HttpResponse.BodyHandler<T> handler) throws Exception {
