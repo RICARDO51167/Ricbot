@@ -22,6 +22,8 @@ public final class OpenAIResponsesSupport {
 
     // 创建 ObjectMapper 实例，用于 JSON 序列化与反序列化
     private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final TypeReference<Map<String, Object>> JSON_OBJECT_TYPE = new TypeReference<>() {
+    };
 
     // 私有构造函数，防止实例化
     private OpenAIResponsesSupport() {
@@ -35,7 +37,6 @@ public final class OpenAIResponsesSupport {
      * @param onEnd   结束处理器
      * @return LLMResponse
      */
-    @SuppressWarnings("unchecked")
     public static LLMResponse consumeSSE(
             java.util.stream.Stream<String> lines,
             LLMProvider.StreamDeltaHandler onDelta,
@@ -66,13 +67,13 @@ public final class OpenAIResponsesSupport {
 
             try {
                 // 解析 JSON 块
-                Map<String, Object> chunk = MAPPER.readValue(data, new TypeReference<>() {});
+                Map<String, Object> chunk = MAPPER.readValue(data, JSON_OBJECT_TYPE);
                 // 获取 choices 列表
-                List<Map<String, Object>> choices = (List<Map<String, Object>>) chunk.get("choices");
+                List<Map<String, Object>> choices = asObjectMapList(chunk.get("choices"));
                 if (choices != null && !choices.isEmpty()) {
                     Map<String, Object> choice = choices.get(0);
                     // 获取 delta 对象
-                    Map<String, Object> delta = (Map<String, Object>) choice.get("delta");
+                    Map<String, Object> delta = asObjectMap(choice.get("delta"));
                     if (delta != null) {
                         // 获取增量内容
                         Object contentObj = delta.get("content");
@@ -122,7 +123,7 @@ public final class OpenAIResponsesSupport {
                 }
 
                 // 处理使用量信息
-                Map<String, Object> usageRaw = (Map<String, Object>) chunk.get("usage");
+                Map<String, Object> usageRaw = asObjectMap(chunk.get("usage"));
                 if (usageRaw != null) {
                     usage.put("prompt_tokens", toInt(usageRaw.get("prompt_tokens")));
                     usage.put("completion_tokens", toInt(usageRaw.get("completion_tokens")));
@@ -227,8 +228,7 @@ public final class OpenAIResponsesSupport {
             String rawArgs = b.arguments.toString();
             if (!rawArgs.isBlank()) {
                 try {
-                    @SuppressWarnings("unchecked")
-                    Map<String, Object> parsed = MAPPER.readValue(rawArgs, Map.class);
+                    Map<String, Object> parsed = MAPPER.readValue(rawArgs, JSON_OBJECT_TYPE);
                     if (parsed != null) {
                         args = parsed;
                     }
@@ -244,5 +244,32 @@ public final class OpenAIResponsesSupport {
         String id;
         String name;
         StringBuilder arguments = new StringBuilder();
+    }
+
+    private static Map<String, Object> asObjectMap(Object value) {
+        if (!(value instanceof Map<?, ?> raw)) {
+            return null;
+        }
+        Map<String, Object> out = new LinkedHashMap<>();
+        for (Map.Entry<?, ?> entry : raw.entrySet()) {
+            if (entry.getKey() != null) {
+                out.put(String.valueOf(entry.getKey()), entry.getValue());
+            }
+        }
+        return out;
+    }
+
+    private static List<Map<String, Object>> asObjectMapList(Object value) {
+        if (!(value instanceof List<?> list)) {
+            return null;
+        }
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (Object item : list) {
+            Map<String, Object> map = asObjectMap(item);
+            if (map != null) {
+                out.add(map);
+            }
+        }
+        return out;
     }
 }

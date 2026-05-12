@@ -76,7 +76,7 @@ public class FeishuChannel extends BaseChannel {
             c.setEnabled(Boolean.TRUE.equals(m.get("enabled"))); // 设置启用状态
             c.setAppId((String) m.get("app_id")); // 设置 App ID
             c.setAppSecret((String) m.get("app_secret")); // 设置 App Secret
-            c.setAllowFrom((List<String>) m.get("allow_from")); // 设置允许的来源列表
+            c.setAllowFrom(toStringList(m.get("allow_from"))); // 设置允许的来源列表
             return c;
         }
         return new FeishuConfig(); // 默认返回空配置
@@ -137,7 +137,6 @@ public class FeishuChannel extends BaseChannel {
         }
     }
 
-    @SuppressWarnings("unchecked")
     public void handleWebhookEvent(Map<String, Object> payload) throws Exception {
         if (payload == null || payload.isEmpty()) {
             return;
@@ -236,6 +235,19 @@ public class FeishuChannel extends BaseChannel {
         return value instanceof Map<?, ?> map ? (Map<String, Object>) map : Map.of();
     }
 
+    private static List<String> toStringList(Object value) {
+        if (!(value instanceof List<?> raw)) {
+            return List.of();
+        }
+        List<String> out = new ArrayList<>();
+        for (Object item : raw) {
+            if (item != null) {
+                out.add(String.valueOf(item));
+            }
+        }
+        return out;
+    }
+
     private static String firstText(Object... values) {
         if (values == null) {
             return "";
@@ -251,13 +263,12 @@ public class FeishuChannel extends BaseChannel {
         return "";
     }
 
-    @SuppressWarnings("unchecked")
     private static String extractContentText(Object rawContent) {
         if (rawContent == null) {
             return "";
         }
         if (rawContent instanceof Map<?, ?> map) {
-            return firstText(((Map<String, Object>) map).get("text"), ((Map<String, Object>) map).get("content"));
+            return firstText(map.get("text"), map.get("content"));
         }
         String content = String.valueOf(rawContent);
         if (content.isBlank()) {

@@ -6,6 +6,8 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermission;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -48,6 +50,23 @@ class ConfigLoaderTest {
         Config reloaded = ConfigLoader.loadConfig(configPath);
         assertNotNull(reloaded);
         assertEquals(new Config().getAgents().getDefaults().getModel(), reloaded.getAgents().getDefaults().getModel());
+    }
+
+    @Test
+    void saveConfig_setsOwnerOnlyPermissionsWhenSupported(@TempDir Path tempDir) throws Exception {
+        Path configPath = tempDir.resolve("saved-config.json");
+
+        ConfigLoader.saveConfig(new Config(), configPath);
+
+        try {
+            Set<PosixFilePermission> permissions = Files.getPosixFilePermissions(configPath);
+            assertEquals(
+                    Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE),
+                    permissions
+            );
+        } catch (UnsupportedOperationException ignored) {
+            assertTrue(Files.exists(configPath));
+        }
     }
 
     @Test

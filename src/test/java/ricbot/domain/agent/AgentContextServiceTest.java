@@ -25,6 +25,7 @@ import static org.junit.jupiter.api.Assertions.*;
 class AgentContextServiceTest {
 
     @Test
+    @SuppressWarnings("unchecked")
     void buildInteractiveRequest_combinesMemorySkillsSummaryAndBuildsHook(@TempDir Path workspace) throws Exception {
         Files.createDirectories(workspace.resolve("memory"));
         Files.createDirectories(workspace.resolve("skills").resolve("demo"));

@@ -213,9 +213,7 @@ public class MCPIntegrationTest {
 
                     Object id = req.get("id");
                     String method = String.valueOf(req.get("method"));
-                    Map<String, Object> params = req.get("params") instanceof Map<?, ?> m
-                            ? (Map<String, Object>) m
-                            : Map.of();
+                    Map<String, Object> params = asObjectMap(req.get("params"));
 
                     Map<String, Object> result = switch (method) {
                         case "initialize" -> Map.of("protocolVersion", "2024-11-05", "capabilities", Map.of());
@@ -281,10 +279,9 @@ public class MCPIntegrationTest {
             }
         }
 
-        @SuppressWarnings("unchecked")
         private static Map<String, Object> handleCall(Map<String, Object> params) {
             Object argsObj = params.get("arguments");
-            Map<String, Object> args = argsObj instanceof Map<?, ?> m ? (Map<String, Object>) m : Map.of();
+            Map<String, Object> args = asObjectMap(argsObj);
             Object sleep = args.get("sleep_ms");
             if (sleep instanceof Number n && n.longValue() > 0) {
                 try {
@@ -294,6 +291,11 @@ public class MCPIntegrationTest {
                 }
             }
             return Map.of("content", List.of(String.valueOf(args.getOrDefault("text", ""))));
+        }
+
+        @SuppressWarnings("unchecked")
+        private static Map<String, Object> asObjectMap(Object value) {
+            return value instanceof Map<?, ?> map ? (Map<String, Object>) map : Map.of();
         }
     }
 
@@ -323,9 +325,7 @@ public class MCPIntegrationTest {
                     }
 
                     String method = String.valueOf(req.get("method"));
-                    Map<String, Object> params = req.get("params") instanceof Map<?, ?> m
-                            ? (Map<String, Object>) m
-                            : Map.of();
+                    Map<String, Object> params = FakeSseMcpServer.asObjectMap(req.get("params"));
 
                     Map<String, Object> result = switch (method) {
                         case "initialize" -> Map.of("protocolVersion", "2024-11-05", "capabilities", Map.of());

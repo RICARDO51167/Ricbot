@@ -1,5 +1,6 @@
 package ricbot.integration.channel;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.Getter;
 import lombok.Setter;
@@ -178,7 +179,7 @@ public class WecomChannel extends BaseChannel {
             HttpRequest request = HttpRequest.newBuilder(URI.create(url)).GET().build();
 
             HttpResponse<String> response = sendHttp(request, HttpResponse.BodyHandlers.ofString());
-            Map<String, Object> data = mapper.readValue(response.body(), Map.class);
+            Map<String, Object> data = mapper.readValue(response.body(), new TypeReference<>() {});
             if (data.containsKey("access_token")) {
                 this.accessToken = (String) data.get("access_token");
                 int expires = (int) data.get("expires_in");
@@ -385,8 +386,14 @@ public class WecomChannel extends BaseChannel {
     }
 
     private Map<String, Object> extractBody(Object frame) {
-        if (frame instanceof Map<?, ?> m) {
-            return (Map<String, Object>) m;
+        if (frame instanceof Map<?, ?> raw) {
+            Map<String, Object> out = new LinkedHashMap<>();
+            for (Map.Entry<?, ?> entry : raw.entrySet()) {
+                if (entry.getKey() != null) {
+                    out.put(String.valueOf(entry.getKey()), entry.getValue());
+                }
+            }
+            return out;
         }
         return new HashMap<>();
     }

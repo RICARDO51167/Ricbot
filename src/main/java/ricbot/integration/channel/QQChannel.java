@@ -1,6 +1,7 @@
 package ricbot.integration.channel;
 
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.Data;
 import lombok.Getter;
@@ -365,7 +366,7 @@ public class QQChannel extends BaseChannel {
             }
 
             // 解析响应 JSON，提取 WebSocket 连接 URL
-            Map<String, Object> data = mapper.readValue(response.body(), Map.class);
+            Map<String, Object> data = mapper.readValue(response.body(), new TypeReference<>() {});
             String wssUrl = (String) data.get("url");
             
             // 异步建立 WebSocket 连接，并等待连接完成
@@ -467,7 +468,7 @@ public class QQChannel extends BaseChannel {
              */
             private void handleMessage(String json, WebSocket currentSocket) throws Exception {
                 // 将 JSON 字符串解析为 Map 对象
-                Map<String, Object> msg = mapper.readValue(json, Map.class);
+                Map<String, Object> msg = mapper.readValue(json, new TypeReference<>() {});
                 // 获取操作码 (opcode)
                 Integer op = asInt(msg.get("op"));
                 
@@ -485,7 +486,7 @@ public class QQChannel extends BaseChannel {
                 // 根据操作码处理不同类型的消息
                 switch (op) {
                     case 10: // Hello: 网关欢迎消息，包含心跳间隔
-                        Map<String, Object> d = (Map<String, Object>) msg.get("d");
+                        Map<String, Object> d = asObjectMap(msg.get("d"));
                         // 获取心跳间隔时间（毫秒）
                         Integer interval = d != null ? asInt(d.get("heartbeat_interval")) : null;
                         // 如果间隔无效，设置默认值 30 秒
@@ -501,7 +502,7 @@ public class QQChannel extends BaseChannel {
                         // 获取事件类型
                         String t = (String) msg.get("t");
                         // 获取事件数据
-                        Map<String, Object> eventData = (Map<String, Object>) msg.get("d");
+                        Map<String, Object> eventData = asObjectMap(msg.get("d"));
                         // 如果是 READY 事件，表示机器人已就绪
                         if ("READY".equals(t)) {
                             log.info("QQ 机器人已就绪");
@@ -629,7 +630,7 @@ public class QQChannel extends BaseChannel {
             String chatId = isGroup ? (String) data.get("group_id") : null;
             
             // 获取作者信息对象
-            Map<String, Object> author = (Map<String, Object>) data.get("author");
+            Map<String, Object> author = asObjectMap(data.get("author"));
             // 从作者信息中提取用户 ID，如果作者信息为空则 userId 为 null
             String userId = author != null ? (String) author.get("id") : null;
             
@@ -647,7 +648,7 @@ public class QQChannel extends BaseChannel {
             // 初始化附件列表
             List<QQAttachment> atts = new ArrayList<>();
             // 获取原始附件数据列表
-            List<Map<String, Object>> attachments = (List<Map<String, Object>>) data.get("attachments");
+            List<Map<String, Object>> attachments = asObjectMapList(data.get("attachments"));
             
             // 如果存在附件数据，则遍历处理每一个附件
             if (attachments != null) {
@@ -766,7 +767,7 @@ public class QQChannel extends BaseChannel {
             HttpResponse<String> response = sendHttp(request, HttpResponse.BodyHandlers.ofString());
             
             // 将响应的 JSON 字符串解析为 Map 对象，方便获取其中的数据
-            Map data = new ObjectMapper().readValue(response.body(), Map.class);
+            Map<String, Object> data = mapper.readValue(response.body(), new TypeReference<>() {});
             
             // 从响应数据中提取访问令牌
             this.accessToken = (String) data.get("access_token");
@@ -806,6 +807,33 @@ public class QQChannel extends BaseChannel {
             }
             // 其他类型或 null 直接返回 null
             return null;
+        }
+
+        private static Map<String, Object> asObjectMap(Object value) {
+            if (!(value instanceof Map<?, ?> raw)) {
+                return new LinkedHashMap<>();
+            }
+            Map<String, Object> out = new LinkedHashMap<>();
+            for (Map.Entry<?, ?> entry : raw.entrySet()) {
+                if (entry.getKey() != null) {
+                    out.put(String.valueOf(entry.getKey()), entry.getValue());
+                }
+            }
+            return out;
+        }
+
+        private static List<Map<String, Object>> asObjectMapList(Object value) {
+            if (!(value instanceof List<?> raw)) {
+                return List.of();
+            }
+            List<Map<String, Object>> out = new ArrayList<>();
+            for (Object item : raw) {
+                Map<String, Object> map = asObjectMap(item);
+                if (!map.isEmpty()) {
+                    out.add(map);
+                }
+            }
+            return out;
         }
 
         private <T> HttpResponse<T> sendHttp(HttpRequest request, HttpResponse.BodyHandler<T> handler) throws Exception {

@@ -1,5 +1,6 @@
 package ricbot.integration.api;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.Headers;
 import com.sun.net.httpserver.HttpExchange;
@@ -57,6 +58,8 @@ public class RicbotApiServer {
     public static final String API_CHAT_ID = "default";
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final TypeReference<Map<String, Object>> JSON_OBJECT_TYPE = new TypeReference<>() {
+    };
     private static final int MAX_SESSION_LOCKS = 4096;
     private static final long SESSION_LOCK_IDLE_MILLIS = TimeUnit.MINUTES.toMillis(10);
     private static final long SESSION_LOCK_CLEANUP_INTERVAL_MILLIS = TimeUnit.SECONDS.toMillis(30);
@@ -517,7 +520,7 @@ public class RicbotApiServer {
 
             private Map<String, Object> readJsonRequestBody(HttpExchange exchange) throws IOException {
                 try {
-                    return MAPPER.readValue(readRequestBody(exchange), Map.class);
+                    return MAPPER.readValue(readRequestBody(exchange), JSON_OBJECT_TYPE);
                 } catch (RicbotApiSupport.PayloadTooLargeException e) {
                     throw new InvalidRequestException(413, e.getMessage(), "invalid_request_error");
                 } catch (Exception e) {

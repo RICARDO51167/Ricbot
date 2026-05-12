@@ -22,6 +22,8 @@ public class AnthropicProvider extends LLMProvider {
     private static final String ALNUM = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
     // 初始化安全随机数生成器
     private static final SecureRandom RANDOM = new SecureRandom();
+    private static final TypeReference<Map<String, Object>> JSON_OBJECT_TYPE = new TypeReference<>() {
+    };
 
     // 存储额外的 HTTP 请求头
     private final Map<String, String> extraHeaders;
@@ -92,7 +94,6 @@ public class AnthropicProvider extends LLMProvider {
      * @param messages 原始消息列表
      * @return 转换后的 Anthropic 消息对象
      */
-    @SuppressWarnings("unchecked")
     public ConvertedAnthropicMessages convertMessages(List<Map<String, Object>> messages) {
         // 初始化 system 消息内容
         Object system = null;
@@ -124,8 +125,10 @@ public class AnthropicProvider extends LLMProvider {
                     Object prevContent = raw.get(raw.size() - 1).get("content");
                     // 如果前一个内容是列表
                     if (prevContent instanceof List<?> prevList) {
+                        List<Object> updatedContent = new ArrayList<>(prevList);
                         // 将工具结果块添加到列表中
-                        ((List<Object>) prevList).add(block);
+                        updatedContent.add(block);
+                        raw.get(raw.size() - 1).put("content", updatedContent);
                     } else {
                         // 否则，将前一个内容和工具结果块组合成新的列表
                         raw.get(raw.size() - 1).put("content", new ArrayList<>(List.of(
@@ -196,7 +199,6 @@ public class AnthropicProvider extends LLMProvider {
      * @param msg assistant 消息
      * @return 块列表
      */
-    @SuppressWarnings("unchecked")
     public static List<Map<String, Object>> assistantBlocks(Map<String, Object> msg) {
         // 初始化块列表
         List<Map<String, Object>> blocks = new ArrayList<>();
@@ -218,9 +220,12 @@ public class AnthropicProvider extends LLMProvider {
                 // 如果不是 Map 类型，跳过
                 if (!(tc instanceof Map<?, ?> rawTc)) continue;
                 // 转换为 Map
-                Map<String, Object> tcMap = (Map<String, Object>) rawTc;
+                Map<String, Object> tcMap = copyObjectMap(rawTc);
                 // 获取函数信息，默认为空 Map
-                Map<String, Object> func = (Map<String, Object>) tcMap.getOrDefault("function", Collections.emptyMap());
+                Map<String, Object> func = asObjectMap(tcMap.get("function"));
+                if (func == null) {
+                    func = Collections.emptyMap();
+                }
 
                 // 初始化工具输入参数
                 Map<String, Object> input = new HashMap<>();
@@ -230,11 +235,11 @@ public class AnthropicProvider extends LLMProvider {
                 if (args instanceof String s) {
                     try {
                         // 尝试解析 JSON 字符串为 Map
-                        input = MAPPER.readValue(s, new TypeReference<>() {});
+                        input = MAPPER.readValue(s, JSON_OBJECT_TYPE);
                     } catch (Exception ignored) {}
                 } else if (args instanceof Map<?, ?> m) {
                     // 如果参数已经是 Map，直接转换
-                    input = (Map<String, Object>) m;
+                    input = copyObjectMap(m);
                 }
 
                 // 初始化工具使用块
@@ -266,7 +271,6 @@ public class AnthropicProvider extends LLMProvider {
      * @param content 用户消息内容
      * @return 转换后的内容
      */
-    @SuppressWarnings("unchecked")
     public Object convertUserContent(Object content) {
         // 如果内容是字符串或 null
         if (content instanceof String || content == null) {
@@ -287,7 +291,7 @@ public class AnthropicProvider extends LLMProvider {
                 continue;
             }
             // 转换为 Map
-            Map<String, Object> item = (Map<String, Object>) rawItem;
+            Map<String, Object> item = copyObjectMap(rawItem);
             // 获取项的类型
             String type = String.valueOf(item.get("type"));
             // 如果类型是 text
@@ -303,8 +307,9 @@ public class AnthropicProvider extends LLMProvider {
                 Object imageUrlObj = item.get("image_url");
                 // 如果 image_url 是 Map 类型
                 if (imageUrlObj instanceof Map<?, ?> rawImageUrl) {
+                    Map<String, Object> imageUrl = copyObjectMap(rawImageUrl);
                     // 获取 URL 字符串
-                    String url = String.valueOf(((Map<String, Object>) rawImageUrl).getOrDefault("url", ""));
+                    String url = String.valueOf(imageUrl.getOrDefault("url", ""));
                     // 尝试将 URL 转换为 Anthropic 图像块
                     Map<String, Object> imageBlock = convertImageUrlToAnthropic(url);
                     // 如果转换成功
@@ -400,7 +405,6 @@ public class AnthropicProvider extends LLMProvider {
      * @param msgs 消息列表
      * @return 合并后的消息列表
      */
-    @SuppressWarnings("unchecked")
     public static List<Map<String, Object>> mergeConsecutive(List<Map<String, Object>> msgs) {
         // 初始化合并后的列表
         List<Map<String, Object>> merged = new ArrayList<>();
@@ -436,7 +440,6 @@ public class AnthropicProvider extends LLMProvider {
      * @param tools 工具列表
      * @return 转换后的工具列表
      */
-    @SuppressWarnings("unchecked")
     public static List<Map<String, Object>> convertTools(List<Map<String, Object>> tools) {
         // 如果工具列表为 null，返回 null
         if (tools == null) return null;
@@ -445,7 +448,10 @@ public class AnthropicProvider extends LLMProvider {
         // 遍历每个工具
         for (Map<String, Object> tool : tools) {
             // 获取函数定义，如果不存在则使用工具本身
-            Map<String, Object> func = (Map<String, Object>) tool.getOrDefault("function", tool);
+            Map<String, Object> func = asObjectMap(tool.get("function"));
+            if (func == null) {
+                func = tool;
+            }
             // 初始化条目 Map
             Map<String, Object> entry = new LinkedHashMap<>();
             // 设置名称
@@ -548,10 +554,9 @@ public class AnthropicProvider extends LLMProvider {
      * @return LLM 响应对象
      * @throws Exception 异常
      */
-    @SuppressWarnings("unchecked")
     private LLMResponse parseAnthropicResponse(String json) throws Exception {
         // 将 JSON 字符串解析为 Map
-        Map<String, Object> map = MAPPER.readValue(json, new TypeReference<>() {});
+        Map<String, Object> map = MAPPER.readValue(json, JSON_OBJECT_TYPE);
         
         // 初始化内容 StringBuilder
         StringBuilder content = new StringBuilder();
@@ -559,7 +564,7 @@ public class AnthropicProvider extends LLMProvider {
         List<ToolCallRequest> toolCalls = new ArrayList<>();
         
         // 获取内容列表
-        List<Map<String, Object>> contentList = (List<Map<String, Object>>) map.get("content");
+        List<Map<String, Object>> contentList = asObjectMapList(map.get("content"));
         // 如果内容列表不为 null
         if (contentList != null) {
             // 遍历每个内容块
@@ -577,7 +582,7 @@ public class AnthropicProvider extends LLMProvider {
                     // 获取名称
                     String name = (String) block.get("name");
                     // 获取输入参数
-                    Map<String, Object> input = (Map<String, Object>) block.get("input");
+                    Map<String, Object> input = asObjectMap(block.get("input"));
                     // 添加工具调用请求
                     toolCalls.add(new ToolCallRequest(id, name, input));
                 }
@@ -587,15 +592,15 @@ public class AnthropicProvider extends LLMProvider {
         // 获取停止原因
         String stopReason = (String) map.get("stop_reason");
         // 获取原始使用情况数据
-        Map<String, Object> usageRaw = (Map<String, Object>) map.get("usage");
+        Map<String, Object> usageRaw = asObjectMap(map.get("usage"));
         // 初始化使用情况 Map
         Map<String, Integer> usage = new HashMap<>();
         // 如果使用情况数据不为 null
         if (usageRaw != null) {
             // 设置 prompt tokens
-            usage.put("prompt_tokens", (Integer) usageRaw.get("input_tokens"));
+            usage.put("prompt_tokens", asInt(usageRaw.get("input_tokens")));
             // 设置 completion tokens
-            usage.put("completion_tokens", (Integer) usageRaw.get("output_tokens"));
+            usage.put("completion_tokens", asInt(usageRaw.get("output_tokens")));
         }
 
         // 构建并返回 LLM 响应对象
@@ -703,14 +708,17 @@ public class AnthropicProvider extends LLMProvider {
                     if ("[DONE]".equals(data)) return;
                     try {
                         // 解析事件 JSON
-                        Map<String, Object> event = MAPPER.readValue(data, new TypeReference<>() {});
+                        Map<String, Object> event = MAPPER.readValue(data, JSON_OBJECT_TYPE);
                         // 获取事件类型
                         String type = (String) event.get("type");
 
                         // 如果是内容块增量事件
                         if ("content_block_delta".equals(type)) {
                             // 获取 delta 对象
-                            Map<String, Object> delta = (Map<String, Object>) event.get("delta");
+                            Map<String, Object> delta = asObjectMap(event.get("delta"));
+                            if (delta == null) {
+                                return;
+                            }
                             // 如果是文本增量
                             if ("text_delta".equals(delta.get("type"))) {
                                 // 获取文本
@@ -723,22 +731,25 @@ public class AnthropicProvider extends LLMProvider {
                         } else if ("message_delta".equals(type)) {
                             // 如果是消息增量事件
                             // 获取使用情况数据
-                            Map<String, Object> usageRaw = (Map<String, Object>) event.get("usage");
+                            Map<String, Object> usageRaw = asObjectMap(event.get("usage"));
                             // 如果存在
                             if (usageRaw != null) {
                                 // 设置 completion tokens
-                                usage.put("completion_tokens", (Integer) usageRaw.get("output_tokens"));
+                                usage.put("completion_tokens", asInt(usageRaw.get("output_tokens")));
                             }
                         } else if ("message_start".equals(type)) {
                             // 如果是消息开始事件
                             // 获取消息对象
-                            Map<String, Object> msg = (Map<String, Object>) event.get("message");
+                            Map<String, Object> msg = asObjectMap(event.get("message"));
+                            if (msg == null) {
+                                return;
+                            }
                             // 获取使用情况数据
-                            Map<String, Object> usageRaw = (Map<String, Object>) msg.get("usage");
+                            Map<String, Object> usageRaw = asObjectMap(msg.get("usage"));
                             // 如果存在
                             if (usageRaw != null) {
                                 // 设置 prompt tokens
-                                usage.put("prompt_tokens", (Integer) usageRaw.get("input_tokens"));
+                                usage.put("prompt_tokens", asInt(usageRaw.get("input_tokens")));
                             }
                         }
                     } catch (Exception ignored) {}
@@ -768,4 +779,46 @@ public class AnthropicProvider extends LLMProvider {
      * @param messages 消息列表
      */
     public record ConvertedAnthropicMessages(Object system, List<Map<String, Object>> messages) {}
+
+    private static Map<String, Object> asObjectMap(Object value) {
+        return value instanceof Map<?, ?> raw ? copyObjectMap(raw) : null;
+    }
+
+    private static Map<String, Object> copyObjectMap(Map<?, ?> raw) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        for (Map.Entry<?, ?> entry : raw.entrySet()) {
+            if (entry.getKey() != null) {
+                out.put(String.valueOf(entry.getKey()), entry.getValue());
+            }
+        }
+        return out;
+    }
+
+    private static List<Map<String, Object>> asObjectMapList(Object value) {
+        if (!(value instanceof List<?> list)) {
+            return null;
+        }
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (Object item : list) {
+            Map<String, Object> map = asObjectMap(item);
+            if (map != null) {
+                out.add(map);
+            }
+        }
+        return out;
+    }
+
+    private static int asInt(Object value) {
+        if (value instanceof Number number) {
+            return number.intValue();
+        }
+        if (value == null) {
+            return 0;
+        }
+        try {
+            return Integer.parseInt(String.valueOf(value));
+        } catch (NumberFormatException e) {
+            return 0;
+        }
+    }
 }

@@ -92,7 +92,7 @@ public class DingTalkChannel extends BaseChannel {
             // 设置 AppSecret
             c.setAppSecret((String) m.get("app_secret"));
             // 设置允许的来源列表
-            c.setAllowFrom((List<String>) m.get("allow_from"));
+            c.setAllowFrom(toStringList(m.get("allow_from")));
             return c;
         }
         // 如果无法识别配置类型，返回默认的空配置
@@ -183,7 +183,6 @@ public class DingTalkChannel extends BaseChannel {
         }
     }
 
-    @SuppressWarnings("unchecked")
     public void handleWebhookEvent(Map<String, Object> payload) throws Exception {
         if (payload == null || payload.isEmpty()) {
             return;
@@ -196,9 +195,7 @@ public class DingTalkChannel extends BaseChannel {
 
         String chatId = firstText(payload.get("conversationId"), payload.get("chatId"), senderId);
         String msgType = firstText(payload.get("msgtype"), payload.get("msgType"), "text");
-        Map<String, Object> text = payload.get("text") instanceof Map<?, ?> map
-                ? (Map<String, Object>) map
-                : Map.of();
+        Map<?, ?> text = payload.get("text") instanceof Map<?, ?> map ? map : Map.of();
         String content = firstText(text.get("content"), payload.get("content"));
         if (content.isBlank()) {
             content = "[" + msgType + "]";
@@ -266,6 +263,19 @@ public class DingTalkChannel extends BaseChannel {
     private boolean isAllowed(String senderId) {
         List<String> allow = config.getAllowFrom();
         return allow == null || allow.contains("*") || allow.contains(senderId);
+    }
+
+    private static List<String> toStringList(Object value) {
+        if (!(value instanceof List<?> raw)) {
+            return List.of();
+        }
+        List<String> out = new ArrayList<>();
+        for (Object item : raw) {
+            if (item != null) {
+                out.add(String.valueOf(item));
+            }
+        }
+        return out;
     }
 
     private static String firstText(Object... values) {

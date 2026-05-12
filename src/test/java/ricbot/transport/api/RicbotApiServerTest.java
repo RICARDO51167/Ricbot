@@ -32,6 +32,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+@SuppressWarnings("unchecked")
 public class RicbotApiServerTest {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();

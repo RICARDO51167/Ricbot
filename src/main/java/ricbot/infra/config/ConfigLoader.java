@@ -8,6 +8,7 @@ import ricbot.infra.security.NetworkSecurity;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermission;
 import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -158,9 +159,23 @@ public final class ConfigLoader {
             }
             // 将 Config 对象转换为 Map，并以美观的格式写入 JSON 文件
             MAPPER.writerWithDefaultPrettyPrinter().writeValue(path.toFile(), configToMap(actualConfig));
+            hardenConfigFilePermissions(path);
         } catch (IOException e) {
             // 如果发生 IO 异常，抛出运行时异常
             throw new RuntimeException("保存配置失败：" + path, e);
+        }
+    }
+
+    private static void hardenConfigFilePermissions(Path path) {
+        try {
+            Files.setPosixFilePermissions(
+                    path,
+                    EnumSet.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE)
+            );
+        } catch (UnsupportedOperationException ignored) {
+            // Non-POSIX file systems such as Windows do not support chmod-style permissions.
+        } catch (IOException e) {
+            log.warn("无法收紧配置文件权限: {}", path, e);
         }
     }
 
