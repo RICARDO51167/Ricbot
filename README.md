@@ -45,7 +45,7 @@ Ricbot 是一个面向“可工程化智能代理”的 Java 项目。它试图�
 | CLI | `agent` 单次运行 | 已支持 | 支持 `--message/-m`、`--session/-s`、`--config/-c`、`--workspace/-w` |
 | CLI | `agent` 交互模式 | 已支持 | 无 `--message` 时进入 REPL，支持流式输出 |
 | CLI | `serve` 服务模式 | 已支持 | 会启动 `AgentLoop`、`ChannelManager`、`HeartbeatService`、OpenAI 兼容 API |
-| CLI | `status` / `tools` / `skills` / `provider login` / `onboard` | 已支持 | `provider login` 对 OAuth 型 Provider 仅给提示，不做浏览器登录 |
+| CLI | `eval` / `status` / `tools` / `skills` / `provider login` / `onboard` | 已支持 | `eval` 会运行 JSONL 场景并生成可回放 artifact；`provider login` 对 OAuth 型 Provider 仅给提示，不做浏览器登录 |
 | HTTP API | `POST /v1/chat/completions` | 已支持 | OpenAI 风格接口，支持 `session_id` |
 | HTTP API | `GET /v1/models` / `GET /health` | 已支持 | 便于接入客户端与健康检查 |
 | HTTP API | 流式响应 | 已支持 | 当前实现为 SSE 风格 `stream=true` |
@@ -396,12 +396,137 @@ sh ./ricbot agent -c config/ricbot.config.json -m "hello"
 sh ./ricbot serve -c config/ricbot.config.json
 ```
 
+#### 6. 运行评测场景
+
+`eval` 子命令用于从 harness 角度做可重复回归。场景文件是 JSONL，每行一个 case：
+
+```json
+{"id":"hello","input":"请用一句话问候我","expected_contains":["你好"]}
+{"id":"no-error","input":"列出当前目录","expected_not_contains":["Exception","Traceback"]}
+{"id":"read-only","input":"只分析当前目录，不要写文件","allowed_side_effects":"none","max_file_changes":0}
+{"id":"fixture","input":"读取 docs/input.txt","clean_workspace":true,"workspace_files":{"docs/input.txt":"hello fixture\n"},"expected_tools":["read_file"],"expected_file_contains":{"docs/input.txt":["hello fixture"]}}
+{"id":"multi-turn","turns":[{"input":"记住代号 alpha","expected_contains":["已记录"]},{"input":"我刚才给你的代号是什么？","expected_contains":["alpha"]}]}
+{"id":"json","input":"返回 JSON","expected_json_required":["status"],"expected_json_values":{"status":"ok"},"expected_json_absent":["error"]}
+{"id":"known-gap","input":"触发已知缺口","xfail":true,"xfail_reason":"等待工具错误恢复优化","expected_failure_kind":"tool_error","expected_contains":["不会出现"]}
+{"id":"future-case","input":"后续补 MCP 故障注入","skip":true,"skip_reason":"fixture 尚未准备好","expected_contains":["不会执行"]}
+```
+
+运行：
+
+```bash
+java -jar target/Ricbot-1.0-SNAPSHOT.jar eval \
+  --config config/ricbot.config.json \
+  --scenarios evals/scenarios.jsonl \
+  --out workspace/.ricbot/evals \
+  --tag fast \
+  --fail-fast
+```
+
+不访问真实模型的 CLI smoke：
+
+```bash
+java -jar target/Ricbot-1.0-SNAPSHOT.jar eval lint \
+  --scenarios evals/golden.jsonl \
+  --out target/eval-lint
+
+java -jar target/Ricbot-1.0-SNAPSHOT.jar eval smoke \
+  --scenarios evals/golden.jsonl \
+  --workspace target/eval-smoke-workspace \
+  --out target/eval-smoke-artifacts \
+  --tag fast \
+  --fail-fast
+
+java -jar target/Ricbot-1.0-SNAPSHOT.jar eval smoke \
+  --scenarios evals/golden.jsonl \
+  --workspace target/eval-replayable-workspace \
+  --out target/eval-replayable-artifacts \
+  --tag replayable \
+  --fail-fast
+
+java -jar target/Ricbot-1.0-SNAPSHOT.jar eval replay \
+  --run target/eval-replayable-artifacts/<run-id> \
+  --workspace target/eval-replay-workspace \
+  --out target/eval-replay-artifacts \
+  --fail-fast
+```
+
+离线回放已有 artifact，不访问真实模型：
+
+```bash
+java -jar target/Ricbot-1.0-SNAPSHOT.jar eval replay \
+  --config config/ricbot.config.json \
+  --case workspace/.ricbot/evals/<run-id>/cases/hello.json
+
+java -jar target/Ricbot-1.0-SNAPSHOT.jar eval replay \
+  --config config/ricbot.config.json \
+  --run workspace/.ricbot/evals/<run-id> \
+  --fail-fast
+```
+
+对比两次 eval run，识别相对 baseline 的回归：
+
+```bash
+java -jar target/Ricbot-1.0-SNAPSHOT.jar eval compare \
+  --baseline workspace/.ricbot/evals/<old-run-id> \
+  --candidate workspace/.ricbot/evals/<new-run-id> \
+  --out workspace/.ricbot/eval-comparisons/<compare-id>
+```
+
+输出 artifact：
+
+- `manifest.json`：模型、provider、`provider_mode`、工具 schema hash、workspace 运行前快照；smoke artifact 会标记 `provider_mode=smoke`，replay 会据此自动使用确定性 smoke 环境
+- `cases.jsonl`：每个 case 的状态、失败分类、耗时、工具列表、artifact 路径
+- `cases/<id>.json`：单 case 的场景、响应、模型请求/响应 `model_calls`、workspace diff、run trace、context trace
+- `turn_results`：多轮 case 中每一轮的输入、响应、工具列表与 trace
+- `summary.json`：通过/失败计数、`failures_by_kind`、模型/工具调用总数、耗时 p50/p95、token usage 汇总
+- `report.md`：面向人工排障的 Markdown 报告，包含失败 case、失败详情、artifact 路径和 replay 命令
+- `workspace-after.json`：运行后 workspace 快照
+
+`eval compare` 输出：
+
+- `comparison.json`：baseline/candidate 的 case 状态变化、回归数量、改进数量、summary 指标 delta
+- `comparison-report.md`：面向人工审阅的对比报告；当出现 pass -> fail、baseline case 缺失、或新增失败 case 时，CLI 退出码为 2
+
+`eval lint` 会在不访问模型的情况下静态检查场景文件，输出 `lint.json` 和 `lint-report.md`。它会拦截重复 id、缺少输入、没有任何断言/预算/副作用策略、非法 regex、非法 JSON path、负数预算、workspace fixture 路径逃逸等问题。
+
+常用场景字段：
+
+- `expected_contains` / `expected_not_contains` / `expected_regex`：响应断言
+- `expected_json_required` / `expected_json_absent` / `expected_json_values`：JSON 响应断言；路径支持 `a.b` 与 `items[0].name`
+- `turns`：多轮场景；每轮支持 `input`、`expected_contains`、`expected_not_contains`、`expected_regex`、`expected_json_required`、`expected_json_absent`、`expected_json_values`、`expected_tools`、`forbidden_tools`、`expected_stop_reason`
+- `tags`：场景标签；CLI 可用 `--tag fast` 只运行某类场景，可重复传入或用逗号分隔；`--exclude-tag flaky` 可排除标签
+- `skip` / `skip_reason`：跳过暂不可执行的 case；跳过会写 artifact 并计入 `skipped`，不会调用模型
+- `xfail` / `xfail_reason` / `expected_failure_kind`：标记预期失败；失败时计入 `expected_failed` 且不使 run 失败，意外通过会变成 `xpass` 并计入失败
+- `expected_tools` / `forbidden_tools`：要求或禁止某些工具被使用
+- `clean_workspace`：运行该 case 前清空工作区普通文件；会保留 `.git`、`.idea`、`.ricbot` 等运行元数据目录。默认只允许清理临时目录、`target` 下目录，或带 `.ricbot-eval-workspace` 标记的目录；确需清理其他目录时显式加 `--allow-unsafe-workspace-clean`
+- `restore_workspace`：运行该 case 后恢复工作区普通文件，默认开启；会保留 `.git`、`.idea`、`.ricbot`、`sessions`、`memory` 等运行元数据目录。需要保留文件给人工排查时可在 case 中设为 `false`，或 CLI 使用 `--no-restore-workspace`
+- `restore_session`：运行该 case 后恢复当前 eval session，默认开启；需要专门测试跨 case session 泄漏时可设为 `false`，或 CLI 使用 `--no-restore-session`
+- `workspace_files`：运行前写入的 fixture 文件，key 为工作区相对路径，value 为文件内容
+- `expected_file_contains` / `expected_file_not_contains`：对运行后工作区文件内容做断言
+- `expected_session_message_count` / `expected_session_role_counts` / `expected_session_contains` / `expected_session_not_contains`：对当前 case session 的消息数、角色分布和内容做断言
+- `expected_memory_counts` / `expected_memory_file_contains` / `expected_memory_file_not_contains`：对 memory 目录计数和文件内容做断言；memory 目前只做状态快照和断言，不默认恢复
+- `max_model_calls` / `max_tool_calls`：限制模型轮次和工具调用次数
+- `expected_stop_reason`：要求最终 `run_trace.stop_reason` 等于指定值，例如 `stop`
+- `allowed_side_effects`：副作用策略；`none` / `read_only` 禁止文件变化和非只读工具；`files` 允许文件写入但不允许 network/process/cron/mcp；如需放行可显式包含 `network`、`process`、`cron`、`mcp`，或用 `any` / `all`
+- `max_file_changes`：允许的最大文件变化数，超出会归类为 `side_effect_violation`
+- `max_duration_ms`：单 case 最大耗时，超出会归类为 `latency_budget_exceeded`
+
+Replay 相关失败分类：
+
+- `replay_mismatch`：回放输出与原始 artifact 不一致，或回放时的模型请求 messages/tools/model/tool_choice 等与录制 artifact 不一致；workspace 根路径会在请求签名里归一化，避免同一 artifact 换目录回放时误报
+- `replay_exhausted`：回放时模型请求次数超过已录制的 `model_calls`
+- `replay_artifact_invalid`：case artifact 缺少可回放的模型调用记录
+
+仓库内置 `evals/golden.jsonl`，CI 的 `mvn test` 会通过确定性 provider 跑这组 golden 场景，避免依赖真实模型或网络。
+
+Artifact 会对常见敏感 key（例如 `api_key`、`authorization`、`token`、`secret`、`password`）做基础脱敏；真实模型 eval 仍应避免把生产密钥、私密文件内容写入场景或工作区。
+
 说明：
 
 - `ricbot` / `bin/ricbot` 会自动检查并构建最新 fat-jar
 - Windows 可使用 `ricbot.cmd` 或 `bin/ricbot.cmd`
 
-#### 6. IDE 调试启动
+#### 7. IDE 调试启动
 
 主类：
 

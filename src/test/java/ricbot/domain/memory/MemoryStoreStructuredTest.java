@@ -43,6 +43,7 @@ class MemoryStoreStructuredTest {
 
         List<MemoryEntry> entries = store.readMemoryEntries();
         assertEquals(2, entries.size());
+        assertTrue(entries.stream().allMatch(entry -> entry.getMemoryType() == MemoryType.SEMANTIC));
         assertTrue(store.readUser().contains("用户喜欢简洁回答"));
         assertTrue(store.readMemory().contains("项目使用 Java 17"));
         assertTrue(Files.exists(workspace.resolve("memory").resolve("memory_entries.jsonl")));
@@ -107,6 +108,7 @@ class MemoryStoreStructuredTest {
 
         assertEquals(1, recalled.size());
         assertEquals("项目使用飞书审批流程", recalled.get(0).getSummary());
+        assertEquals(MemoryType.SEMANTIC, recalled.get(0).getMemoryType());
         assertEquals(1, store.readMemoryEntries().stream()
                 .filter(entry -> "项目使用飞书审批流程".equals(entry.getSummary()))
                 .findFirst()
@@ -178,6 +180,36 @@ class MemoryStoreStructuredTest {
         ));
 
         assertTrue(store.recallMemories("临时数据库", "", 3).isEmpty());
+    }
+
+    @Test
+    void recallScoredMemories_exposesRankingFactors(@TempDir Path workspace) {
+        MemoryStore store = new MemoryStore(workspace);
+
+        store.mergeMemoryEntries(List.of(
+                new MemoryEntry()
+                        .setType(MemoryEntry.TYPE_WORKFLOW)
+                        .setMemoryType(MemoryType.EPISODIC)
+                        .setScope(MemoryEntry.SCOPE_LONG_TERM)
+                        .setSummary("上次修复 MCP 超时需要先看 MCPAdapters")
+                        .setImportance(0.75d)
+                        .setConfidence(0.8d)
+                        .setAccessCount(3),
+                new MemoryEntry()
+                        .setType(MemoryEntry.TYPE_PROJECT)
+                        .setMemoryType(MemoryType.SEMANTIC)
+                        .setScope(MemoryEntry.SCOPE_LONG_TERM)
+                        .setSummary("项目使用 Java 17")
+                        .setImportance(0.95d)
+                        .setConfidence(0.95d)
+        ));
+
+        var scored = store.recallScoredMemories("继续修复 MCP 超时", "", 2);
+
+        assertEquals(2, scored.size());
+        assertEquals("上次修复 MCP 超时需要先看 MCPAdapters", scored.get(0).entry().getSummary());
+        assertTrue(scored.get(0).relevanceScore() > scored.get(1).relevanceScore());
+        assertTrue(scored.get(0).accessScore() > 0d);
     }
 
     @Test

@@ -109,15 +109,14 @@ public class ReadFileTool extends Tool {
             // 检查文件是否自上次读取以来未发生变化，以优化 Token 使用
             if (FileReadState.isUnchanged(target, off, limit)) {
                 return "文件自上次读取后未发生变化。\n\n" +
-                        FileToolSupport.sliceLines(FileToolSupport.readText(target), off, limit);
+                        FileToolSupport.sliceLines(target, off, limit);
             }
 
-            // 读取全文并记录状态
-            String content = FileToolSupport.readText(target);
+            // 按行流式读取切片并记录状态
+            String content = FileToolSupport.sliceLines(target, off, limit);
             FileReadState.recordRead(target, off, limit);
 
-            // 返回切片后的内容
-            return FileToolSupport.sliceLines(content, off, limit);
+            return content;
         } catch (Exception e) {
             return "错误：" + e.getMessage();
         }

@@ -57,6 +57,22 @@ public class SessionManager {
         });
     }
 
+    public Optional<Session> find(String key) {
+        if (key == null || key.isBlank()) {
+            return Optional.empty();
+        }
+        Session cached = cache.get(key);
+        if (cached != null) {
+            return Optional.of(cached);
+        }
+        Session loaded = load(key);
+        if (loaded != null) {
+            cache.put(key, loaded);
+            return Optional.of(loaded);
+        }
+        return Optional.empty();
+    }
+
     /**
      * 保存会话到磁盘
      *
@@ -122,6 +138,17 @@ public class SessionManager {
     public void invalidate(String key) {
         // 从缓存中移除指定 Key 的会话
         cache.remove(key);
+    }
+
+    public void delete(String key) {
+        cache.remove(key);
+        try {
+            Files.deleteIfExists(getSessionPath(key));
+            Files.deleteIfExists(getLegacyNameInSessionsDir(key));
+            Files.deleteIfExists(getLegacySessionPath(key));
+        } catch (Exception e) {
+            log.warn("删除会话失败: key={}", key, e);
+        }
     }
 
     /**
@@ -343,16 +370,7 @@ public class SessionManager {
      * @return Map<String, Object>
      */
     private static Map<String, Object> castMap(Object o) {
-        if (o instanceof Map<?, ?> m) {
-            Map<String, Object> out = new LinkedHashMap<>();
-            for (Map.Entry<?, ?> entry : m.entrySet()) {
-                if (entry.getKey() != null) {
-                    out.put(String.valueOf(entry.getKey()), entry.getValue());
-                }
-            }
-            return out;
-        }
-        return new LinkedHashMap<>();
+        return ricbot.infra.common.JsonMapUtils.asObjectMap(o);
     }
 
     /**

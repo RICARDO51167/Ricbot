@@ -20,6 +20,8 @@ class ContextBuilderStructuredContextTest {
         bundle.addItem("user_profile", "prefers concise replies");
         bundle.addItem("memory_recall", "project uses Java 17");
         bundle.addItem("memory_recall", "project uses Java 17");
+        bundle.addItem("project_notes", "notes/project/decisions.md: use GSSC");
+        bundle.addItem("workspace_knowledge", "src/main/java/App.java:1-20");
         bundle.addItem("tool_trace", "grep: ok | result=found files");
 
         List<Map<String, Object>> messages = builder.buildMessages(
@@ -38,9 +40,13 @@ class ContextBuilderStructuredContextTest {
         assertTrue(system.contains("## task_state"));
         assertTrue(system.contains("## user_profile"));
         assertTrue(system.contains("## memory_recall"));
+        assertTrue(system.contains("## project_notes"));
+        assertTrue(system.contains("## workspace_knowledge"));
         assertTrue(system.contains("## tool_trace"));
         assertTrue(system.indexOf("## recent_history") < system.indexOf("## task_state"));
         assertTrue(system.indexOf("## task_state") < system.indexOf("## user_profile"));
+        assertTrue(system.indexOf("## memory_recall") < system.indexOf("## project_notes"));
+        assertTrue(system.indexOf("## project_notes") < system.indexOf("## workspace_knowledge"));
         assertTrue(system.contains("grep: ok | result=found files"));
         assertEquals(system.indexOf("project uses Java 17"), system.lastIndexOf("project uses Java 17"));
     }
@@ -81,6 +87,28 @@ class ContextBuilderStructuredContextTest {
         assertTrue(large.totalCharLimit() > new PromptContextBundle().totalCharLimit());
         assertTrue(large.sectionBudget("memory_recall").maxChars() > small.sectionBudget("memory_recall").maxChars());
         assertTrue(large.sectionBudget("tool_trace").maxItems() > small.sectionBudget("tool_trace").maxItems());
+    }
+
+    @Test
+    void promptContextQualityReport_surfacesBudgetAndNoiseSignals() {
+        PromptContextBundle bundle = PromptContextBundle.forContextWindow(8_000);
+        bundle.addItem("memory_recall", "[semantic] project uses MCP", 0.8d);
+        bundle.addItem("memory_recall", "[semantic] project uses MCP", 0.8d);
+        bundle.addItem("recent_history", "archived session: old MCP discussion");
+        bundle.addItem("tool_trace", "exec: error " + "x".repeat(400));
+        for (int i = 0; i < 20; i++) {
+            bundle.addItem("memory_recall", "memory-" + i + " " + "y".repeat(200), 0.2d);
+        }
+
+        ContextQualityReport report = bundle.qualityReport();
+        Map<String, Object> asMap = report.toMap();
+
+        assertTrue((Integer) asMap.get("totalTokens") > 0);
+        assertTrue((Double) asMap.get("budgetUsageRate") > 0d);
+        assertTrue((Double) asMap.get("avgRelevanceScore") > 0d);
+        assertTrue((Double) asMap.get("toolResultNoiseRatio") > 0d);
+        assertEquals(true, asMap.get("missingTaskState"));
+        assertEquals(true, asMap.get("compressionApplied"));
     }
 
     @Test

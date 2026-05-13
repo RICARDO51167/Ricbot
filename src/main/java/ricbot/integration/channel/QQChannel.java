@@ -810,30 +810,13 @@ public class QQChannel extends BaseChannel {
         }
 
         private static Map<String, Object> asObjectMap(Object value) {
-            if (!(value instanceof Map<?, ?> raw)) {
-                return new LinkedHashMap<>();
-            }
-            Map<String, Object> out = new LinkedHashMap<>();
-            for (Map.Entry<?, ?> entry : raw.entrySet()) {
-                if (entry.getKey() != null) {
-                    out.put(String.valueOf(entry.getKey()), entry.getValue());
-                }
-            }
-            return out;
+            return ricbot.infra.common.JsonMapUtils.asObjectMap(value);
         }
 
         private static List<Map<String, Object>> asObjectMapList(Object value) {
-            if (!(value instanceof List<?> raw)) {
-                return List.of();
-            }
-            List<Map<String, Object>> out = new ArrayList<>();
-            for (Object item : raw) {
-                Map<String, Object> map = asObjectMap(item);
-                if (!map.isEmpty()) {
-                    out.add(map);
-                }
-            }
-            return out;
+            return ricbot.infra.common.JsonMapUtils.asObjectMapList(value).stream()
+                    .filter(map -> !map.isEmpty())
+                    .toList();
         }
 
         private <T> HttpResponse<T> sendHttp(HttpRequest request, HttpResponse.BodyHandler<T> handler) throws Exception {

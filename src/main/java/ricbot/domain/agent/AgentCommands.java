@@ -14,6 +14,7 @@ import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Future;
 import java.util.function.BiConsumer;
@@ -111,7 +112,22 @@ final class AgentCommands {
         sb.append("workspace: ").append(workspace).append("\n");
         sb.append("session messages: ").append(sessionMsgCount).append("\n");
         sb.append("\n").append(taskState.renderStatus());
+        ContextQualityReport quality = readContextQuality(session);
+        if (quality != null) {
+            sb.append("\n\n").append(quality.renderStatusBlock());
+        }
         return completedReply(ctx, sb.toString());
+    }
+
+    private ContextQualityReport readContextQuality(Session session) {
+        if (session == null || session.getMetadata() == null) {
+            return null;
+        }
+        Object rawTrace = session.getMetadata().get(SessionRuntimeKeys.CONTEXT_TRACE_KEY);
+        if (!(rawTrace instanceof Map<?, ?> trace)) {
+            return null;
+        }
+        return ContextQualityReport.fromMap(trace.get("context_quality"));
     }
 
     private CompletableFuture<OutboundMessage> dream(CommandRouter.CommandContext ctx) {

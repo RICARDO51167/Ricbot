@@ -33,6 +33,7 @@ public class MemoryEntry {
 
     private String id = UUID.randomUUID().toString();
     private String type = TYPE_FACT;
+    private MemoryType memoryType;
     private String scope = SCOPE_SHORT_TERM;
     private String summary = "";
     private String details = "";
@@ -58,6 +59,8 @@ public class MemoryEntry {
         }
         entry.id = stringValue(raw.get("id"), entry.id);
         entry.type = normalizeType(stringValue(raw.get("type"), entry.type));
+        Object memoryTypeRaw = raw.containsKey("memory_type") ? raw.get("memory_type") : raw.get("memoryType");
+        entry.memoryType = MemoryType.fromString(stringValue(memoryTypeRaw, null));
         entry.scope = normalizeScope(stringValue(raw.get("scope"), entry.scope));
         entry.summary = stringValue(raw.get("summary"), "");
         entry.details = stringValue(raw.get("details"), "");
@@ -75,6 +78,9 @@ public class MemoryEntry {
         entry.status = normalizeStatus(stringValue(raw.get("status"), entry.status));
         entry.aliases = toStringList(raw.get("aliases"));
         entry.tags = toStringList(raw.get("tags"));
+        if (entry.memoryType == null) {
+            entry.memoryType = MemoryType.infer(entry.type, entry.scope, entry.source, entry.tags);
+        }
         return entry;
     }
 
@@ -82,6 +88,7 @@ public class MemoryEntry {
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("id", id);
         out.put("type", type);
+        out.put("memory_type", getMemoryType().name().toLowerCase());
         out.put("scope", scope);
         out.put("summary", summary);
         out.put("details", details);
@@ -138,6 +145,22 @@ public class MemoryEntry {
 
     public boolean isUserProfile() {
         return TYPE_PREFERENCE.equals(type) || TYPE_PERSON.equals(type);
+    }
+
+    public boolean isWorkingMemory() {
+        return getMemoryType() == MemoryType.WORKING;
+    }
+
+    public boolean isEpisodicMemory() {
+        return getMemoryType() == MemoryType.EPISODIC;
+    }
+
+    public boolean isSemanticMemory() {
+        return getMemoryType() == MemoryType.SEMANTIC;
+    }
+
+    public boolean isPerceptualMemory() {
+        return getMemoryType() == MemoryType.PERCEPTUAL;
     }
 
     public boolean isExpired() {
@@ -288,6 +311,26 @@ public class MemoryEntry {
 
     public MemoryEntry setType(String type) {
         this.type = normalizeType(type);
+        return this;
+    }
+
+    public MemoryType getMemoryType() {
+        if (memoryType == null) {
+            memoryType = MemoryType.infer(type, scope, source, tags);
+        }
+        return memoryType;
+    }
+
+    public MemoryEntry setMemoryType(MemoryType memoryType) {
+        this.memoryType = memoryType != null ? memoryType : MemoryType.infer(type, scope, source, tags);
+        return this;
+    }
+
+    public MemoryEntry setMemoryType(String memoryType) {
+        MemoryType parsed = MemoryType.fromString(memoryType);
+        if (parsed != null) {
+            this.memoryType = parsed;
+        }
         return this;
     }
 

@@ -61,6 +61,7 @@ public class MemoryStore {
 
     // Git 存储管理对象
     private final GitStore git;
+    private final MemoryRetriever memoryRetriever = new MemoryRetriever();
 
     // 用于同步访问游标文件的锁对象
     private final Object cursorLock = new Object();
@@ -378,6 +379,7 @@ public class MemoryStore {
         out.put("entries_count", entries.size());
         out.put("active_count", entries.stream().filter(MemoryEntry::isActive).count());
         out.put("expired_count", entries.stream().filter(MemoryEntry::isExpired).count());
+        out.put("memory_type_counts", memoryTypeCounts(entries));
         out.put("candidates_count", candidates.size());
         out.put("pending_candidates", candidates.stream().filter(MemoryEntry::requiresApproval).count());
         out.put("sensitive_candidates", candidates.stream()
@@ -616,59 +618,46 @@ public class MemoryStore {
      * @return 召回的记忆条目列表
      */
     public List<MemoryEntry> recallMemories(String query, String taskGoal, int limit) {
-        // 读取所有记忆条目
+        return recallScoredMemories(query, taskGoal, limit).stream()
+                .map(MemoryRetriever.ScoredMemory::entry)
+                .toList();
+    }
+
+    public List<MemoryRetriever.ScoredMemory> recallScoredMemories(String query, String taskGoal, int limit) {
         List<MemoryEntry> all = readMemoryEntries();
-        // 如果没有记忆条目，返回空列表
         if (all.isEmpty()) {
             return List.of();
         }
-        // 组合查询字符串和任务目标
-        String combined = (query != null ? query : "") + "\n" + (taskGoal != null ? taskGoal : "");
-        // 对组合文本进行分词
-        Set<String> queryTokens = tokenize(combined);
-
-        // 初始化带评分的记忆条目列表
-        List<ScoredMemory> scored = new ArrayList<>();
-        for (MemoryEntry entry : all) {
-            // 跳过无效或不可召回的条目
-            if (entry == null || !entry.isRecallable()) {
-                continue;
-            }
-            // 基础评分：重要性 * 2 + 置信度
-            double score = entry.getImportance() * 2.0d + entry.getConfidence();
-            // 如果查询 token 不为空，增加基于匹配比例的评分
-            if (!queryTokens.isEmpty()) {
-                score += weightedRecallScore(queryTokens, entry);
-            }
-            // 如果是长期范围，额外增加评分
-            if (MemoryEntry.SCOPE_LONG_TERM.equals(entry.getScope())) {
-                score += 1.5d;
-            }
-            if (entry.getAccessCount() > 0) {
-                score += Math.min(1.0d, Math.log1p(entry.getAccessCount()) / 3.0d);
-            }
-            // 添加带评分的记忆条目
-            scored.add(new ScoredMemory(entry, score));
-        }
-
-        // 按评分降序排序，限制返回数量，并提取记忆条目
-        List<MemoryEntry> selected = scored.stream()
-                .sorted((a, b) -> Double.compare(b.score(), a.score()))
+        List<MemoryRetriever.ScoredMemory> selected = memoryRetriever.score(all, query, taskGoal).stream()
                 .limit(Math.max(0, limit))
-                .map(ScoredMemory::entry)
                 .toList();
         // 如果有选中的条目，标记它们为已使用并更新文件
         if (!selected.isEmpty()) {
             List<MemoryEntry> allEntries = new ArrayList<>(all);
             for (MemoryEntry entry : allEntries) {
                 // 如果当前条目在选中列表中，标记为已使用
-                if (selected.stream().anyMatch(sel -> sel.getId().equals(entry.getId()))) {
+                if (selected.stream().anyMatch(sel -> sel.entry().getId().equals(entry.getId()))) {
                     entry.markUsed();
                 }
             }
             writeMemoryEntries(allEntries);
         }
         return selected;
+    }
+
+    private Map<String, Long> memoryTypeCounts(List<MemoryEntry> entries) {
+        Map<String, Long> out = new LinkedHashMap<>();
+        for (MemoryType type : MemoryType.values()) {
+            out.put(type.name().toLowerCase(Locale.ROOT), 0L);
+        }
+        for (MemoryEntry entry : entries != null ? entries : List.<MemoryEntry>of()) {
+            if (entry == null) {
+                continue;
+            }
+            String key = entry.getMemoryType().name().toLowerCase(Locale.ROOT);
+            out.put(key, out.getOrDefault(key, 0L) + 1L);
+        }
+        return out;
     }
 
     private void applyCandidateGovernance(MemoryEntry candidate) {
@@ -1104,24 +1093,6 @@ public class MemoryStore {
         return out;
     }
 
-    private double weightedRecallScore(Set<String> queryTokens, MemoryEntry entry) {
-        double summary = overlapScore(queryTokens, tokenize(entry.getSummary())) * 4.0d;
-        double details = overlapScore(queryTokens, tokenize(entry.getDetails())) * 2.0d;
-        double tags = overlapScore(queryTokens, tokenize(String.join(" ", entry.getTags()))) * 1.5d;
-        double aliases = overlapScore(queryTokens, tokenize(String.join(" ", entry.getAliases()))) * 1.2d;
-        return summary + details + tags + aliases;
-    }
-
-    private double overlapScore(Set<String> queryTokens, Set<String> contentTokens) {
-        if (queryTokens.isEmpty() || contentTokens.isEmpty()) {
-            return 0d;
-        }
-        long hits = contentTokens.stream().filter(queryTokens::contains).count();
-        double queryCoverage = (double) hits / Math.max(1d, queryTokens.size());
-        double contentCoverage = (double) hits / Math.max(1d, Math.min(contentTokens.size(), queryTokens.size() * 2));
-        return (queryCoverage * 0.75d) + (contentCoverage * 0.25d);
-    }
-
     private void addCjkNgrams(String text, Set<String> out) {
         StringBuilder cjk = new StringBuilder();
         for (int i = 0; i < text.length(); i++) {
@@ -1154,12 +1125,6 @@ public class MemoryStore {
                 || script == Character.UnicodeScript.HIRAGANA
                 || script == Character.UnicodeScript.KATAKANA
                 || script == Character.UnicodeScript.HANGUL;
-    }
-
-    /**
-     * 带评分的记忆条目记录
-     */
-    private record ScoredMemory(MemoryEntry entry, double score) {
     }
 
     /**

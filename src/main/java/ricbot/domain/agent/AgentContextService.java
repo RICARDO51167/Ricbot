@@ -195,6 +195,7 @@ record AgentContextService(Path workspace, ContextBuilder contextBuilder, Memory
         trace.put("skills_context_chars", lengthOf(skillContext));
         trace.put("combined_context_chars", lengthOf(combinedContext));
         trace.put("prompt_context_budget", selection.bundle().budgetTrace());
+        trace.put("context_quality", selection.bundle().qualityReport().toMap());
         trace.put("skills", skillsTrace(selectedSkills, skillContext));
         return trace;
     }
@@ -335,12 +336,6 @@ record AgentContextService(Path workspace, ContextBuilder contextBuilder, Memory
     }
 
     private static Map<String, Object> copyObjectMap(Map<?, ?> raw) {
-        Map<String, Object> out = new LinkedHashMap<>();
-        for (Map.Entry<?, ?> entry : raw.entrySet()) {
-            if (entry.getKey() != null) {
-                out.put(String.valueOf(entry.getKey()), entry.getValue());
-            }
-        }
-        return out;
+        return ricbot.infra.common.JsonMapUtils.copyObjectMap(raw);
     }
 }

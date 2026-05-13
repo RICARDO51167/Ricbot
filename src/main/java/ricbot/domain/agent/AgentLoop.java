@@ -11,19 +11,15 @@ import ricbot.tool.web.WebSearchTool;
 import ricbot.domain.memory.Consolidator;
 import ricbot.domain.memory.Dream;
 import ricbot.domain.memory.MemoryStore;
+import ricbot.domain.note.NoteService;
+import ricbot.domain.rag.WorkspaceRagService;
 import ricbot.domain.subagent.SubagentManager;
 import ricbot.domain.hook.AgentHook;
+import ricbot.tool.api.BuiltinToolRegistrar;
 import ricbot.tool.api.ToolRegistry;
 import ricbot.tool.cron.CronTool;
-import ricbot.tool.filesystem.EditFileTool;
-import ricbot.tool.filesystem.ListDirTool;
 import ricbot.tool.filesystem.NotebookEditTool;
-import ricbot.tool.filesystem.ReadFileTool;
-import ricbot.tool.filesystem.WriteFileTool;
-import ricbot.tool.process.ExecTool;
 import ricbot.tool.process.SpawnTool;
-import ricbot.tool.search.GlobTool;
-import ricbot.tool.search.GrepTool;
 import ricbot.tool.skill.ReadSkillTool;
 import ricbot.integration.mcp.MCPLoader;
 import ricbot.integration.command.CommandRouter;
@@ -282,7 +278,9 @@ public class AgentLoop {
         ContextSelectionService contextSelectionService = new ContextSelectionService(
                 this.memoryStore,
                 new ToolTraceSummarizer(),
-                this.contextWindowTokens
+                this.contextWindowTokens,
+                new NoteService(this.workspace),
+                new WorkspaceRagService(this.workspace)
         );
         this.agentContextService = new AgentContextService(
                 this.workspace,
@@ -362,42 +360,21 @@ public class AgentLoop {
      * 最小可展示工具集：read_file / list_dir / exec
      */
     private void registerDefaultTools() {
-        // 计算允许的操作目录，如果限制工作空间或启用沙箱，则限制为工作空间
-        Path allowedDir = (restrictToWorkspace || execConfig.isSandbox()) ? workspace : null;
+        Path allowedDir = BuiltinToolRegistrar.allowedDir(workspace, restrictToWorkspace, execConfig);
 
-        // 注册文件系统工具
         tools.register(new ReadSkillTool(skillsLoader));
-        tools.register(new ReadFileTool(workspace, allowedDir, List.of()));
-        tools.register(new ListDirTool(workspace, allowedDir));
-        tools.register(new WriteFileTool(workspace, allowedDir));
-        tools.register(new EditFileTool(workspace, allowedDir));
+        BuiltinToolRegistrar.registerFileAndSearchTools(tools, workspace, allowedDir);
         tools.register(new NotebookEditTool(workspace, allowedDir, List.of()));
 
-        // 注册搜索工具
-        tools.register(new GlobTool(workspace, allowedDir));
-        tools.register(new GrepTool(workspace, allowedDir));
-
-        // 注册 Shell 执行工具
         if (execConfig.isEnable()) {
-            tools.register(new ExecTool(
-                    execConfig.getTimeout(),
-                    workspace.toString(),
-                    null,
-                    null,
-                    restrictToWorkspace,
-                    execConfig.isSandbox() ? "sandbox" : "",
-                    execConfig.getPathAppend(),
-                    execConfig.getAllowedEnvKeys()
-            ));
+            BuiltinToolRegistrar.registerExecTool(tools, workspace, restrictToWorkspace, execConfig);
             tools.register(new SpawnTool(subagents));
         }
 
-        // 注册定时任务工具
         if (cronService != null) {
             tools.register(new CronTool(cronService, contextBuilder.getTimezone()));
         }
 
-        // 注册 Web 工具
         if (webConfig.isEnable()) {
             tools.register(new WebFetchTool(
                     webConfig.getMaxChars(),
@@ -570,6 +547,7 @@ public class AgentLoop {
     public Dream getDream() { return dream; }
     public SubagentManager getSubagents() { return subagents; }
     public SessionManager getSessions() { return sessionManager; }
+    public ToolRegistry getTools() { return tools; }
 
     public MCPLoader getMcpLoader() { return mcpLoader; }
 

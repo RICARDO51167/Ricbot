@@ -1,8 +1,8 @@
 package ricbot.app.bootstrap;
 
 import ricbot.app.cli.CliCommands;
+import ricbot.infra.config.RuntimePaths;
 
-import java.nio.file.Files;
 import java.nio.file.Path;
 
 /**
@@ -16,33 +16,10 @@ public class RicbotApplication {
             return;
         }
 
-        String workspace = null;
-        if (args != null) {
-            for (int i = 0; i < args.length; i++) {
-                String cur = args[i];
-                if ("--workspace".equals(cur) || "-w".equals(cur)) {
-                    if (i + 1 < args.length) {
-                        workspace = args[i + 1];
-                    }
-                }
-            }
-        }
-
-        Path workspacePath;
-        if (workspace == null || workspace.isBlank()) {
-            workspacePath = Path.of(System.getProperty("user.dir"));
-        } else {
-            workspacePath = Path.of(workspace);
-        }
-        workspacePath = workspacePath.toAbsolutePath().normalize();
-
-        Path logsDir = workspacePath.resolve(".ricbot").resolve("logs");
-        try {
-            Files.createDirectories(logsDir);
-        } catch (Exception ignored) {
-        }
-        Path logFile = logsDir.resolve("ricbot.log");
-        System.setProperty("ricbot.log.file", logFile.toString());
+        RuntimePaths.configureWorkspaceLogFile(
+                RuntimePaths.workspaceOption(args),
+                Path.of(System.getProperty("user.dir"))
+        );
     }
 
     /**

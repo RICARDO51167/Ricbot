@@ -3,7 +3,6 @@ package ricbot.domain.agent;
 import org.junit.jupiter.api.Test;
 import ricbot.domain.session.Session;
 
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -85,12 +84,6 @@ class TaskStateTest {
     }
 
     private static Map<String, Object> copyObjectMap(Map<?, ?> raw) {
-        Map<String, Object> out = new LinkedHashMap<>();
-        for (Map.Entry<?, ?> entry : raw.entrySet()) {
-            if (entry.getKey() != null) {
-                out.put(String.valueOf(entry.getKey()), entry.getValue());
-            }
-        }
-        return out;
+        return ricbot.infra.common.JsonMapUtils.copyObjectMap(raw);
     }
 }

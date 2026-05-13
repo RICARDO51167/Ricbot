@@ -386,16 +386,7 @@ public class WecomChannel extends BaseChannel {
     }
 
     private Map<String, Object> extractBody(Object frame) {
-        if (frame instanceof Map<?, ?> raw) {
-            Map<String, Object> out = new LinkedHashMap<>();
-            for (Map.Entry<?, ?> entry : raw.entrySet()) {
-                if (entry.getKey() != null) {
-                    out.put(String.valueOf(entry.getKey()), entry.getValue());
-                }
-            }
-            return out;
-        }
-        return new HashMap<>();
+        return ricbot.infra.common.JsonMapUtils.asObjectMap(frame);
     }
 
     private String stringValue(Object o) {

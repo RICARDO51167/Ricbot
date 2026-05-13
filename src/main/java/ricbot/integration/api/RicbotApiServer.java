@@ -15,20 +15,14 @@ import ricbot.domain.message.OutboundMessage;
 import ricbot.domain.session.Session;
 
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.io.Writer;
-import java.net.InetAddress;
 import java.net.InetSocketAddress;
-import java.net.URLConnection;
 import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.*;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -60,10 +54,6 @@ public class RicbotApiServer {
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final TypeReference<Map<String, Object>> JSON_OBJECT_TYPE = new TypeReference<>() {
     };
-    private static final int MAX_SESSION_LOCKS = 4096;
-    private static final long SESSION_LOCK_IDLE_MILLIS = TimeUnit.MINUTES.toMillis(10);
-    private static final long SESSION_LOCK_CLEANUP_INTERVAL_MILLIS = TimeUnit.SECONDS.toMillis(30);
-
     /**
      * 创建并启动 HTTP 服务。
      *
@@ -84,10 +74,10 @@ public class RicbotApiServer {
     ) throws IOException {
         String bindHost = host != null && !host.isBlank() ? host : "127.0.0.1";
         String token = bearerToken != null ? bearerToken.trim() : "";
-        if (!ApiAppContext.isLoopbackHost(bindHost) && token.isBlank()) {
+        if (!RicbotApiAppContext.isLoopbackHost(bindHost) && token.isBlank()) {
             throw new IllegalArgumentException("API 监听非本地地址时必须配置 api.bearer_token");
         }
-        ApiAppContext appContext = new ApiAppContext(agentLoop, modelName, requestTimeoutMillis, bindHost, token);
+        RicbotApiAppContext appContext = new RicbotApiAppContext(agentLoop, modelName, requestTimeoutMillis, bindHost, token);
 
         HttpServer server = HttpServer.create(new InetSocketAddress(bindHost, port), 0);
         server.createContext("/v1/chat/completions", new ChatCompletionsHandler(appContext));
@@ -96,239 +86,10 @@ public class RicbotApiServer {
         server.createContext("/v1/mcp", new McpHandler(appContext));
         server.createContext("/v1/memory", new MemoryHandler(appContext));
         server.createContext("/health", new HealthHandler(appContext));
-        server.createContext("/", new WebUiHandler());
+        server.createContext("/", new RicbotWebUiHandler());
         server.setExecutor(RicbotApiSupport.newApiExecutor());
         server.start();
         return server;
-    }
-
-    /**
-     * 应用上下文。
-     *
-     * 对应 Python app[...] 中存的内容：
-     * - agent_loop
-     * - model_name
-     * - request_timeout
-     * - session_locks
-     */
-    /**
-     * 应用上下文。
-     *
-     * 对应 Python app[...] 中存的内容：
-     * - agent_loop
-     * - model_name
-     * - request_timeout
-     * - session_locks
-     */
-    public static class ApiAppContext {
-        // 核心业务逻辑代理，负责处理具体的 Agent 交互
-        private final AgentLoop agentLoop;
-        // 对外报告的模型名称
-        private final String modelName;
-        // 单个请求的超时时间（毫秒）
-        private final long requestTimeoutMillis;
-        // 服务绑定的主机地址
-        private final String bindHost;
-        // 用于身份验证的 Bearer Token
-        private final String bearerToken;
-        // 是否强制要求身份验证（取决于 token 是否存在或是否为回环地址）
-        private final boolean requireAuth;
-        // 会话锁映射表，用于保证同一会话的并发安全
-        private final Map<String, SessionLockEntry> sessionLocks = new ConcurrentHashMap<>();
-        private volatile long lastLockCleanupMillis = 0L;
-
-        /**
-         * 构造函数，初始化应用上下文。
-         *
-         * @param agentLoop 已初始化好的 AgentLoop 实例
-         * @param modelName 模型名称，若为空则默认为 "ricbot"
-         * @param requestTimeoutMillis 请求超时毫秒数，若小于等于0则默认为 120秒
-         * @param bindHost 绑定主机地址，若为空则默认为 "127.0.0.1"
-         * @param bearerToken 鉴权 Token，若为空则去除首尾空格
-         */
-        public ApiAppContext(
-                AgentLoop agentLoop,
-                String modelName,
-                long requestTimeoutMillis,
-                String bindHost,
-                String bearerToken
-        ) {
-            this.agentLoop = agentLoop;
-            // 如果模型名为空，使用默认值 "ricbot"
-            this.modelName = modelName != null ? modelName : "ricbot";
-            // 如果超时时间无效，使用默认值 120,000 毫秒 (2分钟)
-            this.requestTimeoutMillis = requestTimeoutMillis > 0 ? requestTimeoutMillis : 120_000L;
-            // 如果绑定主机为空，使用默认本地地址
-            this.bindHost = bindHost != null && !bindHost.isBlank() ? bindHost : "127.0.0.1";
-            // 处理 bearerToken，去除首尾空格，若为 null 则置为空串
-            this.bearerToken = bearerToken != null ? bearerToken.trim() : "";
-            // 确定是否需要鉴权：如果配置了 token 或者绑定的不是回环地址，则需要鉴权
-            this.requireAuth = !this.bearerToken.isBlank() || !isLoopbackHost(this.bindHost);
-        }
-
-        /**
-         * 获取 AgentLoop 实例。
-         *
-         * @return AgentLoop 对象
-         */
-        public AgentLoop getAgentLoop() {
-            return agentLoop;
-        }
-
-        /**
-         * 获取模型名称。
-         *
-         * @return 模型名称字符串
-         */
-        public String getModelName() {
-            return modelName;
-        }
-
-        /**
-         * 获取请求超时时间。
-         *
-         * @return 超时毫秒数
-         */
-        public long getRequestTimeoutMillis() {
-            return requestTimeoutMillis;
-        }
-
-        /**
-         * 检查当前 HTTP 请求是否已通过授权。
-         *
-         * @param exchange HTTP 交换对象，用于获取请求头
-         * @return 如果不需要鉴权或鉴权通过返回 true，否则返回 false
-         */
-        public boolean isAuthorized(HttpExchange exchange) {
-            // 如果配置为不需要鉴权，直接通过
-            if (!requireAuth) {
-                return true;
-            }
-            // 如果需要鉴权但 token 为空，则拒绝
-            if (bearerToken.isBlank()) {
-                return false;
-            }
-
-            // 获取 Authorization 请求头
-            String header = exchange.getRequestHeaders().getFirst("Authorization");
-            // 检查头部是否存在且以 "Bearer " 开头（忽略大小写）
-            if (header == null || !header.regionMatches(true, 0, "Bearer ", 0, 7)) {
-                return false;
-            }
-
-            // 提取提供的 token 部分
-            String provided = header.substring(7).trim();
-            // 使用恒定时间比较算法防止时序攻击，比对配置的 token 和提供的 token
-            return MessageDigest.isEqual(
-                    bearerToken.getBytes(StandardCharsets.UTF_8),
-                    provided.getBytes(StandardCharsets.UTF_8)
-            );
-        }
-
-        /**
-         * 获取指定会话键对应的重入锁。
-         * 如果不存在则创建一个新的锁并放入映射表。
-         *
-         * @param sessionKey 会话唯一标识键
-         * @return 对应的 ReentrantLock 实例
-         */
-        public SessionLockLease acquireSessionLock(String sessionKey) {
-            cleanupSessionLocksIfNeeded();
-            String key = sessionKey != null && !sessionKey.isBlank() ? sessionKey : API_SESSION_KEY;
-            SessionLockEntry entry = sessionLocks.computeIfAbsent(key, k -> new SessionLockEntry());
-            entry.acquire();
-            return new SessionLockLease(key, entry);
-        }
-
-        private void cleanupSessionLocksIfNeeded() {
-            long now = System.currentTimeMillis();
-            if (sessionLocks.size() < MAX_SESSION_LOCKS
-                    && now - lastLockCleanupMillis < SESSION_LOCK_CLEANUP_INTERVAL_MILLIS) {
-                return;
-            }
-            lastLockCleanupMillis = now;
-            for (Map.Entry<String, SessionLockEntry> item : sessionLocks.entrySet()) {
-                SessionLockEntry entry = item.getValue();
-                if (entry.users.get() != 0 || now - entry.lastAccessMillis < SESSION_LOCK_IDLE_MILLIS) {
-                    continue;
-                }
-                if (!entry.lock.tryLock()) {
-                    continue;
-                }
-                try {
-                    if (entry.users.get() == 0 && now - entry.lastAccessMillis >= SESSION_LOCK_IDLE_MILLIS) {
-                        sessionLocks.remove(item.getKey(), entry);
-                    }
-                } finally {
-                    entry.lock.unlock();
-                }
-            }
-        }
-
-        public static final class SessionLockLease implements AutoCloseable {
-            private final String key;
-            private final SessionLockEntry entry;
-            private boolean closed;
-
-            private SessionLockLease(String key, SessionLockEntry entry) {
-                this.key = key;
-                this.entry = entry;
-            }
-
-            public String key() {
-                return key;
-            }
-
-            @Override
-            public void close() {
-                if (closed) {
-                    return;
-                }
-                closed = true;
-                entry.release();
-            }
-        }
-
-        private static final class SessionLockEntry {
-            private final ReentrantLock lock = new ReentrantLock();
-            private final AtomicInteger users = new AtomicInteger();
-            private volatile long lastAccessMillis = System.currentTimeMillis();
-
-            private void acquire() {
-                users.incrementAndGet();
-                lastAccessMillis = System.currentTimeMillis();
-                lock.lock();
-            }
-
-            private void release() {
-                try {
-                    lastAccessMillis = System.currentTimeMillis();
-                    lock.unlock();
-                } finally {
-                    users.decrementAndGet();
-                }
-            }
-        }
-
-        /**
-         * 判断给定的主机地址是否为回环地址（如 localhost, 127.0.0.1）。
-         *
-         * @param host 主机地址字符串
-         * @return 如果是回环地址返回 true，否则返回 false
-         */
-        static boolean isLoopbackHost(String host) {
-            // 空字符串视为非回环
-            if (host == null || host.isBlank()) {
-                return false;
-            }
-            try {
-                // 尝试解析 InetAddress 并判断是否为回环地址
-                return InetAddress.getByName(host).isLoopbackAddress();
-            } catch (Exception e) {
-                // 如果解析失败，兜底判断是否等于 "localhost"
-                return "localhost".equalsIgnoreCase(host);
-            }
-        }
     }
 
     // ---------------------------------------------------------------------
@@ -436,16 +197,7 @@ public class RicbotApiServer {
      * 安全读取 Map 字段。
      */
     public static Map<String, Object> asMap(Object value) {
-        if (!(value instanceof Map<?, ?> raw)) {
-            return null;
-        }
-        Map<String, Object> out = new LinkedHashMap<>();
-        for (Map.Entry<?, ?> entry : raw.entrySet()) {
-            if (entry.getKey() != null) {
-                out.put(String.valueOf(entry.getKey()), entry.getValue());
-            }
-        }
-        return out;
+        return ricbot.infra.common.JsonMapUtils.asNullableObjectMap(value);
     }
 
     /**
@@ -462,7 +214,7 @@ public class RicbotApiServer {
     /**
      * POST /v1/chat/completions
      */
-    public record ChatCompletionsHandler(ApiAppContext appContext) implements HttpHandler {
+    public record ChatCompletionsHandler(RicbotApiAppContext appContext) implements HttpHandler {
             private static final String FALLBACK_RESPONSE = RuntimeConstants.EMPTY_FINAL_RESPONSE_MESSAGE;
 
             @Override
@@ -503,7 +255,7 @@ public class RicbotApiServer {
                 String sessionKey = resolveSessionKey(body);
                 log.info("API 请求 sessionKey={} 内容={}", sessionKey, abbreviate(parsed.currentUserContent(), 80));
 
-                try (ApiAppContext.SessionLockLease ignored = appContext.acquireSessionLock(sessionKey)) {
+                try (RicbotApiAppContext.SessionLockLease ignored = appContext.acquireSessionLock(sessionKey)) {
                     if (streamEnabled) {
                         handleStreaming(exchange, parsed, sessionKey, modelName);
                         return;
@@ -714,9 +466,9 @@ public class RicbotApiServer {
      * GET /v1/models
      */
     public static class ModelsHandler implements HttpHandler {
-        private final ApiAppContext appContext;
+        private final RicbotApiAppContext appContext;
 
-        public ModelsHandler(ApiAppContext appContext) {
+        public ModelsHandler(RicbotApiAppContext appContext) {
             this.appContext = appContext;
         }
 
@@ -750,9 +502,9 @@ public class RicbotApiServer {
      * GET /health
      */
     public static class HealthHandler implements HttpHandler {
-        private final ApiAppContext appContext;
+        private final RicbotApiAppContext appContext;
 
-        public HealthHandler(ApiAppContext appContext) {
+        public HealthHandler(RicbotApiAppContext appContext) {
             this.appContext = appContext;
         }
 
@@ -776,9 +528,9 @@ public class RicbotApiServer {
      * GET /v1/sessions/{session_id}/trace
      */
     public static class SessionsHandler implements HttpHandler {
-        private final ApiAppContext appContext;
+        private final RicbotApiAppContext appContext;
 
-        public SessionsHandler(ApiAppContext appContext) {
+        public SessionsHandler(RicbotApiAppContext appContext) {
             this.appContext = appContext;
         }
 
@@ -834,9 +586,9 @@ public class RicbotApiServer {
      * GET /v1/mcp
      */
     public static class McpHandler implements HttpHandler {
-        private final ApiAppContext appContext;
+        private final RicbotApiAppContext appContext;
 
-        public McpHandler(ApiAppContext appContext) {
+        public McpHandler(RicbotApiAppContext appContext) {
             this.appContext = appContext;
         }
 
@@ -862,9 +614,9 @@ public class RicbotApiServer {
      * POST /v1/memory/candidates/{id}/reject
      */
     public static class MemoryHandler implements HttpHandler {
-        private final ApiAppContext appContext;
+        private final RicbotApiAppContext appContext;
 
-        public MemoryHandler(ApiAppContext appContext) {
+        public MemoryHandler(RicbotApiAppContext appContext) {
             this.appContext = appContext;
         }
 
@@ -919,81 +671,6 @@ public class RicbotApiServer {
         }
 
         private record CandidateAction(String id, String action) {
-        }
-    }
-
-    /**
-     * GET / and /app/* serve the bundled web UI.
-     */
-    public static class WebUiHandler implements HttpHandler {
-        private static final String INDEX_RESOURCE = "webui/index.html";
-
-        @Override
-        public void handle(HttpExchange exchange) throws IOException {
-            if (!"GET".equalsIgnoreCase(exchange.getRequestMethod()) && !"HEAD".equalsIgnoreCase(exchange.getRequestMethod())) {
-                writeErrorJson(exchange, 405, "不支持的 HTTP 方法", "invalid_request_error");
-                return;
-            }
-
-            String path = exchange.getRequestURI() != null ? exchange.getRequestURI().getPath() : "/";
-            String resource = resolveResource(path);
-            if (resource == null) {
-                writeErrorJson(exchange, 404, "资源不存在", "not_found");
-                return;
-            }
-
-            byte[] bytes;
-            try (InputStream in = RicbotApiServer.class.getClassLoader().getResourceAsStream(resource)) {
-                if (in == null) {
-                    writeErrorJson(exchange, 404, "资源不存在", "not_found");
-                    return;
-                }
-                bytes = in.readAllBytes();
-            }
-
-            Headers headers = exchange.getResponseHeaders();
-            headers.set("Content-Type", contentType(resource));
-            headers.set("Cache-Control", "no-store");
-            headers.set("X-Content-Type-Options", "nosniff");
-            exchange.sendResponseHeaders(200, "HEAD".equalsIgnoreCase(exchange.getRequestMethod()) ? -1 : bytes.length);
-            if (!"HEAD".equalsIgnoreCase(exchange.getRequestMethod())) {
-                try (OutputStream os = exchange.getResponseBody()) {
-                    os.write(bytes);
-                }
-            } else {
-                exchange.close();
-            }
-        }
-
-        private static String resolveResource(String path) {
-            if (path == null || path.isBlank() || "/".equals(path) || "/app".equals(path) || "/app/".equals(path)) {
-                return INDEX_RESOURCE;
-            }
-            if (!path.startsWith("/app/")) {
-                return null;
-            }
-            String relative = path.substring("/app/".length());
-            if (relative.isBlank() || relative.contains("..") || relative.startsWith("/")) {
-                return INDEX_RESOURCE;
-            }
-            return "webui/" + relative;
-        }
-
-        private static String contentType(String resource) {
-            String guessed = URLConnection.guessContentTypeFromName(resource);
-            if (guessed != null) {
-                return guessed + "; charset=utf-8";
-            }
-            if (resource.endsWith(".js")) {
-                return "text/javascript; charset=utf-8";
-            }
-            if (resource.endsWith(".css")) {
-                return "text/css; charset=utf-8";
-            }
-            if (resource.endsWith(".html")) {
-                return "text/html; charset=utf-8";
-            }
-            return "application/octet-stream";
         }
     }
 

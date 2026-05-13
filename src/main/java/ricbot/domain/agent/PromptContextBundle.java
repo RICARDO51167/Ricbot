@@ -21,21 +21,18 @@ final class PromptContextBundle {
             "task_state",       // 任务状态
             "user_profile",     // 用户画像
             "memory_recall",    // 记忆召回
+            "project_notes",    // 项目笔记
+            "workspace_knowledge", // 工作区知识库
             "tool_trace"        // 工具调用轨迹
     );
 
-    private static final Map<String, SectionBudget> SECTION_BUDGETS = Map.of(
-            "recent_history", new SectionBudget(3, 900),
-            "task_state", new SectionBudget(12, 1_200),
-            "user_profile", new SectionBudget(8, 1_600),
-            "memory_recall", new SectionBudget(8, 2_400),
-            "tool_trace", new SectionBudget(4, 1_200)
-    );
+    private static final Map<String, SectionBudget> SECTION_BUDGETS = sectionBudgets();
 
     // 使用 LinkedHashMap 保持插入顺序，存储各个部分的内容列表
     private final Map<String, List<String>> sections = new LinkedHashMap<>();
     private final int totalCharLimit;
     private final Map<String, SectionBudget> sectionBudgets;
+    private final Map<String, List<Double>> relevanceScores = new LinkedHashMap<>();
 
     // 构造函数，初始化所有预定义的上下文部分为空列表
     PromptContextBundle() {
@@ -69,6 +66,10 @@ final class PromptContextBundle {
 
     // 向指定部分添加一项内容
     void addItem(String section, String item) {
+        addItem(section, item, null);
+    }
+
+    void addItem(String section, String item, Double relevanceScore) {
         // 如果部分名或内容为空，则直接返回
         if (section == null || item == null || item.isBlank()) {
             return;
@@ -77,6 +78,9 @@ final class PromptContextBundle {
         List<String> target = sections.computeIfAbsent(section, ignored -> new ArrayList<>());
         if (!target.contains(normalized)) {
             target.add(normalized);
+            if (relevanceScore != null) {
+                relevanceScores.computeIfAbsent(section, ignored -> new ArrayList<>()).add(clampDouble(relevanceScore, 0d, 1d));
+            }
         }
     }
 
@@ -199,6 +203,102 @@ final class PromptContextBundle {
         return out;
     }
 
+    ContextQualityReport qualityReport() {
+        Map<String, Object> trace = budgetTrace();
+        int estimatedChars = intValue(trace.get("estimated_rendered_chars"));
+        int totalTokens = Math.max(0, (int) Math.ceil(estimatedChars / 4.0d));
+        double budgetUsageRate = totalCharLimit > 0 ? (double) estimatedChars / (double) totalCharLimit : 0d;
+
+        int candidates = 0;
+        int omitted = 0;
+        boolean compressionApplied = false;
+        Object sectionsObj = trace.get("sections");
+        if (sectionsObj instanceof List<?> reports) {
+            for (Object item : reports) {
+                if (!(item instanceof Map<?, ?> report)) {
+                    continue;
+                }
+                candidates += intValue(report.get("candidates"));
+                omitted += intValue(report.get("omitted"));
+                compressionApplied = compressionApplied || boolValue(report.get("truncated"));
+            }
+        }
+
+        int duplicateCandidates = 0;
+        int totalItems = 0;
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        for (List<String> items : sections.values()) {
+            for (String item : items) {
+                totalItems++;
+                String normalized = item.toLowerCase(java.util.Locale.ROOT).replaceAll("\\s+", " ").trim();
+                if (!seen.add(normalized)) {
+                    duplicateCandidates++;
+                }
+            }
+        }
+
+        int staleItems = 0;
+        for (String item : sections.getOrDefault("recent_history", List.of())) {
+            String lower = item.toLowerCase(java.util.Locale.ROOT);
+            if (lower.contains("archived") || lower.contains("session summary") || lower.contains("历史")) {
+                staleItems++;
+            }
+        }
+
+        int noisyToolItems = 0;
+        for (String item : sections.getOrDefault("tool_trace", List.of())) {
+            String lower = item.toLowerCase(java.util.Locale.ROOT);
+            if (item.length() > 320 || lower.contains("error") || lower.contains("exception") || lower.contains("[truncated]")) {
+                noisyToolItems++;
+            }
+        }
+
+        boolean missingTaskState = sections.getOrDefault("task_state", List.of()).isEmpty();
+        List<String> suggestions = new ArrayList<>();
+        if (budgetUsageRate > 0.9d || omitted > 0) {
+            suggestions.add("reduce low-value context or raise context window");
+        }
+        if (missingTaskState) {
+            suggestions.add("persist task_state before long-running work");
+        }
+        if (totalItems > 0 && (double) duplicateCandidates / totalItems > 0.2d) {
+            suggestions.add("dedupe repeated context candidates");
+        }
+        if (!sections.getOrDefault("tool_trace", List.of()).isEmpty()
+                && (double) noisyToolItems / Math.max(1, sections.get("tool_trace").size()) > 0.5d) {
+            suggestions.add("compress noisy tool results");
+        }
+
+        return new ContextQualityReport(
+                totalTokens,
+                clampDouble(budgetUsageRate, 0d, 1d),
+                averageRelevance(),
+                totalItems > 0 ? (double) duplicateCandidates / totalItems : 0d,
+                candidates > 0 ? (double) staleItems / candidates : 0d,
+                sections.getOrDefault("tool_trace", List.of()).isEmpty()
+                        ? 0d
+                        : (double) noisyToolItems / sections.get("tool_trace").size(),
+                missingTaskState,
+                compressionApplied,
+                suggestions
+        );
+    }
+
+    private double averageRelevance() {
+        double total = 0d;
+        int count = 0;
+        for (List<Double> values : relevanceScores.values()) {
+            for (Double value : values) {
+                if (value == null) {
+                    continue;
+                }
+                total += value;
+                count++;
+            }
+        }
+        return count > 0 ? total / count : 0d;
+    }
+
     private static void appendBudgetNotice(StringBuilder sb, int remainingItems) {
         if (remainingItems > 0) {
             sb.append("- ").append(TRUNCATED_MARKER).append(" ")
@@ -225,6 +325,42 @@ final class PromptContextBundle {
 
     private static int clamp(int value, int min, int max) {
         return Math.max(min, Math.min(max, value));
+    }
+
+    private static double clampDouble(double value, double min, double max) {
+        return Math.max(min, Math.min(max, value));
+    }
+
+    private static int intValue(Object raw) {
+        if (raw instanceof Number n) {
+            return n.intValue();
+        }
+        if (raw != null) {
+            try {
+                return Integer.parseInt(String.valueOf(raw));
+            } catch (Exception ignored) {
+            }
+        }
+        return 0;
+    }
+
+    private static boolean boolValue(Object raw) {
+        if (raw instanceof Boolean b) {
+            return b;
+        }
+        return raw != null && Boolean.parseBoolean(String.valueOf(raw));
+    }
+
+    private static Map<String, SectionBudget> sectionBudgets() {
+        Map<String, SectionBudget> out = new LinkedHashMap<>();
+        out.put("recent_history", new SectionBudget(3, 900));
+        out.put("task_state", new SectionBudget(12, 1_200));
+        out.put("user_profile", new SectionBudget(8, 1_600));
+        out.put("memory_recall", new SectionBudget(8, 2_000));
+        out.put("project_notes", new SectionBudget(5, 1_600));
+        out.put("workspace_knowledge", new SectionBudget(5, 2_400));
+        out.put("tool_trace", new SectionBudget(4, 1_200));
+        return out;
     }
 
     record SectionBudget(int maxItems, int maxChars) {

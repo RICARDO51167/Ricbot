@@ -257,12 +257,8 @@ public final class ConfigLoader {
 
         // 如果是 Map，递归处理每个值
         if (obj instanceof Map<?, ?> rawMap) {
-            Map<String, Object> out = new LinkedHashMap<>();
-            for (Map.Entry<?, ?> entry : rawMap.entrySet()) {
-                if (entry.getKey() != null) {
-                    out.put(String.valueOf(entry.getKey()), resolveEnvVars(entry.getValue()));
-                }
-            }
+            Map<String, Object> out = ricbot.infra.common.JsonMapUtils.copyObjectMap(rawMap);
+            out.replaceAll((key, value) -> resolveEnvVars(value));
             return out;
         }
 
@@ -696,16 +692,7 @@ public final class ConfigLoader {
      * @return Map<String, Object>
      */
     private static Map<String, Object> asMap(Object o) {
-        if (o instanceof Map<?, ?> raw) {
-            Map<String, Object> out = new LinkedHashMap<>();
-            for (Map.Entry<?, ?> entry : raw.entrySet()) {
-                if (entry.getKey() != null) {
-                    out.put(String.valueOf(entry.getKey()), entry.getValue());
-                }
-            }
-            return out;
-        }
-        return new LinkedHashMap<>();
+        return ricbot.infra.common.JsonMapUtils.asObjectMap(o);
     }
 
     /**

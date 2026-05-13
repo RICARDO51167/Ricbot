@@ -590,13 +590,7 @@ public class WeixinChannel extends BaseChannel {
     }
 
     private static Map<String, Object> copyObjectMap(Map<?, ?> raw) {
-        Map<String, Object> out = new LinkedHashMap<>();
-        for (Map.Entry<?, ?> entry : raw.entrySet()) {
-            if (entry.getKey() != null) {
-                out.put(String.valueOf(entry.getKey()), entry.getValue());
-            }
-        }
-        return out;
+        return ricbot.infra.common.JsonMapUtils.copyObjectMap(raw);
     }
 
     private <T> HttpResponse<T> sendHttp(HttpRequest request, HttpResponse.BodyHandler<T> handler) throws Exception {

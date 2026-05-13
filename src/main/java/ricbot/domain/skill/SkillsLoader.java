@@ -2,6 +2,7 @@ package ricbot.domain.skill;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import ricbot.infra.common.JsonMapUtils;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -702,13 +703,7 @@ public class SkillsLoader {
         Map<String, Object> root = parseMetadata(doc);
         Object ricbot = root.get("ricbot");
         if (ricbot instanceof Map<?, ?> ricbotMap) {
-            Map<String, Object> out = new LinkedHashMap<>();
-            for (Map.Entry<?, ?> entry : ricbotMap.entrySet()) {
-                if (entry.getKey() != null) {
-                    out.put(String.valueOf(entry.getKey()), entry.getValue());
-                }
-            }
-            return out;
+            return JsonMapUtils.copyObjectMap(ricbotMap);
         }
         return root;
     }

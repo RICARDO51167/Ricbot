@@ -1,5 +1,7 @@
 package ricbot.app.cli;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.PropertyNamingStrategies;
 import ricbot.app.bootstrap.Bootstrapper; // 导入 Bootstrapper 类，用于初始化核心组件
 import ricbot.domain.agent.AgentLoop; // 导入 AgentLoop 类，用于运行 Agent 逻辑
 
@@ -7,6 +9,17 @@ import ricbot.domain.message.InboundMessage; // 导入入站消息类
 import ricbot.domain.message.InboundMessages;
 import ricbot.domain.message.MessageBus; // 导入消息总线类，用于消息传递
 import ricbot.domain.message.OutboundMessage; // 导出现站消息类
+import ricbot.domain.eval.EvalHarness;
+import ricbot.domain.eval.EvalCompareRunner;
+import ricbot.domain.eval.EvalComparisonResult;
+import ricbot.domain.eval.EvalOptions;
+import ricbot.domain.eval.EvalRecordingProvider;
+import ricbot.domain.eval.EvalReplayRunner;
+import ricbot.domain.eval.EvalRunSummary;
+import ricbot.domain.eval.EvalLintResult;
+import ricbot.domain.eval.EvalScenarioLinter;
+import ricbot.domain.eval.EvalSmokeProvider;
+import ricbot.domain.eval.EvalSmokeRuntime;
 import ricbot.infra.config.Config; // 导入配置类
 import ricbot.infra.config.ConfigLoader; // 导入配置加载器
 import ricbot.infra.config.RuntimePaths; // 导入运行时路径工具类
@@ -17,20 +30,14 @@ import ricbot.integration.mcp.MCPLoader;
 import ricbot.integration.llm.provider.ProviderRegistry; // 导入提供商注册表类
 import ricbot.integration.llm.provider.ProviderSpec; // 导入提供商规范类
 import ricbot.integration.channel.ChannelManager;
+import ricbot.tool.api.BuiltinToolRegistrar;
 import ricbot.tool.api.ToolRegistry;
-import ricbot.tool.filesystem.EditFileTool;
-import ricbot.tool.filesystem.ListDirTool;
-import ricbot.tool.filesystem.ReadFileTool;
-import ricbot.tool.filesystem.WriteFileTool;
-import ricbot.tool.process.ExecTool;
-import ricbot.tool.search.GlobTool;
-import ricbot.tool.search.GrepTool;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.Console;
-import java.nio.file.Path; // 导入 Path 类，用于文件路径操作
 import java.nio.file.Files;
+import java.nio.file.Path; // 导入 Path 类，用于文件路径操作
 import java.util.*; // 导入 Java 集合框架
 // 导入线程池服务接口
 // 导入线程池工厂类
@@ -52,6 +59,9 @@ public final class CliCommands {
 
     private static final Bootstrapper BOOTSTRAPPER = new Bootstrapper(); // 静态初始化 Bootstrapper 实例
     private static final Logger log = LoggerFactory.getLogger(CliCommands.class);
+    private static final ObjectMapper MAPPER = new ObjectMapper()
+            .findAndRegisterModules()
+            .setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE);
 
     private CliCommands() {
         // 私有构造函数，防止实例化
@@ -79,6 +89,7 @@ public final class CliCommands {
             case "onboard" -> onboard(argv.subList(1, argv.size())); // onboarding 命令，传递剩余参数
             case "agent" -> agent(argv.subList(1, argv.size())); // agent 命令，传递剩余参数
             case "serve" -> serve(argv.subList(1, argv.size())); // serve 命令，启动多渠道服务
+            case "eval" -> eval(argv.subList(1, argv.size()));
             case "status" -> status(); // 状态命令
             case "provider" -> provider(argv.subList(1, argv.size())); // 提供商管理命令，传递剩余参数
             case "tools" -> tools(argv.subList(1, argv.size()));
@@ -90,27 +101,291 @@ public final class CliCommands {
         }
     }
 
-    private static void initLogging(String[] args) {
-        String workspace = null;
-        if (args != null) {
-            for (int i = 0; i < args.length; i++) {
-                String cur = args[i];
-                if ("--workspace".equals(cur) || "-w".equals(cur)) {
-                    if (i + 1 < args.length) {
-                        workspace = args[i + 1];
-                    }
-                }
-            }
+    private static void eval(List<String> args) throws Exception {
+        if (!args.isEmpty() && "lint".equals(args.get(0))) {
+            evalLint(args.subList(1, args.size()));
+            return;
+        }
+        if (!args.isEmpty() && "smoke".equals(args.get(0))) {
+            evalSmoke(args.subList(1, args.size()));
+            return;
+        }
+        if (!args.isEmpty() && "compare".equals(args.get(0))) {
+            evalCompare(args.subList(1, args.size()));
+            return;
+        }
+        if (!args.isEmpty() && "replay".equals(args.get(0))) {
+            evalReplay(args.subList(1, args.size()));
+            return;
         }
 
-        Path workspacePath = RuntimePaths.getWorkspacePath(workspace);
-        Path logsDir = workspacePath.resolve(".ricbot").resolve("logs");
-        try {
-            Files.createDirectories(logsDir);
-        } catch (Exception ignored) {
+        String scenarios = optionValue(args, "--scenarios", "-s");
+        String out = optionValue(args, "--out", "-o");
+        String configPath = optionValue(args, "--config", "-c");
+        String workspace = optionValue(args, "--workspace", "-w");
+        String sessionPrefix = optionValue(args, "--session-prefix", null);
+        Integer limit = optionIntValue(args, "--limit", null);
+        boolean failFast = hasFlag(args, "--fail-fast");
+        boolean allowUnsafeWorkspaceClean = hasFlag(args, "--allow-unsafe-workspace-clean");
+        boolean noRestoreWorkspace = hasFlag(args, "--no-restore-workspace");
+        boolean noRestoreSession = hasFlag(args, "--no-restore-session");
+        List<String> includeTags = optionValues(args, "--tag", "-t");
+        List<String> excludeTags = optionValues(args, "--exclude-tag", null);
+
+        if (scenarios == null || scenarios.isBlank()) {
+            System.out.println("用法：ricbot eval --scenarios scenarios.jsonl [--out dir] [--config path] [--workspace dir] [--tag name] [--exclude-tag name] [--limit n] [--fail-fast] [--allow-unsafe-workspace-clean] [--no-restore-workspace] [--no-restore-session]");
+            System.out.println("场景 JSONL 示例：{\"id\":\"hello\",\"input\":\"say hello\",\"expected_contains\":[\"hello\"]}");
+            return;
         }
-        Path logFile = logsDir.resolve("ricbot.log");
-        System.setProperty("ricbot.log.file", logFile.toString());
+
+        Config config = loadRuntimeConfig(configPath, workspace);
+        Config resolvedConfig = resolveAndPrintEffectiveConfig(configPath, config);
+
+        MessageBus bus = new MessageBus();
+        var provider = BOOTSTRAPPER.createProvider(resolvedConfig);
+        EvalRecordingProvider recordingProvider = new EvalRecordingProvider(provider);
+        AgentLoop agentLoop = BOOTSTRAPPER.createAgentLoop(resolvedConfig, bus, recordingProvider);
+
+        EvalOptions options = new EvalOptions()
+                .setScenariosPath(Path.of(scenarios))
+                .setOutputDir(out != null && !out.isBlank() ? Path.of(out) : null)
+                .setSessionPrefix(sessionPrefix)
+                .setLimit(limit != null ? limit : 0)
+                .setFailFast(failFast)
+                .setAllowUnsafeWorkspaceClean(allowUnsafeWorkspaceClean)
+                .setRestoreWorkspace(!noRestoreWorkspace)
+                .setRestoreSession(!noRestoreSession)
+                .setIncludeTags(includeTags)
+                .setExcludeTags(excludeTags);
+
+        try {
+            EvalRunSummary summary = new EvalHarness(agentLoop, resolvedConfig, recordingProvider).run(options);
+            System.out.println("ricbot eval");
+            System.out.println("run_id: " + summary.getRunId());
+            System.out.println("total: " + summary.getTotal());
+            System.out.println("passed: " + summary.getPassed());
+            System.out.println("failed: " + summary.getFailed());
+            System.out.println("skipped: " + summary.getSkipped());
+            System.out.println("expected_failed: " + summary.getExpectedFailed());
+            System.out.println("unexpected_passed: " + summary.getUnexpectedPassed());
+            if (!summary.getFailuresByKind().isEmpty()) {
+                System.out.println("failures_by_kind: " + summary.getFailuresByKind());
+            }
+            System.out.println("artifacts: " + summary.getArtifactDir());
+            System.out.println("report: " + Path.of(summary.getArtifactDir()).resolve("report.md"));
+            if (summary.getFailed() > 0) {
+                System.exit(2);
+            }
+        } finally {
+            agentLoop.stop();
+        }
+    }
+
+    private static void evalLint(List<String> args) throws Exception {
+        String scenarios = optionValue(args, "--scenarios", "-s");
+        String out = optionValue(args, "--out", "-o");
+        if (scenarios == null || scenarios.isBlank()) {
+            System.out.println("用法：ricbot eval lint --scenarios scenarios.jsonl [--out dir]");
+            return;
+        }
+
+        EvalLintResult result = new EvalScenarioLinter().lint(
+                Path.of(scenarios),
+                out != null && !out.isBlank() ? Path.of(out) : null
+        );
+        System.out.println("ricbot eval lint");
+        System.out.println("status: " + result.getStatus());
+        System.out.println("total_scenarios: " + result.getTotalScenarios());
+        System.out.println("errors: " + result.getErrors());
+        System.out.println("warnings: " + result.getWarnings());
+        System.out.println("artifacts: " + result.getArtifactDir());
+        System.out.println("report: " + Path.of(result.getArtifactDir()).resolve("lint-report.md"));
+        if (result.getErrors() > 0) {
+            System.exit(2);
+        }
+    }
+
+    private static void evalSmoke(List<String> args) throws Exception {
+        String scenarios = optionValue(args, "--scenarios", "-s");
+        String out = optionValue(args, "--out", "-o");
+        String workspace = optionValue(args, "--workspace", "-w");
+        Integer limit = optionIntValue(args, "--limit", null);
+        boolean failFast = hasFlag(args, "--fail-fast");
+        boolean noRestoreWorkspace = hasFlag(args, "--no-restore-workspace");
+        boolean noRestoreSession = hasFlag(args, "--no-restore-session");
+        List<String> includeTags = optionValues(args, "--tag", "-t");
+        List<String> excludeTags = optionValues(args, "--exclude-tag", null);
+
+        if (scenarios == null || scenarios.isBlank()) {
+            scenarios = "evals/golden.jsonl";
+        }
+        if (workspace == null || workspace.isBlank()) {
+            workspace = EvalSmokeRuntime.DEFAULT_WORKSPACE;
+        }
+
+        Config config = EvalSmokeRuntime.config(workspace);
+
+        MessageBus bus = new MessageBus();
+        EvalRecordingProvider recorder = new EvalRecordingProvider(new EvalSmokeProvider());
+        AgentLoop agentLoop = BOOTSTRAPPER.createAgentLoop(config, bus, recorder);
+        EvalOptions options = new EvalOptions()
+                .setScenariosPath(Path.of(scenarios))
+                .setOutputDir(out != null && !out.isBlank() ? Path.of(out) : EvalSmokeRuntime.DEFAULT_ARTIFACTS)
+                .setLimit(limit != null ? limit : 0)
+                .setFailFast(failFast)
+                .setRestoreWorkspace(!noRestoreWorkspace)
+                .setRestoreSession(!noRestoreSession)
+                .setIncludeTags(includeTags)
+                .setExcludeTags(excludeTags);
+        try {
+            EvalRunSummary summary = new EvalHarness(agentLoop, config, recorder).run(options);
+            System.out.println("ricbot eval smoke");
+            System.out.println("run_id: " + summary.getRunId());
+            System.out.println("total: " + summary.getTotal());
+            System.out.println("passed: " + summary.getPassed());
+            System.out.println("failed: " + summary.getFailed());
+            System.out.println("skipped: " + summary.getSkipped());
+            System.out.println("expected_failed: " + summary.getExpectedFailed());
+            System.out.println("unexpected_passed: " + summary.getUnexpectedPassed());
+            if (!summary.getFailuresByKind().isEmpty()) {
+                System.out.println("failures_by_kind: " + summary.getFailuresByKind());
+            }
+            System.out.println("artifacts: " + summary.getArtifactDir());
+            System.out.println("report: " + Path.of(summary.getArtifactDir()).resolve("report.md"));
+            if (summary.getFailed() > 0) {
+                System.exit(2);
+            }
+        } finally {
+            agentLoop.stop();
+        }
+    }
+
+    private static void evalCompare(List<String> args) throws Exception {
+        String baseline = optionValue(args, "--baseline", null);
+        String candidate = optionValue(args, "--candidate", null);
+        String out = optionValue(args, "--out", "-o");
+
+        if (baseline == null || baseline.isBlank() || candidate == null || candidate.isBlank()) {
+            System.out.println("用法：ricbot eval compare --baseline path/to/old-run --candidate path/to/new-run [--out dir]");
+            return;
+        }
+
+        EvalComparisonResult result = new EvalCompareRunner().compare(
+                Path.of(baseline),
+                Path.of(candidate),
+                out != null && !out.isBlank() ? Path.of(out) : null
+        );
+        System.out.println("ricbot eval compare");
+        System.out.println("status: " + result.getStatus());
+        System.out.println("baseline_total: " + result.getBaselineTotal());
+        System.out.println("candidate_total: " + result.getCandidateTotal());
+        System.out.println("regressions: " + result.getRegressions());
+        System.out.println("improvements: " + result.getImprovements());
+        System.out.println("missing_cases: " + result.getMissingCases());
+        System.out.println("new_cases: " + result.getNewCases());
+        System.out.println("artifacts: " + result.getArtifactDir());
+        System.out.println("report: " + Path.of(result.getArtifactDir()).resolve("comparison-report.md"));
+        if (result.getRegressions() > 0) {
+            System.exit(2);
+        }
+    }
+
+    private static void evalReplay(List<String> args) throws Exception {
+        String casePath = optionValue(args, "--case", null);
+        String runDir = optionValue(args, "--run", null);
+        String out = optionValue(args, "--out", "-o");
+        String configPath = optionValue(args, "--config", "-c");
+        String workspace = optionValue(args, "--workspace", "-w");
+        Integer limit = optionIntValue(args, "--limit", null);
+        boolean failFast = hasFlag(args, "--fail-fast");
+        boolean allowUnsafeWorkspaceClean = hasFlag(args, "--allow-unsafe-workspace-clean");
+        boolean noRestoreWorkspace = hasFlag(args, "--no-restore-workspace");
+        boolean noRestoreSession = hasFlag(args, "--no-restore-session");
+
+        if ((casePath == null || casePath.isBlank()) && (runDir == null || runDir.isBlank())) {
+            System.out.println("用法：ricbot eval replay --case path/to/cases/foo.json [--out dir] [--config path] [--workspace dir] [--allow-unsafe-workspace-clean] [--no-restore-workspace] [--no-restore-session]");
+            System.out.println("或：ricbot eval replay --run path/to/eval-run-dir [--limit n] [--fail-fast] [--allow-unsafe-workspace-clean] [--no-restore-workspace] [--no-restore-session]");
+            return;
+        }
+
+        boolean smokeReplay = isSmokeReplay(runDir, casePath);
+        Config resolvedConfig;
+        if (smokeReplay) {
+            resolvedConfig = EvalSmokeRuntime.config(workspace);
+        } else {
+            Config config = loadRuntimeConfig(configPath, workspace);
+            resolvedConfig = resolveAndPrintEffectiveConfig(configPath, config);
+        }
+        List<Path> cases = EvalReplayRunner.resolveCaseArtifacts(
+                casePath != null && !casePath.isBlank() ? Path.of(casePath) : null,
+                runDir != null && !runDir.isBlank() ? Path.of(runDir) : null,
+                limit != null ? limit : 0
+        );
+
+        EvalOptions options = new EvalOptions()
+                .setOutputDir(out != null && !out.isBlank() ? Path.of(out) : null)
+                .setLimit(limit != null ? limit : 0)
+                .setFailFast(failFast)
+                .setAllowUnsafeWorkspaceClean(allowUnsafeWorkspaceClean)
+                .setRestoreWorkspace(!noRestoreWorkspace)
+                .setRestoreSession(!noRestoreSession);
+
+        EvalReplayRunner replayRunner = new EvalReplayRunner(
+                resolvedConfig,
+                provider -> BOOTSTRAPPER.createAgentLoop(resolvedConfig, new MessageBus(), provider)
+        );
+        EvalRunSummary summary = replayRunner.replay(cases, options);
+        System.out.println("ricbot eval replay");
+        System.out.println("run_id: " + summary.getRunId());
+        System.out.println("total: " + summary.getTotal());
+        System.out.println("passed: " + summary.getPassed());
+        System.out.println("failed: " + summary.getFailed());
+        System.out.println("skipped: " + summary.getSkipped());
+        System.out.println("expected_failed: " + summary.getExpectedFailed());
+        System.out.println("unexpected_passed: " + summary.getUnexpectedPassed());
+        if (!summary.getFailuresByKind().isEmpty()) {
+            System.out.println("failures_by_kind: " + summary.getFailuresByKind());
+        }
+        System.out.println("artifacts: " + summary.getArtifactDir());
+        System.out.println("report: " + Path.of(summary.getArtifactDir()).resolve("report.md"));
+        if (summary.getFailed() > 0) {
+            System.exit(2);
+        }
+    }
+
+    private static boolean isSmokeReplay(String runDir, String casePath) {
+        Path manifestPath = replayManifestPath(runDir, casePath);
+        if (manifestPath == null) {
+            return false;
+        }
+        if (!Files.exists(manifestPath)) {
+            return false;
+        }
+        try {
+            Map<?, ?> manifest = MAPPER.readValue(manifestPath.toFile(), Map.class);
+            Object providerMode = manifest.get("provider_mode");
+            return EvalSmokeRuntime.PROVIDER_MODE.equals(String.valueOf(providerMode));
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private static Path replayManifestPath(String runDir, String casePath) {
+        if (runDir != null && !runDir.isBlank()) {
+            return Path.of(runDir).resolve("manifest.json");
+        }
+        if (casePath == null || casePath.isBlank()) {
+            return null;
+        }
+        Path parent = Path.of(casePath).toAbsolutePath().normalize().getParent();
+        if (parent == null || parent.getParent() == null) {
+            return null;
+        }
+        return parent.getParent().resolve("manifest.json");
+    }
+
+    private static void initLogging(String[] args) {
+        RuntimePaths.configureWorkspaceLogFile(RuntimePaths.workspaceOption(args), null);
     }
 
     // =========================================================
@@ -515,45 +790,15 @@ public final class CliCommands {
             // 忽略解析异常，保持原配置
         }
 
-        // 获取工作空间路径
         Path workspace = resolved.getWorkspacePath();
-        // 获取是否限制工具只能在工作空间内操作的配置
         boolean restrictToWorkspace = resolved.getTools().isRestrictToWorkspace();
-        // 获取执行工具的配置，如果为空则创建默认配置
         Config.ExecToolConfig execConfig = resolved.getTools().getExec() != null ? resolved.getTools().getExec() : new Config.ExecToolConfig();
 
-        // 计算允许的基目录：如果限制在工作空间或启用沙箱，则允许目录为工作空间，否则不限制（null）
-        Path allowedDir = (restrictToWorkspace || execConfig.isSandbox()) ? workspace : null;
+        Path allowedDir = BuiltinToolRegistrar.allowedDir(workspace, restrictToWorkspace, execConfig);
 
-        // 创建工具注册表实例
         ToolRegistry registry = new ToolRegistry();
-        // 注册读取文件工具
-        registry.register(new ReadFileTool(workspace, allowedDir, List.of()));
-        // 注册列出目录工具
-        registry.register(new ListDirTool(workspace, allowedDir));
-        // 注册写入文件工具
-        registry.register(new WriteFileTool(workspace, allowedDir));
-        // 注册编辑文件工具
-        registry.register(new EditFileTool(workspace, allowedDir));
-        // 注册全局匹配工具
-        registry.register(new GlobTool(workspace, allowedDir));
-        // 注册 grep 搜索工具
-        registry.register(new GrepTool(workspace, allowedDir));
-        
-        // 如果启用了执行工具
-        if (execConfig.isEnable()) {
-            // 注册执行命令工具
-            registry.register(new ExecTool(
-                    execConfig.getTimeout(),          // 超时时间
-                    workspace.toString(),             // 工作目录
-                    null,                             // 保留参数
-                    null,                             // 保留参数
-                    restrictToWorkspace,              // 是否限制在工作空间
-                    execConfig.isSandbox() ? "sandbox" : "", // 沙箱模式标识
-                    execConfig.getPathAppend(),       // 追加路径
-                    execConfig.getAllowedEnvKeys()    // 允许的环境变量键
-            ));
-        }
+        BuiltinToolRegistrar.registerFileAndSearchTools(registry, workspace, allowedDir);
+        BuiltinToolRegistrar.registerExecTool(registry, workspace, restrictToWorkspace, execConfig);
 
         // 加载 MCP 工具（如有配置）
         MCPLoader mcpLoader = null;
@@ -936,6 +1181,11 @@ public final class CliCommands {
         System.out.println("  onboard"); // 打印 onboard 命令
         System.out.println("  agent      交互模式运行 Agent，或处理单条消息");
         System.out.println("  serve      启动多渠道服务（飞书、钉钉、企微等）");
+        System.out.println("  eval       运行 JSONL 场景评测并生成 artifacts");
+        System.out.println("  eval lint  静态检查 eval JSONL 场景");
+        System.out.println("  eval smoke 使用内置确定性 provider 跑 eval smoke");
+        System.out.println("  eval replay  离线回放 eval case/run artifact");
+        System.out.println("  eval compare 对比两个 eval run 并识别回归");
         System.out.println("  status     显示 ricbot 状态");
         System.out.println("  provider"); // 打印 provider 命令
         System.out.println("  tools");
@@ -1002,6 +1252,31 @@ public final class CliCommands {
             }
         }
         return null; // 未找到则返回 null
+    }
+
+    private static List<String> optionValues(List<String> args, String longOpt, String shortOpt) {
+        List<String> values = new ArrayList<>();
+        for (int i = 0; i < args.size(); i++) {
+            String cur = args.get(i);
+            if ((longOpt != null && longOpt.equals(cur)) || (shortOpt != null && shortOpt.equals(cur))) {
+                if (i + 1 < args.size()) {
+                    addOptionValues(values, args.get(i + 1));
+                }
+            }
+        }
+        return values;
+    }
+
+    private static void addOptionValues(List<String> values, String raw) {
+        if (raw == null || raw.isBlank()) {
+            return;
+        }
+        for (String part : raw.split(",")) {
+            String value = part.trim();
+            if (!value.isEmpty()) {
+                values.add(value);
+            }
+        }
     }
 
     /**

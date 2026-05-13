@@ -146,10 +146,13 @@ public final class FsPathUtils {
         }
 
         Path parent = normalized.getParent();
+        while (parent != null && !Files.exists(parent, LinkOption.NOFOLLOW_LINKS)) {
+            parent = parent.getParent();
+        }
         if (parent == null) {
             return normalized;
         }
         Path realParent = parent.toRealPath();
-        return realParent.resolve(normalized.getFileName()).normalize();
+        return realParent.resolve(parent.relativize(normalized)).normalize();
     }
 }

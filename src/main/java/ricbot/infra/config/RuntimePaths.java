@@ -3,12 +3,8 @@ package ricbot.infra.config;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
-/**
- * 对应 Python: paths.py / runtime path helpers
- */
 public final class RuntimePaths {
 
-    // 私有构造函数，防止实例化
     private RuntimePaths() {
     }
 
@@ -17,9 +13,7 @@ public final class RuntimePaths {
      * @return 数据目录路径
      */
     public static Path getDataDir() {
-        // 构建用户主目录下的 .ricbot 路径
         Path dir = Path.of(System.getProperty("user.home"), ".ricbot");
-        // 确保目录存在
         ensureDir(dir);
         return dir;
     }
@@ -30,9 +24,7 @@ public final class RuntimePaths {
      * @return 子目录路径
      */
     public static Path getRuntimeSubdir(String name) {
-        // 在主数据目录下解析子目录名称
         Path dir = getDataDir().resolve(name);
-        // 确保目录存在
         ensureDir(dir);
         return dir;
     }
@@ -51,13 +43,10 @@ public final class RuntimePaths {
      * @return 频道媒体目录路径
      */
     public static Path getMediaDir(String channel) {
-        // 如果频道为空或空白，返回默认媒体目录
         if (channel == null || channel.isBlank()) {
             return getMediaDir();
         }
-        // 在默认媒体目录下解析频道名称
         Path dir = getMediaDir().resolve(channel);
-        // 确保目录存在
         ensureDir(dir);
         return dir;
     }
@@ -84,18 +73,50 @@ public final class RuntimePaths {
      * @return 规范化后的绝对工作区路径
      */
     public static Path getWorkspacePath(String workspace) {
-        Path path;
-        // 判断工作区参数是否为空
-        if (workspace == null || workspace.isBlank()) {
-            // 使用默认工作区路径 ~/.ricbot/workspace
-            path = Path.of(System.getProperty("user.home"), ".ricbot", "workspace");
-        } else {
-            // 使用指定的工作区路径
-            path = Path.of(workspace);
+        return resolveWorkspacePath(
+                workspace,
+                Path.of(System.getProperty("user.home"), ".ricbot", "workspace")
+        );
+    }
+
+    public static Path configureWorkspaceLogFile(String workspace, Path defaultWorkspace) {
+        Path workspacePath = normalizeWorkspacePath(
+                workspace,
+                defaultWorkspace != null
+                        ? defaultWorkspace
+                        : Path.of(System.getProperty("user.home"), ".ricbot", "workspace")
+        );
+        Path logsDir = workspacePath.resolve(".ricbot").resolve("logs");
+        try {
+            Files.createDirectories(logsDir);
+        } catch (Exception ignored) {
         }
-        // 确保目录存在
+        Path logFile = logsDir.resolve("ricbot.log");
+        System.setProperty("ricbot.log.file", logFile.toString());
+        return logFile;
+    }
+
+    public static String workspaceOption(String[] args) {
+        if (args == null) {
+            return null;
+        }
+        for (int i = 0; i < args.length; i++) {
+            String cur = args[i];
+            if (("--workspace".equals(cur) || "-w".equals(cur)) && i + 1 < args.length) {
+                return args[i + 1];
+            }
+        }
+        return null;
+    }
+
+    private static Path resolveWorkspacePath(String workspace, Path defaultWorkspace) {
+        Path path = normalizeWorkspacePath(workspace, defaultWorkspace);
         ensureDir(path);
-        // 返回规范化后的绝对路径
+        return path;
+    }
+
+    private static Path normalizeWorkspacePath(String workspace, Path defaultWorkspace) {
+        Path path = workspace == null || workspace.isBlank() ? defaultWorkspace : Path.of(workspace);
         return path.toAbsolutePath().normalize();
     }
 
@@ -105,11 +126,8 @@ public final class RuntimePaths {
      * @return 如果是默认工作区返回 true，否则返回 false
      */
     public static boolean isDefaultWorkspace(String workspace) {
-        // 获取当前工作区路径
         Path current = getWorkspacePath(workspace);
-        // 获取默认工作区路径
         Path def = getWorkspacePath(null);
-        // 比较两者是否相等
         return current.equals(def);
     }
 
@@ -118,11 +136,8 @@ public final class RuntimePaths {
      * @return CLI 历史记录文件路径
      */
     public static Path getCliHistoryPath() {
-        // 构建历史目录路径
         Path dir = Path.of(System.getProperty("user.home"), ".ricbot", "history");
-        // 确保目录存在
         ensureDir(dir);
-        // 返回历史记录文件路径
         return dir.resolve("cli_history");
     }
 
@@ -131,9 +146,7 @@ public final class RuntimePaths {
      * @return Bridge 安装目录路径
      */
     public static Path getBridgeInstallDir() {
-        // 构建 Bridge 目录路径
         Path dir = Path.of(System.getProperty("user.home"), ".ricbot", "bridge");
-        // 确保目录存在
         ensureDir(dir);
         return dir;
     }
@@ -143,9 +156,7 @@ public final class RuntimePaths {
      * @return 旧版会话目录路径
      */
     public static Path getLegacySessionsDir() {
-        // 构建会话目录路径
         Path dir = Path.of(System.getProperty("user.home"), ".ricbot", "sessions");
-        // 确保目录存在
         ensureDir(dir);
         return dir;
     }
@@ -157,10 +168,8 @@ public final class RuntimePaths {
      */
     private static void ensureDir(Path path) {
         try {
-            // 创建所有必需的父目录
             Files.createDirectories(path);
         } catch (Exception e) {
-            // 抛出运行时异常，包含路径信息
             throw new RuntimeException("创建目录失败：" + path, e);
         }
     }

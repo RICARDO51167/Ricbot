@@ -421,17 +421,7 @@ public class WebSearchTool extends Tool {
      * @return 转换后的 Map，如果转换失败则返回空 LinkedHashMap
      */
     private static Map<String, Object> asMap(Object obj) {
-        if (obj instanceof Map<?, ?> raw) {
-            Map<String, Object> out = new LinkedHashMap<>();
-            for (Map.Entry<?, ?> entry : raw.entrySet()) {
-                if (entry.getKey() != null) {
-                    out.put(String.valueOf(entry.getKey()), entry.getValue());
-                }
-            }
-            return out;
-        }
-        // 否则返回空的 LinkedHashMap
-        return new LinkedHashMap<>();
+        return ricbot.infra.common.JsonMapUtils.asObjectMap(obj);
     }
 
     /**

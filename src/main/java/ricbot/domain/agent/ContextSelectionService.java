@@ -1,7 +1,11 @@
 package ricbot.domain.agent;
 
 import ricbot.domain.memory.MemoryEntry;
+import ricbot.domain.memory.MemoryRetriever;
 import ricbot.domain.memory.MemoryStore;
+import ricbot.domain.note.NoteEntry;
+import ricbot.domain.note.NoteService;
+import ricbot.domain.rag.WorkspaceRagService;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -28,6 +32,8 @@ final class ContextSelectionService {
     // 工具调用轨迹摘要器，用于生成工具调用的简要描述
     private final ToolTraceSummarizer toolTraceSummarizer;
     private final int contextWindowTokens;
+    private final NoteService noteService;
+    private final WorkspaceRagService ragService;
 
     /**
      * 构造函数，初始化记忆存储和工具轨迹摘要器。
@@ -40,9 +46,21 @@ final class ContextSelectionService {
     }
 
     ContextSelectionService(MemoryStore memoryStore, ToolTraceSummarizer toolTraceSummarizer, int contextWindowTokens) {
+        this(memoryStore, toolTraceSummarizer, contextWindowTokens, null, null);
+    }
+
+    ContextSelectionService(
+            MemoryStore memoryStore,
+            ToolTraceSummarizer toolTraceSummarizer,
+            int contextWindowTokens,
+            NoteService noteService,
+            WorkspaceRagService ragService
+    ) {
         this.memoryStore = memoryStore;
         this.toolTraceSummarizer = toolTraceSummarizer;
         this.contextWindowTokens = contextWindowTokens;
+        this.noteService = noteService;
+        this.ragService = ragService;
     }
 
     /**
@@ -95,13 +113,15 @@ final class ContextSelectionService {
         }
 
         // 从记忆存储中回忆相关记忆条目
-        List<MemoryEntry> recall = memoryStore.recallMemories(currentMessage, taskState != null ? taskState.goal() : "", 8);
-        for (MemoryEntry entry : recall) {
+        List<MemoryRetriever.ScoredMemory> recall = memoryStore.recallScoredMemories(currentMessage, taskState != null ? taskState.goal() : "", 8);
+        for (MemoryRetriever.ScoredMemory scoredMemory : recall) {
+            MemoryEntry entry = scoredMemory.entry();
+            String rendered = "[" + entry.getMemoryType().name().toLowerCase(Locale.ROOT) + "] " + entry.renderLine().substring(2);
             // 根据是否是用户个人资料，分别添加到不同的上下文类别中
             if (entry.isUserProfile()) {
-                bundle.addItem("user_profile", entry.renderLine().substring(2));
+                bundle.addItem("user_profile", rendered, scoredMemory.relevanceScore());
             } else {
-                bundle.addItem("memory_recall", entry.renderLine().substring(2));
+                bundle.addItem("memory_recall", rendered, scoredMemory.relevanceScore());
             }
         }
 
@@ -110,6 +130,9 @@ final class ContextSelectionService {
             bundle.addItem("recent_history", archived);
         }
 
+        addProjectNotes(bundle, currentMessage, taskState);
+        addWorkspaceKnowledge(bundle, currentMessage, taskState);
+
         // 渲染最近的工具调用轨迹并添加到上下文中
         for (String trace : toolTraceSummarizer.renderRecent(preparedInputs.toolTrace(), 4)) {
             bundle.addItem("tool_trace", trace);
@@ -117,6 +140,53 @@ final class ContextSelectionService {
 
         // 返回选择结果，包含筛选后的历史消息和上下文 bundle
         return new SelectionResult(history, bundle);
+    }
+
+    private void addProjectNotes(PromptContextBundle bundle, String currentMessage, TaskState taskState) {
+        if (noteService == null) {
+            return;
+        }
+        String query = currentMessage + "\n" + (taskState != null ? taskState.goal() : "");
+        try {
+            for (NoteService.SearchResult result : noteService.search(query, 4)) {
+                NoteEntry entry = result.entry();
+                String rendered = entry.path()
+                        + " [" + entry.category() + "/" + entry.type() + "] "
+                        + entry.title()
+                        + (result.snippet() != null && !result.snippet().isBlank()
+                        ? " — " + result.snippet().replace("\n", " ")
+                        : "");
+                bundle.addItem("project_notes", rendered, normalizeRelevance(result.score(), 5.0d));
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void addWorkspaceKnowledge(PromptContextBundle bundle, String currentMessage, TaskState taskState) {
+        if (ragService == null) {
+            return;
+        }
+        String query = currentMessage + "\n" + (taskState != null ? taskState.goal() : "");
+        try {
+            for (WorkspaceRagService.SearchResult result : ragService.searchProjectKnowledge(query, 5)) {
+                WorkspaceRagService.FileChunk chunk = result.chunk();
+                String rendered = chunk.path()
+                        + ":" + chunk.startLine() + "-" + chunk.endLine()
+                        + " [" + chunk.kind() + "]"
+                        + (result.snippet() != null && !result.snippet().isBlank()
+                        ? " — " + result.snippet().replace("\n", " ")
+                        : "");
+                bundle.addItem("workspace_knowledge", rendered, normalizeRelevance(result.score(), 8.0d));
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    private double normalizeRelevance(double score, double maxExpected) {
+        if (maxExpected <= 0d) {
+            return 0d;
+        }
+        return Math.max(0d, Math.min(1d, score / maxExpected));
     }
 
     /**

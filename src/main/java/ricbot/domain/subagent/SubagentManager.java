@@ -12,22 +12,8 @@ import ricbot.domain.hook.AgentHook;
 // 导入代理钩子上下文类
 import ricbot.domain.hook.AgentHookContext;
 import ricbot.domain.skill.SkillsLoader;
-// 导入工具注册表类
+import ricbot.tool.api.BuiltinToolRegistrar;
 import ricbot.tool.api.ToolRegistry;
-// 导入文件编辑工具类
-import ricbot.tool.filesystem.EditFileTool;
-// 导入目录列表工具类
-import ricbot.tool.filesystem.ListDirTool;
-// 导入文件读取工具类
-import ricbot.tool.filesystem.ReadFileTool;
-// 导入文件写入工具类
-import ricbot.tool.filesystem.WriteFileTool;
-// 导入命令执行工具类
-import ricbot.tool.process.ExecTool;
-// 导入全局匹配搜索工具类
-import ricbot.tool.search.GlobTool;
-// 导入内容搜索工具类
-import ricbot.tool.search.GrepTool;
 import ricbot.tool.skill.ReadSkillTool;
 import ricbot.tool.web.WebFetchTool;
 import ricbot.tool.web.WebSearchTool;
@@ -328,24 +314,10 @@ public class SubagentManager implements AutoCloseable {
         Path allowedDir = resolveAllowedDir();
 
         tools.register(new ReadSkillTool(skillsLoader));
-        tools.register(new ReadFileTool(workspace, allowedDir, List.of()));
-        tools.register(new WriteFileTool(workspace, allowedDir));
-        tools.register(new EditFileTool(workspace, allowedDir));
-        tools.register(new ListDirTool(workspace, allowedDir));
-        tools.register(new GlobTool(workspace, allowedDir));
-        tools.register(new GrepTool(workspace, allowedDir));
+        BuiltinToolRegistrar.registerFileAndSearchTools(tools, workspace, allowedDir);
 
         if (execConfig.isEnable()) {
-            tools.register(new ExecTool(
-                    execConfig.getTimeout(),
-                    String.valueOf(workspace),
-                    null,
-                    null,
-                    restrictToWorkspace,
-                    execConfig.getSandbox(),
-                    execConfig.getPathAppend(),
-                    execConfig.getAllowedEnvKeys()
-            ));
+            BuiltinToolRegistrar.registerExecTool(tools, workspace, restrictToWorkspace, execConfig);
         }
 
         if (webConfig.isEnable()) {
@@ -356,7 +328,7 @@ public class SubagentManager implements AutoCloseable {
     }
 
     private Path resolveAllowedDir() {
-        return (restrictToWorkspace || isSandboxEnabled(execConfig)) ? workspace : null;
+        return BuiltinToolRegistrar.allowedDir(workspace, restrictToWorkspace, execConfig);
     }
 
     private AgentRunSpec buildRunSpec(String taskId, String task, Origin origin, ToolRegistry tools) {
@@ -626,17 +598,6 @@ public class SubagentManager implements AutoCloseable {
         return (label != null && !label.isBlank())
                 ? label
                 : truncate(task, DEFAULT_LABEL_MAX_LENGTH);
-    }
-
-    /**
-     * 兼容你前面 Config.ExecToolConfig 里 sandbox 是 String 的写法。
-     * 检查沙箱是否启用。
-     *
-     * @param cfg 执行工具配置
-     * @return 如果沙箱配置不为空且非空白则返回true
-     */
-    private boolean isSandboxEnabled(Config.ExecToolConfig cfg) {
-        return cfg.getSandbox() != null && !cfg.getSandbox().isBlank();
     }
 
     private record Origin(String channel, String chatId) {

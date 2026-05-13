@@ -231,16 +231,7 @@ public class FeishuChannel extends BaseChannel {
     }
 
     private static Map<String, Object> asMap(Object value) {
-        if (!(value instanceof Map<?, ?> raw)) {
-            return Map.of();
-        }
-        Map<String, Object> out = new LinkedHashMap<>();
-        for (Map.Entry<?, ?> entry : raw.entrySet()) {
-            if (entry.getKey() != null) {
-                out.put(String.valueOf(entry.getKey()), entry.getValue());
-            }
-        }
-        return out;
+        return ricbot.infra.common.JsonMapUtils.asObjectMap(value);
     }
 
     private static List<String> toStringList(Object value) {

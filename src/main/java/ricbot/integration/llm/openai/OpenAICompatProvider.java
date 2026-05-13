@@ -588,16 +588,7 @@ public class OpenAICompatProvider extends LLMProvider {
      * @return 转换后的 Map
      */
     private static Map<String, Object> castMap(Object obj) {
-        if (obj instanceof Map<?, ?> raw) {
-            Map<String, Object> out = new LinkedHashMap<>();
-            for (Map.Entry<?, ?> e : raw.entrySet()) {
-                if (e.getKey() != null) {
-                    out.put(String.valueOf(e.getKey()), e.getValue());
-                }
-            }
-            return out;
-        }
-        return new LinkedHashMap<>();
+        return ricbot.infra.common.JsonMapUtils.asObjectMap(obj);
     }
 
     /**

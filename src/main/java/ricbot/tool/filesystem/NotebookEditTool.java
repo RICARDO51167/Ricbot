@@ -112,7 +112,7 @@ public class NotebookEditTool extends FsTool {
             // 创建父目录（如果不存在）
             Files.createDirectories(fp.getParent());
             // 将 Notebook 对象序列化为 JSON 并写入文件
-            Files.writeString(fp, MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(nb));
+            FileToolSupport.writeText(fp, MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(nb));
             // 返回成功消息
             return "创建成功：" + fp + "（包含 1 个单元格）";
         }
@@ -121,7 +121,7 @@ public class NotebookEditTool extends FsTool {
         Map<String, Object> nb;
         try {
             // 读取文件内容并反序列化为 Map 对象
-            nb = MAPPER.readValue(Files.readString(fp), new TypeReference<Map<String, Object>>() {});
+            nb = MAPPER.readValue(FileToolSupport.readText(fp), new TypeReference<Map<String, Object>>() {});
         } catch (Exception e) {
             // 捕获解析异常并返回错误信息
             return "错误：解析 Notebook 失败：" + e.getMessage();
@@ -147,7 +147,7 @@ public class NotebookEditTool extends FsTool {
             // 更新 Notebook 中的 cells
             nb.put("cells", cells);
             // 将修改后的 Notebook 写回文件
-            Files.writeString(fp, MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(nb));
+            FileToolSupport.writeText(fp, MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(nb));
             // 返回成功消息
             return "删除成功：已从 " + fp + " 删除单元格 " + cellIndex;
         }
@@ -161,7 +161,7 @@ public class NotebookEditTool extends FsTool {
             // 更新 Notebook 中的 cells
             nb.put("cells", cells);
             // 将修改后的 Notebook 写回文件
-            Files.writeString(fp, MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(nb));
+            FileToolSupport.writeText(fp, MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(nb));
             // 返回成功消息
             return "插入成功：已在 " + fp + " 的索引 " + insertAt + " 插入单元格";
         }
@@ -196,7 +196,7 @@ public class NotebookEditTool extends FsTool {
         // 更新 Notebook 中的 cells
         nb.put("cells", cells);
         // 将修改后的 Notebook 写回文件
-        Files.writeString(fp, MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(nb));
+        FileToolSupport.writeText(fp, MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(nb));
         // 返回成功消息
         return "编辑成功：已在 " + fp + " 中更新单元格 " + cellIndex;
     }
@@ -275,13 +275,7 @@ public class NotebookEditTool extends FsTool {
     }
 
     private static Map<String, Object> copyObjectMap(Map<?, ?> raw) {
-        Map<String, Object> out = new LinkedHashMap<>();
-        for (Map.Entry<?, ?> entry : raw.entrySet()) {
-            if (entry.getKey() != null) {
-                out.put(String.valueOf(entry.getKey()), entry.getValue());
-            }
-        }
-        return out;
+        return ricbot.infra.common.JsonMapUtils.copyObjectMap(raw);
     }
 
     /**
