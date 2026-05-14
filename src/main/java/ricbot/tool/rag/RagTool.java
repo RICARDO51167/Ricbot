@@ -65,6 +65,10 @@ public class RagTool extends Tool {
                 + "files: " + report.files() + "\n"
                 + "chunks: " + report.chunks() + "\n"
                 + "symbol_files: " + report.symbols() + "\n"
+                + "added: " + report.added() + "\n"
+                + "modified: " + report.modified() + "\n"
+                + "deleted: " + report.deleted() + "\n"
+                + "skipped: " + report.skipped() + "\n"
                 + "chunks_file: " + report.chunksFile();
     }
 

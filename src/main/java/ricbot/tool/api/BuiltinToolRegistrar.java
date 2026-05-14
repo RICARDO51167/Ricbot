@@ -1,6 +1,8 @@
 package ricbot.tool.api;
 
 import ricbot.infra.config.Config;
+import ricbot.domain.security.ApprovalService;
+import ricbot.domain.security.CommandRiskAnalyzer;
 import ricbot.tool.filesystem.EditFileTool;
 import ricbot.tool.filesystem.ListDirTool;
 import ricbot.tool.filesystem.ReadFileTool;
@@ -24,10 +26,15 @@ public final class BuiltinToolRegistrar {
     }
 
     public static void registerFileAndSearchTools(ToolRegistry registry, Path workspace, Path allowedDir) {
+        registerFileAndSearchTools(registry, workspace, allowedDir, null);
+    }
+
+    public static void registerFileAndSearchTools(ToolRegistry registry, Path workspace, Path allowedDir, ApprovalService approvalService) {
+        CommandRiskAnalyzer riskAnalyzer = approvalService != null ? new CommandRiskAnalyzer(workspace) : null;
         registry.register(new ReadFileTool(workspace, allowedDir, List.of()));
         registry.register(new ListDirTool(workspace, allowedDir));
-        registry.register(new WriteFileTool(workspace, allowedDir));
-        registry.register(new EditFileTool(workspace, allowedDir));
+        registry.register(new WriteFileTool(workspace, allowedDir, riskAnalyzer, approvalService));
+        registry.register(new EditFileTool(workspace, allowedDir, riskAnalyzer, approvalService));
         registry.register(new GlobTool(workspace, allowedDir));
         registry.register(new GrepTool(workspace, allowedDir));
         registry.register(new NoteTool(workspace));
@@ -40,6 +47,16 @@ public final class BuiltinToolRegistrar {
             boolean restrictToWorkspace,
             Config.ExecToolConfig execConfig
     ) {
+        registerExecTool(registry, workspace, restrictToWorkspace, execConfig, null);
+    }
+
+    public static void registerExecTool(
+            ToolRegistry registry,
+            Path workspace,
+            boolean restrictToWorkspace,
+            Config.ExecToolConfig execConfig,
+            ApprovalService approvalService
+    ) {
         if (execConfig == null || !execConfig.isEnable()) {
             return;
         }
@@ -51,7 +68,9 @@ public final class BuiltinToolRegistrar {
                 restrictToWorkspace,
                 execConfig.isSandbox() ? "sandbox" : "",
                 execConfig.getPathAppend(),
-                execConfig.getAllowedEnvKeys()
+                execConfig.getAllowedEnvKeys(),
+                approvalService != null ? new CommandRiskAnalyzer(workspace) : null,
+                approvalService
         ));
     }
 }

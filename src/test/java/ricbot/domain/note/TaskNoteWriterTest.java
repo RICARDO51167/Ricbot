@@ -1,0 +1,74 @@
+package ricbot.domain.note;
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import ricbot.domain.agent.TaskSummaryService;
+
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.List;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+class TaskNoteWriterTest {
+
+    @Test
+    void rendersTaskSummaryAsMarkdown(@TempDir Path workspace) {
+        TaskNoteWriter writer = new TaskNoteWriter(new NoteService(workspace));
+        TaskSummaryService.TaskSummary summary = summary();
+
+        String markdown = writer.renderMarkdown(summary);
+
+        assertTrue(markdown.contains("# Task Summary - V3.4 task notes"), markdown);
+        assertTrue(markdown.contains("## Changed Files"), markdown);
+        assertTrue(markdown.contains("src/main/java/ricbot/domain/note/TaskNoteWriter.java"), markdown);
+        assertTrue(markdown.contains("## Approval Records"), markdown);
+        assertTrue(markdown.contains("approval_abc123"), markdown);
+        assertTrue(markdown.contains("## Rollback Hints"), markdown);
+    }
+
+    @Test
+    void writesTaskSummaryIntoTasksAndUpdatesIndex(@TempDir Path workspace) throws Exception {
+        NoteService noteService = new NoteService(workspace);
+        TaskNoteWriter writer = new TaskNoteWriter(noteService);
+
+        TaskNoteWriter.WriteResult result = writer.write(summary(), "tasks");
+
+        assertEquals("tasks", result.category());
+        assertTrue(result.path().startsWith("notes/tasks/"), result.path());
+        assertTrue(result.path().contains("task_summary_v3_4_task_notes"), result.path());
+        assertTrue(Files.exists(workspace.resolve(result.path())));
+        String index = Files.readString(workspace.resolve("notes").resolve("index.json"));
+        assertTrue(index.contains(result.noteId()), index);
+    }
+
+    @Test
+    void writtenTaskNoteCanBeSearched(@TempDir Path workspace) {
+        NoteService noteService = new NoteService(workspace);
+        TaskNoteWriter writer = new TaskNoteWriter(noteService);
+        writer.write(summary(), "tasks");
+
+        List<NoteService.SearchResult> results = noteService.search("rollback approval V3.4", 5);
+
+        assertFalse(results.isEmpty());
+        assertTrue(results.get(0).entry().path().startsWith("notes/tasks/"));
+    }
+
+    private TaskSummaryService.TaskSummary summary() {
+        return new TaskSummaryService.TaskSummary(
+                "V3.4 task notes",
+                List.of("src/main/java/ricbot/domain/note/TaskNoteWriter.java"),
+                List.of("Task notes are written only on explicit /summary --write-note"),
+                List.of("./mvnw -q -Dtest='ricbot.domain.note.*Test' test"),
+                List.of(),
+                List.of("Run targeted tests"),
+                List.of("write_file: requestId=approval_abc123, riskLevel=MEDIUM"),
+                List.of("TaskNoteWriter.java — Created task note writer [risk=MEDIUM]"),
+                List.of("./mvnw -q -Dtest='ricbot.domain.note.*Test' test"),
+                List.of("git checkout -- src/main/java/ricbot/domain/note/TaskNoteWriter.java"),
+                ""
+        );
+    }
+}

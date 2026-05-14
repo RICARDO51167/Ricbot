@@ -32,6 +32,12 @@ public class EvalSmokeProvider extends LLMProvider {
         if (hasToolResult(messages, "cron")) {
             return response("cron status checked");
         }
+        if (hasToolResult(messages, "mcp_demo_echo")) {
+            if (lastToolResultContains(messages, "timed out")) {
+                return response("mcp timeout handled");
+            }
+            return response("mcp echo returned deterministic mcp response");
+        }
         if (hasToolResult(messages, "read_file")) {
             return response("The key phrase is deterministic harness coverage.");
         }
@@ -71,6 +77,12 @@ public class EvalSmokeProvider extends LLMProvider {
         }
         if (lower.contains("check cron status")) {
             return toolCall("cron", Map.of("action", "status"));
+        }
+        if (lower.contains("mcp echo timeout")) {
+            return toolCall("mcp_demo_echo", Map.of("text", "slow mcp response", "sleep_ms", 1500));
+        }
+        if (lower.contains("mcp echo deterministic")) {
+            return toolCall("mcp_demo_echo", Map.of("text", "deterministic mcp response"));
         }
         if (lower.contains("read docs/input.txt")) {
             return toolCall("read_file", Map.of("path", "docs/input.txt"));

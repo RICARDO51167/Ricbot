@@ -33,6 +33,7 @@ final class PromptContextBundle {
     private final int totalCharLimit;
     private final Map<String, SectionBudget> sectionBudgets;
     private final Map<String, List<Double>> relevanceScores = new LinkedHashMap<>();
+    private final Map<String, List<ContextSource>> sources = new LinkedHashMap<>();
 
     // 构造函数，初始化所有预定义的上下文部分为空列表
     PromptContextBundle() {
@@ -70,6 +71,10 @@ final class PromptContextBundle {
     }
 
     void addItem(String section, String item, Double relevanceScore) {
+        addItem(section, item, relevanceScore, null);
+    }
+
+    void addItem(String section, String item, Double relevanceScore, ContextSource source) {
         // 如果部分名或内容为空，则直接返回
         if (section == null || item == null || item.isBlank()) {
             return;
@@ -80,6 +85,9 @@ final class PromptContextBundle {
             target.add(normalized);
             if (relevanceScore != null) {
                 relevanceScores.computeIfAbsent(section, ignored -> new ArrayList<>()).add(clampDouble(relevanceScore, 0d, 1d));
+            }
+            if (source != null) {
+                sources.computeIfAbsent(section, ignored -> new ArrayList<>()).add(source);
             }
         }
     }
@@ -195,11 +203,26 @@ final class PromptContextBundle {
             section.put("max_items", budget.maxItems());
             section.put("max_chars", budget.maxChars());
             section.put("estimated_chars", emittedChars);
+            section.put("estimated_tokens", estimateTokens(emittedChars));
             section.put("truncated", truncated || emitted < items.size());
             sectionReports.add(section);
         }
         out.put("estimated_rendered_chars", estimatedTotalChars);
+        out.put("estimated_rendered_tokens", estimateTokens(estimatedTotalChars));
         out.put("sections", sectionReports);
+        out.put("sources", sourceTrace());
+        return out;
+    }
+
+    Map<String, List<Map<String, Object>>> sourceTrace() {
+        Map<String, List<Map<String, Object>>> out = new LinkedHashMap<>();
+        for (String key : ORDER) {
+            List<Map<String, Object>> rows = new ArrayList<>();
+            for (ContextSource source : sources.getOrDefault(key, List.of())) {
+                rows.add(source.toMap());
+            }
+            out.put(key, rows);
+        }
         return out;
     }
 
@@ -297,6 +320,10 @@ final class PromptContextBundle {
             }
         }
         return count > 0 ? total / count : 0d;
+    }
+
+    private static int estimateTokens(int chars) {
+        return Math.max(0, (int) Math.ceil(chars / 4.0d));
     }
 
     private static void appendBudgetNotice(StringBuilder sb, int remainingItems) {

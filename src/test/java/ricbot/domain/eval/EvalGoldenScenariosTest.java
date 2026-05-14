@@ -27,14 +27,14 @@ class EvalGoldenScenariosTest {
                     .setScenariosPath(Path.of("evals/golden.jsonl"))
                     .setOutputDir(Path.of("target", "eval-artifacts", "golden")));
 
-            assertEquals(11, summary.getTotal());
-            assertEquals(9, summary.getPassed(), "failures=" + summary.getFailuresByKind() + ", artifacts=" + summary.getArtifactDir());
+            assertEquals(13, summary.getTotal());
+            assertEquals(11, summary.getPassed(), "failures=" + summary.getFailuresByKind() + ", artifacts=" + summary.getArtifactDir());
             assertEquals(0, summary.getFailed(), "failures=" + summary.getFailuresByKind() + ", artifacts=" + summary.getArtifactDir());
             assertEquals(1, summary.getSkipped());
             assertEquals(1, summary.getExpectedFailed());
             assertEquals(0, summary.getUnexpectedPassed());
-            assertEquals(16, summary.getTotalModelCalls());
-            assertEquals(5, summary.getTotalToolCalls());
+            assertEquals(20, summary.getTotalModelCalls());
+            assertEquals(7, summary.getTotalToolCalls());
             assertEquals(1, summary.getTotalWorkspaceChanges());
             assertTrue(summary.getDurationP50Ms() >= 0);
             assertTrue(summary.getDurationP95Ms() >= summary.getDurationP50Ms());
@@ -44,19 +44,20 @@ class EvalGoldenScenariosTest {
     }
 
     private static AgentLoop loop(Path workspace, LLMProvider provider) {
+        Config config = EvalSmokeRuntime.config(workspace.toString());
         return new AgentLoop(
                 new MessageBus(),
                 provider,
                 workspace,
-                "test-model",
+                config.getAgents().getDefaults().getModel(),
                 4,
                 8_000,
                 24,
                 4_000,
                 "none",
-                new Config.WebToolsConfig(),
-                execDisabled(),
-                Map.of(),
+                config.getTools().getWeb(),
+                config.getTools().getExec(),
+                config.getTools().getMcpServers(),
                 true,
                 null,
                 "UTC",
@@ -68,17 +69,13 @@ class EvalGoldenScenariosTest {
     }
 
     private static Config config(Path workspace) {
-        Config config = new Config();
-        config.getAgents().getDefaults().setWorkspace(workspace.toString());
-        config.getAgents().getDefaults().setModel("test-model");
-        config.getAgents().getDefaults().setDream(dreamDisabled());
-        config.getTools().setExec(execDisabled());
-        return config;
+        return EvalSmokeRuntime.config(workspace.toString());
     }
 
     private static Config.ExecToolConfig execDisabled() {
         Config.ExecToolConfig exec = new Config.ExecToolConfig();
         exec.setEnable(false);
+        exec.setApprovalEnabled(false);
         return exec;
     }
 

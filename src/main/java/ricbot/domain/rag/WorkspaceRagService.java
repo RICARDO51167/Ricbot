@@ -12,6 +12,7 @@ import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.PathMatcher;
+import java.security.MessageDigest;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -53,6 +54,7 @@ public class WorkspaceRagService {
         ensureLayout();
         List<FileChunk> chunks = new ArrayList<>();
         Map<String, List<String>> symbols = new LinkedHashMap<>();
+        Map<String, FileState> fileStates = new LinkedHashMap<>();
         int files = 0;
         try (var stream = Files.walk(workspace)) {
             for (Path path : stream.toList()) {
@@ -66,17 +68,12 @@ public class WorkspaceRagService {
                 if (!fileSymbols.isEmpty()) {
                     symbols.put(relative(path), fileSymbols);
                 }
+                fileStates.put(relative(path), fileState(path, fileChunks.size()));
             }
             writeChunks(chunks);
             writeJson(symbolIndexFile, symbols);
-            writeJson(scanStateFile, Map.of(
-                    "indexed_at", Instant.now().toString(),
-                    "files", files,
-                    "chunks", chunks.size(),
-                    "mode", "keyword_path_mtime",
-                    "vector_index", workspace.relativize(vectorIndexDir).toString()
-            ));
-            return new IndexReport(files, chunks.size(), symbols.size(), chunksFile.toString());
+            writeScanState(fileStates, files, chunks.size(), 0, 0, 0, 0);
+            return new IndexReport(files, chunks.size(), symbols.size(), chunksFile.toString(), files, 0, 0, 0);
         } catch (IOException e) {
             throw new RuntimeException("index workspace failed: " + workspace, e);
         }
@@ -134,7 +131,79 @@ public class WorkspaceRagService {
     }
 
     public IndexReport refreshChangedFiles() {
-        return indexWorkspace();
+        ensureLayout();
+        Map<String, FileState> previous = readFileStates();
+        if (previous.isEmpty() || !Files.exists(chunksFile)) {
+            return indexWorkspace();
+        }
+
+        Map<String, Path> currentFiles = discoverIndexableFiles();
+        Map<String, FileState> nextStates = new LinkedHashMap<>();
+        Set<String> changedPaths = new LinkedHashSet<>();
+        int added = 0;
+        int modified = 0;
+        int deleted = 0;
+        int skipped = 0;
+
+        for (Map.Entry<String, Path> entry : currentFiles.entrySet()) {
+            String rel = entry.getKey();
+            Path path = entry.getValue();
+            FileState current = fileState(path, 0);
+            FileState old = previous.get(rel);
+            if (old == null) {
+                added++;
+                changedPaths.add(rel);
+            } else if (!old.sameFingerprint(current)) {
+                modified++;
+                changedPaths.add(rel);
+            } else {
+                skipped++;
+                current = old;
+            }
+            nextStates.put(rel, current);
+        }
+
+        for (String rel : previous.keySet()) {
+            if (!currentFiles.containsKey(rel)) {
+                deleted++;
+                changedPaths.add(rel);
+            }
+        }
+
+        List<FileChunk> nextChunks = new ArrayList<>();
+        Map<String, List<String>> symbols = readSymbolIndex();
+        symbols.keySet().removeIf(changedPaths::contains);
+
+        for (FileChunk chunk : readChunks()) {
+            if (!changedPaths.contains(chunk.path())) {
+                nextChunks.add(chunk);
+            }
+        }
+
+        for (String rel : changedPaths) {
+            Path path = currentFiles.get(rel);
+            if (path == null) {
+                nextStates.remove(rel);
+                continue;
+            }
+            List<FileChunk> fileChunks = chunkFile(path);
+            nextChunks.addAll(fileChunks);
+            List<String> fileSymbols = extractSymbols(path);
+            if (!fileSymbols.isEmpty()) {
+                symbols.put(rel, fileSymbols);
+            }
+            nextStates.put(rel, fileState(path, fileChunks.size()));
+        }
+
+        nextChunks.sort(Comparator.comparing(FileChunk::path).thenComparingInt(FileChunk::startLine));
+        try {
+            writeChunks(nextChunks);
+            writeJson(symbolIndexFile, symbols);
+            writeScanState(nextStates, nextStates.size(), nextChunks.size(), added, modified, deleted, skipped);
+            return new IndexReport(nextStates.size(), nextChunks.size(), symbols.size(), chunksFile.toString(), added, modified, deleted, skipped);
+        } catch (IOException e) {
+            throw new RuntimeException("refresh changed files failed: " + workspace, e);
+        }
     }
 
     private List<SearchResult> search(String query, int limit, Set<String> kinds) {
@@ -156,6 +225,21 @@ public class WorkspaceRagService {
         }
         results.sort(Comparator.comparingDouble(SearchResult::score).reversed());
         return results.stream().limit(Math.max(1, limit)).toList();
+    }
+
+    private Map<String, Path> discoverIndexableFiles() {
+        Map<String, Path> out = new LinkedHashMap<>();
+        try (var stream = Files.walk(workspace)) {
+            for (Path path : stream.toList()) {
+                if (!shouldIndex(path)) {
+                    continue;
+                }
+                out.put(relative(path), path.toAbsolutePath().normalize());
+            }
+        } catch (IOException e) {
+            throw new RuntimeException("discover indexable files failed: " + workspace, e);
+        }
+        return out;
     }
 
     private double score(Set<String> queryTokens, FileChunk chunk) {
@@ -380,6 +464,102 @@ public class WorkspaceRagService {
         }
     }
 
+    private Map<String, List<String>> readSymbolIndex() {
+        Map<String, Object> raw = readJson(symbolIndexFile);
+        Map<String, List<String>> out = new LinkedHashMap<>();
+        for (Map.Entry<String, Object> entry : raw.entrySet()) {
+            List<String> values = new ArrayList<>();
+            if (entry.getValue() instanceof List<?> list) {
+                for (Object item : list) {
+                    if (item != null) {
+                        values.add(String.valueOf(item));
+                    }
+                }
+            }
+            if (!values.isEmpty()) {
+                out.put(entry.getKey(), values);
+            }
+        }
+        return out;
+    }
+
+    private Map<String, FileState> readFileStates() {
+        Map<String, Object> raw = readJson(scanStateFile);
+        Object rawFiles = raw.get("files");
+        if (!(rawFiles instanceof Map<?, ?> fileMap)) {
+            return Map.of();
+        }
+        Map<String, FileState> out = new LinkedHashMap<>();
+        for (Map.Entry<?, ?> entry : fileMap.entrySet()) {
+            if (entry.getKey() == null || !(entry.getValue() instanceof Map<?, ?> stateMap)) {
+                continue;
+            }
+            FileState state = FileState.fromMap(stateMap);
+            if (state != null) {
+                out.put(String.valueOf(entry.getKey()), state);
+            }
+        }
+        return out;
+    }
+
+    private void writeScanState(
+            Map<String, FileState> fileStates,
+            int filesCount,
+            int chunksCount,
+            int added,
+            int modified,
+            int deleted,
+            int skipped
+    ) {
+        Map<String, Object> files = new LinkedHashMap<>();
+        for (Map.Entry<String, FileState> entry : fileStates.entrySet()) {
+            files.put(entry.getKey(), entry.getValue().toMap());
+        }
+        writeJson(scanStateFile, Map.of(
+                "indexed_at", Instant.now().toString(),
+                "files_count", filesCount,
+                "chunks_count", chunksCount,
+                "mode", "keyword_path_mtime_sha256",
+                "vector_index", workspace.relativize(vectorIndexDir).toString(),
+                "last_refresh", Map.of(
+                        "added", added,
+                        "modified", modified,
+                        "deleted", deleted,
+                        "skipped", skipped
+                ),
+                "files", files
+        ));
+    }
+
+    private FileState fileState(Path path, int chunkCount) {
+        try {
+            return new FileState(
+                    relative(path),
+                    Files.size(path),
+                    Files.getLastModifiedTime(path).toMillis(),
+                    sha256(path),
+                    chunkCount,
+                    Instant.now().toString()
+            );
+        } catch (IOException e) {
+            throw new RuntimeException("read file state failed: " + path, e);
+        }
+    }
+
+    private String sha256(Path path) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(Files.readAllBytes(path));
+            StringBuilder sb = new StringBuilder();
+            for (byte b : hash) {
+                sb.append(String.format("%02x", b));
+            }
+            return sb.toString();
+        } catch (Exception e) {
+            throw new RuntimeException("sha256 failed: " + path, e);
+        }
+    }
+
     private Set<String> tokenize(String text) {
         Set<String> out = new LinkedHashSet<>();
         if (text == null || text.isBlank()) {
@@ -459,7 +639,10 @@ public class WorkspaceRagService {
         return workspace.relativize(path.toAbsolutePath().normalize()).toString();
     }
 
-    public record IndexReport(int files, int chunks, int symbols, String chunksFile) {
+    public record IndexReport(int files, int chunks, int symbols, String chunksFile, int added, int modified, int deleted, int skipped) {
+        public IndexReport(int files, int chunks, int symbols, String chunksFile) {
+            this(files, chunks, symbols, chunksFile, files, 0, 0, 0);
+        }
     }
 
     public record SearchResult(FileChunk chunk, double score, String snippet) {
@@ -531,6 +714,77 @@ public class WorkspaceRagService {
                 }
             }
             return out;
+        }
+    }
+
+    private record FileState(
+            String path,
+            long size,
+            long lastModified,
+            String sha256,
+            int chunkCount,
+            String indexedAt
+    ) {
+        boolean sameFingerprint(FileState other) {
+            return other != null
+                    && size == other.size
+                    && lastModified == other.lastModified
+                    && String.valueOf(sha256).equals(other.sha256);
+        }
+
+        Map<String, Object> toMap() {
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("path", path);
+            out.put("size", size);
+            out.put("lastModified", lastModified);
+            out.put("sha256", sha256);
+            out.put("chunkCount", chunkCount);
+            out.put("indexedAt", indexedAt);
+            return out;
+        }
+
+        static FileState fromMap(Map<?, ?> raw) {
+            if (raw == null) {
+                return null;
+            }
+            return new FileState(
+                    string(raw.get("path")),
+                    longValue(raw.get("size")),
+                    longValue(raw.get("lastModified")),
+                    string(raw.get("sha256")),
+                    intValue(raw.get("chunkCount")),
+                    string(raw.get("indexedAt"))
+            );
+        }
+
+        private static String string(Object raw) {
+            return raw != null ? String.valueOf(raw) : "";
+        }
+
+        private static int intValue(Object raw) {
+            if (raw instanceof Number n) {
+                return n.intValue();
+            }
+            if (raw != null) {
+                try {
+                    return Integer.parseInt(String.valueOf(raw));
+                } catch (Exception ignored) {
+                }
+            }
+            return 0;
+        }
+
+        private static long longValue(Object raw) {
+            if (raw instanceof Number n) {
+                return n.longValue();
+            }
+            if (raw != null) {
+                try {
+                    return Long.parseLong(String.valueOf(raw));
+                } catch (Exception ignored) {
+                }
+            }
+            return 0L;
         }
     }
 }

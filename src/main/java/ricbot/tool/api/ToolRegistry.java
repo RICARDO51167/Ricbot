@@ -257,6 +257,14 @@ public class ToolRegistry {
      * @return 执行结果或错误信息
      */
     public Object execute(String name, java.util.Map<String, Object> params) {
+        return execute(name, params, false);
+    }
+
+    public Object executeApproved(String name, java.util.Map<String, Object> params) {
+        return execute(name, params, true);
+    }
+
+    private Object execute(String name, java.util.Map<String, Object> params, boolean approvalBypass) {
         // 再次获取工具实例以防万一
         Tool tool = get(name);
         if (tool == null) {
@@ -264,6 +272,10 @@ public class ToolRegistry {
         }
 
         // 参数转换和二次校验
+        params = params != null ? new LinkedHashMap<>(params) : new LinkedHashMap<>();
+        if (approvalBypass) {
+            params.put("__approval_bypass", true);
+        }
         params = tool.castParams(params);
         java.util.List<String> errors = tool.validateParams(params);
         if (!errors.isEmpty()) {
@@ -271,7 +283,7 @@ public class ToolRegistry {
         }
 
         try {
-            Object result = executeTool(tool, params);
+            Object result = executeTool(tool, params, approvalBypass);
             // 如果结果是字符串且以错误或错误开头，直接返回
             if (result instanceof String s && (s.startsWith("Error") || s.startsWith("错误"))) return s;
             return result;
@@ -295,8 +307,8 @@ public class ToolRegistry {
         return names;
     }
 
-    private Object executeTool(Tool tool, Map<String, Object> params) throws Exception {
-        LegacyToolExecutor<? extends Tool> legacyExecutor = findLegacyExecutor(tool);
+    private Object executeTool(Tool tool, Map<String, Object> params, boolean approvalBypass) throws Exception {
+        LegacyToolExecutor<? extends Tool> legacyExecutor = approvalBypass ? null : findLegacyExecutor(tool);
         if (legacyExecutor != null) {
             return legacyExecutor.executeUnchecked(tool, params);
         }

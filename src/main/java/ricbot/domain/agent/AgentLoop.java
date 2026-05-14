@@ -13,6 +13,7 @@ import ricbot.domain.memory.Dream;
 import ricbot.domain.memory.MemoryStore;
 import ricbot.domain.note.NoteService;
 import ricbot.domain.rag.WorkspaceRagService;
+import ricbot.domain.security.ApprovalService;
 import ricbot.domain.subagent.SubagentManager;
 import ricbot.domain.hook.AgentHook;
 import ricbot.tool.api.BuiltinToolRegistrar;
@@ -100,6 +101,7 @@ public class AgentLoop {
     private final Consolidator consolidator;
     /** Dream 模块，用于后台记忆整理和反思 */
     private final Dream dream;
+    private final ApprovalService approvalService;
     /** 会话自动归档器 */
     private final AutoCompact autoCompact;
     /** 子代理管理器，用于管理子代理任务 */
@@ -236,6 +238,7 @@ public class AgentLoop {
         
         // 初始化 Dream 模块
         this.dream = new Dream(this.provider, this.model, this.memoryStore);
+        this.approvalService = new ApprovalService();
         this.autoCompact = new AutoCompact(this.sessionManager, this.consolidator, this.sessionTtlMinutes);
         
         // 初始化子代理管理器
@@ -317,7 +320,9 @@ public class AgentLoop {
                 this.workspace,
                 this::effectiveSessionKey,
                 activeTasks::remove,
-                this::markSessionInterrupted
+                this::markSessionInterrupted,
+                this.approvalService,
+                this.tools
         );
 
         // 初始化并发控制
@@ -361,13 +366,16 @@ public class AgentLoop {
      */
     private void registerDefaultTools() {
         Path allowedDir = BuiltinToolRegistrar.allowedDir(workspace, restrictToWorkspace, execConfig);
+        ApprovalService toolApprovalService = execConfig != null && execConfig.isApprovalEnabled()
+                ? approvalService
+                : null;
 
         tools.register(new ReadSkillTool(skillsLoader));
-        BuiltinToolRegistrar.registerFileAndSearchTools(tools, workspace, allowedDir);
+        BuiltinToolRegistrar.registerFileAndSearchTools(tools, workspace, allowedDir, toolApprovalService);
         tools.register(new NotebookEditTool(workspace, allowedDir, List.of()));
 
         if (execConfig.isEnable()) {
-            BuiltinToolRegistrar.registerExecTool(tools, workspace, restrictToWorkspace, execConfig);
+            BuiltinToolRegistrar.registerExecTool(tools, workspace, restrictToWorkspace, execConfig, toolApprovalService);
             tools.register(new SpawnTool(subagents));
         }
 

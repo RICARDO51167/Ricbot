@@ -198,7 +198,7 @@ class EvalHarnessTest {
         );
 
         assertEquals("pass", result.getStatus());
-        assertEquals(11, result.getTotalScenarios());
+        assertEquals(13, result.getTotalScenarios());
         assertEquals(0, result.getErrors());
         assertTrue(Files.exists(Path.of(result.getArtifactDir()).resolve("lint.json")));
         assertTrue(Files.readString(Path.of(result.getArtifactDir()).resolve("lint-report.md")).contains("No lint issues found."));
@@ -892,6 +892,7 @@ class EvalHarnessTest {
     private static Config.ExecToolConfig execDisabled() {
         Config.ExecToolConfig exec = new Config.ExecToolConfig();
         exec.setEnable(false);
+        exec.setApprovalEnabled(false);
         return exec;
     }
 

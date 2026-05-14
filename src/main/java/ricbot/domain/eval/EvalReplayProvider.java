@@ -168,9 +168,16 @@ public class EvalReplayProvider extends LLMProvider {
             return raw;
         }
         if (workspacePath == null || workspacePath.isBlank()) {
+            return normalizeDynamicToolText(text);
+        }
+        return normalizeDynamicToolText(text.replace(workspacePath, "<workspace>"));
+    }
+
+    private String normalizeDynamicToolText(String text) {
+        if (text == null || text.isBlank()) {
             return text;
         }
-        return text.replace(workspacePath, "<workspace>");
+        return text.replaceAll("启用=(true|false)", "启用=<bool>");
     }
 
     private List<String> toolNames(Object raw) {

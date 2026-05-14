@@ -119,9 +119,11 @@ final class ContextSelectionService {
             String rendered = "[" + entry.getMemoryType().name().toLowerCase(Locale.ROOT) + "] " + entry.renderLine().substring(2);
             // 根据是否是用户个人资料，分别添加到不同的上下文类别中
             if (entry.isUserProfile()) {
-                bundle.addItem("user_profile", rendered, scoredMemory.relevanceScore());
+                bundle.addItem("user_profile", rendered, scoredMemory.relevanceScore(),
+                        ContextSource.of("memory", entry.getId(), "", entry.getSummary(), scoredMemory.relevanceScore()));
             } else {
-                bundle.addItem("memory_recall", rendered, scoredMemory.relevanceScore());
+                bundle.addItem("memory_recall", rendered, scoredMemory.relevanceScore(),
+                        ContextSource.of("memory", entry.getId(), "", entry.getSummary(), scoredMemory.relevanceScore()));
             }
         }
 
@@ -156,7 +158,9 @@ final class ContextSelectionService {
                         + (result.snippet() != null && !result.snippet().isBlank()
                         ? " — " + result.snippet().replace("\n", " ")
                         : "");
-                bundle.addItem("project_notes", rendered, normalizeRelevance(result.score(), 5.0d));
+                double relevance = normalizeRelevance(result.score(), 5.0d);
+                bundle.addItem("project_notes", rendered, relevance,
+                        ContextSource.of("note", entry.id(), entry.path(), entry.title(), relevance));
             }
         } catch (Exception ignored) {
         }
@@ -176,7 +180,9 @@ final class ContextSelectionService {
                         + (result.snippet() != null && !result.snippet().isBlank()
                         ? " — " + result.snippet().replace("\n", " ")
                         : "");
-                bundle.addItem("workspace_knowledge", rendered, normalizeRelevance(result.score(), 8.0d));
+                double relevance = normalizeRelevance(result.score(), 8.0d);
+                bundle.addItem("workspace_knowledge", rendered, relevance,
+                        ContextSource.of("rag", chunk.id(), chunk.path(), chunk.path() + ":" + chunk.startLine(), relevance));
             }
         } catch (Exception ignored) {
         }

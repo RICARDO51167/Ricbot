@@ -518,6 +518,7 @@ Replay 相关失败分类：
 - `replay_artifact_invalid`：case artifact 缺少可回放的模型调用记录
 
 仓库内置 `evals/golden.jsonl`，CI 的 `mvn test` 会通过确定性 provider 跑这组 golden 场景，避免依赖真实模型或网络。
+`eval smoke` 会配置内置 stdio fake MCP server，覆盖 MCP tool 注册、调用和 timeout 恢复，不依赖外部 MCP 服务。
 
 Artifact 会对常见敏感 key（例如 `api_key`、`authorization`、`token`、`secret`、`password`）做基础脱敏；真实模型 eval 仍应避免把生产密钥、私密文件内容写入场景或工作区。
 

@@ -4,6 +4,11 @@ import ricbot.tool.api.Tool;
 import ricbot.tool.api.ToolParam;
 import ricbot.infra.config.RuntimePaths;
 import ricbot.infra.security.NetworkSecurity;
+import ricbot.domain.security.ApprovalRequest;
+import ricbot.domain.security.ApprovalService;
+import ricbot.domain.security.CommandRiskAnalyzer;
+import ricbot.domain.security.CommandRiskLevel;
+import ricbot.domain.security.RiskAssessment;
 
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
@@ -57,6 +62,8 @@ public class ExecTool extends Tool {
     private final String pathAppend;
     // 允许传递的环境变量键名列表
     private final List<String> allowedEnvKeys;
+    private final CommandRiskAnalyzer riskAnalyzer;
+    private final ApprovalService approvalService;
 
     /**
      * 构造函数
@@ -80,6 +87,21 @@ public class ExecTool extends Tool {
             String pathAppend,
             List<String> allowedEnvKeys
     ) {
+        this(timeout, workingDir, denyPatterns, allowPatterns, restrictToWorkspace, sandbox, pathAppend, allowedEnvKeys, null, null);
+    }
+
+    public ExecTool(
+            int timeout,
+            String workingDir,
+            List<String> denyPatterns,
+            List<String> allowPatterns,
+            boolean restrictToWorkspace,
+            String sandbox,
+            String pathAppend,
+            List<String> allowedEnvKeys,
+            CommandRiskAnalyzer riskAnalyzer,
+            ApprovalService approvalService
+    ) {
         this.timeout = timeout > 0 ? timeout : 60;
         this.workingDir = workingDir;
         this.sandbox = sandbox != null ? sandbox : "";
@@ -88,6 +110,8 @@ public class ExecTool extends Tool {
         this.restrictToWorkspace = restrictToWorkspace;
         this.pathAppend = pathAppend != null ? pathAppend : "";
         this.allowedEnvKeys = allowedEnvKeys != null ? allowedEnvKeys : new ArrayList<>();
+        this.riskAnalyzer = riskAnalyzer;
+        this.approvalService = approvalService;
     }
 
     @Override
@@ -144,7 +168,7 @@ public class ExecTool extends Tool {
             timeoutOverride = n.intValue();
         }
 
-        return execute(cmd, workingDirOverride, timeoutOverride);
+        return execute(cmd, workingDirOverride, timeoutOverride, approvalBypass(kwargs));
     }
 
     /**
@@ -156,6 +180,10 @@ public class ExecTool extends Tool {
      * @return 执行结果字符串
      */
     public String execute(String command, String workingDirOverride, Integer timeoutOverride) {
+        return execute(command, workingDirOverride, timeoutOverride, false);
+    }
+
+    private String execute(String command, String workingDirOverride, Integer timeoutOverride, boolean approvalBypass) {
         // 确定最终的工作目录：优先使用传入的覆盖值，其次是配置的工作目录，最后是系统用户目录
         String cwd = firstNonBlank(workingDirOverride, this.workingDir, System.getProperty("user.dir"));
 
@@ -171,6 +199,11 @@ public class ExecTool extends Tool {
             } catch (Exception e) {
                 return "错误：无法解析 working_dir";
             }
+        }
+
+        String riskGate = approvalBypass ? null : riskGate(command, cwd, workingDirOverride, timeoutOverride);
+        if (riskGate != null) {
+            return riskGate;
         }
 
         // 检查命令安全性
@@ -267,6 +300,38 @@ public class ExecTool extends Tool {
         } catch (Exception e) {
             return "错误：" + e.getMessage();
         }
+    }
+
+    private String riskGate(String command, String cwd, String workingDirOverride, Integer timeoutOverride) {
+        if (riskAnalyzer == null) {
+            return null;
+        }
+        RiskAssessment assessment = riskAnalyzer.analyzeExec(command, cwd);
+        if (assessment.blocked()) {
+            return "错误：命令被风险策略拒绝。\n" + assessment.render();
+        }
+        if (assessment.riskLevel() == CommandRiskLevel.MEDIUM || assessment.riskLevel() == CommandRiskLevel.HIGH) {
+            Map<String, Object> arguments = new LinkedHashMap<>();
+            arguments.put("command", command);
+            if (workingDirOverride != null) {
+                arguments.put("working_dir", workingDirOverride);
+            }
+            if (timeoutOverride != null) {
+                arguments.put("timeout", timeoutOverride);
+            }
+            ApprovalRequest request = approvalService != null
+                    ? approvalService.createRequest(assessment, getName(), arguments, null)
+                    : null;
+            String requestId = request != null ? request.requestId() : "approval_unavailable";
+            return "需要审批后才能执行。\nrequestId: " + requestId + "\n"
+                    + assessment.render()
+                    + "\n请使用 /approve " + requestId + " 或 /reject " + requestId + "。";
+        }
+        return null;
+    }
+
+    private boolean approvalBypass(Map<String, Object> kwargs) {
+        return kwargs != null && Boolean.TRUE.equals(kwargs.get("__approval_bypass"));
     }
 
     /**

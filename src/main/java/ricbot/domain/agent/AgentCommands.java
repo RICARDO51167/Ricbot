@@ -2,13 +2,23 @@ package ricbot.domain.agent;
 
 import ricbot.domain.memory.Dream;
 import ricbot.domain.memory.MemoryStore;
+import ricbot.domain.experience.ExperienceEntry;
+import ricbot.domain.experience.ExperienceExtractor;
+import ricbot.domain.experience.ExperienceRenderer;
+import ricbot.domain.experience.ExperienceStore;
 import ricbot.domain.message.InboundMessage;
 import ricbot.domain.message.OutboundMessage;
 import ricbot.domain.message.OutboundMessages;
+import ricbot.domain.note.NoteService;
+import ricbot.domain.note.TaskNoteWriter;
 import ricbot.domain.session.Session;
 import ricbot.domain.session.SessionManager;
+import ricbot.domain.security.ApprovalRequest;
+import ricbot.domain.security.ApprovalService;
+import ricbot.domain.security.PendingToolCall;
 import ricbot.infra.config.Config;
 import ricbot.integration.command.CommandRouter;
+import ricbot.tool.api.ToolRegistry;
 
 import java.nio.file.Path;
 import java.time.LocalDateTime;
@@ -31,6 +41,8 @@ final class AgentCommands {
     private final Function<InboundMessage, String> sessionKeyResolver;
     private final Function<String, List<Future<?>>> activeTaskRemover;
     private final BiConsumer<String, String> sessionInterruptMarker;
+    private final ApprovalService approvalService;
+    private final ToolRegistry toolRegistry;
 
     AgentCommands(
             SessionManager sessionManager,
@@ -43,6 +55,39 @@ final class AgentCommands {
             Function<String, List<Future<?>>> activeTaskRemover,
             BiConsumer<String, String> sessionInterruptMarker
     ) {
+        this(sessionManager, memoryStore, dream, dreamConfig, model, workspace, sessionKeyResolver,
+                activeTaskRemover, sessionInterruptMarker, new ApprovalService(), null);
+    }
+
+    AgentCommands(
+            SessionManager sessionManager,
+            MemoryStore memoryStore,
+            Dream dream,
+            Config.DreamConfig dreamConfig,
+            String model,
+            Path workspace,
+            Function<InboundMessage, String> sessionKeyResolver,
+            Function<String, List<Future<?>>> activeTaskRemover,
+            BiConsumer<String, String> sessionInterruptMarker,
+            ApprovalService approvalService
+    ) {
+        this(sessionManager, memoryStore, dream, dreamConfig, model, workspace, sessionKeyResolver,
+                activeTaskRemover, sessionInterruptMarker, approvalService, null);
+    }
+
+    AgentCommands(
+            SessionManager sessionManager,
+            MemoryStore memoryStore,
+            Dream dream,
+            Config.DreamConfig dreamConfig,
+            String model,
+            Path workspace,
+            Function<InboundMessage, String> sessionKeyResolver,
+            Function<String, List<Future<?>>> activeTaskRemover,
+            BiConsumer<String, String> sessionInterruptMarker,
+            ApprovalService approvalService,
+            ToolRegistry toolRegistry
+    ) {
         this.sessionManager = sessionManager;
         this.memoryStore = memoryStore;
         this.dream = dream;
@@ -52,6 +97,8 @@ final class AgentCommands {
         this.sessionKeyResolver = sessionKeyResolver;
         this.activeTaskRemover = activeTaskRemover;
         this.sessionInterruptMarker = sessionInterruptMarker;
+        this.approvalService = approvalService != null ? approvalService : new ApprovalService();
+        this.toolRegistry = toolRegistry;
     }
 
     void register(CommandRouter router) {
@@ -60,6 +107,14 @@ final class AgentCommands {
         router.exact("/new", this::startNewSession);
         router.exact("/help", this::help);
         router.exact("/status", this::status);
+        router.exact("/context", this::context);
+        router.prefix("/context ", this::context);
+        router.exact("/summary", this::summary);
+        router.prefix("/summary ", this::summary);
+        router.exact("/experience", this::experience);
+        router.prefix("/experience ", this::experience);
+        router.prefix("/approve ", this::approve);
+        router.prefix("/reject ", this::reject);
         router.exact("/dream", this::dream);
         router.exact("/dream-log", this::dreamLog);
         router.prefix("/dream-log ", this::dreamLog);
@@ -98,7 +153,7 @@ final class AgentCommands {
     }
 
     private CompletableFuture<OutboundMessage> help(CommandRouter.CommandContext ctx) {
-        return completedReply(ctx, "ricbot 命令：\n/new — 开始新对话\n/stop — 停止当前任务\n/help — 查看可用命令");
+        return completedReply(ctx, "ricbot 命令：\n/new — 开始新对话\n/stop — 停止当前任务\n/summary — 查看当前任务摘要\n/help — 查看可用命令");
     }
 
     private CompletableFuture<OutboundMessage> status(CommandRouter.CommandContext ctx) {
@@ -128,6 +183,109 @@ final class AgentCommands {
             return null;
         }
         return ContextQualityReport.fromMap(trace.get("context_quality"));
+    }
+
+    private CompletableFuture<OutboundMessage> context(CommandRouter.CommandContext ctx) {
+        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
+        Object rawTrace = session != null && session.getMetadata() != null
+                ? session.getMetadata().get(SessionRuntimeKeys.CONTEXT_TRACE_KEY)
+                : null;
+        Map<?, ?> trace = rawTrace instanceof Map<?, ?> map ? map : Map.of();
+        String args = trim(ctx.getArgs()).toLowerCase();
+        boolean detail = args.contains("--detail");
+        boolean sources = args.contains("--sources");
+        return completedReply(ctx, ContextCommandRenderer.render(trace, detail, sources));
+    }
+
+    private CompletableFuture<OutboundMessage> summary(CommandRouter.CommandContext ctx) {
+        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
+        TaskSummaryService.TaskSummary summary = new TaskSummaryService().summarizeCurrentTask(session);
+        String rendered = new TaskNoteWriter(null).renderMarkdown(summary);
+        String args = trim(ctx.getArgs());
+        if (!args.contains("--write-note")) {
+            return completedReply(ctx, rendered);
+        }
+
+        String category = optionValue(args, "--category", "tasks");
+        TaskNoteWriter writer = new TaskNoteWriter(new NoteService(workspace));
+        TaskNoteWriter.WriteResult result = writer.write(summary, category);
+        return completedReply(ctx, "summary note written\n"
+                + "id: " + result.noteId() + "\n"
+                + "path: " + result.path() + "\n"
+                + "category: " + result.category() + "\n\n"
+                + rendered);
+    }
+
+    private CompletableFuture<OutboundMessage> experience(CommandRouter.CommandContext ctx) {
+        String args = trim(ctx.getArgs());
+        String action = args.isBlank() ? "list" : args.split("\\s+")[0].toLowerCase();
+        ExperienceStore store = new ExperienceStore(workspace);
+        ExperienceRenderer renderer = new ExperienceRenderer();
+        try {
+            return switch (action) {
+                case "extract" -> experienceExtract(ctx, store, renderer);
+                case "list" -> completedReply(ctx, renderer.renderList(store.listCandidates()));
+                case "show" -> completedReply(ctx, renderer.renderDetail(store.find(commandArg(args, 1))));
+                case "verify" -> completedReply(ctx, "experience verified\n"
+                        + renderer.renderDetail(store.verify(commandArg(args, 1))));
+                case "reject" -> completedReply(ctx, "experience rejected\n"
+                        + renderer.renderDetail(store.reject(commandArg(args, 1))));
+                default -> completedReply(ctx, "用法：/experience extract|list|show <id>|verify <id>|reject <id>");
+            };
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            return completedReply(ctx, "experience error: " + e.getMessage());
+        }
+    }
+
+    private CompletableFuture<OutboundMessage> experienceExtract(
+            CommandRouter.CommandContext ctx,
+            ExperienceStore store,
+            ExperienceRenderer renderer
+    ) {
+        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
+        TaskSummaryService.TaskSummary summary = new TaskSummaryService().summarizeCurrentTask(session);
+        List<ExperienceEntry> extracted = new ExperienceExtractor().extract(summary);
+        List<ExperienceEntry> stored = new java.util.ArrayList<>();
+        for (ExperienceEntry entry : extracted) {
+            stored.add(store.addCandidate(entry));
+        }
+        return completedReply(ctx, "experience extracted: " + stored.size()
+                + "\nfile: " + workspace.relativize(store.candidatesFile())
+                + "\n\n" + renderer.renderList(stored));
+    }
+
+    private CompletableFuture<OutboundMessage> approve(CommandRouter.CommandContext ctx) {
+        String requestId = trim(ctx.getArgs()).split("\\s+")[0];
+        ApprovalRequest request = approvalService.approve(requestId);
+        if (request == null) {
+            return completedReply(ctx, "未找到审批请求：" + requestId);
+        }
+        if (toolRegistry == null) {
+            return completedReply(ctx, "已批准审批请求：" + request.requestId()
+                    + "\nstatus: " + request.status()
+                    + "\n该请求没有接入 ToolRegistry，无法自动恢复执行。");
+        }
+        PendingToolCall pendingToolCall;
+        try {
+            pendingToolCall = approvalService.consumeApprovedToolCall(requestId);
+        } catch (IllegalStateException | IllegalArgumentException e) {
+            return completedReply(ctx, "已批准审批请求：" + request.requestId()
+                    + "\nstatus: " + request.status()
+                    + "\n无法恢复执行：" + e.getMessage());
+        }
+        Object result = toolRegistry.executeApproved(pendingToolCall.toolName(), pendingToolCall.arguments());
+        return completedReply(ctx, "已批准并恢复执行：" + request.requestId()
+                + "\ntool: " + pendingToolCall.toolName()
+                + "\n\n" + String.valueOf(result));
+    }
+
+    private CompletableFuture<OutboundMessage> reject(CommandRouter.CommandContext ctx) {
+        String requestId = trim(ctx.getArgs()).split("\\s+")[0];
+        ApprovalRequest request = approvalService.reject(requestId);
+        if (request == null) {
+            return completedReply(ctx, "未找到审批请求：" + requestId);
+        }
+        return completedReply(ctx, "已拒绝审批请求：" + request.requestId() + "\nstatus: " + request.status());
     }
 
     private CompletableFuture<OutboundMessage> dream(CommandRouter.CommandContext ctx) {
@@ -222,5 +380,23 @@ final class AgentCommands {
 
     private static String trim(String s) {
         return s == null ? "" : s.trim();
+    }
+
+    private static String optionValue(String args, String option, String def) {
+        String[] parts = trim(args).split("\\s+");
+        for (int i = 0; i < parts.length - 1; i++) {
+            if (option.equals(parts[i])) {
+                return parts[i + 1];
+            }
+        }
+        return def;
+    }
+
+    private static String commandArg(String args, int index) {
+        String[] parts = trim(args).split("\\s+");
+        if (parts.length <= index || parts[index].isBlank()) {
+            throw new IllegalArgumentException("missing id");
+        }
+        return parts[index];
     }
 }

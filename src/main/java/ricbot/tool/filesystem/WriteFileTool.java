@@ -2,11 +2,19 @@ package ricbot.tool.filesystem;
 
 
 
+import ricbot.domain.security.ApprovalRequest;
+import ricbot.domain.security.ApprovalService;
+import ricbot.domain.security.CommandRiskAnalyzer;
+import ricbot.domain.security.CommandRiskLevel;
+import ricbot.domain.security.RiskAssessment;
 import ricbot.tool.api.Tool;
 import ricbot.tool.api.ToolParam;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 对应 Python: WriteFileTool
@@ -27,6 +35,9 @@ public class WriteFileTool extends Tool {
      * 允许访问的目录路径，用于安全校验
      */
     private final Path allowedDir;
+    private final CommandRiskAnalyzer riskAnalyzer;
+    private final ApprovalService approvalService;
+    private final DiffReviewService diffReviewService;
 
     /**
      * 构造函数
@@ -35,8 +46,15 @@ public class WriteFileTool extends Tool {
      * @param allowedDir 允许访问的目录路径，若为 null 则不进行特定目录限制
      */
     public WriteFileTool(Path workspace, Path allowedDir) {
+        this(workspace, allowedDir, null, null);
+    }
+
+    public WriteFileTool(Path workspace, Path allowedDir, CommandRiskAnalyzer riskAnalyzer, ApprovalService approvalService) {
         this.workspace = workspace;
         this.allowedDir = allowedDir != null ? allowedDir.toAbsolutePath().normalize() : null;
+        this.riskAnalyzer = riskAnalyzer;
+        this.approvalService = approvalService;
+        this.diffReviewService = new DiffReviewService(workspace);
     }
 
     /**
@@ -80,20 +98,70 @@ public class WriteFileTool extends Tool {
      * @return 操作结果消息，成功时返回写入路径，失败时返回错误信息
      */
     public String execute(String path, String content) {
+        return execute(path, content, false);
+    }
+
+    private String execute(String path, String content, boolean approvalBypass) {
         try {
             // 解析并规范化目标路径
             Path target = FileToolSupport.resolvePath(workspace, path);
             // 校验路径是否在允许范围内
             FileToolSupport.ensureAllowedForWrite(target, allowedDir, List.of());
+            String riskGate = approvalBypass ? null : riskGate(target, path, content);
+            if (riskGate != null) {
+                return riskGate;
+            }
+            boolean existedBefore = Files.exists(target);
+            String before = existedBefore && Files.isRegularFile(target) && !FileToolSupport.isBinary(target)
+                    ? FileToolSupport.readText(target)
+                    : "";
 
             // 写入文件内容
             FileToolSupport.writeText(target, content);
             // 记录写入状态，以便后续读取操作能感知到变更
             FileReadState.recordWrite(target);
 
-            return "文件已写入：" + target;
+            DiffReview review = diffReviewService.reviewWriteFile(
+                    target.toString(),
+                    before,
+                    content != null ? content : "",
+                    existedBefore,
+                    CommandRiskLevel.MEDIUM
+            );
+            return "文件已写入：" + target + diffReviewService.renderMarkdown(review);
         } catch (Exception e) {
             return "错误：" + e.getMessage();
         }
+    }
+
+    @Override
+    public Object execute(Map<String, Object> params) {
+        String path = params != null ? (String) params.get("path") : null;
+        String content = params != null ? (String) params.get("content") : null;
+        boolean approvalBypass = params != null && Boolean.TRUE.equals(params.get("__approval_bypass"));
+        return execute(path, content, approvalBypass);
+    }
+
+    private String riskGate(Path target, String path, String content) {
+        if (riskAnalyzer == null) {
+            return null;
+        }
+        RiskAssessment assessment = riskAnalyzer.analyzeTool("write_file", target.toString());
+        if (assessment.blocked()) {
+            return "错误：文件写入被风险策略拒绝。\n" + assessment.render();
+        }
+        if (assessment.requiresApproval()) {
+            Map<String, Object> arguments = new LinkedHashMap<>();
+            arguments.put("path", path);
+            arguments.put("content", content);
+            ApprovalRequest request = approvalService != null
+                    ? approvalService.createRequest(assessment, getName(), arguments, null)
+                    : null;
+            String requestId = request != null ? request.requestId() : "approval_unavailable";
+            return "需要审批后才能执行。\nrequestId: " + requestId + "\n"
+                    + assessment.render()
+                    + "\n请使用 /approve " + requestId + " 或 /reject " + requestId + "。";
+        }
+        return null;
     }
 }

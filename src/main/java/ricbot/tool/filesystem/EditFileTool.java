@@ -1,11 +1,18 @@
 package ricbot.tool.filesystem;
 
+import ricbot.domain.security.ApprovalRequest;
+import ricbot.domain.security.ApprovalService;
+import ricbot.domain.security.CommandRiskAnalyzer;
+import ricbot.domain.security.CommandRiskLevel;
+import ricbot.domain.security.RiskAssessment;
 import ricbot.tool.api.Tool;
 import ricbot.tool.api.ToolParam;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 文件编辑工具类 (EditFileTool)
@@ -29,6 +36,9 @@ public class EditFileTool extends Tool {
      * 允许访问的目录路径（用于安全限制）
      */
     private final Path allowedDir;
+    private final CommandRiskAnalyzer riskAnalyzer;
+    private final ApprovalService approvalService;
+    private final DiffReviewService diffReviewService;
 
     /**
      * 构造函数
@@ -37,8 +47,15 @@ public class EditFileTool extends Tool {
      * @param allowedDir  允许访问的目录路径，若为 null 则不限制特定子目录（但仍受 workspace 限制）
      */
     public EditFileTool(Path workspace, Path allowedDir) {
+        this(workspace, allowedDir, null, null);
+    }
+
+    public EditFileTool(Path workspace, Path allowedDir, CommandRiskAnalyzer riskAnalyzer, ApprovalService approvalService) {
         this.workspace = workspace;
         this.allowedDir = allowedDir != null ? allowedDir.toAbsolutePath().normalize() : null;
+        this.riskAnalyzer = riskAnalyzer;
+        this.approvalService = approvalService;
+        this.diffReviewService = new DiffReviewService(workspace);
     }
 
     /**
@@ -94,10 +111,18 @@ public class EditFileTool extends Tool {
      * @return 操作结果消息，成功返回成功信息，失败返回错误信息
      */
     public String execute(String path, String oldText, String newText, Boolean replaceAll) {
+        return execute(path, oldText, newText, replaceAll, false);
+    }
+
+    private String execute(String path, String oldText, String newText, Boolean replaceAll, boolean approvalBypass) {
         try {
             // 1. 解析路径并进行安全校验
             Path target = FileToolSupport.resolvePath(workspace, path);
             FileToolSupport.ensureAllowed(target, allowedDir, List.of());
+            String riskGate = approvalBypass ? null : riskGate(target, path, oldText, newText, replaceAll);
+            if (riskGate != null) {
+                return riskGate;
+            }
 
             // 2. 基础文件状态检查
             if (!Files.exists(target)) {
@@ -147,9 +172,47 @@ public class EditFileTool extends Tool {
             FileToolSupport.writeText(target, updated);
             FileReadState.recordWrite(target);
 
-            return "Success: edited file " + target;
+            DiffReview review = diffReviewService.reviewEditFile(target.toString(), content, updated, CommandRiskLevel.MEDIUM);
+            return "Success: edited file " + target + diffReviewService.renderMarkdown(review);
         } catch (Exception e) {
             return "错误：" + e.getMessage();
         }
+    }
+
+    @Override
+    public Object execute(Map<String, Object> params) {
+        String path = params != null ? (String) params.get("path") : null;
+        String oldText = params != null ? (String) params.get("old_text") : null;
+        String newText = params != null ? (String) params.get("new_text") : null;
+        Boolean replaceAll = params != null ? (Boolean) params.get("replace_all") : null;
+        boolean approvalBypass = params != null && Boolean.TRUE.equals(params.get("__approval_bypass"));
+        return execute(path, oldText, newText, replaceAll, approvalBypass);
+    }
+
+    private String riskGate(Path target, String path, String oldText, String newText, Boolean replaceAll) {
+        if (riskAnalyzer == null) {
+            return null;
+        }
+        RiskAssessment assessment = riskAnalyzer.analyzeTool("edit_file", target.toString());
+        if (assessment.blocked()) {
+            return "错误：文件编辑被风险策略拒绝。\n" + assessment.render();
+        }
+        if (assessment.requiresApproval()) {
+            Map<String, Object> arguments = new LinkedHashMap<>();
+            arguments.put("path", path);
+            arguments.put("old_text", oldText);
+            arguments.put("new_text", newText);
+            if (replaceAll != null) {
+                arguments.put("replace_all", replaceAll);
+            }
+            ApprovalRequest request = approvalService != null
+                    ? approvalService.createRequest(assessment, getName(), arguments, null)
+                    : null;
+            String requestId = request != null ? request.requestId() : "approval_unavailable";
+            return "需要审批后才能执行。\nrequestId: " + requestId + "\n"
+                    + assessment.render()
+                    + "\n请使用 /approve " + requestId + " 或 /reject " + requestId + "。";
+        }
+        return null;
     }
 }

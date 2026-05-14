@@ -60,6 +60,8 @@ public class EvalHarness {
         if (scenarios.isEmpty()) {
             throw new IllegalArgumentException("no eval scenarios found: " + scenariosPath);
         }
+        agentLoop.start();
+        waitForMcpLoad();
 
         Instant started = Instant.now();
         String runId = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")
@@ -104,6 +106,28 @@ public class EvalHarness {
                 && !"skipped".equals(status);
     }
 
+    private void waitForMcpLoad() {
+        try {
+            Map<String, Object> configured = config.getTools() != null ? config.getTools().getMcpServers() : Map.of();
+            if (configured == null || configured.isEmpty()) {
+                return;
+            }
+            Map<String, String> statuses = agentLoop.getMcpLoader().getServerStatuses();
+            long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(2);
+            while (System.nanoTime() < deadline) {
+                statuses = agentLoop.getMcpLoader().getServerStatuses();
+                boolean statusesConnected = !statuses.isEmpty()
+                        && statuses.values().stream().allMatch("connected"::equals);
+                boolean hasMcpTools = agentLoop.getTools().toolNames().stream().anyMatch(name -> name.startsWith("mcp_"));
+                if (statusesConnected && hasMcpTools) {
+                    return;
+                }
+                Thread.sleep(50);
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
     public static List<EvalScenario> loadScenarios(Path scenariosPath, int limit) throws Exception {
         List<EvalScenario> scenarios = new ArrayList<>();
         try (BufferedReader reader = Files.newBufferedReader(scenariosPath, StandardCharsets.UTF_8)) {
@@ -131,6 +155,8 @@ public class EvalHarness {
     }
 
     public EvalCaseResult runScenario(EvalScenario scenario, EvalOptions options, String runId, Path casesDir) throws Exception {
+        agentLoop.start();
+        waitForMcpLoad();
         EvalCaseResult result = new EvalCaseResult()
                 .setId(scenario.getId())
                 .setSessionKey(sessionKeyFor(scenario, options, runId));

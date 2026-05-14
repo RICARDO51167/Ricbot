@@ -562,6 +562,7 @@ public class Config {
         private boolean enable = true;
         private int timeout = 60;
         private boolean sandbox = false;
+        private boolean approvalEnabled = true;
         private String pathAppend = "";
         private List<String> allowedEnvKeys = new ArrayList<>();
         public void setAllowedEnvKeys(List<String> allowedEnvKeys) {

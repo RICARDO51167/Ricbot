@@ -265,4 +265,69 @@ public class AgentLoopToolCallTest {
         assertTrue(out.getContent().contains("context_usage"));
         assertTrue(out.getContent().contains("budget_usage_rate"));
     }
+
+    @Test
+    void contextCommand_readsLastContextTrace(@TempDir Path workspace) throws Exception {
+        MessageBus bus = new MessageBus();
+        SessionManager sessions = new SessionManager(workspace);
+        LLMProvider provider = new LLMProvider("k", "http://localhost") {
+            @Override
+            public LLMResponse chat(
+                    List<Map<String, Object>> messages,
+                    List<Map<String, Object>> tools,
+                    String model,
+                    Integer maxTokens,
+                    Double temperature,
+                    String reasoningEffort,
+                    Object toolChoice
+            ) {
+                return new LLMResponse().setContent("done").setFinishReason("stop");
+            }
+        };
+
+        Config.WebToolsConfig web = new Config.WebToolsConfig();
+        web.setEnable(false);
+        Config.ExecToolConfig exec = new Config.ExecToolConfig();
+        exec.setEnable(false);
+        Config.DreamConfig dreamConfig = new Config.DreamConfig();
+        dreamConfig.setEnabled(false);
+
+        AgentLoop loop = new AgentLoop(
+                bus,
+                provider,
+                workspace,
+                "gpt-4o-mini",
+                5,
+                200000,
+                50,
+                10_000,
+                "standard",
+                web,
+                exec,
+                Map.of(),
+                true,
+                sessions,
+                "UTC",
+                false,
+                List.of(),
+                0,
+                dreamConfig
+        );
+
+        String sessionKey = "cli:direct";
+        loop.processDirect("帮我查看上下文报告", sessionKey);
+        var summary = loop.processDirect("/context", sessionKey);
+        assertTrue(summary.getContent().contains("ricbot context"), summary.getContent());
+        assertTrue(summary.getContent().contains("total_tokens"), summary.getContent());
+        assertTrue(summary.getContent().contains("sections"), summary.getContent());
+        assertTrue(summary.getContent().contains("task_state"), summary.getContent());
+
+        var detail = loop.processDirect("/context --detail", sessionKey);
+        assertTrue(detail.getContent().contains("top sources"), detail.getContent());
+        assertTrue(detail.getContent().contains("max_chars"), detail.getContent());
+
+        var sources = loop.processDirect("/context --sources", sessionKey);
+        assertTrue(sources.getContent().contains("top sources"), sources.getContent());
+        assertFalse(sources.getContent().contains("sections\n"), sources.getContent());
+    }
 }
