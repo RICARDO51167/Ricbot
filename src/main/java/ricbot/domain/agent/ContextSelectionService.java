@@ -1,11 +1,17 @@
 package ricbot.domain.agent;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import ricbot.domain.experience.ExperienceEntry;
+import ricbot.domain.experience.ExperienceStore;
 import ricbot.domain.memory.MemoryEntry;
 import ricbot.domain.memory.MemoryRetriever;
 import ricbot.domain.memory.MemoryStore;
 import ricbot.domain.note.NoteEntry;
 import ricbot.domain.note.NoteService;
 import ricbot.domain.rag.WorkspaceRagService;
+import ricbot.domain.subagent.SubAgentOrchestrator;
+import ricbot.domain.subagent.SubAgentResult;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -22,6 +28,7 @@ import java.util.stream.Collectors;
  * 上下文选择服务类，负责从会话历史、记忆存储和工具调用轨迹中选择相关的上下文信息。
  */
 final class ContextSelectionService {
+    private static final Logger log = LoggerFactory.getLogger(ContextSelectionService.class);
 
     // 用于分割文本为 token 的正则表达式模式，匹配非字母、非数字和非下划线的字符
     private static final Pattern TOKEN_SPLIT = Pattern.compile("[^\\p{IsAlphabetic}\\p{IsDigit}_]+");
@@ -34,6 +41,7 @@ final class ContextSelectionService {
     private final int contextWindowTokens;
     private final NoteService noteService;
     private final WorkspaceRagService ragService;
+    private final ExperienceStore experienceStore;
 
     /**
      * 构造函数，初始化记忆存储和工具轨迹摘要器。
@@ -56,11 +64,23 @@ final class ContextSelectionService {
             NoteService noteService,
             WorkspaceRagService ragService
     ) {
+        this(memoryStore, toolTraceSummarizer, contextWindowTokens, noteService, ragService, null);
+    }
+
+    ContextSelectionService(
+            MemoryStore memoryStore,
+            ToolTraceSummarizer toolTraceSummarizer,
+            int contextWindowTokens,
+            NoteService noteService,
+            WorkspaceRagService ragService,
+            ExperienceStore experienceStore
+    ) {
         this.memoryStore = memoryStore;
         this.toolTraceSummarizer = toolTraceSummarizer;
         this.contextWindowTokens = contextWindowTokens;
         this.noteService = noteService;
         this.ragService = ragService;
+        this.experienceStore = experienceStore;
     }
 
     /**
@@ -134,6 +154,9 @@ final class ContextSelectionService {
 
         addProjectNotes(bundle, currentMessage, taskState);
         addWorkspaceKnowledge(bundle, currentMessage, taskState);
+        addVerifiedExperience(bundle, currentMessage, taskState, preparedInputs.sessionId(), preparedInputs.toolTrace());
+        addTeamContext(bundle, preparedInputs.teamContext());
+        addSubAgentSummaries(bundle, preparedInputs.sessionId(), preparedInputs.subAgentResults());
 
         // 渲染最近的工具调用轨迹并添加到上下文中
         for (String trace : toolTraceSummarizer.renderRecent(preparedInputs.toolTrace(), 4)) {
@@ -142,6 +165,86 @@ final class ContextSelectionService {
 
         // 返回选择结果，包含筛选后的历史消息和上下文 bundle
         return new SelectionResult(history, bundle);
+    }
+
+    private void addTeamContext(PromptContextBundle bundle, Map<String, Object> teamContext) {
+        if (teamContext == null || teamContext.isEmpty()) {
+            return;
+        }
+        Map<?, ?> session = teamContext.get("session") instanceof Map<?, ?> map ? map : Map.of();
+        String sessionId = string(session.get("id"));
+        String goal = string(session.get("goal"));
+        String state = string(session.get("state"));
+        String whiteboardPath = string(teamContext.get("whiteboardPath"));
+        String whiteboardSummary = string(teamContext.get("whiteboardSummary")).replace("\n", " ");
+        List<String> verifierResults = stringList(teamContext.get("verifierResults"));
+        List<String> revisionRequests = stringList(teamContext.get("revisionRequests"));
+        List<String> parts = new ArrayList<>();
+        if (!sessionId.isBlank()) {
+            parts.add("session=" + sessionId);
+        }
+        if (!state.isBlank()) {
+            parts.add("state=" + state);
+        }
+        if (!goal.isBlank()) {
+            parts.add("goal=" + goal);
+        }
+        if (!verifierResults.isEmpty()) {
+            parts.add("verifier=" + String.join("; ", verifierResults));
+        }
+        if (!revisionRequests.isEmpty()) {
+            parts.add("revision=" + String.join("; ", revisionRequests));
+        }
+        if (!whiteboardSummary.isBlank()) {
+            parts.add("whiteboard=" + abbreviate(whiteboardSummary, 360));
+        }
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("team_session", sessionId);
+        metadata.put("team_state", state);
+        bundle.addItem(
+                "team_context",
+                String.join(" | ", parts),
+                0.8d,
+                ContextSource.of("team", sessionId, whiteboardPath, "team whiteboard", 0.8d, metadata)
+        );
+        for (Map<String, Object> event : eventRows(teamContext.get("recentEvents")).stream().limit(2).toList()) {
+            String rendered = "event " + string(event.get("type"))
+                    + " role=" + string(event.get("role"))
+                    + " task=" + string(event.get("taskId"))
+                    + " message=" + abbreviate(string(event.get("message")), 180);
+            bundle.addItem("team_context", rendered, 0.6d,
+                    ContextSource.of("team_event", string(event.get("id")), whiteboardPath, string(event.get("type")), 0.6d, metadata));
+        }
+    }
+
+    private void addSubAgentSummaries(
+            PromptContextBundle bundle,
+            String sessionId,
+            List<SubAgentResult> subAgentResults
+    ) {
+        List<SubAgentResult> results = subAgentResults != null ? subAgentResults : List.of();
+        for (SubAgentResult result : results.stream()
+                .sorted(Comparator.comparing(SubAgentResult::createdAt, Comparator.nullsLast(String::compareTo)).reversed())
+                .limit(3)
+                .toList()) {
+            Map<String, Object> metadata = new LinkedHashMap<>();
+            metadata.put("subagent_role", result.role().name());
+            metadata.put("confidence", Math.round(result.confidence() * 1000.0d) / 1000.0d);
+            metadata.put("sessionId", sessionId != null ? sessionId : "");
+            bundle.addItem(
+                    "subagent_summaries",
+                    SubAgentOrchestrator.renderCompact(result),
+                    result.confidence(),
+                    ContextSource.of(
+                            "subagent",
+                            result.taskId(),
+                            "subagent:" + result.taskId(),
+                            result.role().name() + " summary",
+                            result.confidence(),
+                            metadata
+                    )
+            );
+        }
     }
 
     private void addProjectNotes(PromptContextBundle bundle, String currentMessage, TaskState taskState) {
@@ -163,6 +266,67 @@ final class ContextSelectionService {
                         ContextSource.of("note", entry.id(), entry.path(), entry.title(), relevance));
             }
         } catch (Exception ignored) {
+        }
+    }
+
+    private void addVerifiedExperience(
+            PromptContextBundle bundle,
+            String currentMessage,
+            TaskState taskState,
+            String sessionId,
+            List<Map<String, Object>> toolTrace
+    ) {
+        if (experienceStore == null) {
+            return;
+        }
+        String query = experienceQuery(currentMessage, taskState);
+        List<String> relatedFiles = relatedFiles(currentMessage, toolTrace);
+        try {
+            for (ExperienceStore.ScoredExperience result : experienceStore.searchVerified(query, relatedFiles, 3)) {
+                ExperienceEntry entry = result.entry();
+                String rendered = entry.type()
+                        + " | " + entry.title()
+                        + " | when: " + entry.whenToApply()
+                        + " | content: " + entry.content()
+                        + (!entry.suggestedTests().isEmpty()
+                        ? " | suggestedTests: " + String.join("; ", entry.suggestedTests())
+                        : "")
+                        + " | confidence: " + String.format(Locale.ROOT, "%.2f", entry.confidence())
+                        + (!entry.sourceRef().isBlank() ? " | sourceRef: " + entry.sourceRef() : "");
+                Map<String, Object> metadata = new LinkedHashMap<>();
+                metadata.put("status", entry.status().name());
+                metadata.put("experience_type", entry.type().name());
+                metadata.put("sourceRef", entry.sourceRef());
+                metadata.put("confidence", Math.round(entry.confidence() * 1000.0d) / 1000.0d);
+                metadata.put("effectiveConfidence", Math.round(result.effectiveConfidence() * 1000.0d) / 1000.0d);
+                metadata.put("successCount", entry.successCount());
+                metadata.put("failureCount", entry.failureCount());
+                metadata.put("lastUsedAt", entry.lastUsedAt());
+                metadata.put("reason", result.reason());
+                bundle.addItem("verified_experience", rendered, result.score(),
+                        ContextSource.of(
+                                "experience",
+                                entry.id(),
+                                "experience/verified.jsonl:" + entry.id(),
+                                entry.title(),
+                                result.score(),
+                                metadata
+                        ));
+                try {
+                    experienceStore.recordUsage(
+                            entry.id(),
+                            sessionId,
+                            query,
+                            taskState != null ? taskState.goal() : "",
+                            result.score(),
+                            result.reason()
+                    );
+                } catch (Exception e) {
+                    log.warn("skip recording verified experience usage: {}", entry.id(), e);
+                }
+            }
+        } catch (Exception e) {
+            log.warn("skip verified experience context due to read/search failure", e);
         }
     }
 
@@ -193,6 +357,89 @@ final class ContextSelectionService {
             return 0d;
         }
         return Math.max(0d, Math.min(1d, score / maxExpected));
+    }
+
+    private String experienceQuery(String currentMessage, TaskState taskState) {
+        StringBuilder sb = new StringBuilder();
+        if (currentMessage != null) {
+            sb.append(currentMessage).append("\n");
+        }
+        if (taskState != null) {
+            sb.append(taskState.goal()).append("\n")
+                    .append(taskState.currentStep()).append("\n")
+                    .append(taskState.blockedReason()).append("\n")
+                    .append(taskState.nextAction()).append("\n");
+            for (TaskState.TaskStep step : taskState.steps()) {
+                sb.append(step.title()).append("\n").append(step.evidence()).append("\n");
+            }
+        }
+        return sb.toString();
+    }
+
+    private List<String> relatedFiles(String currentMessage, List<Map<String, Object>> toolTrace) {
+        List<String> out = new ArrayList<>();
+        addPathLike(out, currentMessage);
+        for (Map<String, Object> trace : toolTrace != null ? toolTrace : List.<Map<String, Object>>of()) {
+            addPathLike(out, String.valueOf(trace.getOrDefault("arguments_summary", "")));
+            addPathLike(out, String.valueOf(trace.getOrDefault("result_summary", "")));
+        }
+        return out.stream().distinct().limit(12).toList();
+    }
+
+    private void addPathLike(List<String> out, String text) {
+        if (text == null || text.isBlank()) {
+            return;
+        }
+        String cleaned = text.replace("{", " ").replace("}", " ").replace(",", " ");
+        for (String token : cleaned.split("\\s+")) {
+            String value = token.replace("\"", "").replace("'", "").trim();
+            if (value.contains("/") || value.endsWith(".java") || value.endsWith(".md") || value.endsWith(".json")
+                    || value.endsWith(".yml") || value.endsWith(".yaml") || value.endsWith(".txt")) {
+                out.add(value);
+            }
+        }
+    }
+
+    private List<Map<String, Object>> eventRows(Object raw) {
+        List<Map<String, Object>> out = new ArrayList<>();
+        if (raw instanceof List<?> list) {
+            for (Object item : list) {
+                if (item instanceof Map<?, ?> map) {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    for (Map.Entry<?, ?> entry : map.entrySet()) {
+                        if (entry.getKey() != null) {
+                            row.put(String.valueOf(entry.getKey()), entry.getValue());
+                        }
+                    }
+                    out.add(row);
+                }
+            }
+        }
+        return out;
+    }
+
+    private List<String> stringList(Object raw) {
+        List<String> out = new ArrayList<>();
+        if (raw instanceof List<?> list) {
+            for (Object item : list) {
+                if (item != null && !String.valueOf(item).isBlank()) {
+                    out.add(String.valueOf(item).trim());
+                }
+            }
+        }
+        return out;
+    }
+
+    private String abbreviate(String value, int maxChars) {
+        if (value == null) {
+            return "";
+        }
+        String trimmed = value.trim().replaceAll("\\s+", " ");
+        return trimmed.length() <= maxChars ? trimmed : trimmed.substring(0, maxChars) + "...";
+    }
+
+    private String string(Object raw) {
+        return raw != null ? String.valueOf(raw) : "";
     }
 
     /**
@@ -467,7 +714,37 @@ final class ContextSelectionService {
      * @param taskState       任务状态
      * @param toolTrace       工具调用轨迹
      */
-    record SessionPreparedInputs(String archivedSummary, TaskState taskState, List<Map<String, Object>> toolTrace) {
+    record SessionPreparedInputs(
+            String sessionId,
+            String archivedSummary,
+            TaskState taskState,
+            List<Map<String, Object>> toolTrace,
+            List<SubAgentResult> subAgentResults,
+            Map<String, Object> teamContext
+    ) {
+        SessionPreparedInputs {
+            toolTrace = toolTrace != null ? List.copyOf(toolTrace) : List.of();
+            subAgentResults = subAgentResults != null ? List.copyOf(subAgentResults) : List.of();
+            teamContext = teamContext != null ? Map.copyOf(teamContext) : Map.of();
+        }
+
+        SessionPreparedInputs(String sessionId, String archivedSummary, TaskState taskState, List<Map<String, Object>> toolTrace) {
+            this(sessionId, archivedSummary, taskState, toolTrace, List.of(), Map.of());
+        }
+
+        SessionPreparedInputs(
+                String sessionId,
+                String archivedSummary,
+                TaskState taskState,
+                List<Map<String, Object>> toolTrace,
+                List<SubAgentResult> subAgentResults
+        ) {
+            this(sessionId, archivedSummary, taskState, toolTrace, subAgentResults, Map.of());
+        }
+
+        SessionPreparedInputs(String archivedSummary, TaskState taskState, List<Map<String, Object>> toolTrace) {
+            this("", archivedSummary, taskState, toolTrace, List.of(), Map.of());
+        }
     }
 
     /**

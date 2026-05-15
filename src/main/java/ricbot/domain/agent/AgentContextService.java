@@ -4,6 +4,8 @@ import ricbot.domain.hook.AgentHook;
 import ricbot.domain.memory.MemoryStore;
 import ricbot.domain.message.InboundMessage;
 import ricbot.domain.session.Session;
+import ricbot.domain.subagent.SubAgentOrchestrator;
+import ricbot.domain.team.TeamEngine;
 import ricbot.domain.skill.SkillRouter;
 import ricbot.domain.skill.SkillRoutingContext;
 import ricbot.domain.skill.SkillsLoader;
@@ -66,9 +68,12 @@ record AgentContextService(Path workspace, ContextBuilder contextBuilder, Memory
         // 根据会话准备输入（如归档摘要、任务状态快照、最近工具追踪）、消息内容等选择上下文
         ContextSelectionService.SelectionResult selection = contextSelectionService.select(
                 new ContextSelectionService.SessionPreparedInputs(
+                        prepared.sessionKey(),
                         prepared.archivedSummary(),
                         prepared.taskStateSnapshot(),
-                        recentToolTrace(prepared.session())
+                        recentToolTrace(prepared.session()),
+                        SubAgentOrchestrator.resultsFromSession(prepared.session()),
+                        TeamEngine.contextFromSession(prepared.session())
                 ),
                 prepared.session().getMessages(),
                 msg.getContent(),

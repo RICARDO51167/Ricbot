@@ -11,6 +11,9 @@ final class ContextCommandRenderer {
             "memory_recall",
             "project_notes",
             "workspace_knowledge",
+            "verified_experience",
+            "team_context",
+            "subagent_summaries",
             "tool_trace"
     );
 
@@ -48,7 +51,8 @@ final class ContextCommandRenderer {
                 if (detail) {
                     sb.append(", chars=").append(section.chars())
                             .append(", max_items=").append(section.maxItems())
-                            .append(", max_chars=").append(section.maxChars());
+                            .append(", max_chars=").append(section.maxChars())
+                            .append(", avg_relevance=").append(section.avgRelevance());
                 }
                 sb.append("\n");
             }
@@ -78,6 +82,46 @@ final class ContextCommandRenderer {
                     }
                     if (!label.isBlank()) {
                         sb.append(" label=").append(label);
+                    }
+                    String experienceType = string(row.get("experience_type"));
+                    String subagentRole = string(row.get("subagent_role"));
+                    String status = string(row.get("status"));
+                    String sourceRef = string(row.get("sourceRef"));
+                    String effectiveConfidence = string(row.get("effectiveConfidence"));
+                    String confidence = string(row.get("confidence"));
+                    String successCount = string(row.get("successCount"));
+                    String failureCount = string(row.get("failureCount"));
+                    String lastUsedAt = string(row.get("lastUsedAt"));
+                    String reason = string(row.get("reason"));
+                    if (!experienceType.isBlank()) {
+                        sb.append(" experience_type=").append(experienceType);
+                    }
+                    if (!subagentRole.isBlank()) {
+                        sb.append(" subagent_role=").append(subagentRole);
+                    }
+                    if (!status.isBlank()) {
+                        sb.append(" status=").append(status);
+                    }
+                    if (!sourceRef.isBlank()) {
+                        sb.append(" sourceRef=").append(sourceRef);
+                    }
+                    if (!confidence.isBlank()) {
+                        sb.append(" confidence=").append(confidence);
+                    }
+                    if (!effectiveConfidence.isBlank()) {
+                        sb.append(" effectiveConfidence=").append(effectiveConfidence);
+                    }
+                    if (!successCount.isBlank()) {
+                        sb.append(" successCount=").append(successCount);
+                    }
+                    if (!failureCount.isBlank()) {
+                        sb.append(" failureCount=").append(failureCount);
+                    }
+                    if (!lastUsedAt.isBlank()) {
+                        sb.append(" lastUsedAt=").append(lastUsedAt);
+                    }
+                    if (!reason.isBlank()) {
+                        sb.append(" reason=").append(reason);
                     }
                     Object score = row.get("score");
                     if (score != null) {
@@ -118,7 +162,8 @@ final class ContextCommandRenderer {
                     intValue(map.get("max_chars")),
                     chars,
                     tokens,
-                    boolValue(map.get("truncated"))
+                    boolValue(map.get("truncated")),
+                    doubleValue(map.get("avg_relevance"))
             ));
         }
         return out;
@@ -168,6 +213,19 @@ final class ContextCommandRenderer {
         return raw != null && Boolean.parseBoolean(String.valueOf(raw));
     }
 
+    private static double doubleValue(Object raw) {
+        if (raw instanceof Number n) {
+            return n.doubleValue();
+        }
+        if (raw != null) {
+            try {
+                return Double.parseDouble(String.valueOf(raw));
+            } catch (Exception ignored) {
+            }
+        }
+        return 0d;
+    }
+
     private record SectionUsage(
             String name,
             int candidates,
@@ -176,7 +234,8 @@ final class ContextCommandRenderer {
             int maxChars,
             int chars,
             int tokens,
-            boolean truncated
+            boolean truncated,
+            double avgRelevance
     ) {
     }
 }

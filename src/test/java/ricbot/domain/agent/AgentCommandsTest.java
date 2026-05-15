@@ -3,6 +3,9 @@ package ricbot.domain.agent;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import ricbot.domain.memory.Dream;
+import ricbot.domain.experience.ExperienceEntry;
+import ricbot.domain.experience.ExperienceStore;
+import ricbot.domain.experience.ExperienceType;
 import ricbot.domain.memory.MemoryStore;
 import ricbot.domain.message.InboundMessage;
 import ricbot.domain.security.ApprovalRequest;
@@ -166,6 +169,106 @@ class AgentCommandsTest {
     }
 
     @Test
+    void subagentCommandsCreateListShowAndRecordRoleSummaries(@TempDir Path workspace) throws Exception {
+        SessionManager sessionManager = new SessionManager(workspace);
+        MemoryStore memoryStore = new MemoryStore(workspace);
+        Session session = sessionManager.getOrCreate("cli:direct");
+        seedSummaryMetadata(session);
+
+        AgentCommands commands = new AgentCommands(
+                sessionManager,
+                memoryStore,
+                null,
+                new Config.DreamConfig(),
+                "model",
+                workspace,
+                msg -> "cli:direct",
+                key -> List.<Future<?>>of(),
+                (key, reason) -> {}
+        );
+        CommandRouter router = new CommandRouter();
+        commands.register(router);
+
+        String planned = router.dispatch(context("/subagent plan V4.1 subagent summaries", sessionManager)).get().getContent();
+        String planId = lineValue(planned, "id:");
+        assertTrue(planned.contains("role: PLANNER"), planned);
+        assertTrue(planned.contains("subagent result recorded"), planned);
+
+        String explored = router.dispatch(context("/subagent explore inspect src/main/java/ricbot/domain/agent/ContextSelectionService.java", sessionManager)).get().getContent();
+        assertTrue(explored.contains("role: EXPLORER"), explored);
+
+        String reviewed = router.dispatch(context("/subagent review", sessionManager)).get().getContent();
+        assertTrue(reviewed.contains("role: REVIEWER"), reviewed);
+
+        String listed = router.dispatch(context("/subagent list", sessionManager)).get().getContent();
+        assertTrue(listed.contains("subagent results"), listed);
+        assertTrue(listed.contains(planId), listed);
+
+        String shown = router.dispatch(context("/subagent show " + planId, sessionManager)).get().getContent();
+        assertTrue(shown.contains("SubAgentResult " + planId), shown);
+        assertTrue(shown.contains("role: PLANNER"), shown);
+        String summary = router.dispatch(context("/summary", sessionManager)).get().getContent();
+        assertTrue(summary.contains("SubAgent Findings"), summary);
+        assertTrue(summary.contains(planId), summary);
+        assertTrue(Files.exists(workspace.resolve("notes").resolve("temporary")));
+    }
+
+    @Test
+    void teamCommandsOperateStateMachineAndExposeSummary(@TempDir Path workspace) throws Exception {
+        SessionManager sessionManager = new SessionManager(workspace);
+        MemoryStore memoryStore = new MemoryStore(workspace);
+
+        AgentCommands commands = new AgentCommands(
+                sessionManager,
+                memoryStore,
+                null,
+                new Config.DreamConfig(),
+                "model",
+                workspace,
+                msg -> "cli:direct",
+                key -> List.<Future<?>>of(),
+                (key, reason) -> {}
+        );
+        CommandRouter router = new CommandRouter();
+        commands.register(router);
+
+        String started = router.dispatch(context("/team start Implement TeamEngine verifier gate", sessionManager)).get().getContent();
+        String teamId = lineValue(started, "id:");
+        assertTrue(started.contains("team session started"), started);
+        assertTrue(Files.exists(workspace.resolve(".team").resolve(teamId).resolve("whiteboard.md")));
+
+        String created = router.dispatch(context("/team task developer Implement state transitions", sessionManager)).get().getContent();
+        String taskId = lineValue(created, "id:");
+        assertTrue(created.contains("role: DEVELOPER"), created);
+        assertTrue(created.contains("state: CREATED"), created);
+
+        String status = router.dispatch(context("/team status", sessionManager)).get().getContent();
+        assertTrue(status.contains(teamId), status);
+        assertTrue(status.contains(taskId), status);
+
+        String rejected = router.dispatch(context("/team verify " + taskId + " reject missing targeted tests", sessionManager)).get().getContent();
+        assertTrue(rejected.contains("team verification recorded"), rejected);
+        assertTrue(rejected.contains("state: REVISING"), rejected);
+        assertTrue(rejected.contains("revisionRequest:"), rejected);
+
+        String events = router.dispatch(context("/team events", sessionManager)).get().getContent();
+        assertTrue(events.contains("team events"), events);
+        assertTrue(events.contains("verification_reject"), events);
+
+        String whiteboard = router.dispatch(context("/team whiteboard", sessionManager)).get().getContent();
+        assertTrue(whiteboard.contains(".team/" + teamId + "/whiteboard.md"), whiteboard);
+        assertTrue(whiteboard.contains("Verifier result"), whiteboard);
+
+        String summary = router.dispatch(context("/summary", sessionManager)).get().getContent();
+        assertTrue(summary.contains("Team Findings"), summary);
+        assertTrue(summary.contains("revision:"), summary);
+
+        String aborted = router.dispatch(context("/team abort " + taskId, sessionManager)).get().getContent();
+        assertTrue(aborted.contains("team task aborted"), aborted);
+        assertTrue(aborted.contains("state: ABORTED"), aborted);
+    }
+
+    @Test
     void experienceCommandsExtractListShowVerifyAndReject(@TempDir Path workspace) throws Exception {
         SessionManager sessionManager = new SessionManager(workspace);
         MemoryStore memoryStore = new MemoryStore(workspace);
@@ -210,6 +313,202 @@ class AgentCommandsTest {
         assertTrue(Files.readString(workspace.resolve("experience").resolve("rejected.jsonl")).contains(ids.get(1)));
     }
 
+    @Test
+    void contextSourcesShowsVerifiedExperienceButNotCandidate(@TempDir Path workspace) throws Exception {
+        SessionManager sessionManager = new SessionManager(workspace);
+        MemoryStore memoryStore = new MemoryStore(workspace);
+        Session session = sessionManager.getOrCreate("cli:direct");
+        PromptContextBundle bundle = new PromptContextBundle();
+        bundle.addItem(
+                "verified_experience",
+                "TEST_POLICY | Run filesystem tests",
+                0.9d,
+                ContextSource.of(
+                        "experience",
+                        "exp_verified",
+                        "experience/verified.jsonl:exp_verified",
+                        "Run filesystem tests",
+                        0.9d,
+                        Map.of(
+                                "status", "VERIFIED",
+                                "experience_type", "TEST_POLICY",
+                                "sourceRef", "V3.6",
+                                "confidence", 0.8d,
+                                "effectiveConfidence", 0.9d,
+                                "successCount", 2,
+                                "failureCount", 1,
+                                "lastUsedAt", "2026-05-14T00:00:00Z",
+                                "reason", "keywords=filesystem"
+                        )
+                )
+        );
+        bundle.addItem(
+                "subagent_summaries",
+                "PLANNER task=subtask_context summary=Plan context display",
+                0.8d,
+                ContextSource.of(
+                        "subagent",
+                        "subtask_context",
+                        "subagent:subtask_context",
+                        "PLANNER summary",
+                        0.8d,
+                        Map.of(
+                                "subagent_role", "PLANNER",
+                                "confidence", 0.8d
+                        )
+                )
+        );
+        bundle.addItem(
+                "team_context",
+                "session=team_demo | state=VERIFYING | goal=Team context",
+                0.8d,
+                ContextSource.of(
+                        "team",
+                        "team_demo",
+                        ".team/team_demo/whiteboard.md",
+                        "team whiteboard",
+                        0.8d,
+                        Map.of(
+                                "team_session", "team_demo",
+                                "team_state", "VERIFYING"
+                        )
+                )
+        );
+        session.getMetadata().put(SessionRuntimeKeys.CONTEXT_TRACE_KEY, Map.of(
+                "prompt_context_budget", bundle.budgetTrace(),
+                "context_quality", bundle.qualityReport().toMap()
+        ));
+
+        AgentCommands commands = new AgentCommands(
+                sessionManager,
+                memoryStore,
+                null,
+                new Config.DreamConfig(),
+                "model",
+                workspace,
+                msg -> "cli:direct",
+                key -> List.<Future<?>>of(),
+                (key, reason) -> {}
+        );
+        CommandRouter router = new CommandRouter();
+        commands.register(router);
+
+        String sources = router.dispatch(context("/context --sources", sessionManager)).get().getContent();
+        String detail = router.dispatch(context("/context --detail", sessionManager)).get().getContent();
+
+        assertTrue(sources.contains("verified_experience"), sources);
+        assertTrue(sources.contains("team_context"), sources);
+        assertTrue(sources.contains("subagent_summaries"), sources);
+        assertTrue(sources.contains("experience/verified.jsonl:exp_verified"), sources);
+        assertTrue(sources.contains(".team/team_demo/whiteboard.md"), sources);
+        assertTrue(sources.contains("subagent:subtask_context"), sources);
+        assertTrue(sources.contains("subagent_role=PLANNER"), sources);
+        assertTrue(sources.contains("status=VERIFIED"), sources);
+        assertTrue(sources.contains("effectiveConfidence=0.9"), sources);
+        assertTrue(sources.contains("successCount=2"), sources);
+        assertTrue(sources.contains("failureCount=1"), sources);
+        assertTrue(sources.contains("reason=keywords=filesystem"), sources);
+        assertFalse(sources.contains("candidates.jsonl"), sources);
+        assertTrue(detail.contains("verified_experience"), detail);
+        assertTrue(detail.contains("team_context"), detail);
+        assertTrue(detail.contains("subagent_summaries"), detail);
+        assertTrue(detail.contains("avg_relevance"), detail);
+    }
+
+    @Test
+    void experienceFeedbackUsageStaleAndArchiveCommands(@TempDir Path workspace) throws Exception {
+        SessionManager sessionManager = new SessionManager(workspace);
+        MemoryStore memoryStore = new MemoryStore(workspace);
+        ExperienceStore store = new ExperienceStore(workspace);
+        ExperienceEntry added = store.addCandidate(experience("Run filesystem feedback tests", 0.7d));
+        ExperienceEntry verified = store.verify(added.id());
+        store.recordUsage(verified.id(), "cli:direct", "filesystem feedback tests", "goal", 0.9d, "keywords=filesystem");
+
+        AgentCommands commands = new AgentCommands(
+                sessionManager,
+                memoryStore,
+                null,
+                new Config.DreamConfig(),
+                "model",
+                workspace,
+                msg -> "cli:direct",
+                key -> List.<Future<?>>of(),
+                (key, reason) -> {}
+        );
+        CommandRouter router = new CommandRouter();
+        commands.register(router);
+
+        String success = router.dispatch(context("/experience feedback " + verified.id() + " success", sessionManager)).get().getContent();
+        assertTrue(success.contains("experience feedback recorded"), success);
+        assertTrue(success.contains("successCount: 1"), success);
+        assertTrue(success.contains("effectiveConfidence:"), success);
+
+        String usage = router.dispatch(context("/experience usage " + verified.id(), sessionManager)).get().getContent();
+        assertTrue(usage.contains("experience usage"), usage);
+        assertTrue(usage.contains("outcome=SUCCESS"), usage);
+
+        String failure = router.dispatch(context("/experience feedback " + verified.id() + " failure", sessionManager)).get().getContent();
+        assertTrue(failure.contains("failureCount: 1"), failure);
+        router.dispatch(context("/experience feedback " + verified.id() + " failure", sessionManager)).get();
+
+        String stale = router.dispatch(context("/experience stale", sessionManager)).get().getContent();
+        assertTrue(stale.contains(verified.id()), stale);
+        assertTrue(stale.contains("failureCount>successCount"), stale);
+
+        String archived = router.dispatch(context("/experience archive " + verified.id(), sessionManager)).get().getContent();
+        assertTrue(archived.contains("experience archived"), archived);
+        assertTrue(archived.contains("status: ARCHIVED"), archived);
+        assertTrue(new ExperienceStore(workspace).searchVerified("filesystem feedback tests", List.of(), 5).isEmpty());
+    }
+
+    @Test
+    void experienceGovernanceCommandsPromoteDemoteRestoreStatsAndReview(@TempDir Path workspace) throws Exception {
+        SessionManager sessionManager = new SessionManager(workspace);
+        MemoryStore memoryStore = new MemoryStore(workspace);
+        ExperienceStore store = new ExperienceStore(workspace);
+        ExperienceEntry high = store.verify(store.addCandidate(experience("Run governance promote tests", 0.9d)).id());
+        ExperienceEntry failing = store.verify(store.addCandidate(experience("Run governance review tests", 0.6d)).id());
+        store.feedback(failing.id(), ricbot.domain.experience.ExperienceOutcome.FAILURE);
+
+        AgentCommands commands = new AgentCommands(
+                sessionManager,
+                memoryStore,
+                null,
+                new Config.DreamConfig(),
+                "model",
+                workspace,
+                msg -> "cli:direct",
+                key -> List.<Future<?>>of(),
+                (key, reason) -> {}
+        );
+        CommandRouter router = new CommandRouter();
+        commands.register(router);
+
+        String promoted = router.dispatch(context("/experience promote " + high.id(), sessionManager)).get().getContent();
+        assertTrue(promoted.contains("experience promoted"), promoted);
+        assertTrue(promoted.contains("promotedTo: notes/project/test_policy.md"), promoted);
+        assertTrue(Files.readString(workspace.resolve("notes/project/test_policy.md")).contains(high.id()));
+
+        String demoted = router.dispatch(context("/experience demote " + high.id(), sessionManager)).get().getContent();
+        assertTrue(demoted.contains("experience demoted"), demoted);
+        assertTrue(demoted.contains("demotedAt:"), demoted);
+
+        String stats = router.dispatch(context("/experience stats", sessionManager)).get().getContent();
+        assertTrue(stats.contains("experience stats"), stats);
+        assertTrue(stats.contains("verified: 2"), stats);
+        assertTrue(stats.contains("promoted: 1"), stats);
+
+        String review = router.dispatch(context("/experience review", sessionManager)).get().getContent();
+        assertTrue(review.contains("experience review"), review);
+        assertTrue(review.contains("failureCount>successCount"), review);
+
+        String archived = router.dispatch(context("/experience archive " + high.id(), sessionManager)).get().getContent();
+        assertTrue(archived.contains("status: ARCHIVED"), archived);
+        String restored = router.dispatch(context("/experience restore " + high.id(), sessionManager)).get().getContent();
+        assertTrue(restored.contains("experience restored"), restored);
+        assertTrue(restored.contains("status: VERIFIED"), restored);
+    }
+
     private CommandRouter.CommandContext context(String raw, SessionManager sessionManager) {
         InboundMessage msg = new InboundMessage("cli", "user", "direct", raw);
         Session session = sessionManager.getOrCreate("cli:direct");
@@ -243,6 +542,21 @@ class AgentCommandsTest {
             }
         }
         return ids;
+    }
+
+    private static ExperienceEntry experience(String title, double confidence) {
+        return ExperienceEntry.candidate(
+                ExperienceType.TEST_POLICY,
+                title,
+                "Run targeted tests after changing filesystem tools.",
+                "When changing filesystem tools.",
+                "Command test evidence.",
+                "task_summary",
+                "V3.7",
+                List.of("src/main/java/ricbot/tool/filesystem/WriteFileTool.java"),
+                List.of("./mvnw -q -Dtest='ricbot.tool.filesystem.*Test' test"),
+                confidence
+        );
     }
 
     private static void seedSummaryMetadata(Session session) {

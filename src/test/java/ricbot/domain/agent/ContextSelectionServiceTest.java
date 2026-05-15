@@ -2,10 +2,15 @@ package ricbot.domain.agent;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import ricbot.domain.experience.ExperienceEntry;
+import ricbot.domain.experience.ExperienceStore;
+import ricbot.domain.experience.ExperienceType;
 import ricbot.domain.memory.MemoryStore;
 import ricbot.domain.note.NoteService;
 import ricbot.domain.rag.WorkspaceRagService;
 import ricbot.domain.session.Session;
+import ricbot.domain.subagent.SubAgentResult;
+import ricbot.domain.subagent.SubAgentRole;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -78,7 +83,7 @@ class ContextSelectionServiceTest {
         );
 
         ContextSelectionService.SelectionResult result = service.select(
-                new ContextSelectionService.SessionPreparedInputs(null, TaskState.fromSession(new Session("test")), List.of()),
+                new ContextSelectionService.SessionPreparedInputs("session-test", null, TaskState.fromSession(new Session("test")), List.of()),
                 List.of(),
                 "继续处理 MCP timeout",
                 6
@@ -92,5 +97,194 @@ class ContextSelectionServiceTest {
         Map<String, Object> budgetTrace = result.bundle().budgetTrace();
         assertTrue(String.valueOf(budgetTrace).contains("project_notes"), String.valueOf(budgetTrace));
         assertTrue(String.valueOf(budgetTrace).contains("workspace_knowledge"), String.valueOf(budgetTrace));
+    }
+
+    @Test
+    void select_addsVerifiedExperienceOnly(@TempDir Path workspace) {
+        MemoryStore memoryStore = new MemoryStore(workspace);
+        ExperienceStore experienceStore = new ExperienceStore(workspace);
+        ExperienceEntry verified = experienceStore.addCandidate(experience(
+                "Run filesystem tests",
+                "Run filesystem tests after changing write_file or edit_file.",
+                List.of("src/main/java/ricbot/tool/filesystem/WriteFileTool.java"),
+                0.8d
+        ));
+        experienceStore.verify(verified.id());
+        experienceStore.addCandidate(experience(
+                "Candidate should not enter context",
+                "Candidate filesystem advice.",
+                List.of("src/main/java/ricbot/tool/filesystem/EditFileTool.java"),
+                1.0d
+        ));
+
+        ContextSelectionService service = new ContextSelectionService(
+                memoryStore,
+                new ToolTraceSummarizer(),
+                32_000,
+                null,
+                null,
+                experienceStore
+        );
+
+        ContextSelectionService.SelectionResult result = service.select(
+                new ContextSelectionService.SessionPreparedInputs("session-test", null, TaskState.fromSession(new Session("test")), List.of()),
+                List.of(),
+                "修改 src/main/java/ricbot/tool/filesystem/EditFileTool.java 后跑什么测试",
+                6
+        );
+
+        String rendered = result.bundle().render();
+        assertTrue(rendered.contains("## verified_experience"), rendered);
+        assertTrue(rendered.contains("Run filesystem tests"), rendered);
+        assertFalse(rendered.contains("Candidate should not enter context"), rendered);
+
+        Map<String, Object> budgetTrace = result.bundle().budgetTrace();
+        assertTrue(String.valueOf(budgetTrace).contains("verified_experience"), String.valueOf(budgetTrace));
+        assertTrue(String.valueOf(budgetTrace).contains("experience/verified.jsonl:" + verified.id()), String.valueOf(budgetTrace));
+        assertEquals(1, experienceStore.listUsage(verified.id()).size());
+        assertEquals("session-test", experienceStore.listUsage(verified.id()).get(0).sessionId());
+    }
+
+    @Test
+    void select_skipsRejectedExperience(@TempDir Path workspace) {
+        ExperienceStore experienceStore = new ExperienceStore(workspace);
+        ExperienceEntry rejected = experienceStore.addCandidate(experience(
+                "Rejected filesystem rule",
+                "Rejected content must not enter context.",
+                List.of("src/main/java/ricbot/tool/filesystem/WriteFileTool.java"),
+                1.0d
+        ));
+        experienceStore.reject(rejected.id());
+        ContextSelectionService service = new ContextSelectionService(
+                new MemoryStore(workspace),
+                new ToolTraceSummarizer(),
+                32_000,
+                null,
+                null,
+                experienceStore
+        );
+
+        ContextSelectionService.SelectionResult result = service.select(
+                new ContextSelectionService.SessionPreparedInputs(null, TaskState.fromSession(new Session("test")), List.of()),
+                List.of(),
+                "filesystem WriteFileTool",
+                6
+        );
+
+        assertFalse(result.bundle().render().contains("Rejected filesystem rule"), result.bundle().render());
+        assertTrue(result.bundle().section("verified_experience").isEmpty());
+        assertTrue(experienceStore.listUsage(rejected.id()).isEmpty());
+    }
+
+    @Test
+    void select_doesNotRecordUsageForSearchResultsThatDoNotEnterContext(@TempDir Path workspace) {
+        ExperienceStore experienceStore = new ExperienceStore(workspace);
+        ExperienceEntry verified = experienceStore.addCandidate(experience(
+                "Run filesystem tests",
+                "Run filesystem tests after changing write_file or edit_file.",
+                List.of("src/main/java/ricbot/tool/filesystem/WriteFileTool.java"),
+                0.8d
+        ));
+        experienceStore.verify(verified.id());
+        ContextSelectionService service = new ContextSelectionService(
+                new MemoryStore(workspace),
+                new ToolTraceSummarizer(),
+                32_000,
+                null,
+                null,
+                experienceStore
+        );
+
+        service.select(
+                new ContextSelectionService.SessionPreparedInputs("session-test", null, TaskState.fromSession(new Session("test")), List.of()),
+                List.of(),
+                "completely unrelated query",
+                6
+        );
+
+        assertTrue(experienceStore.listUsage(verified.id()).isEmpty());
+    }
+
+    @Test
+    void select_addsSubAgentSummaries(@TempDir Path workspace) {
+        ContextSelectionService service = new ContextSelectionService(new MemoryStore(workspace), new ToolTraceSummarizer());
+        SubAgentResult result = new SubAgentResult(
+                "subtask_plan",
+                SubAgentRole.PLANNER,
+                "Plan the context upgrade.",
+                List.of("Keep the change small."),
+                List.of("Do not change provider path."),
+                List.of("./mvnw -q -Dtest='ricbot.domain.agent.*Test' test"),
+                List.of("src/main/java/ricbot/domain/agent/ContextSelectionService.java"),
+                0.72d,
+                null
+        );
+
+        ContextSelectionService.SelectionResult selection = service.select(
+                new ContextSelectionService.SessionPreparedInputs("session-test", null, null, List.of(), List.of(result)),
+                List.of(),
+                "context upgrade",
+                6
+        );
+
+        String rendered = selection.bundle().render();
+        assertTrue(rendered.contains("## subagent_summaries"), rendered);
+        assertTrue(rendered.contains("Plan the context upgrade"), rendered);
+        Map<String, Object> budgetTrace = selection.bundle().budgetTrace();
+        assertTrue(String.valueOf(budgetTrace).contains("subagent_summaries"), String.valueOf(budgetTrace));
+        assertTrue(String.valueOf(budgetTrace).contains("subagent:subtask_plan"), String.valueOf(budgetTrace));
+    }
+
+    @Test
+    void select_addsTeamContext(@TempDir Path workspace) {
+        ContextSelectionService service = new ContextSelectionService(new MemoryStore(workspace), new ToolTraceSummarizer());
+        Map<String, Object> teamContext = Map.of(
+                "session", Map.of(
+                        "id", "team_demo",
+                        "goal", "Coordinate verifier gate",
+                        "state", "VERIFYING"
+                ),
+                "whiteboardPath", ".team/team_demo/whiteboard.md",
+                "whiteboardSummary", "Leader note: worker produced a small patch.",
+                "verifierResults", List.of("teamtask_1: REJECT - missing targeted tests"),
+                "revisionRequests", List.of("teamtask_1: Revision requested: missing targeted tests"),
+                "recentEvents", List.of(Map.of(
+                        "id", "event_1",
+                        "type", "verification_reject",
+                        "role", "VERIFIER",
+                        "taskId", "teamtask_1",
+                        "message", "missing targeted tests"
+                ))
+        );
+
+        ContextSelectionService.SelectionResult selection = service.select(
+                new ContextSelectionService.SessionPreparedInputs("session-test", null, null, List.of(), List.of(), teamContext),
+                List.of(),
+                "team verifier context",
+                6
+        );
+
+        String rendered = selection.bundle().render();
+        assertTrue(rendered.contains("## team_context"), rendered);
+        assertTrue(rendered.contains("team_demo"), rendered);
+        assertTrue(rendered.contains("verification_reject"), rendered);
+        Map<String, Object> budgetTrace = selection.bundle().budgetTrace();
+        assertTrue(String.valueOf(budgetTrace).contains("team_context"), String.valueOf(budgetTrace));
+        assertTrue(String.valueOf(budgetTrace).contains(".team/team_demo/whiteboard.md"), String.valueOf(budgetTrace));
+    }
+
+    private ExperienceEntry experience(String title, String content, List<String> files, double confidence) {
+        return ExperienceEntry.candidate(
+                ExperienceType.TEST_POLICY,
+                title,
+                content,
+                "When changing filesystem tools.",
+                "Verified from previous task.",
+                "task_summary",
+                "V3.6",
+                files,
+                List.of("./mvnw -q -Dtest='ricbot.tool.filesystem.*Test' test"),
+                confidence
+        );
     }
 }

@@ -87,6 +87,34 @@ public class NoteService {
         return updated;
     }
 
+    public NoteEntry appendProjectFile(String fileName, String title, String type, String append, List<String> tags) {
+        if (fileName == null || fileName.isBlank() || fileName.contains("/") || fileName.contains("\\") || !fileName.endsWith(".md")) {
+            throw new IllegalArgumentException("invalid project note file: " + fileName);
+        }
+        String path = "notes/project/" + fileName;
+        NoteEntry existing = findByPath(path);
+        if (existing == null) {
+            String now = Instant.now().toString();
+            existing = new NoteEntry(
+                    "project_" + fileName.substring(0, fileName.length() - 3).replaceAll("[^A-Za-z0-9_]+", "_"),
+                    title != null && !title.isBlank() ? title.trim() : fileName,
+                    "project",
+                    NoteEntry.normalizeType(type),
+                    path,
+                    dedupe(tags),
+                    now,
+                    now,
+                    false
+            );
+            writeNoteFile(workspace.resolve(path).toAbsolutePath().normalize(), existing, append);
+            List<NoteEntry> entries = new ArrayList<>(list());
+            entries.add(existing);
+            writeIndex(entries);
+            return existing;
+        }
+        return update(existing.id(), null, append);
+    }
+
     public List<NoteEntry> list() {
         ensureLayout();
         if (!Files.exists(indexFile)) {
@@ -215,6 +243,19 @@ public class NoteService {
         }
         for (NoteEntry entry : list()) {
             if (id.equals(entry.id())) {
+                return entry;
+            }
+        }
+        return null;
+    }
+
+    private NoteEntry findByPath(String path) {
+        if (path == null || path.isBlank()) {
+            return null;
+        }
+        String normalized = path.replace('\\', '/');
+        for (NoteEntry entry : list()) {
+            if (normalized.equals(entry.path().replace('\\', '/'))) {
                 return entry;
             }
         }

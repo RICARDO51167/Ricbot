@@ -11,6 +11,7 @@ import ricbot.tool.web.WebSearchTool;
 import ricbot.domain.memory.Consolidator;
 import ricbot.domain.memory.Dream;
 import ricbot.domain.memory.MemoryStore;
+import ricbot.domain.experience.ExperienceStore;
 import ricbot.domain.note.NoteService;
 import ricbot.domain.rag.WorkspaceRagService;
 import ricbot.domain.security.ApprovalService;
@@ -283,7 +284,8 @@ public class AgentLoop {
                 new ToolTraceSummarizer(),
                 this.contextWindowTokens,
                 new NoteService(this.workspace),
-                new WorkspaceRagService(this.workspace)
+                new WorkspaceRagService(this.workspace),
+                new ExperienceStore(this.workspace)
         );
         this.agentContextService = new AgentContextService(
                 this.workspace,

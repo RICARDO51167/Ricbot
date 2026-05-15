@@ -78,6 +78,8 @@ class ExperienceExtractorTest {
                 diffReviews,
                 suggestedTests,
                 List.of(),
+                List.of(),
+                List.of(),
                 ""
         );
     }

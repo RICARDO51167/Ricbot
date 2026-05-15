@@ -23,6 +23,9 @@ final class PromptContextBundle {
             "memory_recall",    // 记忆召回
             "project_notes",    // 项目笔记
             "workspace_knowledge", // 工作区知识库
+            "verified_experience", // 已验证经验
+            "team_context", // TeamEngine 协作状态
+            "subagent_summaries", // 子代理摘要
             "tool_trace"        // 工具调用轨迹
     );
 
@@ -205,6 +208,7 @@ final class PromptContextBundle {
             section.put("estimated_chars", emittedChars);
             section.put("estimated_tokens", estimateTokens(emittedChars));
             section.put("truncated", truncated || emitted < items.size());
+            section.put("avg_relevance", averageRelevance(key));
             sectionReports.add(section);
         }
         out.put("estimated_rendered_chars", estimatedTotalChars);
@@ -322,6 +326,19 @@ final class PromptContextBundle {
         return count > 0 ? total / count : 0d;
     }
 
+    private double averageRelevance(String section) {
+        double total = 0d;
+        int count = 0;
+        for (Double value : relevanceScores.getOrDefault(section, List.of())) {
+            if (value == null) {
+                continue;
+            }
+            total += value;
+            count++;
+        }
+        return count > 0 ? Math.round((total / count) * 1000.0d) / 1000.0d : 0d;
+    }
+
     private static int estimateTokens(int chars) {
         return Math.max(0, (int) Math.ceil(chars / 4.0d));
     }
@@ -386,6 +403,9 @@ final class PromptContextBundle {
         out.put("memory_recall", new SectionBudget(8, 2_000));
         out.put("project_notes", new SectionBudget(5, 1_600));
         out.put("workspace_knowledge", new SectionBudget(5, 2_400));
+        out.put("verified_experience", new SectionBudget(3, 800));
+        out.put("team_context", new SectionBudget(3, 1_000));
+        out.put("subagent_summaries", new SectionBudget(3, 900));
         out.put("tool_trace", new SectionBudget(4, 1_200));
         return out;
     }

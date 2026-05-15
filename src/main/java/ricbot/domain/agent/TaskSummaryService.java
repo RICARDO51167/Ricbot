@@ -1,6 +1,9 @@
 package ricbot.domain.agent;
 
 import ricbot.domain.session.Session;
+import ricbot.domain.subagent.SubAgentOrchestrator;
+import ricbot.domain.subagent.SubAgentResult;
+import ricbot.domain.team.TeamEngine;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -14,7 +17,15 @@ public final class TaskSummaryService {
     public TaskSummary summarizeCurrentTask(Session session) {
         TaskState taskState = TaskState.fromSession(session);
         List<Map<String, Object>> toolTrace = readTrace(session, SessionRuntimeKeys.TOOL_TRACE_KEY);
-        return summarizeCurrentTask(taskState, toolTrace, List.of(), List.of(), List.of());
+        return summarizeCurrentTask(
+                taskState,
+                toolTrace,
+                List.of(),
+                List.of(),
+                List.of(),
+                renderTeamFindings(TeamEngine.contextFromSession(session)),
+                renderSubAgentFindings(SubAgentOrchestrator.resultsFromSession(session))
+        );
     }
 
     TaskSummary summarizeCurrentTask(
@@ -23,6 +34,18 @@ public final class TaskSummaryService {
             List<String> modifiedFiles,
             List<String> testResults,
             List<String> keyDecisions
+    ) {
+        return summarizeCurrentTask(taskState, toolTrace, modifiedFiles, testResults, keyDecisions, List.of(), List.of());
+    }
+
+    TaskSummary summarizeCurrentTask(
+            TaskState taskState,
+            List<Map<String, Object>> toolTrace,
+            List<String> modifiedFiles,
+            List<String> testResults,
+            List<String> keyDecisions,
+            List<String> teamFindings,
+            List<String> subAgentFindings
     ) {
         List<String> changedFiles = new ArrayList<>(dedupe(modifiedFiles));
         changedFiles.addAll(inferChangedFiles(toolTrace));
@@ -63,8 +86,43 @@ public final class TaskSummaryService {
                 diffReviews,
                 suggestedTests,
                 rollbackHints,
+                new ArrayList<>(dedupe(teamFindings)),
+                new ArrayList<>(dedupe(subAgentFindings)),
                 notice(taskState, changedFiles, toolTrace)
         );
+    }
+
+    private List<String> renderTeamFindings(Map<String, Object> teamContext) {
+        if (teamContext == null || teamContext.isEmpty()) {
+            return List.of();
+        }
+        List<String> out = new ArrayList<>();
+        Object rawSession = teamContext.get("session");
+        if (rawSession instanceof Map<?, ?> session) {
+            String id = string(session.get("id"));
+            String state = string(session.get("state"));
+            String goal = string(session.get("goal"));
+            out.add("team " + id + " state=" + state + " goal=" + goal);
+        }
+        for (String value : stringList(teamContext.get("verifierResults"))) {
+            out.add("verifier: " + value);
+        }
+        for (String value : stringList(teamContext.get("revisionRequests"))) {
+            out.add("revision: " + value);
+        }
+        String whiteboard = string(teamContext.get("whiteboardSummary")).replace("\n", " ").trim();
+        if (!whiteboard.isBlank()) {
+            out.add("whiteboard: " + abbreviate(whiteboard, 220));
+        }
+        return new ArrayList<>(dedupe(out));
+    }
+
+    private List<String> renderSubAgentFindings(List<SubAgentResult> results) {
+        List<String> out = new ArrayList<>();
+        for (SubAgentResult result : results != null ? results : List.<SubAgentResult>of()) {
+            out.add(SubAgentOrchestrator.renderCompact(result));
+        }
+        return out;
     }
 
     private List<String> inferChangedFiles(List<Map<String, Object>> toolTrace) {
@@ -258,6 +316,18 @@ public final class TaskSummaryService {
         return out;
     }
 
+    private List<String> stringList(Object raw) {
+        List<String> out = new ArrayList<>();
+        if (raw instanceof List<?> list) {
+            for (Object item : list) {
+                if (item != null && !String.valueOf(item).isBlank()) {
+                    out.add(String.valueOf(item).trim());
+                }
+            }
+        }
+        return out;
+    }
+
     private String abbreviate(String value, int maxChars) {
         if (value == null) {
             return "";
@@ -281,6 +351,8 @@ public final class TaskSummaryService {
             List<String> diffReviews,
             List<String> suggestedTests,
             List<String> rollbackHints,
+            List<String> teamFindings,
+            List<String> subAgentFindings,
             String notice
     ) {
         public TaskSummary {
@@ -294,6 +366,8 @@ public final class TaskSummaryService {
             diffReviews = diffReviews != null ? List.copyOf(diffReviews) : List.of();
             suggestedTests = suggestedTests != null ? List.copyOf(suggestedTests) : List.of();
             rollbackHints = rollbackHints != null ? List.copyOf(rollbackHints) : List.of();
+            teamFindings = teamFindings != null ? List.copyOf(teamFindings) : List.of();
+            subAgentFindings = subAgentFindings != null ? List.copyOf(subAgentFindings) : List.of();
             notice = notice != null ? notice : "";
         }
 
@@ -309,6 +383,8 @@ public final class TaskSummaryService {
             out.put("diff_reviews", diffReviews);
             out.put("suggested_tests", suggestedTests);
             out.put("rollback_hints", rollbackHints);
+            out.put("team_findings", teamFindings);
+            out.put("subagent_findings", subAgentFindings);
             out.put("notice", notice);
             return out;
         }

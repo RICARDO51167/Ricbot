@@ -137,6 +137,8 @@ public class ExperienceExtractor {
                 diffReviews,
                 suggestedTests,
                 rollbackHints,
+                listSection(markdown, "Team Findings"),
+                listSection(markdown, "SubAgent Findings"),
                 ""
         );
     }

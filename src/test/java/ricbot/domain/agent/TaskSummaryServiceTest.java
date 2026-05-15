@@ -1,6 +1,9 @@
 package ricbot.domain.agent;
 
 import org.junit.jupiter.api.Test;
+import ricbot.domain.session.Session;
+import ricbot.domain.subagent.SubAgentResult;
+import ricbot.domain.subagent.SubAgentRole;
 
 import java.util.List;
 import java.util.Map;
@@ -117,5 +120,56 @@ class TaskSummaryServiceTest {
         );
 
         assertTrue(summary.notice().contains("没有可汇总"), summary.notice());
+    }
+
+    @Test
+    void summarizeCurrentTask_includesSubAgentFindingsFromSession() {
+        Session session = new Session("cli:direct");
+        session.getMetadata().put(SessionRuntimeKeys.TASK_STATE_KEY, Map.of(
+                "goal", "V4.1 subagent summaries"
+        ));
+        session.getMetadata().put(SessionRuntimeKeys.SUBAGENT_RESULTS_KEY, List.of(
+                new SubAgentResult(
+                        "subtask_review",
+                        SubAgentRole.REVIEWER,
+                        "Review current diff.",
+                        List.of("DiffReview is present."),
+                        List.of("Run targeted tests."),
+                        List.of("./mvnw -q -Dtest='ricbot.domain.agent.*Test' test"),
+                        List.of("src/main/java/ricbot/domain/agent/TaskSummaryService.java"),
+                        0.7d,
+                        null
+                ).toMap()
+        ));
+
+        TaskSummaryService.TaskSummary summary = new TaskSummaryService().summarizeCurrentTask(session);
+
+        assertTrue(summary.subAgentFindings().toString().contains("REVIEWER"), summary.subAgentFindings().toString());
+        assertTrue(summary.toMap().containsKey("subagent_findings"));
+    }
+
+    @Test
+    void summarizeCurrentTask_includesTeamFindingsFromSession() {
+        Session session = new Session("cli:direct");
+        session.getMetadata().put(SessionRuntimeKeys.TASK_STATE_KEY, Map.of(
+                "goal", "V4.1 team engine"
+        ));
+        session.getMetadata().put(SessionRuntimeKeys.TEAM_CONTEXT_KEY, Map.of(
+                "session", Map.of(
+                        "id", "team_demo",
+                        "state", "REVISING",
+                        "goal", "Implement verifier gate"
+                ),
+                "whiteboardSummary", "Leader note: verifier rejected missing tests.",
+                "verifierResults", List.of("teamtask_1: REJECT - missing tests"),
+                "revisionRequests", List.of("teamtask_1: Revision requested: missing tests")
+        ));
+
+        TaskSummaryService.TaskSummary summary = new TaskSummaryService().summarizeCurrentTask(session);
+
+        assertTrue(summary.teamFindings().toString().contains("team_demo"), summary.teamFindings().toString());
+        assertTrue(summary.teamFindings().toString().contains("verifier:"), summary.teamFindings().toString());
+        assertTrue(summary.teamFindings().toString().contains("revision:"), summary.teamFindings().toString());
+        assertTrue(summary.toMap().containsKey("team_findings"));
     }
 }

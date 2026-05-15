@@ -34,6 +34,60 @@ Ricbot 是一个面向“可工程化智能代理”的 Java 项目。它试图�
 
 > 说明：当前运行时、入口类与主包名以 `ricbot` 为准。仓库中少量旧命名仅作为兼容入口保留，例如旧环境变量 fallback。
 
+## 核心闭环
+
+Ricbot 当前定位：
+
+```text
+Java Agent Runtime with Context Engineering, Safe Tool Execution,
+Experience Memory and Eval-driven Learning
+```
+
+它不是只展示一次模型调用，而是把“任务执行 -> 安全工具 -> 工程审查 -> 任务沉淀 -> 经验治理 -> 评测学习”串成一个可复现闭环。
+
+文字架构图：
+
+```text
+User / CLI / API / Channel
+  -> MessageBus
+  -> AgentLoop
+     -> ContextSelectionService
+        -> memory / notes / RAG / tool trace / task state / verified experience
+     -> Provider
+     -> ToolRegistry
+        -> risk analyzer -> approval request -> /approve resume
+        -> filesystem/process tools -> DiffReview
+     -> TaskSummaryService
+        -> /summary -> TaskNoteWriter -> notes/tasks
+     -> ExperienceExtractor
+        -> candidates.jsonl -> manual verify -> verified.jsonl
+        -> ContextSelectionService verified_experience
+     -> ExperiencePromoter -> notes/project playbook
+     -> EvalHarness
+        -> artifacts -> eval learn -> candidate experience
+```
+
+核心能力表：
+
+| 能力 | 当前闭环位置 | 说明 |
+| --- | --- | --- |
+| Context Engineering | `ContextSelectionService` / `/context` | 分层选择 recent history、task state、memory、notes、workspace knowledge、tool trace 和 verified experience，并暴露 token/source 观测 |
+| Safe Execution | `CommandRiskAnalyzer` / `ApprovalService` / `/approve` | MEDIUM/HIGH 工具调用先生成 approval request，审批后恢复原 pending tool call，BLOCKED 直接拒绝 |
+| Diff Review | `DiffReviewService` / file tools | 文件变更后返回 changed files、风险提示、suspicious changes、suggested tests 和 rollback hint |
+| Task Notes | `TaskSummaryService` / `TaskNoteWriter` | `/summary` 可读摘要，`/summary --write-note` 显式写入 `notes/tasks` 并更新索引 |
+| Experience Governance | `ExperienceStore` / `/experience` | 经验先进入 candidate，经人工 verify 后才进入 verified；promote 必须人工触发 |
+| Eval Harness | `eval smoke/replay/compare/learn` | golden case、replay artifact、回归对比和 eval-driven candidate learning 形成可重复反馈源 |
+
+污染防护规则：
+
+- `candidate` experience 不进入上下文。
+- `rejected` experience 不进入上下文。
+- 只有 `VERIFIED` experience 会作为 `verified_experience` 被 `/context` 和 prompt context 召回。
+- `promote` 不会自动发生，必须人工执行 `/experience promote <id>`。
+- `eval learn` 只生成 candidate，不自动 verify、不自动 promote。
+
+完整演示脚本见 [docs/demo/self-improving-agent-loop.md](docs/demo/self-improving-agent-loop.md)。最小流程示例见 [examples/context_engineering_flow.md](examples/context_engineering_flow.md)、[examples/approval_and_diffreview.md](examples/approval_and_diffreview.md)、[examples/experience_learning_flow.md](examples/experience_learning_flow.md)、[examples/eval_learning_flow.md](examples/eval_learning_flow.md)。
+
 ## 3. 核心能力总览
 
 以下内容按“模块 -> 能力 -> 当前状态”组织，尽量以代码事实为准。
@@ -486,6 +540,28 @@ java -jar target/Ricbot-1.0-SNAPSHOT.jar eval compare \
 
 - `comparison.json`：baseline/candidate 的 case 状态变化、回归数量、改进数量、summary 指标 delta
 - `comparison-report.md`：面向人工审阅的对比报告；当出现 pass -> fail、baseline case 缺失、或新增失败 case 时，CLI 退出码为 2
+
+Eval-driven Learning：
+
+```bash
+java -jar target/Ricbot-1.0-SNAPSHOT.jar eval learn \
+  --run workspace/.ricbot/evals/<run-id> \
+  --workspace workspace \
+  --include-xfail
+```
+
+`eval learn` 会读取 eval run artifact，将 failed、regression、unexpected_passed 以及显式 `--include-xfail` / `--include-skipped` 的 case 转成 `experience/candidates.jsonl` 中的 candidate experience。它不会自动 verify、不会 promote 到 notes/project，也不会进入上下文召回，避免把一次失败直接固化成项目规则。
+
+推荐流程：
+
+```bash
+ricbot eval smoke --scenarios evals/golden.jsonl --workspace target/eval-smoke-workspace
+ricbot eval replay --run workspace/.ricbot/evals/<run-id>
+ricbot eval learn --run workspace/.ricbot/evals/<run-id> --workspace workspace
+/experience list
+/experience verify <id>
+/experience promote <id>
+```
 
 `eval lint` 会在不访问模型的情况下静态检查场景文件，输出 `lint.json` 和 `lint-report.md`。它会拦截重复 id、缺少输入、没有任何断言/预算/副作用策略、非法 regex、非法 JSON path、负数预算、workspace fixture 路径逃逸等问题。
 

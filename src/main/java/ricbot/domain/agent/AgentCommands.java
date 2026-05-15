@@ -4,6 +4,8 @@ import ricbot.domain.memory.Dream;
 import ricbot.domain.memory.MemoryStore;
 import ricbot.domain.experience.ExperienceEntry;
 import ricbot.domain.experience.ExperienceExtractor;
+import ricbot.domain.experience.ExperienceOutcome;
+import ricbot.domain.experience.ExperiencePromoter;
 import ricbot.domain.experience.ExperienceRenderer;
 import ricbot.domain.experience.ExperienceStore;
 import ricbot.domain.message.InboundMessage;
@@ -16,6 +18,17 @@ import ricbot.domain.session.SessionManager;
 import ricbot.domain.security.ApprovalRequest;
 import ricbot.domain.security.ApprovalService;
 import ricbot.domain.security.PendingToolCall;
+import ricbot.domain.subagent.SubAgentOrchestrator;
+import ricbot.domain.subagent.SubAgentResult;
+import ricbot.domain.subagent.SubAgentRole;
+import ricbot.domain.subagent.SubAgentTask;
+import ricbot.domain.team.TeamArtifact;
+import ricbot.domain.team.TeamEngine;
+import ricbot.domain.team.TeamEvent;
+import ricbot.domain.team.TeamRole;
+import ricbot.domain.team.TeamSession;
+import ricbot.domain.team.TeamTask;
+import ricbot.domain.team.VerificationResult;
 import ricbot.infra.config.Config;
 import ricbot.integration.command.CommandRouter;
 import ricbot.tool.api.ToolRegistry;
@@ -43,6 +56,7 @@ final class AgentCommands {
     private final BiConsumer<String, String> sessionInterruptMarker;
     private final ApprovalService approvalService;
     private final ToolRegistry toolRegistry;
+    private final TeamEngine teamEngine;
 
     AgentCommands(
             SessionManager sessionManager,
@@ -99,6 +113,7 @@ final class AgentCommands {
         this.sessionInterruptMarker = sessionInterruptMarker;
         this.approvalService = approvalService != null ? approvalService : new ApprovalService();
         this.toolRegistry = toolRegistry;
+        this.teamEngine = new TeamEngine(this.workspace);
     }
 
     void register(CommandRouter router) {
@@ -113,6 +128,10 @@ final class AgentCommands {
         router.prefix("/summary ", this::summary);
         router.exact("/experience", this::experience);
         router.prefix("/experience ", this::experience);
+        router.exact("/subagent", this::subagent);
+        router.prefix("/subagent ", this::subagent);
+        router.exact("/team", this::team);
+        router.prefix("/team ", this::team);
         router.prefix("/approve ", this::approve);
         router.prefix("/reject ", this::reject);
         router.exact("/dream", this::dream);
@@ -153,7 +172,7 @@ final class AgentCommands {
     }
 
     private CompletableFuture<OutboundMessage> help(CommandRouter.CommandContext ctx) {
-        return completedReply(ctx, "ricbot 命令：\n/new — 开始新对话\n/stop — 停止当前任务\n/summary — 查看当前任务摘要\n/help — 查看可用命令");
+        return completedReply(ctx, "ricbot 命令：\n/new — 开始新对话\n/stop — 停止当前任务\n/summary — 查看当前任务摘要\n/subagent plan|explore|review|list|show — 角色化子代理摘要\n/team start|status|task|verify|events|whiteboard|abort — TeamEngine 状态机\n/help — 查看可用命令");
     }
 
     private CompletableFuture<OutboundMessage> status(CommandRouter.CommandContext ctx) {
@@ -220,7 +239,7 @@ final class AgentCommands {
         String args = trim(ctx.getArgs());
         String action = args.isBlank() ? "list" : args.split("\\s+")[0].toLowerCase();
         ExperienceStore store = new ExperienceStore(workspace);
-        ExperienceRenderer renderer = new ExperienceRenderer();
+        ExperienceRenderer renderer = new ExperienceRenderer(store);
         try {
             return switch (action) {
                 case "extract" -> experienceExtract(ctx, store, renderer);
@@ -230,7 +249,21 @@ final class AgentCommands {
                         + renderer.renderDetail(store.verify(commandArg(args, 1))));
                 case "reject" -> completedReply(ctx, "experience rejected\n"
                         + renderer.renderDetail(store.reject(commandArg(args, 1))));
-                default -> completedReply(ctx, "用法：/experience extract|list|show <id>|verify <id>|reject <id>");
+                case "feedback" -> completedReply(ctx, "experience feedback recorded\n"
+                        + renderer.renderDetail(store.feedback(commandArg(args, 1), parseOutcome(commandArg(args, 2)))));
+                case "usage" -> completedReply(ctx, renderer.renderUsage(store.listUsage(commandArg(args, 1))));
+                case "stale" -> completedReply(ctx, renderer.renderStale(store.listStaleVerified()));
+                case "archive" -> completedReply(ctx, "experience archived\n"
+                        + renderer.renderDetail(store.archive(commandArg(args, 1))));
+                case "promote" -> completedReply(ctx, "experience promoted\n"
+                        + renderer.renderDetail(new ExperiencePromoter(new NoteService(workspace), store).promote(commandArg(args, 1))));
+                case "demote" -> completedReply(ctx, "experience demoted\n"
+                        + renderer.renderDetail(store.demote(commandArg(args, 1))));
+                case "restore" -> completedReply(ctx, "experience restored\n"
+                        + renderer.renderDetail(store.restore(commandArg(args, 1))));
+                case "stats" -> completedReply(ctx, renderer.renderStats(store.stats()));
+                case "review" -> completedReply(ctx, renderer.renderReview(store.review(20)));
+                default -> completedReply(ctx, "用法：/experience extract|list|show <id>|verify <id>|reject <id>|feedback <id> success|failure|neutral|usage <id>|stale|archive <id>|promote <id>|demote <id>|restore <id>|stats|review");
             };
         } catch (IllegalArgumentException | IllegalStateException e) {
             return completedReply(ctx, "experience error: " + e.getMessage());
@@ -252,6 +285,311 @@ final class AgentCommands {
         return completedReply(ctx, "experience extracted: " + stored.size()
                 + "\nfile: " + workspace.relativize(store.candidatesFile())
                 + "\n\n" + renderer.renderList(stored));
+    }
+
+    private CompletableFuture<OutboundMessage> subagent(CommandRouter.CommandContext ctx) {
+        String args = trim(ctx.getArgs());
+        String action = args.isBlank() ? "list" : args.split("\\s+")[0].toLowerCase();
+        SubAgentOrchestrator orchestrator = new SubAgentOrchestrator(sessionManager, workspace);
+        try {
+            return switch (action) {
+                case "plan" -> subagentPlan(ctx, orchestrator, afterCommand(args));
+                case "explore" -> subagentExplore(ctx, orchestrator, afterCommand(args));
+                case "review" -> subagentReview(ctx, orchestrator);
+                case "list" -> completedReply(ctx, renderSubAgentList(orchestrator.listRecentResults(ctx.getKey())));
+                case "show" -> completedReply(ctx, renderSubAgentShow(orchestrator.listRecentResults(ctx.getKey()), commandArg(args, 1)));
+                default -> completedReply(ctx, "用法：/subagent plan <goal>|explore <goal>|review|list|show <id>");
+            };
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            return completedReply(ctx, "subagent error: " + e.getMessage());
+        }
+    }
+
+    private CompletableFuture<OutboundMessage> subagentPlan(
+            CommandRouter.CommandContext ctx,
+            SubAgentOrchestrator orchestrator,
+            String rawGoal
+    ) {
+        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
+        TaskState taskState = TaskState.fromSession(session);
+        String goal = !rawGoal.isBlank() ? rawGoal : !taskState.goal().isBlank() ? taskState.goal() : "Plan current task";
+        SubAgentTask task = orchestrator.createPlannerTask(goal, taskState.renderStatus());
+        SubAgentResult result = new SubAgentResult(
+                task.id(),
+                SubAgentRole.PLANNER,
+                "Planner scoped the task and proposed a small-step execution path.",
+                List.of("Goal: " + goal, "Next action: " + (!taskState.nextAction().isBlank() ? taskState.nextAction() : "identify the next smallest safe step")),
+                taskState.blockedReason().isBlank() ? List.of() : List.of(taskState.blockedReason()),
+                List.of(),
+                task.relatedFiles(),
+                0.62d,
+                null
+        );
+        orchestrator.recordResult(ctx.getKey(), result);
+        return completedReply(ctx, renderSubAgentCreated(task, result));
+    }
+
+    private CompletableFuture<OutboundMessage> subagentExplore(
+            CommandRouter.CommandContext ctx,
+            SubAgentOrchestrator orchestrator,
+            String goal
+    ) {
+        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
+        String actualGoal = !goal.isBlank() ? goal : "Explore current task context";
+        List<String> relatedFiles = pathLike(actualGoal);
+        List<String> sources = contextSourcePaths(session);
+        SubAgentTask task = orchestrator.createExplorerTask(actualGoal, relatedFiles, sources);
+        SubAgentResult result = new SubAgentResult(
+                task.id(),
+                SubAgentRole.EXPLORER,
+                "Explorer summarized likely files and context sources for the goal.",
+                List.of(
+                        relatedFiles.isEmpty() ? "No explicit related files in the request." : "Related files: " + String.join(", ", relatedFiles),
+                        sources.isEmpty() ? "No prior context sources recorded." : "Context sources available: " + String.join(", ", sources.stream().limit(5).toList())
+                ),
+                List.of("Exploration is a structured placeholder; verify by reading code before edits."),
+                List.of(),
+                relatedFiles,
+                0.58d,
+                null
+        );
+        orchestrator.recordResult(ctx.getKey(), result);
+        return completedReply(ctx, renderSubAgentCreated(task, result));
+    }
+
+    private CompletableFuture<OutboundMessage> subagentReview(
+            CommandRouter.CommandContext ctx,
+            SubAgentOrchestrator orchestrator
+    ) {
+        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
+        TaskSummaryService.TaskSummary summary = new TaskSummaryService().summarizeCurrentTask(session);
+        SubAgentTask task = orchestrator.createReviewerTask(null, summary, verifiedExperienceSources(session));
+        List<String> findings = !summary.diffReviews().isEmpty()
+                ? summary.diffReviews()
+                : List.of("No DiffReview recorded yet; review current summary and tool trace first.");
+        List<String> risks = !summary.blockers().isEmpty()
+                ? summary.blockers()
+                : !summary.rollbackHints().isEmpty()
+                ? summary.rollbackHints()
+                : List.of("No explicit blocker recorded.");
+        SubAgentResult result = new SubAgentResult(
+                task.id(),
+                SubAgentRole.REVIEWER,
+                "Reviewer summarized current diff/task risks and follow-up tests.",
+                findings,
+                risks,
+                summary.suggestedTests(),
+                summary.changedFiles(),
+                0.64d,
+                null
+        );
+        orchestrator.recordResult(ctx.getKey(), result);
+        return completedReply(ctx, renderSubAgentCreated(task, result));
+    }
+
+    private String renderSubAgentCreated(SubAgentTask task, SubAgentResult result) {
+        return "subagent task created\n"
+                + "id: " + task.id() + "\n"
+                + "role: " + task.role() + "\n"
+                + "status: " + task.status() + "\n"
+                + "note: notes/temporary\n\n"
+                + "subagent result recorded\n"
+                + SubAgentOrchestrator.renderDetail(result);
+    }
+
+    private String renderSubAgentList(List<SubAgentResult> results) {
+        if (results == null || results.isEmpty()) {
+            return "No subagent results.";
+        }
+        StringBuilder sb = new StringBuilder("subagent results (" + results.size() + ")\n");
+        for (SubAgentResult result : results) {
+            sb.append("- ").append(result.taskId())
+                    .append(" [").append(result.role()).append("] ")
+                    .append(result.summary())
+                    .append(" confidence=")
+                    .append(String.format(java.util.Locale.ROOT, "%.2f", result.confidence()))
+                    .append("\n");
+        }
+        return sb.toString().trim();
+    }
+
+    private String renderSubAgentShow(List<SubAgentResult> results, String id) {
+        for (SubAgentResult result : results != null ? results : List.<SubAgentResult>of()) {
+            if (result.taskId().equals(id)) {
+                return SubAgentOrchestrator.renderDetail(result);
+            }
+        }
+        return "SubAgent result not found: " + id;
+    }
+
+    private CompletableFuture<OutboundMessage> team(CommandRouter.CommandContext ctx) {
+        String args = trim(ctx.getArgs());
+        String action = args.isBlank() ? "status" : args.split("\\s+")[0].toLowerCase(java.util.Locale.ROOT);
+        try {
+            return switch (action) {
+                case "start" -> teamStart(ctx, afterCommand(args));
+                case "status" -> teamStatus(ctx);
+                case "task" -> teamTask(ctx, afterCommand(args));
+                case "verify" -> teamVerify(ctx, afterCommand(args));
+                case "events" -> teamEvents(ctx);
+                case "whiteboard" -> teamWhiteboard(ctx);
+                case "abort" -> teamAbort(ctx, afterCommand(args));
+                default -> completedReply(ctx, "用法：/team start <goal>|status|task <role> <goal>|verify <taskId> pass|reject|needs-human <reason>|events|whiteboard|abort <taskId>");
+            };
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            return completedReply(ctx, "team error: " + e.getMessage());
+        }
+    }
+
+    private CompletableFuture<OutboundMessage> teamStart(CommandRouter.CommandContext ctx, String rawGoal) {
+        String goal = trim(rawGoal);
+        if (goal.isBlank()) {
+            throw new IllegalArgumentException("missing team goal");
+        }
+        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
+        TeamSession teamSession = teamEngine.createSession(goal);
+        storeTeamContext(session, teamSession.id());
+        return completedReply(ctx, "team session started\n"
+                + "id: " + teamSession.id() + "\n"
+                + "state: " + teamSession.state() + "\n"
+                + "goal: " + teamSession.goal() + "\n"
+                + "whiteboard: " + teamEngine.whiteboard(teamSession.id()).relativeWhiteboardPath());
+    }
+
+    private CompletableFuture<OutboundMessage> teamStatus(CommandRouter.CommandContext ctx) {
+        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
+        String sessionId = activeTeamSessionId(session);
+        if (sessionId.isBlank()) {
+            return completedReply(ctx, "No active team session.");
+        }
+        storeTeamContext(session, sessionId);
+        return completedReply(ctx, teamEngine.getStatus(sessionId));
+    }
+
+    private CompletableFuture<OutboundMessage> teamTask(CommandRouter.CommandContext ctx, String rawArgs) {
+        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
+        String sessionId = requireActiveTeamSessionId(session);
+        String roleRaw = commandArg(rawArgs, 0);
+        TeamRole role = parseTeamRole(roleRaw);
+        String goal = afterCommand(rawArgs);
+        if (goal.isBlank()) {
+            throw new IllegalArgumentException("missing team task goal");
+        }
+        TeamTask task = teamEngine.createTask(sessionId, role, goal);
+        storeTeamContext(session, sessionId);
+        return completedReply(ctx, "team task created\n"
+                + "id: " + task.id() + "\n"
+                + "role: " + task.role() + "\n"
+                + "state: " + task.state() + "\n"
+                + "goal: " + task.goal() + "\n"
+                + "whiteboard: " + teamEngine.whiteboard(sessionId).relativeWhiteboardPath());
+    }
+
+    private CompletableFuture<OutboundMessage> teamVerify(CommandRouter.CommandContext ctx, String rawArgs) {
+        String[] parts = trim(rawArgs).split("\\s+", 3);
+        if (parts.length < 2 || parts[0].isBlank() || parts[1].isBlank()) {
+            throw new IllegalArgumentException("usage: /team verify <taskId> pass|reject|needs-human <reason>");
+        }
+        String taskId = parts[0];
+        String reason = parts.length >= 3 && !parts[2].isBlank() ? parts[2].trim() : "manual verifier result";
+        VerificationResult verification = switch (parts[1].toLowerCase(java.util.Locale.ROOT)) {
+            case "pass", "passed" -> VerificationResult.pass(reason);
+            case "reject", "rejected" -> VerificationResult.reject(reason);
+            case "needs-human", "needs_human", "human" -> VerificationResult.needsHuman(reason);
+            default -> throw new IllegalArgumentException("verification status must be pass, reject, or needs-human");
+        };
+        teamEngine.startVerifying(taskId);
+        TeamTask task = teamEngine.submitVerification(taskId, verification);
+        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
+        storeTeamContext(session, task.sessionId());
+        return completedReply(ctx, "team verification recorded\n"
+                + "taskId: " + task.id() + "\n"
+                + "state: " + task.state() + "\n"
+                + "status: " + task.verificationResult().status() + "\n"
+                + "reason: " + task.verificationResult().reason()
+                + (!task.revisionRequest().isBlank() ? "\nrevisionRequest: " + task.revisionRequest() : ""));
+    }
+
+    private CompletableFuture<OutboundMessage> teamEvents(CommandRouter.CommandContext ctx) {
+        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
+        String sessionId = requireActiveTeamSessionId(session);
+        storeTeamContext(session, sessionId);
+        List<TeamEvent> events = teamEngine.listEvents(sessionId);
+        if (events.isEmpty()) {
+            return completedReply(ctx, "No team events.");
+        }
+        StringBuilder sb = new StringBuilder("team events\n");
+        for (TeamEvent event : events) {
+            sb.append("- ").append(event.createdAt())
+                    .append(" ").append(event.type())
+                    .append(" role=").append(event.role())
+                    .append(!event.taskId().isBlank() ? " task=" + event.taskId() : "")
+                    .append(" ").append(event.message())
+                    .append("\n");
+        }
+        return completedReply(ctx, sb.toString().trim());
+    }
+
+    private CompletableFuture<OutboundMessage> teamWhiteboard(CommandRouter.CommandContext ctx) {
+        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
+        String sessionId = requireActiveTeamSessionId(session);
+        storeTeamContext(session, sessionId);
+        String summary = teamEngine.whiteboard(sessionId).readSummary();
+        return completedReply(ctx, "team whiteboard\n"
+                + "path: " + teamEngine.whiteboard(sessionId).relativeWhiteboardPath()
+                + "\n\n" + (summary.isBlank() ? "(empty)" : summary));
+    }
+
+    private CompletableFuture<OutboundMessage> teamAbort(CommandRouter.CommandContext ctx, String rawArgs) {
+        String taskId = commandArg(rawArgs, 0);
+        TeamTask task = teamEngine.abortTask(taskId);
+        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
+        storeTeamContext(session, task.sessionId());
+        return completedReply(ctx, "team task aborted\n"
+                + "taskId: " + task.id() + "\n"
+                + "state: " + task.state());
+    }
+
+    private TeamRole parseTeamRole(String raw) {
+        try {
+            return TeamRole.valueOf(trim(raw).replace('-', '_').toUpperCase(java.util.Locale.ROOT));
+        } catch (Exception e) {
+            throw new IllegalArgumentException("unknown team role: " + raw);
+        }
+    }
+
+    private String activeTeamSessionId(Session session) {
+        if (session == null || session.getMetadata() == null) {
+            return "";
+        }
+        Object raw = session.getMetadata().get(SessionRuntimeKeys.TEAM_SESSION_ID_KEY);
+        return raw != null ? String.valueOf(raw).trim() : "";
+    }
+
+    private String requireActiveTeamSessionId(Session session) {
+        String sessionId = activeTeamSessionId(session);
+        if (sessionId.isBlank()) {
+            throw new IllegalStateException("no active team session. Run /team start <goal> first");
+        }
+        return sessionId;
+    }
+
+    private void storeTeamContext(Session session, String teamSessionId) {
+        if (session == null || teamSessionId == null || teamSessionId.isBlank()) {
+            return;
+        }
+        session.getMetadata().put(SessionRuntimeKeys.TEAM_SESSION_ID_KEY, teamSessionId);
+        session.getMetadata().put(SessionRuntimeKeys.TEAM_CONTEXT_KEY, teamEngine.contextSnapshot(teamSessionId));
+        sessionManager.save(session);
+    }
+
+    private ExperienceOutcome parseOutcome(String raw) {
+        String value = raw != null ? raw.trim().toUpperCase(java.util.Locale.ROOT) : "";
+        try {
+            return ExperienceOutcome.valueOf(value);
+        } catch (Exception e) {
+            throw new IllegalArgumentException("feedback outcome must be success, failure, or neutral");
+        }
     }
 
     private CompletableFuture<OutboundMessage> approve(CommandRouter.CommandContext ctx) {
@@ -360,6 +698,63 @@ final class AgentCommands {
 
     private boolean dreamEnabled() {
         return dreamConfig != null && dreamConfig.isEnabled();
+    }
+
+    private String afterCommand(String args) {
+        String value = trim(args);
+        int firstSpace = value.indexOf(' ');
+        return firstSpace >= 0 ? value.substring(firstSpace + 1).trim() : "";
+    }
+
+    private List<String> pathLike(String text) {
+        java.util.ArrayList<String> out = new java.util.ArrayList<>();
+        if (text == null || text.isBlank()) {
+            return out;
+        }
+        String cleaned = text.replace("{", " ").replace("}", " ").replace(",", " ");
+        for (String token : cleaned.split("\\s+")) {
+            String value = token.replace("\"", "").replace("'", "").trim();
+            if (value.contains("/") || value.endsWith(".java") || value.endsWith(".md") || value.endsWith(".json")
+                    || value.endsWith(".yml") || value.endsWith(".yaml") || value.endsWith(".txt")) {
+                if (!out.contains(value)) {
+                    out.add(value);
+                }
+            }
+        }
+        return out;
+    }
+
+    private List<String> contextSourcePaths(Session session) {
+        Object rawTrace = session != null && session.getMetadata() != null
+                ? session.getMetadata().get(SessionRuntimeKeys.CONTEXT_TRACE_KEY)
+                : null;
+        if (!(rawTrace instanceof Map<?, ?> trace)) {
+            return List.of();
+        }
+        Map<?, ?> budget = trace.get("prompt_context_budget") instanceof Map<?, ?> map ? map : Map.of();
+        Map<?, ?> sources = budget.get("sources") instanceof Map<?, ?> map ? map : Map.of();
+        java.util.ArrayList<String> out = new java.util.ArrayList<>();
+        for (Object rawRows : sources.values()) {
+            if (!(rawRows instanceof List<?> rows)) {
+                continue;
+            }
+            for (Object row : rows) {
+                if (row instanceof Map<?, ?> source) {
+                    Object rawPath = source.get("path");
+                    String path = rawPath != null ? String.valueOf(rawPath) : "";
+                    if (!path.isBlank() && !out.contains(path)) {
+                        out.add(path);
+                    }
+                }
+            }
+        }
+        return out.stream().limit(10).toList();
+    }
+
+    private List<String> verifiedExperienceSources(Session session) {
+        return contextSourcePaths(session).stream()
+                .filter(path -> path.contains("experience/verified.jsonl"))
+                .toList();
     }
 
     private CompletableFuture<OutboundMessage> completedReply(CommandRouter.CommandContext ctx, String content) {
