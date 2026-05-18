@@ -11,6 +11,8 @@ import ricbot.domain.rag.WorkspaceRagService;
 import ricbot.domain.session.Session;
 import ricbot.domain.subagent.SubAgentResult;
 import ricbot.domain.subagent.SubAgentRole;
+import ricbot.domain.team.TeamEngine;
+import ricbot.domain.team.TeamRole;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -245,12 +247,14 @@ class ContextSelectionServiceTest {
                         "state", "VERIFYING"
                 ),
                 "whiteboardPath", ".team/team_demo/whiteboard.md",
+                "verificationPath", ".team/team_demo/verification.jsonl",
                 "whiteboardSummary", "Leader note: worker produced a small patch.",
                 "verifierResults", List.of("teamtask_1: REJECT - missing targeted tests"),
+                "verificationReports", List.of("task=teamtask_1 | status=REJECT | riskLevel=MEDIUM | missingTests=./mvnw -q test | requiredActions=Run missing suggested tests"),
                 "revisionRequests", List.of("teamtask_1: Revision requested: missing targeted tests"),
                 "recentEvents", List.of(Map.of(
                         "id", "event_1",
-                        "type", "verification_reject",
+                        "type", "VERIFICATION_REJECTED",
                         "role", "VERIFIER",
                         "taskId", "teamtask_1",
                         "message", "missing targeted tests"
@@ -267,10 +271,35 @@ class ContextSelectionServiceTest {
         String rendered = selection.bundle().render();
         assertTrue(rendered.contains("## team_context"), rendered);
         assertTrue(rendered.contains("team_demo"), rendered);
-        assertTrue(rendered.contains("verification_reject"), rendered);
+        assertTrue(rendered.contains("VERIFICATION_REJECTED"), rendered);
+        assertTrue(rendered.contains("status=REJECT"), rendered);
         Map<String, Object> budgetTrace = selection.bundle().budgetTrace();
         assertTrue(String.valueOf(budgetTrace).contains("team_context"), String.valueOf(budgetTrace));
         assertTrue(String.valueOf(budgetTrace).contains(".team/team_demo/whiteboard.md"), String.valueOf(budgetTrace));
+        assertTrue(String.valueOf(budgetTrace).contains(".team/team_demo/verification.jsonl"), String.valueOf(budgetTrace));
+    }
+
+    @Test
+    void select_addsTeamContextFromResumedSessionSnapshot(@TempDir Path workspace) {
+        TeamEngine engine = new TeamEngine(workspace);
+        var session = engine.createSession("Resume team context");
+        engine.createTask(session.id(), TeamRole.REVIEWER, "Review restored state");
+
+        TeamEngine restored = new TeamEngine(workspace);
+        var resumed = restored.resumeSession(session.id());
+        ContextSelectionService service = new ContextSelectionService(new MemoryStore(workspace), new ToolTraceSummarizer());
+
+        ContextSelectionService.SelectionResult selection = service.select(
+                new ContextSelectionService.SessionPreparedInputs("session-test", null, null, List.of(), List.of(), restored.contextSnapshot(resumed.id())),
+                List.of(),
+                "resume team context",
+                6
+        );
+
+        String rendered = selection.bundle().render();
+        assertTrue(rendered.contains("## team_context"), rendered);
+        assertTrue(rendered.contains(session.id()), rendered);
+        assertTrue(String.valueOf(selection.bundle().budgetTrace()).contains(".team/" + session.id() + "/whiteboard.md"));
     }
 
     private ExperienceEntry experience(String title, String content, List<String> files, double confidence) {

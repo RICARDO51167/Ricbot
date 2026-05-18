@@ -17,13 +17,15 @@ public final class TaskSummaryService {
     public TaskSummary summarizeCurrentTask(Session session) {
         TaskState taskState = TaskState.fromSession(session);
         List<Map<String, Object>> toolTrace = readTrace(session, SessionRuntimeKeys.TOOL_TRACE_KEY);
+        Map<String, Object> teamContext = TeamEngine.contextFromSession(session);
         return summarizeCurrentTask(
                 taskState,
                 toolTrace,
                 List.of(),
                 List.of(),
                 List.of(),
-                renderTeamFindings(TeamEngine.contextFromSession(session)),
+                renderTeamFindings(teamContext),
+                renderVerifierReports(teamContext),
                 renderSubAgentFindings(SubAgentOrchestrator.resultsFromSession(session))
         );
     }
@@ -35,7 +37,7 @@ public final class TaskSummaryService {
             List<String> testResults,
             List<String> keyDecisions
     ) {
-        return summarizeCurrentTask(taskState, toolTrace, modifiedFiles, testResults, keyDecisions, List.of(), List.of());
+        return summarizeCurrentTask(taskState, toolTrace, modifiedFiles, testResults, keyDecisions, List.of(), List.of(), List.of());
     }
 
     TaskSummary summarizeCurrentTask(
@@ -45,6 +47,7 @@ public final class TaskSummaryService {
             List<String> testResults,
             List<String> keyDecisions,
             List<String> teamFindings,
+            List<String> verifierReports,
             List<String> subAgentFindings
     ) {
         List<String> changedFiles = new ArrayList<>(dedupe(modifiedFiles));
@@ -87,6 +90,7 @@ public final class TaskSummaryService {
                 suggestedTests,
                 rollbackHints,
                 new ArrayList<>(dedupe(teamFindings)),
+                new ArrayList<>(dedupe(verifierReports)),
                 new ArrayList<>(dedupe(subAgentFindings)),
                 notice(taskState, changedFiles, toolTrace)
         );
@@ -123,6 +127,19 @@ public final class TaskSummaryService {
             out.add(SubAgentOrchestrator.renderCompact(result));
         }
         return out;
+    }
+
+    private List<String> renderVerifierReports(Map<String, Object> teamContext) {
+        if (teamContext == null || teamContext.isEmpty()) {
+            return List.of();
+        }
+        List<String> out = new ArrayList<>(stringList(teamContext.get("verificationReports")));
+        for (String verifier : stringList(teamContext.get("verifierResults"))) {
+            if (out.stream().noneMatch(row -> row.contains(verifier))) {
+                out.add(verifier);
+            }
+        }
+        return new ArrayList<>(dedupe(out));
     }
 
     private List<String> inferChangedFiles(List<Map<String, Object>> toolTrace) {
@@ -352,9 +369,29 @@ public final class TaskSummaryService {
             List<String> suggestedTests,
             List<String> rollbackHints,
             List<String> teamFindings,
+            List<String> verifierReports,
             List<String> subAgentFindings,
             String notice
     ) {
+        public TaskSummary(
+                String goal,
+                List<String> changedFiles,
+                List<String> keyDecisions,
+                List<String> testCommands,
+                List<String> blockers,
+                List<String> nextActions,
+                List<String> approvalRecords,
+                List<String> diffReviews,
+                List<String> suggestedTests,
+                List<String> rollbackHints,
+                List<String> teamFindings,
+                List<String> subAgentFindings,
+                String notice
+        ) {
+            this(goal, changedFiles, keyDecisions, testCommands, blockers, nextActions, approvalRecords,
+                    diffReviews, suggestedTests, rollbackHints, teamFindings, List.of(), subAgentFindings, notice);
+        }
+
         public TaskSummary {
             goal = goal != null ? goal : "";
             changedFiles = changedFiles != null ? List.copyOf(changedFiles) : List.of();
@@ -367,6 +404,7 @@ public final class TaskSummaryService {
             suggestedTests = suggestedTests != null ? List.copyOf(suggestedTests) : List.of();
             rollbackHints = rollbackHints != null ? List.copyOf(rollbackHints) : List.of();
             teamFindings = teamFindings != null ? List.copyOf(teamFindings) : List.of();
+            verifierReports = verifierReports != null ? List.copyOf(verifierReports) : List.of();
             subAgentFindings = subAgentFindings != null ? List.copyOf(subAgentFindings) : List.of();
             notice = notice != null ? notice : "";
         }
@@ -384,6 +422,7 @@ public final class TaskSummaryService {
             out.put("suggested_tests", suggestedTests);
             out.put("rollback_hints", rollbackHints);
             out.put("team_findings", teamFindings);
+            out.put("verifier_reports", verifierReports);
             out.put("subagent_findings", subAgentFindings);
             out.put("notice", notice);
             return out;

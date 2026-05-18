@@ -176,8 +176,10 @@ final class ContextSelectionService {
         String goal = string(session.get("goal"));
         String state = string(session.get("state"));
         String whiteboardPath = string(teamContext.get("whiteboardPath"));
+        String verificationPath = string(teamContext.get("verificationPath"));
         String whiteboardSummary = string(teamContext.get("whiteboardSummary")).replace("\n", " ");
         List<String> verifierResults = stringList(teamContext.get("verifierResults"));
+        List<String> verificationReports = stringList(teamContext.get("verificationReports"));
         List<String> revisionRequests = stringList(teamContext.get("revisionRequests"));
         List<String> parts = new ArrayList<>();
         if (!sessionId.isBlank()) {
@@ -191,6 +193,9 @@ final class ContextSelectionService {
         }
         if (!verifierResults.isEmpty()) {
             parts.add("verifier=" + String.join("; ", verifierResults));
+        }
+        if (!verificationReports.isEmpty()) {
+            parts.add("verificationReport=" + abbreviate(String.join("; ", verificationReports), 360));
         }
         if (!revisionRequests.isEmpty()) {
             parts.add("revision=" + String.join("; ", revisionRequests));
@@ -207,6 +212,14 @@ final class ContextSelectionService {
                 0.8d,
                 ContextSource.of("team", sessionId, whiteboardPath, "team whiteboard", 0.8d, metadata)
         );
+        if (!verificationReports.isEmpty()) {
+            bundle.addItem(
+                    "team_context",
+                    "verification " + abbreviate(String.join("; ", verificationReports), 420),
+                    0.78d,
+                    ContextSource.of("team_verification", sessionId + ":verification", verificationPath, "team verification report", 0.78d, metadata)
+            );
+        }
         for (Map<String, Object> event : eventRows(teamContext.get("recentEvents")).stream().limit(2).toList()) {
             String rendered = "event " + string(event.get("type"))
                     + " role=" + string(event.get("role"))

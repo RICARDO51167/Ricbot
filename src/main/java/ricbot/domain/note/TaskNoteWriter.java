@@ -46,6 +46,7 @@ public class TaskNoteWriter {
         listSection(sb, "Suggested Tests", summary.suggestedTests(), "未生成建议测试");
         listSection(sb, "Rollback Hints", summary.rollbackHints(), "未生成回滚提示");
         listSection(sb, "Team Findings", summary.teamFindings(), "未记录 Team 状态");
+        listSection(sb, "Verifier Report", summary.verifierReports(), "未记录 Verifier Report");
         listSection(sb, "SubAgent Findings", summary.subAgentFindings(), "未记录子代理摘要");
         listSection(sb, "Test Commands", summary.testCommands(), "未记录已运行测试");
         listSection(sb, "Blockers", summary.blockers(), "未记录阻塞项");
@@ -79,6 +80,9 @@ public class TaskNoteWriter {
         }
         if (summary != null && !summary.teamFindings().isEmpty()) {
             tags.add("team");
+        }
+        if (summary != null && !summary.verifierReports().isEmpty()) {
+            tags.add("verifier");
         }
         return tags;
     }

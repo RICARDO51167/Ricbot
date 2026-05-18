@@ -29,6 +29,9 @@ class TeamDecisionPolicyTest {
         assertTrue(decision.reasons().contains("high risk level"));
         assertTrue(decision.reasons().contains("security sensitive scope"));
         assertTrue(decision.reasons().contains("requires verifier"));
+        assertTrue(decision.suggestedRoles().contains(TeamRole.LEADER));
+        assertTrue(decision.suggestedRoles().contains(TeamRole.VERIFIER));
+        assertTrue(decision.suggestedRoles().contains(TeamRole.REVIEWER));
     }
 
     @Test
@@ -44,5 +47,6 @@ class TeamDecisionPolicyTest {
 
         assertFalse(decision.useTeam());
         assertTrue(decision.reasons().contains("simple low-risk single-step task"));
+        assertTrue(decision.suggestedRoles().isEmpty());
     }
 }

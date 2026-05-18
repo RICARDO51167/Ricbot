@@ -1,12 +1,16 @@
 package ricbot.domain.agent;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import ricbot.domain.session.Session;
 import ricbot.domain.subagent.SubAgentResult;
 import ricbot.domain.subagent.SubAgentRole;
+import ricbot.domain.team.TeamEngine;
+import ricbot.domain.team.TeamRole;
 
 import java.util.List;
 import java.util.Map;
+import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -162,6 +166,7 @@ class TaskSummaryServiceTest {
                 ),
                 "whiteboardSummary", "Leader note: verifier rejected missing tests.",
                 "verifierResults", List.of("teamtask_1: REJECT - missing tests"),
+                "verificationReports", List.of("task=teamtask_1 | status=REJECT | riskLevel=MEDIUM | missingTests=./mvnw -q test | requiredActions=Run missing suggested tests"),
                 "revisionRequests", List.of("teamtask_1: Revision requested: missing tests")
         ));
 
@@ -170,6 +175,27 @@ class TaskSummaryServiceTest {
         assertTrue(summary.teamFindings().toString().contains("team_demo"), summary.teamFindings().toString());
         assertTrue(summary.teamFindings().toString().contains("verifier:"), summary.teamFindings().toString());
         assertTrue(summary.teamFindings().toString().contains("revision:"), summary.teamFindings().toString());
+        assertTrue(summary.verifierReports().toString().contains("status=REJECT"), summary.verifierReports().toString());
+        assertTrue(summary.verifierReports().toString().contains("missingTests="), summary.verifierReports().toString());
+        assertTrue(summary.verifierReports().toString().contains("requiredActions="), summary.verifierReports().toString());
         assertTrue(summary.toMap().containsKey("team_findings"));
+        assertTrue(summary.toMap().containsKey("verifier_reports"));
+    }
+
+    @Test
+    void summarizeCurrentTask_includesResumedTeamFindings(@TempDir Path workspace) {
+        TeamEngine engine = new TeamEngine(workspace);
+        var team = engine.createSession("Resumed team summary");
+        engine.createTask(team.id(), TeamRole.DEVELOPER, "Implement resumed summary");
+        TeamEngine restored = new TeamEngine(workspace);
+        var resumed = restored.resumeSession(team.id());
+
+        Session session = new Session("cli:direct");
+        session.getMetadata().put(SessionRuntimeKeys.TEAM_CONTEXT_KEY, restored.contextSnapshot(resumed.id()));
+
+        TaskSummaryService.TaskSummary summary = new TaskSummaryService().summarizeCurrentTask(session);
+
+        assertTrue(summary.teamFindings().toString().contains("Resumed team summary"), summary.teamFindings().toString());
+        assertTrue(summary.teamFindings().toString().contains("whiteboard:"), summary.teamFindings().toString());
     }
 }

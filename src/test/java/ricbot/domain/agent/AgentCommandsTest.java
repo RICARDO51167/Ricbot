@@ -253,19 +253,65 @@ class AgentCommandsTest {
 
         String events = router.dispatch(context("/team events", sessionManager)).get().getContent();
         assertTrue(events.contains("team events"), events);
-        assertTrue(events.contains("verification_reject"), events);
+        assertTrue(events.contains("VERIFICATION_REJECTED"), events);
 
         String whiteboard = router.dispatch(context("/team whiteboard", sessionManager)).get().getContent();
         assertTrue(whiteboard.contains(".team/" + teamId + "/whiteboard.md"), whiteboard);
         assertTrue(whiteboard.contains("Verifier result"), whiteboard);
 
+        String listed = router.dispatch(context("/team list", sessionManager)).get().getContent();
+        assertTrue(listed.contains("team sessions"), listed);
+        assertTrue(listed.contains(teamId), listed);
+
+        AgentCommands resumedCommands = new AgentCommands(
+                sessionManager,
+                memoryStore,
+                null,
+                new Config.DreamConfig(),
+                "model",
+                workspace,
+                msg -> "cli:direct",
+                key -> List.<Future<?>>of(),
+                (key, reason) -> {}
+        );
+        CommandRouter resumedRouter = new CommandRouter();
+        resumedCommands.register(resumedRouter);
+        String resumed = resumedRouter.dispatch(context("/team resume " + teamId, sessionManager)).get().getContent();
+        assertTrue(resumed.contains("team session resumed"), resumed);
+        assertTrue(resumed.contains(teamId), resumed);
+
+        String suggested = resumedRouter.dispatch(context("/team suggest modify security approval risk and verify tests", sessionManager)).get().getContent();
+        assertTrue(suggested.contains("useTeam: true"), suggested);
+        assertTrue(suggested.contains("suggestedRoles:"), suggested);
+        assertTrue(suggested.contains("VERIFIER"), suggested);
+
+        String autoVerified = resumedRouter.dispatch(context("/team auto-verify " + taskId, sessionManager)).get().getContent();
+        assertTrue(autoVerified.contains("team auto verification recorded"), autoVerified);
+        assertTrue(autoVerified.contains("status: REJECT"), autoVerified);
+        assertTrue(autoVerified.contains("worker result is empty"), autoVerified);
+
+        String verifierReport = resumedRouter.dispatch(context("/team verifier-report " + taskId, sessionManager)).get().getContent();
+        assertTrue(verifierReport.contains("team verifier report"), verifierReport);
+        assertTrue(verifierReport.contains("missingTests:"), verifierReport);
+        assertTrue(verifierReport.contains("requiredActions:"), verifierReport);
+
+        String suggestCurrent = resumedRouter.dispatch(context("/team suggest-current", sessionManager)).get().getContent();
+        assertTrue(suggestCurrent.contains("useTeam: true"), suggestCurrent);
+        assertTrue(suggestCurrent.contains("VERIFIER"), suggestCurrent);
+
         String summary = router.dispatch(context("/summary", sessionManager)).get().getContent();
         assertTrue(summary.contains("Team Findings"), summary);
+        assertTrue(summary.contains("Verifier Report"), summary);
         assertTrue(summary.contains("revision:"), summary);
 
         String aborted = router.dispatch(context("/team abort " + taskId, sessionManager)).get().getContent();
         assertTrue(aborted.contains("team task aborted"), aborted);
         assertTrue(aborted.contains("state: ABORTED"), aborted);
+
+        String archived = router.dispatch(context("/team archive " + teamId, sessionManager)).get().getContent();
+        assertTrue(archived.contains("team session archived"), archived);
+        String listedAfterArchive = router.dispatch(context("/team list", sessionManager)).get().getContent();
+        assertTrue(listedAfterArchive.contains("archived=true"), listedAfterArchive);
     }
 
     @Test
@@ -374,6 +420,22 @@ class AgentCommandsTest {
                         )
                 )
         );
+        bundle.addItem(
+                "team_context",
+                "verification task=teamtask_context status=REJECT",
+                0.78d,
+                ContextSource.of(
+                        "team_verification",
+                        "team_demo:verification",
+                        ".team/team_demo/verification.jsonl",
+                        "team verification report",
+                        0.78d,
+                        Map.of(
+                                "team_session", "team_demo",
+                                "team_state", "VERIFYING"
+                        )
+                )
+        );
         session.getMetadata().put(SessionRuntimeKeys.CONTEXT_TRACE_KEY, Map.of(
                 "prompt_context_budget", bundle.budgetTrace(),
                 "context_quality", bundle.qualityReport().toMap()
@@ -401,6 +463,7 @@ class AgentCommandsTest {
         assertTrue(sources.contains("subagent_summaries"), sources);
         assertTrue(sources.contains("experience/verified.jsonl:exp_verified"), sources);
         assertTrue(sources.contains(".team/team_demo/whiteboard.md"), sources);
+        assertTrue(sources.contains(".team/team_demo/verification.jsonl"), sources);
         assertTrue(sources.contains("subagent:subtask_context"), sources);
         assertTrue(sources.contains("subagent_role=PLANNER"), sources);
         assertTrue(sources.contains("status=VERIFIED"), sources);

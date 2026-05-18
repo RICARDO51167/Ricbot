@@ -6,6 +6,7 @@ import ricbot.domain.message.InboundMessage;
 import ricbot.domain.session.Session;
 import ricbot.domain.subagent.SubAgentOrchestrator;
 import ricbot.domain.team.TeamEngine;
+import ricbot.domain.team.TeamSession;
 import ricbot.domain.skill.SkillRouter;
 import ricbot.domain.skill.SkillRoutingContext;
 import ricbot.domain.skill.SkillsLoader;
@@ -73,7 +74,7 @@ record AgentContextService(Path workspace, ContextBuilder contextBuilder, Memory
                         prepared.taskStateSnapshot(),
                         recentToolTrace(prepared.session()),
                         SubAgentOrchestrator.resultsFromSession(prepared.session()),
-                        TeamEngine.contextFromSession(prepared.session())
+                        teamContext(prepared.session())
                 ),
                 prepared.session().getMessages(),
                 msg.getContent(),
@@ -203,6 +204,20 @@ record AgentContextService(Path workspace, ContextBuilder contextBuilder, Memory
         trace.put("context_quality", selection.bundle().qualityReport().toMap());
         trace.put("skills", skillsTrace(selectedSkills, skillContext));
         return trace;
+    }
+
+    private Map<String, Object> teamContext(Session session) {
+        Map<String, Object> existing = TeamEngine.contextFromSession(session);
+        if (existing != null && !existing.isEmpty()) {
+            return existing;
+        }
+        try {
+            TeamEngine engine = new TeamEngine(workspace);
+            TeamSession latest = engine.loadLatestActiveSession();
+            return latest != null ? engine.contextSnapshot(latest.id()) : Map.of();
+        } catch (Exception ignored) {
+            return Map.of();
+        }
     }
 
     private Map<String, Object> buildSystemContextTrace(

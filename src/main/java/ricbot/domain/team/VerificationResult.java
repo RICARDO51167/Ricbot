@@ -1,5 +1,7 @@
 package ricbot.domain.team;
 
+import ricbot.domain.security.CommandRiskLevel;
+
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -11,6 +13,13 @@ public record VerificationResult(
         String reason,
         String summary,
         List<String> suggestedTests,
+        CommandRiskLevel riskLevel,
+        List<String> reasons,
+        List<String> missingTests,
+        List<String> suspiciousChanges,
+        List<String> requiredActions,
+        List<String> suggestedExperienceActions,
+        boolean humanApprovalRequired,
         double confidence,
         String createdAt
 ) {
@@ -25,8 +34,39 @@ public record VerificationResult(
         reason = clean(reason);
         summary = clean(summary);
         suggestedTests = suggestedTests != null ? List.copyOf(nonBlank(suggestedTests)) : List.of();
+        riskLevel = riskLevel != null ? riskLevel : CommandRiskLevel.LOW;
+        reasons = reasons != null ? List.copyOf(nonBlank(reasons)) : List.of();
+        missingTests = missingTests != null ? List.copyOf(nonBlank(missingTests)) : List.of();
+        suspiciousChanges = suspiciousChanges != null ? List.copyOf(nonBlank(suspiciousChanges)) : List.of();
+        requiredActions = requiredActions != null ? List.copyOf(nonBlank(requiredActions)) : List.of();
+        suggestedExperienceActions = suggestedExperienceActions != null ? List.copyOf(nonBlank(suggestedExperienceActions)) : List.of();
         confidence = Math.max(0d, Math.min(1d, confidence));
         createdAt = createdAt != null && !createdAt.isBlank() ? createdAt : Instant.now().toString();
+    }
+
+    public VerificationResult(
+            Status status,
+            String reason,
+            String summary,
+            List<String> suggestedTests,
+            double confidence,
+            String createdAt
+    ) {
+        this(
+                status,
+                reason,
+                summary,
+                suggestedTests,
+                CommandRiskLevel.LOW,
+                reason != null && !reason.isBlank() ? List.of(reason) : List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                status == Status.NEEDS_HUMAN,
+                confidence,
+                createdAt
+        );
     }
 
     public static VerificationResult pass(String reason) {
@@ -47,6 +87,13 @@ public record VerificationResult(
         out.put("reason", reason);
         out.put("summary", summary);
         out.put("suggestedTests", suggestedTests);
+        out.put("riskLevel", riskLevel.name());
+        out.put("reasons", reasons);
+        out.put("missingTests", missingTests);
+        out.put("suspiciousChanges", suspiciousChanges);
+        out.put("requiredActions", requiredActions);
+        out.put("suggestedExperienceActions", suggestedExperienceActions);
+        out.put("humanApprovalRequired", humanApprovalRequired);
         out.put("confidence", confidence);
         out.put("createdAt", createdAt);
         return out;
@@ -61,6 +108,13 @@ public record VerificationResult(
                 string(raw.get("reason")),
                 string(raw.get("summary")),
                 stringList(raw.get("suggestedTests")),
+                parseRiskLevel(raw.get("riskLevel")),
+                stringList(raw.get("reasons")),
+                stringList(raw.get("missingTests")),
+                stringList(raw.get("suspiciousChanges")),
+                stringList(raw.get("requiredActions")),
+                stringList(raw.get("suggestedExperienceActions")),
+                bool(raw.get("humanApprovalRequired")),
                 number(raw.get("confidence"), 0.5d),
                 string(raw.get("createdAt"))
         );
@@ -74,6 +128,14 @@ public record VerificationResult(
         }
     }
 
+    private static CommandRiskLevel parseRiskLevel(Object raw) {
+        try {
+            return raw != null ? CommandRiskLevel.valueOf(String.valueOf(raw).replace("-", "_").toUpperCase(java.util.Locale.ROOT)) : CommandRiskLevel.LOW;
+        } catch (Exception e) {
+            return CommandRiskLevel.LOW;
+        }
+    }
+
     private static List<String> nonBlank(List<String> values) {
         List<String> out = new ArrayList<>();
         for (String value : values) {
@@ -82,6 +144,10 @@ public record VerificationResult(
             }
         }
         return out;
+    }
+
+    private static boolean bool(Object raw) {
+        return raw instanceof Boolean b ? b : raw != null && Boolean.parseBoolean(String.valueOf(raw));
     }
 
     private static List<String> stringList(Object raw) {

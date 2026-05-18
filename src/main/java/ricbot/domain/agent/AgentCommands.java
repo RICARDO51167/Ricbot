@@ -17,17 +17,20 @@ import ricbot.domain.session.Session;
 import ricbot.domain.session.SessionManager;
 import ricbot.domain.security.ApprovalRequest;
 import ricbot.domain.security.ApprovalService;
+import ricbot.domain.security.CommandRiskLevel;
 import ricbot.domain.security.PendingToolCall;
 import ricbot.domain.subagent.SubAgentOrchestrator;
 import ricbot.domain.subagent.SubAgentResult;
 import ricbot.domain.subagent.SubAgentRole;
 import ricbot.domain.subagent.SubAgentTask;
 import ricbot.domain.team.TeamArtifact;
+import ricbot.domain.team.TeamDecisionPolicy;
 import ricbot.domain.team.TeamEngine;
 import ricbot.domain.team.TeamEvent;
 import ricbot.domain.team.TeamRole;
 import ricbot.domain.team.TeamSession;
 import ricbot.domain.team.TeamTask;
+import ricbot.domain.team.VerificationInput;
 import ricbot.domain.team.VerificationResult;
 import ricbot.infra.config.Config;
 import ricbot.integration.command.CommandRouter;
@@ -172,7 +175,7 @@ final class AgentCommands {
     }
 
     private CompletableFuture<OutboundMessage> help(CommandRouter.CommandContext ctx) {
-        return completedReply(ctx, "ricbot 命令：\n/new — 开始新对话\n/stop — 停止当前任务\n/summary — 查看当前任务摘要\n/subagent plan|explore|review|list|show — 角色化子代理摘要\n/team start|status|task|verify|events|whiteboard|abort — TeamEngine 状态机\n/help — 查看可用命令");
+        return completedReply(ctx, "ricbot 命令：\n/new — 开始新对话\n/stop — 停止当前任务\n/summary — 查看当前任务摘要\n/subagent plan|explore|review|list|show — 角色化子代理摘要\n/team start|status|list|resume|archive|suggest|suggest-current|task|auto-verify|verifier-report|verify|events|whiteboard|abort — TeamEngine 状态机\n/help — 查看可用命令");
     }
 
     private CompletableFuture<OutboundMessage> status(CommandRouter.CommandContext ctx) {
@@ -218,6 +221,7 @@ final class AgentCommands {
 
     private CompletableFuture<OutboundMessage> summary(CommandRouter.CommandContext ctx) {
         Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
+        resolveActiveTeamSessionId(session);
         TaskSummaryService.TaskSummary summary = new TaskSummaryService().summarizeCurrentTask(session);
         String rendered = new TaskNoteWriter(null).renderMarkdown(summary);
         String args = trim(ctx.getArgs());
@@ -429,12 +433,19 @@ final class AgentCommands {
             return switch (action) {
                 case "start" -> teamStart(ctx, afterCommand(args));
                 case "status" -> teamStatus(ctx);
+                case "list" -> teamList(ctx);
+                case "resume" -> teamResume(ctx, afterCommand(args));
+                case "archive" -> teamArchive(ctx, afterCommand(args));
+                case "suggest" -> teamSuggest(ctx, afterCommand(args));
+                case "suggest-current" -> teamSuggestCurrent(ctx);
+                case "auto-verify" -> teamAutoVerify(ctx, afterCommand(args));
+                case "verifier-report" -> teamVerifierReport(ctx, afterCommand(args));
                 case "task" -> teamTask(ctx, afterCommand(args));
                 case "verify" -> teamVerify(ctx, afterCommand(args));
                 case "events" -> teamEvents(ctx);
                 case "whiteboard" -> teamWhiteboard(ctx);
                 case "abort" -> teamAbort(ctx, afterCommand(args));
-                default -> completedReply(ctx, "用法：/team start <goal>|status|task <role> <goal>|verify <taskId> pass|reject|needs-human <reason>|events|whiteboard|abort <taskId>");
+                default -> completedReply(ctx, "用法：/team start <goal>|status|list|resume <sessionId>|archive <sessionId>|suggest <goal>|suggest-current|task <role> <goal>|auto-verify <taskId>|verifier-report <taskId>|verify <taskId> pass|reject|needs-human <reason>|events|whiteboard|abort <taskId>");
             };
         } catch (IllegalArgumentException | IllegalStateException e) {
             return completedReply(ctx, "team error: " + e.getMessage());
@@ -458,12 +469,144 @@ final class AgentCommands {
 
     private CompletableFuture<OutboundMessage> teamStatus(CommandRouter.CommandContext ctx) {
         Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
-        String sessionId = activeTeamSessionId(session);
+        String sessionId = resolveActiveTeamSessionId(session);
         if (sessionId.isBlank()) {
             return completedReply(ctx, "No active team session.");
         }
         storeTeamContext(session, sessionId);
         return completedReply(ctx, teamEngine.getStatus(sessionId));
+    }
+
+    private CompletableFuture<OutboundMessage> teamList(CommandRouter.CommandContext ctx) {
+        List<TeamSession> sessions = teamEngine.listSessions();
+        if (sessions.isEmpty()) {
+            return completedReply(ctx, "No team sessions.");
+        }
+        StringBuilder sb = new StringBuilder("team sessions\n");
+        for (TeamSession session : sessions) {
+            sb.append("- ").append(session.id())
+                    .append(" [").append(session.state()).append("]")
+                    .append(teamEngine.isArchived(session.id()) ? " archived=true" : "")
+                    .append(" updatedAt=").append(session.updatedAt())
+                    .append(" goal=").append(session.goal())
+                    .append("\n");
+        }
+        return completedReply(ctx, sb.toString().trim());
+    }
+
+    private CompletableFuture<OutboundMessage> teamResume(CommandRouter.CommandContext ctx, String rawArgs) {
+        String sessionId = commandArg(rawArgs, 0);
+        TeamSession teamSession = teamEngine.resumeSession(sessionId);
+        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
+        storeTeamContext(session, teamSession.id());
+        return completedReply(ctx, "team session resumed\n"
+                + "id: " + teamSession.id() + "\n"
+                + "state: " + teamSession.state() + "\n"
+                + "goal: " + teamSession.goal() + "\n"
+                + "whiteboard: " + teamEngine.whiteboard(teamSession.id()).relativeWhiteboardPath());
+    }
+
+    private CompletableFuture<OutboundMessage> teamArchive(CommandRouter.CommandContext ctx, String rawArgs) {
+        String sessionId = commandArg(rawArgs, 0);
+        TeamSession archived = teamEngine.archiveSession(sessionId);
+        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
+        if (sessionId.equals(activeTeamSessionId(session))) {
+            session.getMetadata().remove(SessionRuntimeKeys.TEAM_SESSION_ID_KEY);
+            session.getMetadata().remove(SessionRuntimeKeys.TEAM_CONTEXT_KEY);
+            sessionManager.save(session);
+        }
+        return completedReply(ctx, "team session archived\n"
+                + "id: " + archived.id() + "\n"
+                + "state: " + archived.state());
+    }
+
+    private CompletableFuture<OutboundMessage> teamSuggest(CommandRouter.CommandContext ctx, String rawGoal) {
+        String goal = trim(rawGoal);
+        if (goal.isBlank()) {
+            throw new IllegalArgumentException("missing team goal");
+        }
+        List<String> files = pathLike(goal);
+        String lower = goal.toLowerCase(java.util.Locale.ROOT);
+        CommandRiskLevel riskLevel = lower.contains("security")
+                || lower.contains("approval")
+                || lower.contains("risk")
+                || lower.contains("permission")
+                || lower.contains("provider")
+                || lower.contains("config")
+                ? CommandRiskLevel.HIGH
+                : CommandRiskLevel.SAFE;
+        boolean requiresResearch = lower.contains("research") || lower.contains("explore") || lower.contains("inspect")
+                || lower.contains("调查") || lower.contains("研究");
+        boolean requiresVerification = lower.contains("verify") || lower.contains("test") || lower.contains("review")
+                || lower.contains("测试") || lower.contains("验证");
+        int estimatedSteps = Math.max(1, files.size());
+        if (lower.contains("state") || lower.contains("flow") || lower.contains("restore") || requiresResearch || requiresVerification) {
+            estimatedSteps = Math.max(estimatedSteps, 3);
+        }
+        TeamDecisionPolicy.Decision decision = new TeamDecisionPolicy().evaluate(
+                goal,
+                riskLevel,
+                files,
+                estimatedSteps,
+                requiresResearch,
+                requiresVerification
+        );
+        return completedReply(ctx, "team suggestion\n"
+                + "useTeam: " + decision.useTeam() + "\n"
+                + "riskLevel: " + riskLevel + "\n"
+                + "estimatedSteps: " + estimatedSteps + "\n"
+                + "reasons: " + (decision.reasons().isEmpty() ? "none" : String.join(", ", decision.reasons())) + "\n"
+                + "suggestedRoles: " + (decision.suggestedRoles().isEmpty()
+                ? "none"
+                : String.join(", ", decision.suggestedRoles().stream().map(Enum::name).toList())));
+    }
+
+    private CompletableFuture<OutboundMessage> teamSuggestCurrent(CommandRouter.CommandContext ctx) {
+        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
+        resolveActiveTeamSessionId(session);
+        TaskSummaryService.TaskSummary summary = new TaskSummaryService().summarizeCurrentTask(session);
+        List<String> changedFiles = summary.changedFiles();
+        boolean highRiskDiff = containsAny(summary.diffReviews(), "risk=high", "high risk", "blocked", "security", "approval", "provider", "agentloop", "toolregistry", "config", "ci");
+        boolean missingSuggestedTests = !summary.suggestedTests().isEmpty()
+                && !suggestedTestsCovered(summary.suggestedTests(), summary.testCommands());
+        boolean hasVerifierReport = !summary.verifierReports().isEmpty();
+        CommandRiskLevel riskLevel = highRiskDiff ? CommandRiskLevel.HIGH : CommandRiskLevel.SAFE;
+        int estimatedSteps = Math.max(1, changedFiles.size());
+        if (highRiskDiff || missingSuggestedTests || hasVerifierReport) {
+            estimatedSteps = Math.max(estimatedSteps, 3);
+        }
+        TeamDecisionPolicy.Decision decision = new TeamDecisionPolicy().evaluate(
+                !summary.goal().isBlank() ? summary.goal() : "Current task",
+                riskLevel,
+                changedFiles,
+                estimatedSteps,
+                !summary.diffReviews().isEmpty(),
+                highRiskDiff || missingSuggestedTests || hasVerifierReport
+        );
+        java.util.ArrayList<String> reasons = new java.util.ArrayList<>(decision.reasons());
+        if (highRiskDiff && !reasons.contains("high risk diff present")) {
+            reasons.add("high risk diff present");
+        }
+        if (missingSuggestedTests && !reasons.contains("suggested tests are not covered")) {
+            reasons.add("suggested tests are not covered");
+        }
+        if (hasVerifierReport && !reasons.contains("existing verifier report should be reviewed")) {
+            reasons.add("existing verifier report should be reviewed");
+        }
+        java.util.ArrayList<TeamRole> roles = new java.util.ArrayList<>(decision.suggestedRoles());
+        if ((highRiskDiff || missingSuggestedTests || hasVerifierReport) && !roles.contains(TeamRole.VERIFIER)) {
+            roles.add(TeamRole.VERIFIER);
+        }
+        if (missingSuggestedTests && !roles.contains(TeamRole.TESTER)) {
+            roles.add(TeamRole.TESTER);
+        }
+        boolean useTeam = decision.useTeam() || highRiskDiff || missingSuggestedTests || hasVerifierReport;
+        return completedReply(ctx, "team suggestion\n"
+                + "useTeam: " + useTeam + "\n"
+                + "riskLevel: " + riskLevel + "\n"
+                + "changedFiles: " + (changedFiles.isEmpty() ? "none" : String.join(", ", changedFiles)) + "\n"
+                + "reasons: " + (reasons.isEmpty() ? "none" : String.join(", ", reasons)) + "\n"
+                + "suggestedRoles: " + (roles.isEmpty() ? "none" : String.join(", ", roles.stream().map(Enum::name).toList())));
     }
 
     private CompletableFuture<OutboundMessage> teamTask(CommandRouter.CommandContext ctx, String rawArgs) {
@@ -508,6 +651,40 @@ final class AgentCommands {
                 + "status: " + task.verificationResult().status() + "\n"
                 + "reason: " + task.verificationResult().reason()
                 + (!task.revisionRequest().isBlank() ? "\nrevisionRequest: " + task.revisionRequest() : ""));
+    }
+
+    private CompletableFuture<OutboundMessage> teamAutoVerify(CommandRouter.CommandContext ctx, String rawArgs) {
+        String taskId = commandArg(rawArgs, 0);
+        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
+        resolveActiveTeamSessionId(session);
+        TeamTask existing = teamEngine.findTask(taskId);
+        if (existing == null) {
+            throw new IllegalArgumentException("team task not found: " + taskId);
+        }
+        TaskSummaryService.TaskSummary summary = new TaskSummaryService().summarizeCurrentTask(session);
+        VerificationInput input = verificationInput(existing, summary, session);
+        TeamTask task = teamEngine.autoVerify(taskId, input);
+        storeTeamContext(session, task.sessionId());
+        VerificationResult result = task.verificationResult();
+        return completedReply(ctx, "team auto verification recorded\n"
+                + "taskId: " + task.id() + "\n"
+                + "state: " + task.state() + "\n"
+                + "status: " + result.status() + "\n"
+                + "riskLevel: " + result.riskLevel() + "\n"
+                + "reasons: " + renderListInline(result.reasons()) + "\n"
+                + "missingTests: " + renderListInline(result.missingTests()) + "\n"
+                + "requiredActions: " + renderListInline(result.requiredActions()));
+    }
+
+    private CompletableFuture<OutboundMessage> teamVerifierReport(CommandRouter.CommandContext ctx, String rawArgs) {
+        String taskId = commandArg(rawArgs, 0);
+        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
+        resolveActiveTeamSessionId(session);
+        List<Map<String, Object>> reports = teamEngine.verificationReports(taskId);
+        if (reports.isEmpty()) {
+            return completedReply(ctx, "No verifier report for task: " + taskId);
+        }
+        return completedReply(ctx, renderVerifierReports(reports));
     }
 
     private CompletableFuture<OutboundMessage> teamEvents(CommandRouter.CommandContext ctx) {
@@ -558,6 +735,100 @@ final class AgentCommands {
         }
     }
 
+    private VerificationInput verificationInput(TeamTask task, TaskSummaryService.TaskSummary summary, Session session) {
+        return new VerificationInput(
+                task.id(),
+                task.goal(),
+                task.summary(),
+                summary.diffReviews(),
+                renderTaskSummaryForVerifier(summary),
+                summary.approvalRecords(),
+                summary.suggestedTests(),
+                summary.testCommands(),
+                verifiedExperienceSources(session),
+                teamEngine.whiteboard(task.sessionId()).readSummary()
+        );
+    }
+
+    private String renderTaskSummaryForVerifier(TaskSummaryService.TaskSummary summary) {
+        if (summary == null) {
+            return "";
+        }
+        return "goal=" + summary.goal()
+                + " changedFiles=" + String.join(",", summary.changedFiles())
+                + " blockers=" + String.join(",", summary.blockers())
+                + " suggestedTests=" + String.join(",", summary.suggestedTests())
+                + " executedTests=" + String.join(",", summary.testCommands());
+    }
+
+    private String renderVerifierReports(List<Map<String, Object>> reports) {
+        StringBuilder sb = new StringBuilder("team verifier report\n");
+        for (Map<String, Object> report : reports) {
+            Map<?, ?> result = report.get("verificationResult") instanceof Map<?, ?> map ? map : Map.of();
+            sb.append("- taskId: ").append(report.getOrDefault("taskId", ""))
+                    .append("\n  status: ").append(mapValue(result, "status"))
+                    .append("\n  riskLevel: ").append(mapValue(result, "riskLevel"))
+                    .append("\n  reasons: ").append(renderRawList(result.get("reasons")))
+                    .append("\n  missingTests: ").append(renderRawList(result.get("missingTests")))
+                    .append("\n  requiredActions: ").append(renderRawList(result.get("requiredActions")))
+                    .append("\n  createdAt: ").append(report.getOrDefault("createdAt", ""))
+                    .append("\n");
+        }
+        return sb.toString().trim();
+    }
+
+    private String renderListInline(List<String> values) {
+        return values == null || values.isEmpty() ? "none" : String.join("; ", values);
+    }
+
+    private String mapValue(Map<?, ?> map, String key) {
+        Object value = map != null ? map.get(key) : null;
+        return value != null ? String.valueOf(value) : "";
+    }
+
+    private String renderRawList(Object raw) {
+        if (raw instanceof List<?> list && !list.isEmpty()) {
+            return String.join("; ", list.stream().map(String::valueOf).toList());
+        }
+        return "none";
+    }
+
+    private boolean suggestedTestsCovered(List<String> suggestedTests, List<String> executedTests) {
+        for (String suggested : suggestedTests != null ? suggestedTests : List.<String>of()) {
+            String normalized = normalizeCommand(suggested);
+            boolean covered = false;
+            for (String executed : executedTests != null ? executedTests : List.<String>of()) {
+                String normalizedExecuted = normalizeCommand(executed);
+                if (normalizedExecuted.contains(normalized) || normalized.contains(normalizedExecuted)) {
+                    covered = true;
+                    break;
+                }
+            }
+            if (!covered) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean containsAny(List<String> values, String... needles) {
+        for (String value : values != null ? values : List.<String>of()) {
+            String lower = value != null ? value.toLowerCase(java.util.Locale.ROOT) : "";
+            for (String needle : needles) {
+                if (lower.contains(needle.toLowerCase(java.util.Locale.ROOT))) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private String normalizeCommand(String raw) {
+        return raw != null
+                ? raw.toLowerCase(java.util.Locale.ROOT).replace("'", "").replace("\"", "").replaceAll("\\s+", " ").trim()
+                : "";
+    }
+
     private String activeTeamSessionId(Session session) {
         if (session == null || session.getMetadata() == null) {
             return "";
@@ -567,11 +838,25 @@ final class AgentCommands {
     }
 
     private String requireActiveTeamSessionId(Session session) {
-        String sessionId = activeTeamSessionId(session);
+        String sessionId = resolveActiveTeamSessionId(session);
         if (sessionId.isBlank()) {
             throw new IllegalStateException("no active team session. Run /team start <goal> first");
         }
         return sessionId;
+    }
+
+    private String resolveActiveTeamSessionId(Session session) {
+        String sessionId = activeTeamSessionId(session);
+        if (!sessionId.isBlank() && teamEngine.findSession(sessionId) != null && !teamEngine.isArchived(sessionId)) {
+            storeTeamContext(session, sessionId);
+            return sessionId;
+        }
+        TeamSession latest = teamEngine.loadLatestActiveSession();
+        if (latest == null) {
+            return "";
+        }
+        storeTeamContext(session, latest.id());
+        return latest.id();
     }
 
     private void storeTeamContext(Session session, String teamSessionId) {

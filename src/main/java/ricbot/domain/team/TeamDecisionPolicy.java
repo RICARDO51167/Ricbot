@@ -17,6 +17,7 @@ public class TeamDecisionPolicy {
             boolean requiresVerification
     ) {
         List<String> reasons = new ArrayList<>();
+        List<TeamRole> roles = new ArrayList<>();
         List<String> files = changedFiles != null ? changedFiles : List.of();
         String goal = taskGoal != null ? taskGoal.toLowerCase(Locale.ROOT) : "";
 
@@ -45,8 +46,24 @@ public class TeamDecisionPolicy {
         boolean useTeam = !reasons.isEmpty();
         if (!useTeam) {
             reasons.add("simple low-risk single-step task");
+        } else {
+            addRole(roles, TeamRole.LEADER);
+            addRole(roles, TeamRole.PLANNER);
+            if (requiresResearch || !files.isEmpty()) {
+                addRole(roles, TeamRole.EXPLORER);
+            }
+            if (!files.isEmpty() || estimatedSteps >= 2) {
+                addRole(roles, TeamRole.DEVELOPER);
+            }
+            if (requiresVerification || needsTests(goal, files)) {
+                addRole(roles, TeamRole.TESTER);
+                addRole(roles, TeamRole.VERIFIER);
+            }
+            if (riskLevel == CommandRiskLevel.HIGH || riskLevel == CommandRiskLevel.BLOCKED || securitySensitive(goal, files)) {
+                addRole(roles, TeamRole.REVIEWER);
+            }
         }
-        return new Decision(useTeam, List.copyOf(reasons));
+        return new Decision(useTeam, List.copyOf(reasons), List.copyOf(roles));
     }
 
     private boolean securitySensitive(String goal, List<String> files) {
@@ -69,9 +86,20 @@ public class TeamDecisionPolicy {
         return files.stream().anyMatch(file -> file != null && file.endsWith(".java"));
     }
 
-    public record Decision(boolean useTeam, List<String> reasons) {
+    private void addRole(List<TeamRole> roles, TeamRole role) {
+        if (!roles.contains(role)) {
+            roles.add(role);
+        }
+    }
+
+    public record Decision(boolean useTeam, List<String> reasons, List<TeamRole> suggestedRoles) {
         public Decision {
             reasons = reasons != null ? List.copyOf(reasons) : List.of();
+            suggestedRoles = suggestedRoles != null ? List.copyOf(suggestedRoles) : List.of();
+        }
+
+        public Decision(boolean useTeam, List<String> reasons) {
+            this(useTeam, reasons, List.of());
         }
     }
 }

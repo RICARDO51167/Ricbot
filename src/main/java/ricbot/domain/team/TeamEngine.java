@@ -15,12 +15,16 @@ public class TeamEngine {
     public static final String TEAM_CONTEXT_KEY = SessionRuntimeKeys.TEAM_CONTEXT_KEY;
 
     private final Path workspace;
+    private final TeamSessionStore store;
+    private final VerificationService verificationService = new VerificationService();
     private final Map<String, TeamSession> sessions = new LinkedHashMap<>();
     private final Map<String, TeamTask> tasks = new LinkedHashMap<>();
     private final Map<String, List<TeamEvent>> events = new LinkedHashMap<>();
 
     public TeamEngine(Path workspace) {
         this.workspace = workspace.toAbsolutePath().normalize();
+        this.store = new TeamSessionStore(this.workspace);
+        restoreKnownSessions();
     }
 
     public TeamSession createSession(String goal) {
@@ -28,7 +32,8 @@ public class TeamEngine {
         sessions.put(session.id(), session);
         TeamWhiteboard whiteboard = whiteboard(session.id());
         whiteboard.appendNote("Leader started team session.\n\nGoal: " + session.goal());
-        appendEvent(TeamEvent.of(session.id(), "", TeamRole.LEADER, "session_created", session.goal()));
+        store.saveSession(session);
+        appendEvent(TeamEvent.of(session.id(), "", TeamRole.LEADER, TeamEvent.TEAM_STARTED, session.goal()));
         return session;
     }
 
@@ -38,13 +43,22 @@ public class TeamEngine {
         tasks.put(task.id(), task);
         refreshSessionTasks(session.id());
         whiteboard(session.id()).appendNote("Task created: " + task.id() + "\nRole: " + task.role() + "\nGoal: " + task.goal());
-        appendEvent(TeamEvent.of(session.id(), task.id(), task.role(), "task_created", task.goal()));
+        appendEvent(TeamEvent.of(session.id(), task.id(), task.role(), TeamEvent.TASK_CREATED, task.goal()));
+        return task;
+    }
+
+    public TeamTask createVerifierTaskFromDiffReview(String sessionId, String diffReviewSummary) {
+        String summary = diffReviewSummary != null && !diffReviewSummary.isBlank()
+                ? diffReviewSummary.trim()
+                : "Review current diff and task summary.";
+        TeamTask task = createTask(sessionId, TeamRole.VERIFIER, "Verify diff review: " + summary);
+        whiteboard(task.sessionId()).appendNote("Verifier task prepared from DiffReview.\n\n" + summary);
         return task;
     }
 
     public TeamTask startProducing(String taskId) {
         TeamTask task = updateTask(taskId, requireTask(taskId).withState(TeamTaskState.PRODUCING));
-        appendEvent(TeamEvent.of(task.sessionId(), task.id(), task.role(), "producing_started", task.goal()));
+        appendEvent(TeamEvent.of(task.sessionId(), task.id(), task.role(), TeamEvent.TASK_PRODUCING, task.goal()));
         return task;
     }
 
@@ -57,13 +71,13 @@ public class TeamEngine {
         for (TeamArtifact artifact : safeArtifacts) {
             whiteboard.appendArtifact(artifact);
         }
-        appendEvent(TeamEvent.of(task.sessionId(), task.id(), task.role(), "worker_result", summary));
+        appendEvent(TeamEvent.of(task.sessionId(), task.id(), task.role(), TeamEvent.WORKER_RESULT_SUBMITTED, summary));
         return task;
     }
 
     public TeamTask startVerifying(String taskId) {
         TeamTask task = updateTask(taskId, requireTask(taskId).withState(TeamTaskState.VERIFYING));
-        appendEvent(TeamEvent.of(task.sessionId(), task.id(), TeamRole.VERIFIER, "verifying_started", task.goal()));
+        appendEvent(TeamEvent.of(task.sessionId(), task.id(), TeamRole.VERIFIER, TeamEvent.VERIFICATION_STARTED, task.goal()));
         return task;
     }
 
@@ -81,16 +95,90 @@ public class TeamEngine {
         TeamTask task = updateTask(taskId, current.withVerification(result, nextState, revisionRequest));
         whiteboard(task.sessionId()).appendNote("Verifier result for " + task.id()
                 + "\nStatus: " + result.status()
+                + "\nRiskLevel: " + result.riskLevel()
                 + "\nReason: " + result.reason()
+                + (!result.missingTests().isEmpty() ? "\nMissingTests: " + String.join("; ", result.missingTests()) : "")
+                + (!result.requiredActions().isEmpty() ? "\nRequiredActions: " + String.join("; ", result.requiredActions()) : "")
                 + (!revisionRequest.isBlank() ? "\n" + revisionRequest : ""));
-        appendEvent(TeamEvent.of(task.sessionId(), task.id(), TeamRole.VERIFIER, "verification_" + result.status().name().toLowerCase(java.util.Locale.ROOT), result.reason()));
+        store.appendVerification(task.sessionId(), task);
+        appendEvent(TeamEvent.of(
+                task.sessionId(),
+                task.id(),
+                TeamRole.VERIFIER,
+                verificationEventType(result.status()),
+                result.reason(),
+                Map.of("confidence", result.confidence())
+        ));
+        if (result.status() == VerificationResult.Status.REJECT) {
+            appendEvent(TeamEvent.of(task.sessionId(), task.id(), TeamRole.VERIFIER, TeamEvent.REVISION_REQUESTED, revisionRequest));
+        }
         return task;
+    }
+
+    public TeamTask autoVerify(String taskId, VerificationInput input) {
+        TeamTask current = requireTask(taskId);
+        VerificationInput base = input != null ? input : VerificationInput.ofTask(current);
+        VerificationInput merged = new VerificationInput(
+                !base.taskId().isBlank() ? base.taskId() : current.id(),
+                !base.taskGoal().isBlank() ? base.taskGoal() : current.goal(),
+                !base.workerSummary().isBlank() ? base.workerSummary() : current.summary(),
+                base.diffReviews(),
+                base.taskSummary(),
+                base.approvalRecords(),
+                base.suggestedTests(),
+                base.executedTests(),
+                base.verifiedExperience(),
+                !base.teamWhiteboardSummary().isBlank() ? base.teamWhiteboardSummary() : whiteboard(current.sessionId()).readSummary()
+        );
+        startVerifying(taskId);
+        VerificationResult result = verificationService.verify(merged);
+        return submitVerification(taskId, result);
     }
 
     public TeamTask abortTask(String taskId) {
         TeamTask task = updateTask(taskId, requireTask(taskId).withState(TeamTaskState.ABORTED));
-        appendEvent(TeamEvent.of(task.sessionId(), task.id(), TeamRole.LEADER, "task_aborted", task.goal()));
+        appendEvent(TeamEvent.of(task.sessionId(), task.id(), TeamRole.LEADER, TeamEvent.TASK_ABORTED, task.goal()));
         return task;
+    }
+
+    public TeamSession resumeSession(String sessionId) {
+        TeamSession session = store.restoreActiveSession(sessionId);
+        rememberSession(session);
+        events.put(session.id(), new ArrayList<>(store.loadEvents(session.id())));
+        appendEvent(TeamEvent.of(session.id(), "", TeamRole.LEADER, TeamEvent.TEAM_RESUMED, "Team session resumed."));
+        return requireSession(session.id());
+    }
+
+    public TeamSession archiveSession(String sessionId) {
+        TeamSession session = requireSession(sessionId);
+        appendEvent(TeamEvent.of(session.id(), "", TeamRole.LEADER, TeamEvent.TEAM_ARCHIVED, "Team session archived."));
+        return store.archiveSession(session.id());
+    }
+
+    public List<TeamSession> listSessions() {
+        List<TeamSession> out = store.listSessions();
+        for (TeamSession session : out) {
+            rememberSession(session);
+        }
+        return out;
+    }
+
+    public TeamSession loadLatestActiveSession() {
+        TeamSession session = store.loadLatestActiveSession();
+        if (session != null) {
+            rememberSession(session);
+            events.put(session.id(), new ArrayList<>(store.loadEvents(session.id())));
+        }
+        return session;
+    }
+
+    public boolean isArchived(String sessionId) {
+        return store.isArchived(sessionId);
+    }
+
+    public List<Map<String, Object>> verificationReports(String taskId) {
+        TeamTask task = requireTask(taskId);
+        return store.loadVerificationReportsForTask(task.sessionId(), task.id());
     }
 
     public String getStatus(String sessionId) {
@@ -114,6 +202,9 @@ public class TeamEngine {
     }
 
     public List<TeamEvent> listEvents(String sessionId) {
+        if (!events.containsKey(sessionId)) {
+            events.put(sessionId, new ArrayList<>(store.loadEvents(sessionId)));
+        }
         return events.getOrDefault(sessionId, List.of()).stream()
                 .sorted(Comparator.comparing(TeamEvent::createdAt))
                 .toList();
@@ -124,7 +215,18 @@ public class TeamEngine {
     }
 
     public TeamSession findSession(String sessionId) {
-        return sessions.get(sessionId);
+        if (sessionId == null || sessionId.isBlank()) {
+            return null;
+        }
+        TeamSession session = sessions.get(sessionId);
+        if (session == null) {
+            session = store.loadSession(sessionId);
+            if (session != null) {
+                rememberSession(session);
+                events.put(session.id(), new ArrayList<>(store.loadEvents(session.id())));
+            }
+        }
+        return session;
     }
 
     public TeamTask findTask(String taskId) {
@@ -132,7 +234,7 @@ public class TeamEngine {
     }
 
     public Map<String, Object> contextSnapshot(String sessionId) {
-        TeamSession session = sessions.get(sessionId);
+        TeamSession session = findSession(sessionId);
         if (session == null) {
             return Map.of();
         }
@@ -144,9 +246,11 @@ public class TeamEngine {
                 .toList();
         List<String> verifierResults = new ArrayList<>();
         List<String> revisionRequests = new ArrayList<>();
+        List<String> verificationReports = new ArrayList<>();
         for (TeamTask task : session.tasks()) {
             if (task.verificationResult() != null) {
                 verifierResults.add(task.id() + ": " + task.verificationResult().status() + " - " + task.verificationResult().reason());
+                verificationReports.add(renderVerificationReport(task));
             }
             if (!task.revisionRequest().isBlank()) {
                 revisionRequests.add(task.id() + ": " + task.revisionRequest());
@@ -158,6 +262,8 @@ public class TeamEngine {
         out.put("whiteboardPath", whiteboard.relativeWhiteboardPath());
         out.put("whiteboardSummary", whiteboard.readSummary());
         out.put("verifierResults", verifierResults);
+        out.put("verificationReports", verificationReports);
+        out.put("verificationPath", workspace.relativize(store.sessionDir(sessionId).resolve("verification.jsonl")).toString().replace('\\', '/'));
         out.put("revisionRequests", revisionRequests);
         return out;
     }
@@ -192,7 +298,9 @@ public class TeamEngine {
                 .sorted(Comparator.comparing(TeamTask::createdAt))
                 .toList();
         TeamTaskState nextState = deriveSessionState(sessionTasks, session.state());
-        sessions.put(sessionId, new TeamSession(session.id(), session.goal(), nextState, sessionTasks, session.createdAt(), java.time.Instant.now().toString()));
+        TeamSession next = new TeamSession(session.id(), session.goal(), nextState, sessionTasks, session.createdAt(), java.time.Instant.now().toString());
+        sessions.put(sessionId, next);
+        store.saveSession(next);
     }
 
     private TeamTaskState deriveSessionState(List<TeamTask> sessionTasks, TeamTaskState fallback) {
@@ -220,7 +328,7 @@ public class TeamEngine {
     }
 
     private TeamSession requireSession(String sessionId) {
-        TeamSession session = sessions.get(sessionId);
+        TeamSession session = findSession(sessionId);
         if (session == null) {
             throw new IllegalArgumentException("team session not found: " + sessionId);
         }
@@ -233,5 +341,57 @@ public class TeamEngine {
             throw new IllegalArgumentException("team task not found: " + taskId);
         }
         return task;
+    }
+
+    private void restoreKnownSessions() {
+        try {
+            for (TeamSession session : store.listSessions()) {
+                rememberSession(session);
+                events.put(session.id(), new ArrayList<>(store.loadEvents(session.id())));
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void rememberSession(TeamSession session) {
+        if (session == null) {
+            return;
+        }
+        sessions.put(session.id(), session);
+        for (TeamTask task : session.tasks()) {
+            tasks.put(task.id(), task);
+        }
+    }
+
+    private String verificationEventType(VerificationResult.Status status) {
+        return switch (status) {
+            case PASS -> TeamEvent.VERIFICATION_PASSED;
+            case REJECT -> TeamEvent.VERIFICATION_REJECTED;
+            case NEEDS_HUMAN -> TeamEvent.HUMAN_NEEDED;
+        };
+    }
+
+    private String renderVerificationReport(TeamTask task) {
+        VerificationResult result = task.verificationResult();
+        if (result == null) {
+            return "";
+        }
+        List<String> parts = new ArrayList<>();
+        parts.add("task=" + task.id());
+        parts.add("status=" + result.status());
+        parts.add("riskLevel=" + result.riskLevel());
+        if (!result.reasons().isEmpty()) {
+            parts.add("reasons=" + String.join("; ", result.reasons()));
+        }
+        if (!result.missingTests().isEmpty()) {
+            parts.add("missingTests=" + String.join("; ", result.missingTests()));
+        }
+        if (!result.requiredActions().isEmpty()) {
+            parts.add("requiredActions=" + String.join("; ", result.requiredActions()));
+        }
+        if (!result.suggestedExperienceActions().isEmpty()) {
+            parts.add("suggestedExperienceActions=" + String.join("; ", result.suggestedExperienceActions()));
+        }
+        return String.join(" | ", parts);
     }
 }

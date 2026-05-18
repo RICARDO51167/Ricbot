@@ -14,7 +14,7 @@ class TeamWhiteboardTest {
     @Test
     void writesAndReadsWhiteboardEventsAndArtifacts(@TempDir Path workspace) throws Exception {
         TeamWhiteboard whiteboard = new TeamWhiteboard(workspace, "team_demo");
-        TeamEvent event = TeamEvent.of("team_demo", "task_demo", TeamRole.DEVELOPER, "worker_result", "implemented summary");
+        TeamEvent event = TeamEvent.of("team_demo", "task_demo", TeamRole.DEVELOPER, TeamEvent.WORKER_RESULT_SUBMITTED, "implemented summary");
         TeamArtifact artifact = TeamArtifact.of("task_demo", "src/main/java/Demo.java", "changed one method");
 
         whiteboard.appendNote("Leader note: keep only summaries on the whiteboard.");
@@ -26,7 +26,8 @@ class TeamWhiteboardTest {
         assertTrue(Files.exists(whiteboard.artifactsPath()));
         assertTrue(whiteboard.readSummary().contains("Leader note"));
         assertEquals(1, whiteboard.readEvents().size());
-        assertEquals("worker_result", whiteboard.readEvents().get(0).type());
+        assertEquals(TeamEvent.WORKER_RESULT_SUBMITTED, whiteboard.readEvents().get(0).type());
+        assertEquals("DEVELOPER", whiteboard.readEvents().get(0).actor());
         assertEquals(1, whiteboard.readArtifacts().size());
         assertEquals("src/main/java/Demo.java", whiteboard.readArtifacts().get(0).path());
         assertEquals(".team/team_demo/whiteboard.md", whiteboard.relativeWhiteboardPath());

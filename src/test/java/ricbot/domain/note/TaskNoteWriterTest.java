@@ -29,6 +29,8 @@ class TaskNoteWriterTest {
         assertTrue(markdown.contains("## Rollback Hints"), markdown);
         assertTrue(markdown.contains("## Team Findings"), markdown);
         assertTrue(markdown.contains("team team_demo state=VERIFYING"), markdown);
+        assertTrue(markdown.contains("## Verifier Report"), markdown);
+        assertTrue(markdown.contains("status=REJECT"), markdown);
         assertTrue(markdown.contains("## SubAgent Findings"), markdown);
         assertTrue(markdown.contains("PLANNER task=subtask_demo"), markdown);
     }
@@ -73,6 +75,7 @@ class TaskNoteWriterTest {
                 List.of("./mvnw -q -Dtest='ricbot.domain.note.*Test' test"),
                 List.of("git checkout -- src/main/java/ricbot/domain/note/TaskNoteWriter.java"),
                 List.of("team team_demo state=VERIFYING goal=V3.4 task notes"),
+                List.of("task=teamtask_demo | status=REJECT | missingTests=./mvnw -q test | requiredActions=Run tests"),
                 List.of("PLANNER task=subtask_demo summary=Plan note writing"),
                 ""
         );
