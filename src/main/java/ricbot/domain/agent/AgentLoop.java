@@ -16,6 +16,7 @@ import ricbot.domain.note.NoteService;
 import ricbot.domain.rag.WorkspaceRagService;
 import ricbot.domain.security.ApprovalService;
 import ricbot.domain.subagent.SubagentManager;
+import ricbot.domain.trace.TraceStore;
 import ricbot.domain.hook.AgentHook;
 import ricbot.tool.api.BuiltinToolRegistrar;
 import ricbot.tool.api.ToolRegistry;
@@ -103,6 +104,7 @@ public class AgentLoop {
     /** Dream 模块，用于后台记忆整理和反思 */
     private final Dream dream;
     private final ApprovalService approvalService;
+    private final TraceStore traceStore;
     /** 会话自动归档器 */
     private final AutoCompact autoCompact;
     /** 子代理管理器，用于管理子代理任务 */
@@ -239,7 +241,8 @@ public class AgentLoop {
         
         // 初始化 Dream 模块
         this.dream = new Dream(this.provider, this.model, this.memoryStore);
-        this.approvalService = new ApprovalService();
+        this.traceStore = new TraceStore(this.workspace);
+        this.approvalService = new ApprovalService(this.traceStore);
         this.autoCompact = new AutoCompact(this.sessionManager, this.consolidator, this.sessionTtlMinutes);
         
         // 初始化子代理管理器
@@ -285,7 +288,8 @@ public class AgentLoop {
                 this.contextWindowTokens,
                 new NoteService(this.workspace),
                 new WorkspaceRagService(this.workspace),
-                new ExperienceStore(this.workspace)
+                new ExperienceStore(this.workspace),
+                this.traceStore
         );
         this.agentContextService = new AgentContextService(
                 this.workspace,

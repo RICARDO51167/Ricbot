@@ -1,5 +1,10 @@
 package ricbot.domain.agent;
 
+import ricbot.domain.change.ChangeSetRenderer;
+import ricbot.domain.change.ChangeSetService;
+import ricbot.domain.change.GitChangeSet;
+import ricbot.domain.change.GitChangeSetStatus;
+import ricbot.domain.change.PendingChangeAction;
 import ricbot.domain.memory.Dream;
 import ricbot.domain.memory.MemoryStore;
 import ricbot.domain.experience.ExperienceEntry;
@@ -19,6 +24,7 @@ import ricbot.domain.security.ApprovalRequest;
 import ricbot.domain.security.ApprovalService;
 import ricbot.domain.security.CommandRiskLevel;
 import ricbot.domain.security.PendingToolCall;
+import ricbot.domain.security.RiskAssessment;
 import ricbot.domain.subagent.SubAgentOrchestrator;
 import ricbot.domain.subagent.SubAgentResult;
 import ricbot.domain.subagent.SubAgentRole;
@@ -32,6 +38,17 @@ import ricbot.domain.team.TeamSession;
 import ricbot.domain.team.TeamTask;
 import ricbot.domain.team.VerificationInput;
 import ricbot.domain.team.VerificationResult;
+import ricbot.domain.trace.TraceEvent;
+import ricbot.domain.trace.TraceEventType;
+import ricbot.domain.trace.TraceRenderer;
+import ricbot.domain.trace.TraceStore;
+import ricbot.domain.workspace.GitWorktreeWorkspaceBackend;
+import ricbot.domain.workspace.LocalWorkspaceBackend;
+import ricbot.domain.workspace.WorkspaceBackend;
+import ricbot.domain.workspace.WorkspaceBackendType;
+import ricbot.domain.workspace.WorkspaceRenderer;
+import ricbot.domain.workspace.WorkspaceSession;
+import ricbot.domain.workspace.WorkspaceSessionStore;
 import ricbot.infra.config.Config;
 import ricbot.integration.command.CommandRouter;
 import ricbot.tool.api.ToolRegistry;
@@ -60,6 +77,7 @@ final class AgentCommands {
     private final ApprovalService approvalService;
     private final ToolRegistry toolRegistry;
     private final TeamEngine teamEngine;
+    private final TraceStore traceStore;
 
     AgentCommands(
             SessionManager sessionManager,
@@ -114,9 +132,11 @@ final class AgentCommands {
         this.sessionKeyResolver = sessionKeyResolver;
         this.activeTaskRemover = activeTaskRemover;
         this.sessionInterruptMarker = sessionInterruptMarker;
+        this.traceStore = new TraceStore(this.workspace);
         this.approvalService = approvalService != null ? approvalService : new ApprovalService();
+        this.approvalService.setTraceStore(this.traceStore);
         this.toolRegistry = toolRegistry;
-        this.teamEngine = new TeamEngine(this.workspace);
+        this.teamEngine = new TeamEngine(this.workspace, this.traceStore);
     }
 
     void register(CommandRouter router) {
@@ -133,6 +153,12 @@ final class AgentCommands {
         router.prefix("/experience ", this::experience);
         router.exact("/subagent", this::subagent);
         router.prefix("/subagent ", this::subagent);
+        router.exact("/change", this::change);
+        router.prefix("/change ", this::change);
+        router.exact("/workspace", this::workspace);
+        router.prefix("/workspace ", this::workspace);
+        router.exact("/trace", this::trace);
+        router.prefix("/trace ", this::trace);
         router.exact("/team", this::team);
         router.prefix("/team ", this::team);
         router.prefix("/approve ", this::approve);
@@ -175,7 +201,7 @@ final class AgentCommands {
     }
 
     private CompletableFuture<OutboundMessage> help(CommandRouter.CommandContext ctx) {
-        return completedReply(ctx, "ricbot 命令：\n/new — 开始新对话\n/stop — 停止当前任务\n/summary — 查看当前任务摘要\n/subagent plan|explore|review|list|show — 角色化子代理摘要\n/team start|status|list|resume|archive|suggest|suggest-current|task|auto-verify|verifier-report|verify|events|whiteboard|abort — TeamEngine 状态机\n/help — 查看可用命令");
+        return completedReply(ctx, "ricbot 命令：\n/new — 开始新对话\n/stop — 停止当前任务\n/summary — 查看当前任务摘要\n/subagent plan|explore|review|list|show — 角色化子代理摘要\n/team start|status|list|resume|archive|suggest|suggest-current|task|auto-verify|verifier-report|verify|events|whiteboard|abort — TeamEngine 状态机\n/workspace create|status|list|use|diff|cleanup — Local/Worktree workspace session\n/change create|status|diff|commit-message|approve|commit|rollback — GitChangeSet 工作流\n/trace last|list|show|events|export — Coding Harness trace\n/help — 查看可用命令");
     }
 
     private CompletableFuture<OutboundMessage> status(CommandRouter.CommandContext ctx) {
@@ -216,13 +242,24 @@ final class AgentCommands {
         String args = trim(ctx.getArgs()).toLowerCase();
         boolean detail = args.contains("--detail");
         boolean sources = args.contains("--sources");
-        return completedReply(ctx, ContextCommandRenderer.render(trace, detail, sources));
+        String rendered = ContextCommandRenderer.render(trace, detail, sources);
+        if (sources || detail) {
+            rendered = appendActiveWorkspaceSource(rendered, session);
+        }
+        return completedReply(ctx, rendered);
     }
 
     private CompletableFuture<OutboundMessage> summary(CommandRouter.CommandContext ctx) {
         Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
         resolveActiveTeamSessionId(session);
         TaskSummaryService.TaskSummary summary = new TaskSummaryService().summarizeCurrentTask(session);
+        traceEvent(session, TraceEventType.TASK_SUMMARY_CREATED, "agent", "task summary created", Map.of(
+                "changedFiles", summary.changedFiles(),
+                "blockers", summary.blockers(),
+                "changeSetStatus", summary.changeSetStatus(),
+                "commitHash", summary.commitHash(),
+                "rollbackStatus", summary.rollbackStatus()
+        ), "", "", "");
         String rendered = new TaskNoteWriter(null).renderMarkdown(summary);
         String args = trim(ctx.getArgs());
         if (!args.contains("--write-note")) {
@@ -289,6 +326,470 @@ final class AgentCommands {
         return completedReply(ctx, "experience extracted: " + stored.size()
                 + "\nfile: " + workspace.relativize(store.candidatesFile())
                 + "\n\n" + renderer.renderList(stored));
+    }
+
+    private CompletableFuture<OutboundMessage> trace(CommandRouter.CommandContext ctx) {
+        String args = trim(ctx.getArgs());
+        String action = args.isBlank() ? "last" : args.split("\\s+")[0].toLowerCase(java.util.Locale.ROOT);
+        TraceRenderer renderer = new TraceRenderer();
+        try {
+            return switch (action) {
+                case "last" -> {
+                    TraceStore.TraceSummary latest = traceStore.loadLatestTrace();
+                    yield completedReply(ctx, renderer.renderSummary(latest, latest != null ? traceStore.loadEvents(latest.traceId()) : List.of()));
+                }
+                case "list" -> completedReply(ctx, renderer.renderList(traceStore.listTraces().stream()
+                        .map(traceStore::summarize)
+                        .toList()));
+                case "show" -> {
+                    String traceId = commandArg(args, 1);
+                    yield completedReply(ctx, renderer.renderSummary(traceStore.summarize(traceId), traceStore.loadEvents(traceId)));
+                }
+                case "events" -> completedReply(ctx, renderer.renderEvents(traceStore.loadEvents(commandArg(args, 1))));
+                case "export" -> completedReply(ctx, renderer.renderExport(traceStore.loadEvents(commandArg(args, 1))));
+                default -> completedReply(ctx, "用法：/trace last|list|show <traceId>|events <traceId>|export <traceId>");
+            };
+        } catch (IllegalArgumentException e) {
+            return completedReply(ctx, "trace error: " + e.getMessage());
+        }
+    }
+
+    private CompletableFuture<OutboundMessage> workspace(CommandRouter.CommandContext ctx) {
+        String args = trim(ctx.getArgs());
+        String action = args.isBlank() ? "status" : args.split("\\s+")[0].toLowerCase(java.util.Locale.ROOT);
+        WorkspaceSessionStore store = new WorkspaceSessionStore(workspace);
+        WorkspaceRenderer renderer = new WorkspaceRenderer();
+        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
+        try {
+            return switch (action) {
+                case "create" -> workspaceCreate(ctx, session, store, renderer);
+                case "status" -> completedReply(ctx, renderer.renderStatus(activeWorkspaceSession(session, store)));
+                case "list" -> completedReply(ctx, renderer.renderList(store.list()));
+                case "use" -> workspaceUse(ctx, session, store, renderer, commandArg(args, 1));
+                case "diff" -> workspaceDiff(ctx, session, store, renderer, commandArg(args, 1));
+                case "cleanup" -> workspaceCleanup(ctx, session, store, renderer, commandArg(args, 1));
+                default -> completedReply(ctx, "用法：/workspace create --mode local|worktree <goal>|status|list|use <id>|diff <id>|cleanup <id>");
+            };
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            return completedReply(ctx, "workspace error: " + e.getMessage());
+        }
+    }
+
+    private CompletableFuture<OutboundMessage> workspaceCreate(
+            CommandRouter.CommandContext ctx,
+            Session session,
+            WorkspaceSessionStore store,
+            WorkspaceRenderer renderer
+    ) {
+        String args = trim(ctx.getArgs());
+        String mode = optionValue(args, "--mode", "local").toLowerCase(java.util.Locale.ROOT);
+        String goal = workspaceCreateGoal(args);
+        WorkspaceBackend backend = switch (mode) {
+            case "local" -> new LocalWorkspaceBackend(store);
+            case "worktree", "git_worktree" -> new GitWorktreeWorkspaceBackend(workspace, store);
+            default -> throw new IllegalArgumentException("unsupported workspace mode: " + mode);
+        };
+        WorkspaceSession created = backend.createSession(workspace, goal);
+        storeWorkspaceContext(session, created, renderer);
+        traceEvent(session, TraceEventType.WORKSPACE_CREATED, "workspace", "workspace session created", Map.of(
+                "workspaceSessionId", created.id(),
+                "type", created.type().name(),
+                "workspacePath", created.workspacePath(),
+                "goal", created.goal()
+        ), "", "", "");
+        return completedReply(ctx, "workspace created\n"
+                + "id: " + created.id() + "\n"
+                + "source: .workspaces/" + created.id() + "/session.json\n\n"
+                + renderer.renderStatus(created));
+    }
+
+    private CompletableFuture<OutboundMessage> workspaceUse(
+            CommandRouter.CommandContext ctx,
+            Session session,
+            WorkspaceSessionStore store,
+            WorkspaceRenderer renderer,
+            String sessionId
+    ) {
+        WorkspaceSession selected = requireWorkspaceSession(store, sessionId);
+        storeWorkspaceContext(session, selected, renderer);
+        traceEvent(session, TraceEventType.WORKSPACE_SELECTED, "workspace", "workspace session selected", Map.of(
+                "workspaceSessionId", selected.id(),
+                "type", selected.type().name(),
+                "workspacePath", selected.workspacePath()
+        ), "", "", "");
+        return completedReply(ctx, "workspace selected\n" + renderer.renderStatus(selected));
+    }
+
+    private CompletableFuture<OutboundMessage> workspaceDiff(
+            CommandRouter.CommandContext ctx,
+            Session session,
+            WorkspaceSessionStore store,
+            WorkspaceRenderer renderer,
+            String sessionId
+    ) {
+        WorkspaceSession target = requireWorkspaceSession(store, sessionId);
+        String diff = backendFor(target, store).diff(target.id());
+        traceEvent(session, TraceEventType.WORKSPACE_DIFFED, "workspace", "workspace diff rendered", Map.of(
+                "workspaceSessionId", target.id(),
+                "type", target.type().name(),
+                "diffChars", diff != null ? diff.length() : 0
+        ), "", "", "");
+        return completedReply(ctx, renderer.renderDiff(target, diff, 4_000));
+    }
+
+    private CompletableFuture<OutboundMessage> workspaceCleanup(
+            CommandRouter.CommandContext ctx,
+            Session session,
+            WorkspaceSessionStore store,
+            WorkspaceRenderer renderer,
+            String sessionId
+    ) {
+        WorkspaceSession target = requireWorkspaceSession(store, sessionId);
+        WorkspaceSession cleaned = backendFor(target, store).cleanup(target.id());
+        if (activeWorkspaceSessionId(session).equals(cleaned.id())) {
+            session.getMetadata().remove(SessionRuntimeKeys.ACTIVE_WORKSPACE_SESSION_ID_KEY);
+            session.getMetadata().remove(SessionRuntimeKeys.WORKSPACE_SUMMARY_KEY);
+            session.getMetadata().remove(SessionRuntimeKeys.WORKSPACE_SOURCE_KEY);
+            sessionManager.save(session);
+        }
+        traceEvent(session, TraceEventType.WORKSPACE_CLEANED, "workspace", "workspace session cleaned", Map.of(
+                "workspaceSessionId", cleaned.id(),
+                "type", cleaned.type().name(),
+                "workspacePath", cleaned.workspacePath(),
+                "status", cleaned.status().name()
+        ), "", "", "");
+        return completedReply(ctx, "workspace cleaned\n" + renderer.renderStatus(cleaned));
+    }
+
+    private WorkspaceBackend backendFor(WorkspaceSession session, WorkspaceSessionStore store) {
+        if (session.type() == WorkspaceBackendType.GIT_WORKTREE) {
+            return new GitWorktreeWorkspaceBackend(workspace, store);
+        }
+        return new LocalWorkspaceBackend(store);
+    }
+
+    private WorkspaceSession activeWorkspaceSession(Session session, WorkspaceSessionStore store) {
+        String id = activeWorkspaceSessionId(session);
+        WorkspaceSession active = !id.isBlank() ? store.load(id) : null;
+        if (active != null) {
+            return active;
+        }
+        return store.loadActive().stream().findFirst().orElse(null);
+    }
+
+    private WorkspaceSession requireWorkspaceSession(WorkspaceSessionStore store, String sessionId) {
+        WorkspaceSession workspaceSession = store.load(sessionId);
+        if (workspaceSession == null) {
+            throw new IllegalArgumentException("workspace session not found: " + sessionId);
+        }
+        return workspaceSession;
+    }
+
+    private void storeWorkspaceContext(Session session, WorkspaceSession workspaceSession, WorkspaceRenderer renderer) {
+        if (session == null || workspaceSession == null) {
+            return;
+        }
+        session.getMetadata().put(SessionRuntimeKeys.ACTIVE_WORKSPACE_SESSION_ID_KEY, workspaceSession.id());
+        session.getMetadata().put(SessionRuntimeKeys.WORKSPACE_SUMMARY_KEY, renderer.renderStatus(workspaceSession).replace("\n", " | "));
+        session.getMetadata().put(SessionRuntimeKeys.WORKSPACE_SOURCE_KEY, ".workspaces/" + workspaceSession.id() + "/session.json");
+        sessionManager.save(session);
+    }
+
+    private String activeWorkspaceSessionId(Session session) {
+        if (session == null || session.getMetadata() == null) {
+            return "";
+        }
+        Object raw = session.getMetadata().get(SessionRuntimeKeys.ACTIVE_WORKSPACE_SESSION_ID_KEY);
+        return raw != null ? String.valueOf(raw).trim() : "";
+    }
+
+    private String workspaceCreateGoal(String args) {
+        String value = afterCommand(args);
+        String mode = optionValue(args, "--mode", "");
+        if (!mode.isBlank()) {
+            value = value.replaceFirst("--mode\\s+" + java.util.regex.Pattern.quote(mode), "").trim();
+        }
+        return value.isBlank() ? "workspace session" : value;
+    }
+
+    private CompletableFuture<OutboundMessage> change(CommandRouter.CommandContext ctx) {
+        String args = trim(ctx.getArgs());
+        String action = args.isBlank() ? "status" : args.split("\\s+")[0].toLowerCase(java.util.Locale.ROOT);
+        ChangeSetService service = new ChangeSetService(workspace);
+        ChangeSetRenderer renderer = new ChangeSetRenderer();
+        try {
+            return switch (action) {
+                case "create" -> changeCreate(ctx, service, renderer);
+                case "status" -> completedReply(ctx, renderer.renderStatus(latestChangeSet(ctx, service)));
+                case "diff" -> completedReply(ctx, renderer.renderDiff(latestChangeSet(ctx, service), 4_000));
+                case "commit-message" -> changeCommitMessage(ctx, service, renderer);
+                case "approve" -> changeApprove(ctx, service, renderer);
+                case "commit" -> changeCommit(ctx, service);
+                case "rollback" -> args.contains("--execute")
+                        ? changeRollbackExecute(ctx, service)
+                        : completedReply(ctx, renderer.renderRollback(latestChangeSet(ctx, service)));
+                default -> completedReply(ctx, "用法：/change create|status|diff|commit-message|approve|commit [--message \"...\"]|rollback [--execute]");
+            };
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            return completedReply(ctx, "change error: " + e.getMessage());
+        }
+    }
+
+    private CompletableFuture<OutboundMessage> changeCreate(
+            CommandRouter.CommandContext ctx,
+            ChangeSetService service,
+            ChangeSetRenderer renderer
+    ) {
+        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
+        String teamSessionId = resolveActiveTeamSessionId(session);
+        String taskId = latestTeamTaskId(teamSessionId);
+        WorkspaceSessionStore workspaceStore = new WorkspaceSessionStore(workspace);
+        String activeWorkspaceId = activeWorkspaceSessionId(session);
+        WorkspaceSession activeWorkspace = !activeWorkspaceId.isBlank() ? workspaceStore.load(activeWorkspaceId) : null;
+        boolean fromWorkspace = activeWorkspace != null && activeWorkspace.status() == ricbot.domain.workspace.WorkspaceSessionStatus.ACTIVE;
+        GitChangeSet changeSet = fromWorkspace
+                ? service.createFromWorkspace(activeWorkspace.id(), Path.of(activeWorkspace.workspacePath()), ctx.getKey(), teamSessionId, taskId)
+                : service.createFromWorkingTree(ctx.getKey(), teamSessionId, taskId);
+        if (!teamSessionId.isBlank()) {
+            String path = ".changesets/" + changeSet.id() + "/changeset.json";
+            teamEngine.recordArtifact(teamSessionId, new TeamArtifact(null, taskId, path, "ChangeSet " + changeSet.id(), "changeset", null));
+        }
+        storeChangeSetContext(session, changeSet, renderer);
+        traceEvent(session, fromWorkspace ? TraceEventType.CHANGESET_CREATED_FROM_WORKSPACE : TraceEventType.CHANGESET_CREATED, "change", fromWorkspace ? "changeset created from workspace" : "changeset created", Map.of(
+                "status", changeSet.status().name(),
+                "changedFiles", changeSet.changedFiles(),
+                "diffSummary", changeSet.diffSummary(),
+                "workspaceSessionId", changeSet.workspaceSessionId(),
+                "workspacePath", changeSet.workspacePath()
+        ), changeSet.teamSessionId(), changeSet.id(), "");
+        return completedReply(ctx, "changeset created\n"
+                + "id: " + changeSet.id() + "\n"
+                + "path: .changesets/" + changeSet.id() + "/changeset.json\n"
+                + "diff: .changesets/" + changeSet.id() + "/diff.patch\n\n"
+                + renderer.renderStatus(changeSet));
+    }
+
+    private CompletableFuture<OutboundMessage> changeCommitMessage(
+            CommandRouter.CommandContext ctx,
+            ChangeSetService service,
+            ChangeSetRenderer renderer
+    ) {
+        GitChangeSet changeSet = latestChangeSet(ctx, service);
+        if (changeSet.commitMessage().isBlank()) {
+            changeSet = changeSet.withCommitMessage(service.generateCommitMessage(changeSet));
+        }
+        storeChangeSetContext(ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey()), changeSet, renderer);
+        return completedReply(ctx, renderer.renderCommitMessage(changeSet));
+    }
+
+    private CompletableFuture<OutboundMessage> changeApprove(
+            CommandRouter.CommandContext ctx,
+            ChangeSetService service,
+            ChangeSetRenderer renderer
+    ) {
+        GitChangeSet approved = service.markApproved(latestChangeSet(ctx, service).id());
+        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
+        storeChangeSetContext(session, approved, renderer);
+        traceEvent(session, TraceEventType.CHANGESET_APPROVED, "change", "changeset approved", Map.of(
+                "status", approved.status().name(),
+                "changedFiles", approved.changedFiles()
+        ), approved.teamSessionId(), approved.id(), "");
+        return completedReply(ctx, "changeset approved\n" + renderer.renderStatus(approved)
+                + "\n\nNo git commit was executed.");
+    }
+
+    private CompletableFuture<OutboundMessage> changeCommit(
+            CommandRouter.CommandContext ctx,
+            ChangeSetService service
+    ) {
+        String args = trim(ctx.getArgs());
+        GitChangeSet changeSet = latestChangeSet(ctx, service);
+        String gateFailure = commitGateFailure(service, changeSet);
+        if (!gateFailure.isBlank()) {
+            return completedReply(ctx, "change commit blocked\n" + gateFailure);
+        }
+        String message = optionQuoted(args, "--message");
+        if (message.isBlank()) {
+            message = !changeSet.commitMessage().isBlank() ? changeSet.commitMessage() : service.generateCommitMessage(changeSet);
+        }
+        RiskAssessment assessment = RiskAssessment.of(
+                CommandRiskLevel.HIGH,
+                List.of("git commit changes persistent repository history", "requires explicit user approval"),
+                "git commit",
+                "change_commit",
+                changeSet.changedFiles()
+        );
+        PendingChangeAction action = PendingChangeAction.create(
+                null,
+                PendingChangeAction.ActionType.COMMIT,
+                changeSet.id(),
+                List.of("git add -- " + String.join(" ", changeSet.changedFiles()), "git commit -m " + abbreviate(message, 120)),
+                message,
+                assessment
+        );
+        ApprovalRequest request = approvalService.createChangeActionRequest(assessment, action);
+        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
+        traceEvent(session, TraceEventType.CHANGESET_COMMIT_REQUESTED, "change", "changeset commit requested", Map.of(
+                "commitMessage", message,
+                "commands", action.commands()
+        ), changeSet.teamSessionId(), changeSet.id(), request.requestId());
+        return completedReply(ctx, "change commit requires approval\n"
+                + "requestId: " + request.requestId() + "\n"
+                + "riskLevel: " + assessment.riskLevel() + "\n"
+                + "changeSetId: " + changeSet.id() + "\n"
+                + "commitMessage:\n" + message + "\n\n"
+                + "Run: /approve " + request.requestId());
+    }
+
+    private CompletableFuture<OutboundMessage> changeRollbackExecute(
+            CommandRouter.CommandContext ctx,
+            ChangeSetService service
+    ) {
+        GitChangeSet changeSet = latestChangeSet(ctx, service);
+        if (changeSet.rollbackCommands().isEmpty()) {
+            return completedReply(ctx, "change rollback blocked\nchangeset has no rollback commands: " + changeSet.id());
+        }
+        RiskAssessment assessment = RiskAssessment.of(
+                CommandRiskLevel.HIGH,
+                List.of("rollback modifies or removes working tree files", "requires explicit user approval"),
+                String.join("; ", changeSet.rollbackCommands()),
+                "change_rollback",
+                changeSet.changedFiles()
+        );
+        PendingChangeAction action = PendingChangeAction.create(
+                null,
+                PendingChangeAction.ActionType.ROLLBACK,
+                changeSet.id(),
+                changeSet.rollbackCommands(),
+                "",
+                assessment
+        );
+        ApprovalRequest request = approvalService.createChangeActionRequest(assessment, action);
+        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
+        traceEvent(session, TraceEventType.CHANGESET_ROLLBACK_REQUESTED, "change", "changeset rollback requested", Map.of(
+                "commands", changeSet.rollbackCommands()
+        ), changeSet.teamSessionId(), changeSet.id(), request.requestId());
+        return completedReply(ctx, "change rollback requires approval\n"
+                + "requestId: " + request.requestId() + "\n"
+                + "riskLevel: " + assessment.riskLevel() + "\n"
+                + "changeSetId: " + changeSet.id() + "\n"
+                + "commands:\n- " + String.join("\n- ", changeSet.rollbackCommands()) + "\n\n"
+                + "Run: /approve " + request.requestId());
+    }
+
+    private String commitGateFailure(ChangeSetService service, GitChangeSet changeSet) {
+        if (changeSet == null) {
+            return "No ChangeSet found. Run /change create first.";
+        }
+        if (changeSet.status() != GitChangeSetStatus.APPROVED) {
+            return "ChangeSet must be APPROVED before commit. Current status: " + changeSet.status();
+        }
+        if (!"PASS".equalsIgnoreCase(changeSet.verifierStatus())) {
+            return "ChangeSet must have verifierStatus=PASS before commit. Current verifierStatus: "
+                    + (changeSet.verifierStatus().isBlank() ? "(none)" : changeSet.verifierStatus());
+        }
+        if (changeSet.changedFiles().isEmpty()) {
+            return "ChangeSet has no changed files.";
+        }
+        if (!service.changedFilesStillPresent(changeSet)) {
+            return "Working tree no longer contains all ChangeSet files. Re-run /change create.";
+        }
+        return "";
+    }
+
+    private GitChangeSet latestChangeSet(CommandRouter.CommandContext ctx, ChangeSetService service) {
+        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
+        String id = session.getMetadata() != null && session.getMetadata().get(SessionRuntimeKeys.CHANGESET_ID_KEY) != null
+                ? String.valueOf(session.getMetadata().get(SessionRuntimeKeys.CHANGESET_ID_KEY))
+                : "";
+        GitChangeSet changeSet = !id.isBlank() ? service.load(id) : null;
+        if (changeSet == null) {
+            changeSet = service.latest();
+        }
+        if (changeSet == null) {
+            throw new IllegalStateException("no changeset found. Run /change create first");
+        }
+        return changeSet;
+    }
+
+    private void storeChangeSetContext(Session session, GitChangeSet changeSet, ChangeSetRenderer renderer) {
+        if (session == null || changeSet == null) {
+            return;
+        }
+        session.getMetadata().put(SessionRuntimeKeys.CHANGESET_ID_KEY, changeSet.id());
+        session.getMetadata().put(SessionRuntimeKeys.CHANGESET_SUMMARY_KEY, renderer.summaryLine(changeSet));
+        session.getMetadata().put(SessionRuntimeKeys.CHANGESET_STATUS_KEY, changeSet.status().name());
+        session.getMetadata().put(SessionRuntimeKeys.CHANGESET_COMMIT_HASH_KEY, changeSet.commitHash());
+        session.getMetadata().put(SessionRuntimeKeys.CHANGESET_ROLLBACK_STATUS_KEY, changeSet.rollbackStatus());
+        sessionManager.save(session);
+    }
+
+    private void recordChangeSetTeamArtifact(GitChangeSet changeSet, String action) {
+        if (changeSet == null || changeSet.teamSessionId().isBlank()) {
+            return;
+        }
+        String path = ".changesets/" + changeSet.id() + "/changeset.json";
+        teamEngine.recordArtifact(changeSet.teamSessionId(), new TeamArtifact(
+                null,
+                changeSet.taskId(),
+                path,
+                "ChangeSet " + changeSet.id() + " " + action + " status=" + changeSet.status(),
+                "changeset",
+                null
+        ));
+    }
+
+    private TraceEvent traceEvent(
+            Session session,
+            TraceEventType type,
+            String actor,
+            String message,
+            Map<String, Object> payload,
+            String teamSessionId,
+            String changeSetId,
+            String approvalRequestId
+    ) {
+        if (traceStore == null) {
+            return null;
+        }
+        try {
+            String sessionId = session != null ? session.getKey() : "";
+            String traceId = traceStore.traceIdForSession(sessionId);
+            TraceEvent event = traceStore.append(new TraceEvent(
+                    traceId,
+                    null,
+                    "",
+                    sessionId,
+                    teamSessionId,
+                    changeSetId,
+                    approvalRequestId,
+                    type,
+                    actor,
+                    message,
+                    payload,
+                    null,
+                    null
+            ));
+            if (session != null && event != null) {
+                session.getMetadata().put(SessionRuntimeKeys.TRACE_ID_KEY, event.traceId());
+                session.getMetadata().put(SessionRuntimeKeys.TRACE_SUMMARY_KEY, new TraceRenderer().renderSummary(traceStore.summarize(event.traceId()), traceStore.loadEvents(event.traceId())));
+                sessionManager.save(session);
+            }
+            return event;
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private String latestTeamTaskId(String teamSessionId) {
+        if (teamSessionId == null || teamSessionId.isBlank()) {
+            return "";
+        }
+        TeamSession session = teamEngine.findSession(teamSessionId);
+        if (session == null || session.tasks().isEmpty()) {
+            return "";
+        }
+        return session.tasks().get(session.tasks().size() - 1).id();
     }
 
     private CompletableFuture<OutboundMessage> subagent(CommandRouter.CommandContext ctx) {
@@ -666,6 +1167,9 @@ final class AgentCommands {
         TeamTask task = teamEngine.autoVerify(taskId, input);
         storeTeamContext(session, task.sessionId());
         VerificationResult result = task.verificationResult();
+        String changeHint = result.status() == VerificationResult.Status.PASS && new ChangeSetService(workspace).hasWorkingTreeChanges()
+                ? "\nchangeSetHint: working tree has changes; run /change create"
+                : "";
         return completedReply(ctx, "team auto verification recorded\n"
                 + "taskId: " + task.id() + "\n"
                 + "state: " + task.state() + "\n"
@@ -673,7 +1177,8 @@ final class AgentCommands {
                 + "riskLevel: " + result.riskLevel() + "\n"
                 + "reasons: " + renderListInline(result.reasons()) + "\n"
                 + "missingTests: " + renderListInline(result.missingTests()) + "\n"
-                + "requiredActions: " + renderListInline(result.requiredActions()));
+                + "requiredActions: " + renderListInline(result.requiredActions())
+                + changeHint);
     }
 
     private CompletableFuture<OutboundMessage> teamVerifierReport(CommandRouter.CommandContext ctx, String rawArgs) {
@@ -883,6 +1388,15 @@ final class AgentCommands {
         if (request == null) {
             return completedReply(ctx, "未找到审批请求：" + requestId);
         }
+        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
+        traceEvent(session, TraceEventType.APPROVAL_APPROVED, "approval", "approval approved", Map.of(
+                "status", request.status().name(),
+                "hasChangeAction", request.pendingChangeAction() != null,
+                "hasToolCall", request.pendingToolCall() != null
+        ), "", request.pendingChangeAction() != null ? request.pendingChangeAction().changeSetId() : "", request.requestId());
+        if (request.pendingChangeAction() != null) {
+            return approveChangeAction(ctx, requestId, request);
+        }
         if (toolRegistry == null) {
             return completedReply(ctx, "已批准审批请求：" + request.requestId()
                     + "\nstatus: " + request.status()
@@ -902,12 +1416,63 @@ final class AgentCommands {
                 + "\n\n" + String.valueOf(result));
     }
 
+    private CompletableFuture<OutboundMessage> approveChangeAction(
+            CommandRouter.CommandContext ctx,
+            String requestId,
+            ApprovalRequest request
+    ) {
+        PendingChangeAction action;
+        try {
+            action = approvalService.consumeApprovedChangeAction(requestId);
+        } catch (IllegalStateException | IllegalArgumentException e) {
+            return completedReply(ctx, "已批准审批请求：" + request.requestId()
+                    + "\nstatus: " + request.status()
+                    + "\n无法恢复执行：" + e.getMessage());
+        }
+        ChangeSetService service = new ChangeSetService(workspace);
+        ChangeSetRenderer renderer = new ChangeSetRenderer();
+        try {
+            GitChangeSet result = switch (action.actionType()) {
+                case COMMIT -> service.commit(action.changeSetId(), action.commitMessage());
+                case ROLLBACK -> service.rollback(action.changeSetId());
+            };
+            Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
+            storeChangeSetContext(session, result, renderer);
+            recordChangeSetTeamArtifact(result, action.actionType().name().toLowerCase(java.util.Locale.ROOT));
+            TraceEventType eventType = action.actionType() == PendingChangeAction.ActionType.COMMIT
+                    ? TraceEventType.CHANGESET_COMMITTED
+                    : TraceEventType.CHANGESET_ROLLED_BACK;
+            traceEvent(session, eventType, "change", "changeset action executed", Map.of(
+                    "action", action.actionType().name(),
+                    "status", result.status().name(),
+                    "commitHash", result.commitHash(),
+                    "rollbackStatus", result.rollbackStatus()
+            ), result.teamSessionId(), result.id(), request.requestId());
+            String actionResult = action.actionType() == PendingChangeAction.ActionType.COMMIT
+                    ? "commitHash: " + result.commitHash()
+                    : "rollbackStatus: " + result.rollbackStatus();
+            return completedReply(ctx, "已批准并执行变更动作：" + request.requestId()
+                    + "\naction: " + action.actionType()
+                    + "\nchangeSetId: " + result.id()
+                    + "\nstatus: " + result.status()
+                    + "\n" + actionResult);
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            return completedReply(ctx, "已批准审批请求：" + request.requestId()
+                    + "\nstatus: " + request.status()
+                    + "\n执行变更动作失败：" + e.getMessage());
+        }
+    }
+
     private CompletableFuture<OutboundMessage> reject(CommandRouter.CommandContext ctx) {
         String requestId = trim(ctx.getArgs()).split("\\s+")[0];
         ApprovalRequest request = approvalService.reject(requestId);
         if (request == null) {
             return completedReply(ctx, "未找到审批请求：" + requestId);
         }
+        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
+        traceEvent(session, TraceEventType.APPROVAL_REJECTED, "approval", "approval rejected", Map.of(
+                "status", request.status().name()
+        ), "", "", request.requestId());
         return completedReply(ctx, "已拒绝审批请求：" + request.requestId() + "\nstatus: " + request.status());
     }
 
@@ -1036,6 +1601,19 @@ final class AgentCommands {
         return out.stream().limit(10).toList();
     }
 
+    private String appendActiveWorkspaceSource(String rendered, Session session) {
+        if (session == null || session.getMetadata() == null) {
+            return rendered;
+        }
+        String id = activeWorkspaceSessionId(session);
+        String source = String.valueOf(session.getMetadata().getOrDefault(SessionRuntimeKeys.WORKSPACE_SOURCE_KEY, ""));
+        if (id.isBlank() || source.isBlank() || rendered.contains(source)) {
+            return rendered;
+        }
+        String prefix = rendered.startsWith("暂无 context trace") ? "ricbot context\n\ntop sources" : rendered;
+        return prefix + "\nworkspace_session\n- workspace id=" + id + " path=" + source + " label=active workspace session";
+    }
+
     private List<String> verifiedExperienceSources(Session session) {
         return contextSourcePaths(session).stream()
                 .filter(path -> path.contains("experience/verified.jsonl"))
@@ -1070,6 +1648,32 @@ final class AgentCommands {
             }
         }
         return def;
+    }
+
+    private static String optionQuoted(String args, String option) {
+        String value = trim(args);
+        int index = value.indexOf(option);
+        if (index < 0) {
+            return "";
+        }
+        int start = index + option.length();
+        while (start < value.length() && Character.isWhitespace(value.charAt(start))) {
+            start++;
+        }
+        if (start >= value.length()) {
+            return "";
+        }
+        char first = value.charAt(start);
+        if (first == '"' || first == '\'') {
+            int end = value.indexOf(first, start + 1);
+            return end > start ? value.substring(start + 1, end).trim() : value.substring(start + 1).trim();
+        }
+        return value.substring(start).trim();
+    }
+
+    private static String abbreviate(String value, int maxChars) {
+        String safe = value != null ? value.trim().replaceAll("\\s+", " ") : "";
+        return safe.length() <= maxChars ? safe : safe.substring(0, Math.max(0, maxChars)) + "...";
     }
 
     private static String commandArg(String args, int index) {

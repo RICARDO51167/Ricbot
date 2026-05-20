@@ -1,5 +1,7 @@
 package ricbot.domain.security;
 
+import ricbot.domain.change.PendingChangeAction;
+
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -10,6 +12,7 @@ public record ApprovalRequest(
         String createdAt,
         ApprovalStatus status,
         PendingToolCall pendingToolCall,
+        PendingChangeAction pendingChangeAction,
         boolean consumed
 ) {
     public enum ApprovalStatus {
@@ -19,16 +22,21 @@ public record ApprovalRequest(
     }
 
     public ApprovalRequest withStatus(ApprovalStatus nextStatus) {
-        return new ApprovalRequest(requestId, riskAssessment, createdAt, nextStatus, pendingToolCall, consumed);
+        return new ApprovalRequest(requestId, riskAssessment, createdAt, nextStatus, pendingToolCall, pendingChangeAction, consumed);
     }
 
     public ApprovalRequest withPendingToolCall(PendingToolCall nextPendingToolCall) {
-        return new ApprovalRequest(requestId, riskAssessment, createdAt, status, nextPendingToolCall, consumed);
+        return new ApprovalRequest(requestId, riskAssessment, createdAt, status, nextPendingToolCall, pendingChangeAction, consumed);
+    }
+
+    public ApprovalRequest withPendingChangeAction(PendingChangeAction nextPendingChangeAction) {
+        return new ApprovalRequest(requestId, riskAssessment, createdAt, status, pendingToolCall, nextPendingChangeAction, consumed);
     }
 
     public ApprovalRequest markConsumed() {
         PendingToolCall consumedCall = pendingToolCall != null ? pendingToolCall.markConsumed() : null;
-        return new ApprovalRequest(requestId, riskAssessment, createdAt, status, consumedCall, true);
+        PendingChangeAction consumedAction = pendingChangeAction != null ? pendingChangeAction.markConsumed() : null;
+        return new ApprovalRequest(requestId, riskAssessment, createdAt, status, consumedCall, consumedAction, true);
     }
 
     public Map<String, Object> toMap() {
@@ -38,11 +46,12 @@ public record ApprovalRequest(
         out.put("createdAt", createdAt);
         out.put("status", status.name());
         out.put("pendingToolCall", pendingToolCall != null ? pendingToolCall.toMap() : null);
+        out.put("pendingChangeAction", pendingChangeAction != null ? pendingChangeAction.toMap() : null);
         out.put("consumed", consumed);
         return out;
     }
 
     public static ApprovalRequest create(String requestId, RiskAssessment riskAssessment) {
-        return new ApprovalRequest(requestId, riskAssessment, Instant.now().toString(), ApprovalStatus.PENDING, null, false);
+        return new ApprovalRequest(requestId, riskAssessment, Instant.now().toString(), ApprovalStatus.PENDING, null, null, false);
     }
 }

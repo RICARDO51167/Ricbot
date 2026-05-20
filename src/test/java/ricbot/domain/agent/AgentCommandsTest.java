@@ -2,6 +2,8 @@ package ricbot.domain.agent;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import ricbot.domain.change.ChangeSetService;
+import ricbot.domain.change.GitChangeSetStatus;
 import ricbot.domain.memory.Dream;
 import ricbot.domain.experience.ExperienceEntry;
 import ricbot.domain.experience.ExperienceStore;
@@ -15,6 +17,11 @@ import ricbot.domain.security.CommandRiskAnalyzer;
 import ricbot.domain.security.RiskAssessment;
 import ricbot.domain.session.Session;
 import ricbot.domain.session.SessionManager;
+import ricbot.domain.team.TeamEngine;
+import ricbot.domain.team.TeamTask;
+import ricbot.domain.team.VerificationResult;
+import ricbot.domain.trace.TraceEventType;
+import ricbot.domain.trace.TraceStore;
 import ricbot.infra.config.Config;
 import ricbot.integration.command.CommandRouter;
 import ricbot.tool.api.ToolRegistry;
@@ -315,6 +322,310 @@ class AgentCommandsTest {
     }
 
     @Test
+    void changeCommandsCreateInspectApproveAndRollbackWithoutExecuting(@TempDir Path workspace) throws Exception {
+        initGitRepo(workspace);
+        Files.writeString(workspace.resolve("README.md"), "changed\n");
+        Files.writeString(workspace.resolve("new.txt"), "new file\n");
+        SessionManager sessionManager = new SessionManager(workspace);
+        MemoryStore memoryStore = new MemoryStore(workspace);
+
+        AgentCommands commands = new AgentCommands(
+                sessionManager,
+                memoryStore,
+                null,
+                new Config.DreamConfig(),
+                "model",
+                workspace,
+                msg -> "cli:direct",
+                key -> List.<Future<?>>of(),
+                (key, reason) -> {}
+        );
+        CommandRouter router = new CommandRouter();
+        commands.register(router);
+
+        String created = router.dispatch(context("/change create", sessionManager)).get().getContent();
+        String changeSetId = lineValue(created, "id:");
+        assertTrue(created.contains("changeset created"), created);
+        assertTrue(created.contains("README.md"), created);
+        assertTrue(created.contains("new.txt"), created);
+        assertTrue(Files.exists(workspace.resolve(".changesets").resolve(changeSetId).resolve("changeset.json")));
+        assertTrue(Files.exists(workspace.resolve(".changesets").resolve(changeSetId).resolve("diff.patch")));
+
+        String status = router.dispatch(context("/change status", sessionManager)).get().getContent();
+        assertTrue(status.contains(changeSetId), status);
+        assertTrue(status.contains("status: DRAFT"), status);
+
+        String diff = router.dispatch(context("/change diff", sessionManager)).get().getContent();
+        assertTrue(diff.contains("changeset diff " + changeSetId), diff);
+        assertTrue(diff.contains("README.md"), diff);
+
+        String commitMessage = router.dispatch(context("/change commit-message", sessionManager)).get().getContent();
+        assertTrue(commitMessage.contains("Update"), commitMessage);
+
+        String approved = router.dispatch(context("/change approve", sessionManager)).get().getContent();
+        assertTrue(approved.contains("status: APPROVED"), approved);
+        assertTrue(approved.contains("No git commit was executed"), approved);
+
+        String rollback = router.dispatch(context("/change rollback", sessionManager)).get().getContent();
+        assertTrue(rollback.contains("git restore -- README.md"), rollback);
+        assertTrue(rollback.contains("rm new.txt"), rollback);
+        assertEquals("changed\n", Files.readString(workspace.resolve("README.md")));
+        assertTrue(Files.exists(workspace.resolve("new.txt")));
+
+        String summary = router.dispatch(context("/summary", sessionManager)).get().getContent();
+        assertTrue(summary.contains("ChangeSet"), summary);
+        assertTrue(summary.contains(changeSetId), summary);
+    }
+
+    @Test
+    void workspaceCommandsCreateLocalAndExposeContextSource(@TempDir Path workspace) throws Exception {
+        SessionManager sessionManager = new SessionManager(workspace);
+        MemoryStore memoryStore = new MemoryStore(workspace);
+        AgentCommands commands = commands(sessionManager, memoryStore, workspace);
+        CommandRouter router = new CommandRouter();
+        commands.register(router);
+
+        String created = router.dispatch(context("/workspace create --mode local local sandbox", sessionManager)).get().getContent();
+        String workspaceId = lineValue(created, "id:");
+        assertTrue(created.contains("workspace created"), created);
+        assertTrue(created.contains("type: LOCAL"), created);
+        assertTrue(Files.exists(workspace.resolve(".workspaces").resolve(workspaceId).resolve("session.json")));
+
+        String status = router.dispatch(context("/workspace status", sessionManager)).get().getContent();
+        assertTrue(status.contains(workspaceId), status);
+
+        String sources = router.dispatch(context("/context --sources", sessionManager)).get().getContent();
+        assertTrue(sources.contains("workspace_session"), sources);
+        assertTrue(sources.contains(".workspaces/" + workspaceId + "/session.json"), sources);
+    }
+
+    @Test
+    void workspaceCommandsCreateWorktreeListUseDiffAndCleanup(@TempDir Path workspace) throws Exception {
+        initGitRepo(workspace);
+        SessionManager sessionManager = new SessionManager(workspace);
+        MemoryStore memoryStore = new MemoryStore(workspace);
+        AgentCommands commands = commands(sessionManager, memoryStore, workspace);
+        CommandRouter router = new CommandRouter();
+        commands.register(router);
+
+        String created = router.dispatch(context("/workspace create --mode worktree isolated sandbox", sessionManager)).get().getContent();
+        String workspaceId = lineValue(created, "id:");
+        String workspacePath = lineValue(created, "workspacePath:");
+        assertTrue(created.contains("type: GIT_WORKTREE"), created);
+        assertTrue(Files.exists(Path.of(workspacePath).resolve("README.md")));
+
+        String listed = router.dispatch(context("/workspace list", sessionManager)).get().getContent();
+        assertTrue(listed.contains(workspaceId), listed);
+
+        String selected = router.dispatch(context("/workspace use " + workspaceId, sessionManager)).get().getContent();
+        assertTrue(selected.contains("workspace selected"), selected);
+        assertTrue(selected.contains(workspaceId), selected);
+
+        Files.writeString(Path.of(workspacePath).resolve("README.md"), "initial\nworktree change\n");
+        String diff = router.dispatch(context("/workspace diff " + workspaceId, sessionManager)).get().getContent();
+        assertTrue(diff.contains("workspace diff " + workspaceId), diff);
+        assertTrue(diff.contains("worktree change"), diff);
+        assertTrue(new TraceStore(workspace).loadEvents(new TraceStore(workspace).traceIdForSession("cli:direct"))
+                .stream().anyMatch(event -> event.type() == TraceEventType.WORKSPACE_DIFFED));
+
+        git(Path.of(workspacePath), "restore", "--", "README.md");
+        String cleaned = router.dispatch(context("/workspace cleanup " + workspaceId, sessionManager)).get().getContent();
+        assertTrue(cleaned.contains("workspace cleaned"), cleaned);
+        assertTrue(cleaned.contains("status: CLEANED"), cleaned);
+        assertEquals("initial\n", Files.readString(workspace.resolve("README.md")));
+    }
+
+    @Test
+    void changeCreateUsesActiveWorkspaceSession(@TempDir Path workspace) throws Exception {
+        initGitRepo(workspace);
+        SessionManager sessionManager = new SessionManager(workspace);
+        MemoryStore memoryStore = new MemoryStore(workspace);
+        AgentCommands commands = commands(sessionManager, memoryStore, workspace);
+        CommandRouter router = new CommandRouter();
+        commands.register(router);
+
+        String createdWorkspace = router.dispatch(context("/workspace create --mode worktree changeset workspace", sessionManager)).get().getContent();
+        String workspaceId = lineValue(createdWorkspace, "id:");
+        String workspacePath = lineValue(createdWorkspace, "workspacePath:");
+        Files.writeString(Path.of(workspacePath).resolve("README.md"), "initial\nfrom active workspace\n");
+
+        String createdChangeSet = router.dispatch(context("/change create", sessionManager)).get().getContent();
+        String changeSetId = lineValue(createdChangeSet, "id:");
+        ChangeSetService service = new ChangeSetService(workspace);
+
+        assertTrue(createdChangeSet.contains("workspaceSessionId: " + workspaceId), createdChangeSet);
+        assertEquals(workspaceId, service.load(changeSetId).workspaceSessionId());
+        assertEquals(Path.of(workspacePath).toAbsolutePath().normalize().toString(), service.load(changeSetId).workspacePath());
+        assertEquals("initial\n", Files.readString(workspace.resolve("README.md")));
+        assertTrue(new TraceStore(workspace).loadEvents(new TraceStore(workspace).traceIdForSession("cli:direct"))
+                .stream().anyMatch(event -> event.type() == TraceEventType.CHANGESET_CREATED_FROM_WORKSPACE));
+    }
+
+    @Test
+    void changeCommitRequiresApprovedAndVerifierPassGates(@TempDir Path workspace) throws Exception {
+        initGitRepo(workspace);
+        Files.writeString(workspace.resolve("README.md"), "changed\n");
+        SessionManager sessionManager = new SessionManager(workspace);
+        MemoryStore memoryStore = new MemoryStore(workspace);
+        AgentCommands commands = commands(sessionManager, memoryStore, workspace);
+        CommandRouter router = new CommandRouter();
+        commands.register(router);
+
+        String created = router.dispatch(context("/change create", sessionManager)).get().getContent();
+        String changeSetId = lineValue(created, "id:");
+
+        String notApproved = router.dispatch(context("/change commit", sessionManager)).get().getContent();
+        assertTrue(notApproved.contains("ChangeSet must be APPROVED"), notApproved);
+
+        new ChangeSetService(workspace).markApproved(changeSetId);
+        String noVerifier = router.dispatch(context("/change commit", sessionManager)).get().getContent();
+        assertTrue(noVerifier.contains("verifierStatus=PASS"), noVerifier);
+    }
+
+    @Test
+    void changeCommitCreatesApprovalAndApproveExecutesCommitOnlyOnce(@TempDir Path workspace) throws Exception {
+        initGitRepo(workspace);
+        Files.writeString(workspace.resolve("README.md"), "changed\n");
+        SessionManager sessionManager = new SessionManager(workspace);
+        MemoryStore memoryStore = new MemoryStore(workspace);
+        AgentCommands commands = commands(sessionManager, memoryStore, workspace);
+        CommandRouter router = new CommandRouter();
+        commands.register(router);
+
+        String created = router.dispatch(context("/change create", sessionManager)).get().getContent();
+        String changeSetId = lineValue(created, "id:");
+        ChangeSetService service = new ChangeSetService(workspace);
+        service.attachVerifierResult(changeSetId, VerificationResult.pass("targeted tests passed"));
+        service.markApproved(changeSetId);
+
+        String pending = router.dispatch(context("/change commit --message \"Update README through approval\"", sessionManager)).get().getContent();
+        String requestId = lineValue(pending, "requestId:");
+        assertTrue(pending.contains("change commit requires approval"), pending);
+        assertTrue(pending.contains("riskLevel: HIGH"), pending);
+        assertTrue(pending.contains("Run: /approve " + requestId), pending);
+        TraceStore traceStore = new TraceStore(workspace);
+        String traceId = traceStore.traceIdForSession("cli:direct");
+        assertTrue(traceStore.loadEvents(traceId).stream().anyMatch(event -> event.type() == TraceEventType.CHANGESET_COMMIT_REQUESTED), traceStore.loadEvents(traceId).toString());
+
+        String approved = router.dispatch(context("/approve " + requestId, sessionManager)).get().getContent();
+        String head = git(workspace, "rev-parse", "HEAD").trim();
+        assertTrue(approved.contains("action: COMMIT"), approved);
+        assertTrue(approved.contains("status: COMMITTED"), approved);
+        assertTrue(approved.contains("commitHash: " + head), approved);
+        assertEquals(GitChangeSetStatus.COMMITTED, new ChangeSetService(workspace).load(changeSetId).status());
+        assertEquals("Update README through approval", git(workspace, "log", "-1", "--format=%s").trim());
+        assertTrue(traceStore.loadEvents(traceId).stream().anyMatch(event -> event.type() == TraceEventType.CHANGESET_COMMITTED), traceStore.loadEvents(traceId).toString());
+
+        String duplicate = router.dispatch(context("/approve " + requestId, sessionManager)).get().getContent();
+        assertTrue(duplicate.contains("不能重复执行") || duplicate.contains("已消费"), duplicate);
+        assertEquals(head, git(workspace, "rev-parse", "HEAD").trim());
+    }
+
+    @Test
+    void changeRollbackExecuteCreatesHighRiskApprovalAndApproveExecutesRollback(@TempDir Path workspace) throws Exception {
+        initGitRepo(workspace);
+        Files.writeString(workspace.resolve("README.md"), "changed\n");
+        Files.writeString(workspace.resolve("new.txt"), "new file\n");
+        SessionManager sessionManager = new SessionManager(workspace);
+        MemoryStore memoryStore = new MemoryStore(workspace);
+        AgentCommands commands = commands(sessionManager, memoryStore, workspace);
+        CommandRouter router = new CommandRouter();
+        commands.register(router);
+
+        String created = router.dispatch(context("/change create", sessionManager)).get().getContent();
+        String changeSetId = lineValue(created, "id:");
+        String pending = router.dispatch(context("/change rollback --execute", sessionManager)).get().getContent();
+        String requestId = lineValue(pending, "requestId:");
+
+        assertTrue(pending.contains("change rollback requires approval"), pending);
+        assertTrue(pending.contains("riskLevel: HIGH"), pending);
+        assertTrue(pending.contains("git restore -- README.md"), pending);
+        assertTrue(pending.contains("rm new.txt"), pending);
+        TraceStore traceStore = new TraceStore(workspace);
+        String traceId = traceStore.traceIdForSession("cli:direct");
+        assertTrue(traceStore.loadEvents(traceId).stream().anyMatch(event -> event.type() == TraceEventType.CHANGESET_ROLLBACK_REQUESTED), traceStore.loadEvents(traceId).toString());
+
+        String approved = router.dispatch(context("/approve " + requestId, sessionManager)).get().getContent();
+
+        assertTrue(approved.contains("action: ROLLBACK"), approved);
+        assertTrue(approved.contains("status: ROLLED_BACK"), approved);
+        assertTrue(Files.notExists(workspace.resolve("new.txt")));
+        assertEquals("initial\n", Files.readString(workspace.resolve("README.md")));
+        assertEquals(GitChangeSetStatus.ROLLED_BACK, new ChangeSetService(workspace).load(changeSetId).status());
+    }
+
+    @Test
+    void traceCommandsListLastShowEventsAndExport(@TempDir Path workspace) throws Exception {
+        initGitRepo(workspace);
+        Files.writeString(workspace.resolve("README.md"), "changed\n");
+        SessionManager sessionManager = new SessionManager(workspace);
+        MemoryStore memoryStore = new MemoryStore(workspace);
+        AgentCommands commands = commands(sessionManager, memoryStore, workspace);
+        CommandRouter router = new CommandRouter();
+        commands.register(router);
+
+        String created = router.dispatch(context("/change create", sessionManager)).get().getContent();
+        String changeSetId = lineValue(created, "id:");
+        String traceId = new TraceStore(workspace).traceIdForSession("cli:direct");
+
+        String listed = router.dispatch(context("/trace list", sessionManager)).get().getContent();
+        assertTrue(listed.contains(traceId), listed);
+        assertTrue(listed.contains("types=CHANGESET_CREATED"), listed);
+
+        String last = router.dispatch(context("/trace last", sessionManager)).get().getContent();
+        assertTrue(last.contains("trace " + traceId), last);
+        assertTrue(last.contains("eventTypes: CHANGESET_CREATED"), last);
+        assertTrue(last.contains("changeSets: " + changeSetId), last);
+        assertTrue(last.contains("path: .traces/" + traceId + "/events.jsonl"), last);
+
+        String shown = router.dispatch(context("/trace show " + traceId, sessionManager)).get().getContent();
+        assertTrue(shown.contains("eventCount: 1"), shown);
+        assertTrue(shown.contains("commitHash: none"), shown);
+        assertTrue(shown.contains("rollbackStatus: none"), shown);
+
+        String events = router.dispatch(context("/trace events " + traceId, sessionManager)).get().getContent();
+        assertTrue(events.contains("trace events"), events);
+        assertTrue(events.contains("CHANGESET_CREATED"), events);
+
+        String exported = router.dispatch(context("/trace export " + traceId, sessionManager)).get().getContent();
+        assertTrue(exported.contains("\"traceId\":\"" + traceId + "\""), exported);
+        assertTrue(exported.contains("\"type\":\"CHANGESET_CREATED\""), exported);
+    }
+
+    @Test
+    void teamAutoVerifyPassSuggestsChangeSetCreateWhenWorkingTreeDirty(@TempDir Path workspace) throws Exception {
+        initGitRepo(workspace);
+        Files.writeString(workspace.resolve("README.md"), "changed\n");
+        SessionManager sessionManager = new SessionManager(workspace);
+        MemoryStore memoryStore = new MemoryStore(workspace);
+
+        AgentCommands commands = new AgentCommands(
+                sessionManager,
+                memoryStore,
+                null,
+                new Config.DreamConfig(),
+                "model",
+                workspace,
+                msg -> "cli:direct",
+                key -> List.<Future<?>>of(),
+                (key, reason) -> {}
+        );
+        CommandRouter router = new CommandRouter();
+        commands.register(router);
+
+        router.dispatch(context("/team start Verify changeset hint", sessionManager)).get();
+        String created = router.dispatch(context("/team task developer Implement safe docs change", sessionManager)).get().getContent();
+        String taskId = lineValue(created, "id:");
+        TeamTask task = teamEngine(commands).submitWorkerResult(taskId, "Implemented safe docs change.", List.of());
+        assertEquals(taskId, task.id());
+
+        String autoVerified = router.dispatch(context("/team auto-verify " + taskId, sessionManager)).get().getContent();
+
+        assertTrue(autoVerified.contains("status: PASS"), autoVerified);
+        assertTrue(autoVerified.contains("changeSetHint: working tree has changes; run /change create"), autoVerified);
+    }
+
+    @Test
     void experienceCommandsExtractListShowVerifyAndReject(@TempDir Path workspace) throws Exception {
         SessionManager sessionManager = new SessionManager(workspace);
         MemoryStore memoryStore = new MemoryStore(workspace);
@@ -605,6 +916,49 @@ class AgentCommandsTest {
             }
         }
         return ids;
+    }
+
+    private static TeamEngine teamEngine(AgentCommands commands) throws Exception {
+        java.lang.reflect.Field field = AgentCommands.class.getDeclaredField("teamEngine");
+        field.setAccessible(true);
+        return (TeamEngine) field.get(commands);
+    }
+
+    private static AgentCommands commands(SessionManager sessionManager, MemoryStore memoryStore, Path workspace) {
+        return new AgentCommands(
+                sessionManager,
+                memoryStore,
+                null,
+                new Config.DreamConfig(),
+                "model",
+                workspace,
+                msg -> "cli:direct",
+                key -> List.<Future<?>>of(),
+                (key, reason) -> {}
+        );
+    }
+
+    private static void initGitRepo(Path workspace) throws Exception {
+        git(workspace, "init");
+        git(workspace, "config", "user.name", "Test");
+        git(workspace, "config", "user.email", "test@example.com");
+        Files.writeString(workspace.resolve("README.md"), "initial\n");
+        git(workspace, "add", "README.md");
+        git(workspace, "commit", "-m", "init");
+    }
+
+    private static String git(Path workspace, String... args) throws Exception {
+        java.util.ArrayList<String> command = new java.util.ArrayList<>();
+        command.add("git");
+        command.addAll(List.of(args));
+        Process process = new ProcessBuilder(command).directory(workspace.toFile()).start();
+        String stdout = new String(process.getInputStream().readAllBytes());
+        String stderr = new String(process.getErrorStream().readAllBytes());
+        int code = process.waitFor();
+        if (code != 0) {
+            throw new AssertionError("git failed: " + String.join(" ", command) + "\n" + stderr + stdout);
+        }
+        return stdout;
     }
 
     private static ExperienceEntry experience(String title, double confidence) {

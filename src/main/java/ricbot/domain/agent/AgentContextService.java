@@ -7,6 +7,8 @@ import ricbot.domain.session.Session;
 import ricbot.domain.subagent.SubAgentOrchestrator;
 import ricbot.domain.team.TeamEngine;
 import ricbot.domain.team.TeamSession;
+import ricbot.domain.workspace.WorkspaceSession;
+import ricbot.domain.workspace.WorkspaceSessionStore;
 import ricbot.domain.skill.SkillRouter;
 import ricbot.domain.skill.SkillRoutingContext;
 import ricbot.domain.skill.SkillsLoader;
@@ -74,7 +76,8 @@ record AgentContextService(Path workspace, ContextBuilder contextBuilder, Memory
                         prepared.taskStateSnapshot(),
                         recentToolTrace(prepared.session()),
                         SubAgentOrchestrator.resultsFromSession(prepared.session()),
-                        teamContext(prepared.session())
+                        teamContext(prepared.session()),
+                        workspaceContext(prepared.session())
                 ),
                 prepared.session().getMessages(),
                 msg.getContent(),
@@ -215,6 +218,33 @@ record AgentContextService(Path workspace, ContextBuilder contextBuilder, Memory
             TeamEngine engine = new TeamEngine(workspace);
             TeamSession latest = engine.loadLatestActiveSession();
             return latest != null ? engine.contextSnapshot(latest.id()) : Map.of();
+        } catch (Exception ignored) {
+            return Map.of();
+        }
+    }
+
+    private Map<String, Object> workspaceContext(Session session) {
+        if (session == null || session.getMetadata() == null) {
+            return Map.of();
+        }
+        Object rawId = session.getMetadata().get(SessionRuntimeKeys.ACTIVE_WORKSPACE_SESSION_ID_KEY);
+        String id = rawId != null ? String.valueOf(rawId).trim() : "";
+        if (id.isBlank()) {
+            return Map.of();
+        }
+        try {
+            WorkspaceSession workspaceSession = new WorkspaceSessionStore(workspace).load(id);
+            if (workspaceSession == null) {
+                return Map.of();
+            }
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("id", workspaceSession.id());
+            out.put("type", workspaceSession.type().name());
+            out.put("status", workspaceSession.status().name());
+            out.put("goal", workspaceSession.goal());
+            out.put("path", workspaceSession.workspacePath());
+            out.put("source", ".workspaces/" + workspaceSession.id() + "/session.json");
+            return out;
         } catch (Exception ignored) {
             return Map.of();
         }

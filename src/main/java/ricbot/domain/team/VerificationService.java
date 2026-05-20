@@ -16,7 +16,8 @@ public class VerificationService {
         List<String> requiredActions = new ArrayList<>();
         List<String> experienceActions = new ArrayList<>();
         boolean pendingApproval = containsAny(safe.approvalRecords(), "pending", "blocked", "risklevel=blocked", "risklevel=high", "需要审批", "approval_");
-        boolean unresolvedBlocker = containsAny(List.of(safe.taskSummary(), safe.teamWhiteboardSummary()), "blocked", "blocker", "阻塞", "unresolved");
+        boolean unresolvedBlocker = hasUnresolvedBlocker(safe.taskSummary())
+                || hasUnresolvedBlocker(safe.teamWhiteboardSummary());
         boolean highRisk = highRiskDiff(safe.diffReviews())
                 || containsAny(suspiciousChanges, "security", "approval", "provider", "agentloop", "toolregistry", "config", ".github/workflows", "ci workflow");
         boolean deletedTest = containsAny(safe.diffReviews(), "delete", "deleted") && containsAny(safe.diffReviews(), "test");
@@ -159,6 +160,30 @@ public class VerificationService {
 
     private boolean highRiskDiff(List<String> values) {
         return containsAny(values, "risk=high", "risklevel: high", "high risk", "blocked");
+    }
+
+    private boolean hasUnresolvedBlocker(String value) {
+        String lower = value != null ? value.toLowerCase(Locale.ROOT) : "";
+        if (lower.isBlank()) {
+            return false;
+        }
+        if (contains(lower, "unresolved blocker", "blocked reason", "blocked:", "阻塞")) {
+            return true;
+        }
+        int index = lower.indexOf("blockers=");
+        if (index < 0) {
+            return false;
+        }
+        String tail = lower.substring(index + "blockers=".length());
+        int end = tail.length();
+        for (String marker : List.of(" suggestedtests=", " executedtests=", " changedfiles=", " approvalrecords=")) {
+            int markerIndex = tail.indexOf(marker);
+            if (markerIndex >= 0 && markerIndex < end) {
+                end = markerIndex;
+            }
+        }
+        String blockers = tail.substring(0, end).trim();
+        return !blockers.isBlank() && !"none".equals(blockers) && !"[]".equals(blockers);
     }
 
     private boolean containsAny(List<String> values, String... needles) {

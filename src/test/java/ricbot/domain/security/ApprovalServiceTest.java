@@ -1,6 +1,7 @@
 package ricbot.domain.security;
 
 import org.junit.jupiter.api.Test;
+import ricbot.domain.change.PendingChangeAction;
 
 import java.util.List;
 import java.util.Map;
@@ -93,6 +94,48 @@ class ApprovalServiceTest {
 
         assertThrows(IllegalStateException.class, () -> service.consumeApprovedToolCall(request.requestId()));
         assertThrows(IllegalArgumentException.class, () -> service.consumeApprovedToolCall("missing"));
+    }
+
+    @Test
+    void pendingChangeActionCanBeApprovedConsumedRejectedAndDeduped() {
+        ApprovalService service = new ApprovalService();
+        RiskAssessment assessment = RiskAssessment.of(
+                CommandRiskLevel.HIGH,
+                List.of("git commit requires approval"),
+                "git commit",
+                "change_commit",
+                List.of("README.md")
+        );
+        ApprovalRequest request = service.createChangeActionRequest(
+                assessment,
+                PendingChangeAction.create(
+                        null,
+                        PendingChangeAction.ActionType.COMMIT,
+                        "changeset_1",
+                        List.of("git add -- README.md", "git commit -m Update"),
+                        "Update README",
+                        assessment
+                )
+        );
+
+        service.approve(request.requestId());
+        PendingChangeAction action = service.consumeApprovedChangeAction(request.requestId());
+
+        assertEquals(PendingChangeAction.ActionType.COMMIT, action.actionType());
+        assertEquals("changeset_1", action.changeSetId());
+        assertEquals("Update README", action.commitMessage());
+        assertTrue(service.find(request.requestId()).consumed());
+        assertTrue(service.find(request.requestId()).pendingChangeAction().consumed());
+        assertThrows(IllegalStateException.class, () -> service.consumeApprovedChangeAction(request.requestId()));
+
+        ApprovalRequest rejected = service.createChangeActionRequest(
+                assessment,
+                PendingChangeAction.create(null, PendingChangeAction.ActionType.ROLLBACK, "changeset_2", List.of("git restore -- README.md"), "", assessment)
+        );
+        service.reject(rejected.requestId());
+
+        assertThrows(IllegalStateException.class, () -> service.consumeApprovedChangeAction(rejected.requestId()));
+        assertThrows(IllegalArgumentException.class, () -> service.consumeApprovedChangeAction("missing"));
     }
 
     private record PathLike(String value) {

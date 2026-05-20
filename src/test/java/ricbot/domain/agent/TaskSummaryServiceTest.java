@@ -183,6 +183,65 @@ class TaskSummaryServiceTest {
     }
 
     @Test
+    void summarizeCurrentTask_includesChangeSetSummaryFromSession() {
+        Session session = new Session("cli:direct");
+        session.getMetadata().put(SessionRuntimeKeys.TASK_STATE_KEY, Map.of(
+                "goal", "V4.4 changeset summary"
+        ));
+        session.getMetadata().put(SessionRuntimeKeys.CHANGESET_SUMMARY_KEY,
+                "changeset_demo status=APPROVED files=2 summary=Changed files: 2");
+        session.getMetadata().put(SessionRuntimeKeys.CHANGESET_STATUS_KEY, "COMMITTED");
+        session.getMetadata().put(SessionRuntimeKeys.CHANGESET_COMMIT_HASH_KEY, "abc123");
+        session.getMetadata().put(SessionRuntimeKeys.CHANGESET_ROLLBACK_STATUS_KEY, "not executed");
+
+        TaskSummaryService.TaskSummary summary = new TaskSummaryService().summarizeCurrentTask(session);
+
+        assertTrue(summary.changeSetSummaries().toString().contains("changeset_demo"), summary.changeSetSummaries().toString());
+        assertEquals("COMMITTED", summary.changeSetStatus());
+        assertEquals("abc123", summary.commitHash());
+        assertEquals("not executed", summary.rollbackStatus());
+        assertTrue(summary.toMap().containsKey("changeset_summary"));
+        assertTrue(String.valueOf(summary.toMap().get("changeset_summary")).contains("APPROVED"));
+        assertEquals("abc123", summary.toMap().get("commit_hash"));
+        assertEquals("not executed", summary.toMap().get("rollback_status"));
+    }
+
+    @Test
+    void summarizeCurrentTask_includesTraceSummaryFromSession() {
+        Session session = new Session("cli:direct");
+        session.getMetadata().put(SessionRuntimeKeys.TASK_STATE_KEY, Map.of(
+                "goal", "V4.6 unified trace"
+        ));
+        session.getMetadata().put(SessionRuntimeKeys.TRACE_SUMMARY_KEY, """
+                trace trace_cli_direct
+                path: .traces/trace_cli_direct/events.jsonl
+                eventCount: 2
+                eventTypes: CONTEXT_BUILT, CHANGESET_CREATED
+                """);
+
+        TaskSummaryService.TaskSummary summary = new TaskSummaryService().summarizeCurrentTask(session);
+
+        assertTrue(summary.traceSummary().contains("trace_cli_direct"), summary.traceSummary());
+        assertTrue(String.valueOf(summary.toMap().get("trace_summary")).contains(".traces/trace_cli_direct/events.jsonl"), summary.toMap().toString());
+    }
+
+    @Test
+    void summarizeCurrentTask_includesWorkspaceSummaryFromSession() {
+        Session session = new Session("cli:direct");
+        session.getMetadata().put(SessionRuntimeKeys.TASK_STATE_KEY, Map.of(
+                "goal", "V4.7 workspace backend"
+        ));
+        session.getMetadata().put(SessionRuntimeKeys.WORKSPACE_SUMMARY_KEY,
+                "workspace workspace_demo | type: GIT_WORKTREE | status: ACTIVE | goal: isolated implementation");
+        session.getMetadata().put(SessionRuntimeKeys.WORKSPACE_SOURCE_KEY, ".workspaces/workspace_demo/session.json");
+
+        TaskSummaryService.TaskSummary summary = new TaskSummaryService().summarizeCurrentTask(session);
+
+        assertTrue(summary.workspaceSummary().toString().contains("workspace_demo"), summary.workspaceSummary().toString());
+        assertTrue(String.valueOf(summary.toMap().get("workspace_summary")).contains(".workspaces/workspace_demo/session.json"), summary.toMap().toString());
+    }
+
+    @Test
     void summarizeCurrentTask_includesResumedTeamFindings(@TempDir Path workspace) {
         TeamEngine engine = new TeamEngine(workspace);
         var team = engine.createSession("Resumed team summary");

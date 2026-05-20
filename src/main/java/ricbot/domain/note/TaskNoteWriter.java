@@ -47,7 +47,10 @@ public class TaskNoteWriter {
         listSection(sb, "Rollback Hints", summary.rollbackHints(), "未生成回滚提示");
         listSection(sb, "Team Findings", summary.teamFindings(), "未记录 Team 状态");
         listSection(sb, "Verifier Report", summary.verifierReports(), "未记录 Verifier Report");
+        listSection(sb, "ChangeSet", changeSetLines(summary), "未记录 ChangeSet");
+        listSection(sb, "Workspace", summary.workspaceSummary(), "未记录 Workspace session");
         listSection(sb, "SubAgent Findings", summary.subAgentFindings(), "未记录子代理摘要");
+        section(sb, "Trace Summary", valueOrPlaceholder(summary.traceSummary(), "未记录 Trace Summary"));
         listSection(sb, "Test Commands", summary.testCommands(), "未记录已运行测试");
         listSection(sb, "Blockers", summary.blockers(), "未记录阻塞项");
         listSection(sb, "Next Actions", summary.nextActions(), "未记录下一步");
@@ -84,6 +87,15 @@ public class TaskNoteWriter {
         if (summary != null && !summary.verifierReports().isEmpty()) {
             tags.add("verifier");
         }
+        if (summary != null && !summary.changeSetSummaries().isEmpty()) {
+            tags.add("changeset");
+        }
+        if (summary != null && !summary.workspaceSummary().isEmpty()) {
+            tags.add("workspace");
+        }
+        if (summary != null && !summary.traceSummary().isBlank()) {
+            tags.add("trace");
+        }
         return tags;
     }
 
@@ -109,6 +121,24 @@ public class TaskNoteWriter {
             sb.append("- ").append(value).append("\n");
         }
         sb.append("\n");
+    }
+
+    private List<String> changeSetLines(TaskSummaryService.TaskSummary summary) {
+        List<String> values = new ArrayList<>();
+        if (summary == null) {
+            return values;
+        }
+        values.addAll(summary.changeSetSummaries());
+        if (!summary.changeSetStatus().isBlank()) {
+            values.add("status=" + summary.changeSetStatus());
+        }
+        if (!summary.commitHash().isBlank()) {
+            values.add("commitHash=" + summary.commitHash());
+        }
+        if (!summary.rollbackStatus().isBlank()) {
+            values.add("rollbackStatus=" + summary.rollbackStatus());
+        }
+        return values;
     }
 
     private String valueOrPlaceholder(String value, String placeholder) {

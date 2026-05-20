@@ -2,6 +2,9 @@ package ricbot.domain.team;
 
 import ricbot.domain.agent.SessionRuntimeKeys;
 import ricbot.domain.session.Session;
+import ricbot.domain.trace.TraceEvent;
+import ricbot.domain.trace.TraceEventType;
+import ricbot.domain.trace.TraceStore;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -16,14 +19,20 @@ public class TeamEngine {
 
     private final Path workspace;
     private final TeamSessionStore store;
+    private final TraceStore traceStore;
     private final VerificationService verificationService = new VerificationService();
     private final Map<String, TeamSession> sessions = new LinkedHashMap<>();
     private final Map<String, TeamTask> tasks = new LinkedHashMap<>();
     private final Map<String, List<TeamEvent>> events = new LinkedHashMap<>();
 
     public TeamEngine(Path workspace) {
+        this(workspace, null);
+    }
+
+    public TeamEngine(Path workspace, TraceStore traceStore) {
         this.workspace = workspace.toAbsolutePath().normalize();
         this.store = new TeamSessionStore(this.workspace);
+        this.traceStore = traceStore;
         restoreKnownSessions();
     }
 
@@ -112,6 +121,7 @@ public class TeamEngine {
         if (result.status() == VerificationResult.Status.REJECT) {
             appendEvent(TeamEvent.of(task.sessionId(), task.id(), TeamRole.VERIFIER, TeamEvent.REVISION_REQUESTED, revisionRequest));
         }
+        traceVerification(task, result);
         return task;
     }
 
@@ -212,6 +222,15 @@ public class TeamEngine {
 
     public TeamWhiteboard whiteboard(String sessionId) {
         return new TeamWhiteboard(workspace, sessionId);
+    }
+
+    public void recordArtifact(String sessionId, TeamArtifact artifact) {
+        if (sessionId == null || sessionId.isBlank() || artifact == null) {
+            return;
+        }
+        requireSession(sessionId);
+        whiteboard(sessionId).appendArtifact(artifact);
+        appendEvent(TeamEvent.of(sessionId, artifact.taskId(), TeamRole.LEADER, TeamEvent.ARTIFACT_RECORDED, artifact.summary(), Map.of("path", artifact.path(), "kind", artifact.kind())));
     }
 
     public TeamSession findSession(String sessionId) {
@@ -325,6 +344,66 @@ public class TeamEngine {
     private void appendEvent(TeamEvent event) {
         events.computeIfAbsent(event.sessionId(), ignored -> new ArrayList<>()).add(event);
         whiteboard(event.sessionId()).appendEvent(event);
+        traceTeamEvent(event);
+    }
+
+    private void traceVerification(TeamTask task, VerificationResult result) {
+        if (traceStore == null || task == null || result == null) {
+            return;
+        }
+        try {
+            traceStore.append(new TraceEvent(
+                    traceStore.traceIdForSession(task.sessionId()),
+                    null,
+                    "",
+                    "",
+                    task.sessionId(),
+                    "",
+                    "",
+                    TraceEventType.VERIFICATION_RESULT,
+                    "verifier",
+                    result.reason(),
+                    Map.of(
+                            "taskId", task.id(),
+                            "status", result.status().name(),
+                            "riskLevel", result.riskLevel().name(),
+                            "missingTests", result.missingTests(),
+                            "requiredActions", result.requiredActions(),
+                            "confidence", result.confidence()
+                    ),
+                    null,
+                    null
+            ));
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void traceTeamEvent(TeamEvent event) {
+        if (traceStore == null || event == null) {
+            return;
+        }
+        try {
+            traceStore.append(new TraceEvent(
+                    traceStore.traceIdForSession(event.sessionId()),
+                    null,
+                    "",
+                    "",
+                    event.sessionId(),
+                    "",
+                    "",
+                    TraceEventType.TEAM_EVENT,
+                    event.actor(),
+                    event.message(),
+                    Map.of(
+                            "teamEventType", event.type(),
+                            "taskId", event.taskId(),
+                            "eventId", event.eventId()
+                    ),
+                    null,
+                    null
+            ));
+        } catch (Exception ignored) {
+        }
     }
 
     private TeamSession requireSession(String sessionId) {

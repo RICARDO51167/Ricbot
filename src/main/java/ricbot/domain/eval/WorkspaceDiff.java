@@ -23,6 +23,7 @@ final class WorkspaceDiff {
             ".idea",
             ".rag",
             ".ricbot",
+            ".traces",
             "target",
             "sessions",
             "legacy_sessions",

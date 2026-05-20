@@ -24,8 +24,10 @@ final class PromptContextBundle {
             "project_notes",    // 项目笔记
             "workspace_knowledge", // 工作区知识库
             "verified_experience", // 已验证经验
+            "workspace_session", // active workspace session
             "team_context", // TeamEngine 协作状态
             "subagent_summaries", // 子代理摘要
+            "trace_context", // Coding Harness trace source
             "tool_trace"        // 工具调用轨迹
     );
 

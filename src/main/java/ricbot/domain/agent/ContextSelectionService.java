@@ -12,6 +12,9 @@ import ricbot.domain.note.NoteService;
 import ricbot.domain.rag.WorkspaceRagService;
 import ricbot.domain.subagent.SubAgentOrchestrator;
 import ricbot.domain.subagent.SubAgentResult;
+import ricbot.domain.trace.TraceEvent;
+import ricbot.domain.trace.TraceEventType;
+import ricbot.domain.trace.TraceStore;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -42,6 +45,7 @@ final class ContextSelectionService {
     private final NoteService noteService;
     private final WorkspaceRagService ragService;
     private final ExperienceStore experienceStore;
+    private final TraceStore traceStore;
 
     /**
      * 构造函数，初始化记忆存储和工具轨迹摘要器。
@@ -75,12 +79,25 @@ final class ContextSelectionService {
             WorkspaceRagService ragService,
             ExperienceStore experienceStore
     ) {
+        this(memoryStore, toolTraceSummarizer, contextWindowTokens, noteService, ragService, experienceStore, null);
+    }
+
+    ContextSelectionService(
+            MemoryStore memoryStore,
+            ToolTraceSummarizer toolTraceSummarizer,
+            int contextWindowTokens,
+            NoteService noteService,
+            WorkspaceRagService ragService,
+            ExperienceStore experienceStore,
+            TraceStore traceStore
+    ) {
         this.memoryStore = memoryStore;
         this.toolTraceSummarizer = toolTraceSummarizer;
         this.contextWindowTokens = contextWindowTokens;
         this.noteService = noteService;
         this.ragService = ragService;
         this.experienceStore = experienceStore;
+        this.traceStore = traceStore;
     }
 
     /**
@@ -155,6 +172,7 @@ final class ContextSelectionService {
         addProjectNotes(bundle, currentMessage, taskState);
         addWorkspaceKnowledge(bundle, currentMessage, taskState);
         addVerifiedExperience(bundle, currentMessage, taskState, preparedInputs.sessionId(), preparedInputs.toolTrace());
+        addWorkspaceSessionContext(bundle, preparedInputs.workspaceContext());
         addTeamContext(bundle, preparedInputs.teamContext());
         addSubAgentSummaries(bundle, preparedInputs.sessionId(), preparedInputs.subAgentResults());
 
@@ -162,6 +180,8 @@ final class ContextSelectionService {
         for (String trace : toolTraceSummarizer.renderRecent(preparedInputs.toolTrace(), 4)) {
             bundle.addItem("tool_trace", trace);
         }
+
+        recordContextBuilt(bundle, preparedInputs.sessionId(), currentMessage);
 
         // 返回选择结果，包含筛选后的历史消息和上下文 bundle
         return new SelectionResult(history, bundle);
@@ -228,6 +248,33 @@ final class ContextSelectionService {
             bundle.addItem("team_context", rendered, 0.6d,
                     ContextSource.of("team_event", string(event.get("id")), whiteboardPath, string(event.get("type")), 0.6d, metadata));
         }
+    }
+
+    private void addWorkspaceSessionContext(PromptContextBundle bundle, Map<String, Object> workspaceContext) {
+        if (workspaceContext == null || workspaceContext.isEmpty()) {
+            return;
+        }
+        String id = string(workspaceContext.get("id"));
+        String type = string(workspaceContext.get("type"));
+        String status = string(workspaceContext.get("status"));
+        String goal = string(workspaceContext.get("goal"));
+        String path = string(workspaceContext.get("path"));
+        String source = string(workspaceContext.get("source"));
+        String rendered = "workspace=" + id
+                + " type=" + type
+                + " status=" + status
+                + (!goal.isBlank() ? " goal=" + goal : "")
+                + (!path.isBlank() ? " path=" + path : "");
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("workspace_type", type);
+        metadata.put("status", status);
+        metadata.put("workspacePath", path);
+        bundle.addItem(
+                "workspace_session",
+                rendered,
+                0.82d,
+                ContextSource.of("workspace", id, source, "active workspace session", 0.82d, metadata)
+        );
     }
 
     private void addSubAgentSummaries(
@@ -337,9 +384,85 @@ final class ContextSelectionService {
                 } catch (Exception e) {
                     log.warn("skip recording verified experience usage: {}", entry.id(), e);
                 }
+                traceExperienceHit(sessionId, entry, result);
             }
         } catch (Exception e) {
             log.warn("skip verified experience context due to read/search failure", e);
+        }
+    }
+
+    private void recordContextBuilt(PromptContextBundle bundle, String sessionId, String currentMessage) {
+        if (traceStore == null || bundle == null) {
+            return;
+        }
+        try {
+            String traceId = traceStore.traceIdForSession(sessionId);
+            TraceEvent event = traceStore.append(new TraceEvent(
+                    traceId,
+                    null,
+                    "",
+                    sessionId,
+                    "",
+                    "",
+                    "",
+                    TraceEventType.CONTEXT_BUILT,
+                    "context",
+                    "context bundle built",
+                    Map.of(
+                            "query", currentMessage != null ? abbreviate(currentMessage, 240) : "",
+                            "sections", bundle.budgetTrace().get("sections"),
+                            "estimatedTokens", bundle.budgetTrace().get("estimated_rendered_tokens")
+                    ),
+                    null,
+                    null
+            ));
+            if (event != null) {
+                bundle.addItem(
+                        "trace_context",
+                        "trace=" + event.traceId() + " event=" + event.type(),
+                        0.55d,
+                        ContextSource.of(
+                                "trace",
+                                event.traceId(),
+                                traceStore.tracePath(event.traceId()),
+                                "coding harness trace",
+                                0.55d,
+                                Map.of("eventId", event.eventId(), "eventType", event.type().name())
+                        )
+                );
+            }
+        } catch (Exception e) {
+            log.warn("skip context trace write", e);
+        }
+    }
+
+    private void traceExperienceHit(String sessionId, ExperienceEntry entry, ExperienceStore.ScoredExperience result) {
+        if (traceStore == null || entry == null || result == null) {
+            return;
+        }
+        try {
+            traceStore.append(new TraceEvent(
+                    traceStore.traceIdForSession(sessionId),
+                    null,
+                    "",
+                    sessionId,
+                    "",
+                    "",
+                    "",
+                    TraceEventType.EXPERIENCE_HIT,
+                    "context",
+                    entry.title(),
+                    Map.of(
+                            "experienceId", entry.id(),
+                            "type", entry.type().name(),
+                            "score", result.score(),
+                            "sourceRef", entry.sourceRef()
+                    ),
+                    null,
+                    null
+            ));
+        } catch (Exception e) {
+            log.warn("skip experience hit trace", e);
         }
     }
 
@@ -733,16 +856,18 @@ final class ContextSelectionService {
             TaskState taskState,
             List<Map<String, Object>> toolTrace,
             List<SubAgentResult> subAgentResults,
-            Map<String, Object> teamContext
+            Map<String, Object> teamContext,
+            Map<String, Object> workspaceContext
     ) {
         SessionPreparedInputs {
             toolTrace = toolTrace != null ? List.copyOf(toolTrace) : List.of();
             subAgentResults = subAgentResults != null ? List.copyOf(subAgentResults) : List.of();
             teamContext = teamContext != null ? Map.copyOf(teamContext) : Map.of();
+            workspaceContext = workspaceContext != null ? Map.copyOf(workspaceContext) : Map.of();
         }
 
         SessionPreparedInputs(String sessionId, String archivedSummary, TaskState taskState, List<Map<String, Object>> toolTrace) {
-            this(sessionId, archivedSummary, taskState, toolTrace, List.of(), Map.of());
+            this(sessionId, archivedSummary, taskState, toolTrace, List.of(), Map.of(), Map.of());
         }
 
         SessionPreparedInputs(
@@ -752,11 +877,22 @@ final class ContextSelectionService {
                 List<Map<String, Object>> toolTrace,
                 List<SubAgentResult> subAgentResults
         ) {
-            this(sessionId, archivedSummary, taskState, toolTrace, subAgentResults, Map.of());
+            this(sessionId, archivedSummary, taskState, toolTrace, subAgentResults, Map.of(), Map.of());
+        }
+
+        SessionPreparedInputs(
+                String sessionId,
+                String archivedSummary,
+                TaskState taskState,
+                List<Map<String, Object>> toolTrace,
+                List<SubAgentResult> subAgentResults,
+                Map<String, Object> teamContext
+        ) {
+            this(sessionId, archivedSummary, taskState, toolTrace, subAgentResults, teamContext, Map.of());
         }
 
         SessionPreparedInputs(String archivedSummary, TaskState taskState, List<Map<String, Object>> toolTrace) {
-            this("", archivedSummary, taskState, toolTrace, List.of(), Map.of());
+            this("", archivedSummary, taskState, toolTrace, List.of(), Map.of(), Map.of());
         }
     }
 

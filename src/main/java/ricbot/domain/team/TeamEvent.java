@@ -27,6 +27,7 @@ public record TeamEvent(
     public static final String TASK_ABORTED = "TASK_ABORTED";
     public static final String TEAM_ARCHIVED = "TEAM_ARCHIVED";
     public static final String TEAM_RESUMED = "TEAM_RESUMED";
+    public static final String ARTIFACT_RECORDED = "ARTIFACT_RECORDED";
 
     public TeamEvent {
         eventId = eventId != null && !eventId.isBlank() ? eventId : newId();
@@ -124,6 +125,7 @@ public record TeamEvent(
             case "task_aborted" -> TASK_ABORTED;
             case "team_archived" -> TEAM_ARCHIVED;
             case "team_resumed" -> TEAM_RESUMED;
+            case "artifact_recorded" -> ARTIFACT_RECORDED;
             default -> value.toUpperCase(java.util.Locale.ROOT);
         };
     }

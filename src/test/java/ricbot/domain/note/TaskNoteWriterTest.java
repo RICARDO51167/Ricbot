@@ -31,8 +31,12 @@ class TaskNoteWriterTest {
         assertTrue(markdown.contains("team team_demo state=VERIFYING"), markdown);
         assertTrue(markdown.contains("## Verifier Report"), markdown);
         assertTrue(markdown.contains("status=REJECT"), markdown);
+        assertTrue(markdown.contains("## Workspace"), markdown);
+        assertTrue(markdown.contains(".workspaces/workspace_demo/session.json"), markdown);
         assertTrue(markdown.contains("## SubAgent Findings"), markdown);
         assertTrue(markdown.contains("PLANNER task=subtask_demo"), markdown);
+        assertTrue(markdown.contains("## Trace Summary"), markdown);
+        assertTrue(markdown.contains(".traces/trace_cli_direct/events.jsonl"), markdown);
     }
 
     @Test
@@ -76,7 +80,13 @@ class TaskNoteWriterTest {
                 List.of("git checkout -- src/main/java/ricbot/domain/note/TaskNoteWriter.java"),
                 List.of("team team_demo state=VERIFYING goal=V3.4 task notes"),
                 List.of("task=teamtask_demo | status=REJECT | missingTests=./mvnw -q test | requiredActions=Run tests"),
+                List.of(),
+                List.of("workspace workspace_demo | type: GIT_WORKTREE | status: ACTIVE", "source=.workspaces/workspace_demo/session.json"),
+                "",
+                "",
+                "",
                 List.of("PLANNER task=subtask_demo summary=Plan note writing"),
+                "trace trace_cli_direct\npath: .traces/trace_cli_direct/events.jsonl\neventCount: 3",
                 ""
         );
     }

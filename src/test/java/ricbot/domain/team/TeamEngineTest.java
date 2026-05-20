@@ -6,6 +6,8 @@ import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import ricbot.domain.trace.TraceEventType;
+import ricbot.domain.trace.TraceStore;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -138,7 +140,8 @@ class TeamEngineTest {
 
     @Test
     void autoVerifyPassMarksTaskDone(@TempDir Path workspace) {
-        TeamEngine engine = new TeamEngine(workspace);
+        TraceStore traceStore = new TraceStore(workspace);
+        TeamEngine engine = new TeamEngine(workspace, traceStore);
         TeamSession session = engine.createSession("Auto verify pass");
         TeamTask task = engine.createTask(session.id(), TeamRole.DEVELOPER, "Implement safe change");
         task = engine.submitWorkerResult(task.id(), "Implemented safe change.", List.of());
@@ -149,6 +152,9 @@ class TeamEngineTest {
         assertEquals(VerificationResult.Status.PASS, task.verificationResult().status());
         assertTrue(engine.verificationReports(task.id()).toString().contains("PASS"));
         assertTrue(engine.whiteboard(session.id()).readSummary().contains("RiskLevel: LOW"));
+        List<ricbot.domain.trace.TraceEvent> events = traceStore.loadEvents(traceStore.traceIdForSession(session.id()));
+        assertTrue(events.stream().anyMatch(event -> event.type() == TraceEventType.VERIFICATION_RESULT), events.toString());
+        assertTrue(events.stream().anyMatch(event -> event.type() == TraceEventType.TEAM_EVENT), events.toString());
     }
 
     @Test

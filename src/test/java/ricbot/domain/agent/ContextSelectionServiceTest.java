@@ -13,6 +13,8 @@ import ricbot.domain.subagent.SubAgentResult;
 import ricbot.domain.subagent.SubAgentRole;
 import ricbot.domain.team.TeamEngine;
 import ricbot.domain.team.TeamRole;
+import ricbot.domain.trace.TraceEventType;
+import ricbot.domain.trace.TraceStore;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -145,6 +147,41 @@ class ContextSelectionServiceTest {
         assertTrue(String.valueOf(budgetTrace).contains("experience/verified.jsonl:" + verified.id()), String.valueOf(budgetTrace));
         assertEquals(1, experienceStore.listUsage(verified.id()).size());
         assertEquals("session-test", experienceStore.listUsage(verified.id()).get(0).sessionId());
+    }
+
+    @Test
+    void select_recordsContextBuiltAndExperienceHitTrace(@TempDir Path workspace) {
+        ExperienceStore experienceStore = new ExperienceStore(workspace);
+        ExperienceEntry verified = experienceStore.addCandidate(experience(
+                "Run filesystem tests",
+                "Run filesystem tests after changing write_file or edit_file.",
+                List.of("src/main/java/ricbot/tool/filesystem/WriteFileTool.java"),
+                0.8d
+        ));
+        experienceStore.verify(verified.id());
+        TraceStore traceStore = new TraceStore(workspace);
+        ContextSelectionService service = new ContextSelectionService(
+                new MemoryStore(workspace),
+                new ToolTraceSummarizer(),
+                32_000,
+                null,
+                null,
+                experienceStore,
+                traceStore
+        );
+
+        ContextSelectionService.SelectionResult result = service.select(
+                new ContextSelectionService.SessionPreparedInputs("session-test", null, TaskState.fromSession(new Session("test")), List.of()),
+                List.of(),
+                "修改 src/main/java/ricbot/tool/filesystem/WriteFileTool.java 后跑什么测试",
+                6
+        );
+
+        String traceId = traceStore.traceIdForSession("session-test");
+        assertTrue(traceStore.loadEvents(traceId).stream().anyMatch(event -> event.type() == TraceEventType.CONTEXT_BUILT), traceStore.loadEvents(traceId).toString());
+        assertTrue(traceStore.loadEvents(traceId).stream().anyMatch(event -> event.type() == TraceEventType.EXPERIENCE_HIT), traceStore.loadEvents(traceId).toString());
+        assertTrue(result.bundle().render().contains("## trace_context"), result.bundle().render());
+        assertTrue(String.valueOf(result.bundle().budgetTrace()).contains(".traces/" + traceId + "/events.jsonl"), String.valueOf(result.bundle().budgetTrace()));
     }
 
     @Test
@@ -300,6 +337,31 @@ class ContextSelectionServiceTest {
         assertTrue(rendered.contains("## team_context"), rendered);
         assertTrue(rendered.contains(session.id()), rendered);
         assertTrue(String.valueOf(selection.bundle().budgetTrace()).contains(".team/" + session.id() + "/whiteboard.md"));
+    }
+
+    @Test
+    void select_addsWorkspaceSessionSource(@TempDir Path workspace) {
+        ContextSelectionService service = new ContextSelectionService(new MemoryStore(workspace), new ToolTraceSummarizer());
+        Map<String, Object> workspaceContext = Map.of(
+                "id", "workspace_demo",
+                "type", "GIT_WORKTREE",
+                "status", "ACTIVE",
+                "goal", "isolated implementation",
+                "path", workspace.resolve(".workspaces/workspace_demo").toString(),
+                "source", ".workspaces/workspace_demo/session.json"
+        );
+
+        ContextSelectionService.SelectionResult selection = service.select(
+                new ContextSelectionService.SessionPreparedInputs("session-test", null, null, List.of(), List.of(), Map.of(), workspaceContext),
+                List.of(),
+                "workspace context",
+                6
+        );
+
+        String rendered = selection.bundle().render();
+        assertTrue(rendered.contains("## workspace_session"), rendered);
+        assertTrue(rendered.contains("workspace_demo"), rendered);
+        assertTrue(String.valueOf(selection.bundle().budgetTrace()).contains(".workspaces/workspace_demo/session.json"));
     }
 
     private ExperienceEntry experience(String title, String content, List<String> files, double confidence) {

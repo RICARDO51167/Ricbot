@@ -26,7 +26,13 @@ public final class TaskSummaryService {
                 List.of(),
                 renderTeamFindings(teamContext),
                 renderVerifierReports(teamContext),
-                renderSubAgentFindings(SubAgentOrchestrator.resultsFromSession(session))
+                renderChangeSetSummary(session),
+                renderWorkspaceSummary(session),
+                metadataValue(session, SessionRuntimeKeys.CHANGESET_STATUS_KEY),
+                metadataValue(session, SessionRuntimeKeys.CHANGESET_COMMIT_HASH_KEY),
+                metadataValue(session, SessionRuntimeKeys.CHANGESET_ROLLBACK_STATUS_KEY),
+                renderSubAgentFindings(SubAgentOrchestrator.resultsFromSession(session)),
+                metadataValue(session, SessionRuntimeKeys.TRACE_SUMMARY_KEY)
         );
     }
 
@@ -37,7 +43,7 @@ public final class TaskSummaryService {
             List<String> testResults,
             List<String> keyDecisions
     ) {
-        return summarizeCurrentTask(taskState, toolTrace, modifiedFiles, testResults, keyDecisions, List.of(), List.of(), List.of());
+        return summarizeCurrentTask(taskState, toolTrace, modifiedFiles, testResults, keyDecisions, List.of(), List.of(), List.of(), List.of(), "", "", "", List.of(), "");
     }
 
     TaskSummary summarizeCurrentTask(
@@ -48,7 +54,13 @@ public final class TaskSummaryService {
             List<String> keyDecisions,
             List<String> teamFindings,
             List<String> verifierReports,
-            List<String> subAgentFindings
+            List<String> changeSetSummaries,
+            List<String> workspaceSummary,
+            String changeSetStatus,
+            String commitHash,
+            String rollbackStatus,
+            List<String> subAgentFindings,
+            String traceSummary
     ) {
         List<String> changedFiles = new ArrayList<>(dedupe(modifiedFiles));
         changedFiles.addAll(inferChangedFiles(toolTrace));
@@ -91,7 +103,13 @@ public final class TaskSummaryService {
                 rollbackHints,
                 new ArrayList<>(dedupe(teamFindings)),
                 new ArrayList<>(dedupe(verifierReports)),
+                new ArrayList<>(dedupe(changeSetSummaries)),
+                new ArrayList<>(dedupe(workspaceSummary)),
+                changeSetStatus,
+                commitHash,
+                rollbackStatus,
                 new ArrayList<>(dedupe(subAgentFindings)),
+                traceSummary,
                 notice(taskState, changedFiles, toolTrace)
         );
     }
@@ -140,6 +158,41 @@ public final class TaskSummaryService {
             }
         }
         return new ArrayList<>(dedupe(out));
+    }
+
+    private List<String> renderChangeSetSummary(Session session) {
+        if (session == null || session.getMetadata() == null) {
+            return List.of();
+        }
+        Object raw = session.getMetadata().get(SessionRuntimeKeys.CHANGESET_SUMMARY_KEY);
+        if (raw instanceof List<?> list) {
+            return stringList(list);
+        }
+        String value = string(raw);
+        return value.isBlank() ? List.of() : List.of(value);
+    }
+
+    private List<String> renderWorkspaceSummary(Session session) {
+        if (session == null || session.getMetadata() == null) {
+            return List.of();
+        }
+        List<String> out = new ArrayList<>();
+        String summary = string(session.getMetadata().get(SessionRuntimeKeys.WORKSPACE_SUMMARY_KEY));
+        String source = string(session.getMetadata().get(SessionRuntimeKeys.WORKSPACE_SOURCE_KEY));
+        if (!summary.isBlank()) {
+            out.add(summary);
+        }
+        if (!source.isBlank()) {
+            out.add("source=" + source);
+        }
+        return out;
+    }
+
+    private String metadataValue(Session session, String key) {
+        if (session == null || session.getMetadata() == null || key == null) {
+            return "";
+        }
+        return string(session.getMetadata().get(key));
     }
 
     private List<String> inferChangedFiles(List<Map<String, Object>> toolTrace) {
@@ -370,7 +423,13 @@ public final class TaskSummaryService {
             List<String> rollbackHints,
             List<String> teamFindings,
             List<String> verifierReports,
+            List<String> changeSetSummaries,
+            List<String> workspaceSummary,
+            String changeSetStatus,
+            String commitHash,
+            String rollbackStatus,
             List<String> subAgentFindings,
+            String traceSummary,
             String notice
     ) {
         public TaskSummary(
@@ -385,11 +444,52 @@ public final class TaskSummaryService {
                 List<String> suggestedTests,
                 List<String> rollbackHints,
                 List<String> teamFindings,
+                List<String> verifierReports,
                 List<String> subAgentFindings,
-                String notice
+            String notice
         ) {
             this(goal, changedFiles, keyDecisions, testCommands, blockers, nextActions, approvalRecords,
-                    diffReviews, suggestedTests, rollbackHints, teamFindings, List.of(), subAgentFindings, notice);
+                    diffReviews, suggestedTests, rollbackHints, teamFindings, verifierReports, List.of(), List.of(), "", "", "", subAgentFindings, "", notice);
+        }
+
+        public TaskSummary(
+                String goal,
+                List<String> changedFiles,
+                List<String> keyDecisions,
+                List<String> testCommands,
+                List<String> blockers,
+                List<String> nextActions,
+                List<String> approvalRecords,
+                List<String> diffReviews,
+                List<String> suggestedTests,
+                List<String> rollbackHints,
+                List<String> teamFindings,
+                List<String> verifierReports,
+                List<String> subAgentFindings,
+                String traceSummary,
+            String notice
+        ) {
+            this(goal, changedFiles, keyDecisions, testCommands, blockers, nextActions, approvalRecords,
+                    diffReviews, suggestedTests, rollbackHints, teamFindings, verifierReports, List.of(), List.of(), "", "", "", subAgentFindings, traceSummary, notice);
+        }
+
+        public TaskSummary(
+                String goal,
+                List<String> changedFiles,
+                List<String> keyDecisions,
+                List<String> testCommands,
+                List<String> blockers,
+                List<String> nextActions,
+                List<String> approvalRecords,
+                List<String> diffReviews,
+                List<String> suggestedTests,
+                List<String> rollbackHints,
+                List<String> teamFindings,
+                List<String> subAgentFindings,
+            String notice
+        ) {
+            this(goal, changedFiles, keyDecisions, testCommands, blockers, nextActions, approvalRecords,
+                    diffReviews, suggestedTests, rollbackHints, teamFindings, List.of(), List.of(), List.of(), "", "", "", subAgentFindings, "", notice);
         }
 
         public TaskSummary {
@@ -405,7 +505,13 @@ public final class TaskSummaryService {
             rollbackHints = rollbackHints != null ? List.copyOf(rollbackHints) : List.of();
             teamFindings = teamFindings != null ? List.copyOf(teamFindings) : List.of();
             verifierReports = verifierReports != null ? List.copyOf(verifierReports) : List.of();
+            changeSetSummaries = changeSetSummaries != null ? List.copyOf(changeSetSummaries) : List.of();
+            workspaceSummary = workspaceSummary != null ? List.copyOf(workspaceSummary) : List.of();
+            changeSetStatus = changeSetStatus != null ? changeSetStatus : "";
+            commitHash = commitHash != null ? commitHash : "";
+            rollbackStatus = rollbackStatus != null ? rollbackStatus : "";
             subAgentFindings = subAgentFindings != null ? List.copyOf(subAgentFindings) : List.of();
+            traceSummary = traceSummary != null ? traceSummary : "";
             notice = notice != null ? notice : "";
         }
 
@@ -423,7 +529,13 @@ public final class TaskSummaryService {
             out.put("rollback_hints", rollbackHints);
             out.put("team_findings", teamFindings);
             out.put("verifier_reports", verifierReports);
+            out.put("changeset_summary", changeSetSummaries);
+            out.put("workspace_summary", workspaceSummary);
+            out.put("changeset_status", changeSetStatus);
+            out.put("commit_hash", commitHash);
+            out.put("rollback_status", rollbackStatus);
             out.put("subagent_findings", subAgentFindings);
+            out.put("trace_summary", traceSummary);
             out.put("notice", notice);
             return out;
         }
