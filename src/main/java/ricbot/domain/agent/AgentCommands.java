@@ -38,6 +38,8 @@ import ricbot.domain.team.TeamSession;
 import ricbot.domain.team.TeamTask;
 import ricbot.domain.team.VerificationInput;
 import ricbot.domain.team.VerificationResult;
+import ricbot.domain.team.WorkerExecutionInput;
+import ricbot.domain.team.WorkerExecutionResult;
 import ricbot.domain.trace.TraceEvent;
 import ricbot.domain.trace.TraceEventType;
 import ricbot.domain.trace.TraceRenderer;
@@ -939,6 +941,9 @@ final class AgentCommands {
                 case "archive" -> teamArchive(ctx, afterCommand(args));
                 case "suggest" -> teamSuggest(ctx, afterCommand(args));
                 case "suggest-current" -> teamSuggestCurrent(ctx);
+                case "run-worker" -> teamRunWorker(ctx, afterCommand(args));
+                case "run-verifier" -> teamRunVerifier(ctx, afterCommand(args));
+                case "worker-report" -> teamWorkerReport(ctx, afterCommand(args));
                 case "auto-verify" -> teamAutoVerify(ctx, afterCommand(args));
                 case "verifier-report" -> teamVerifierReport(ctx, afterCommand(args));
                 case "task" -> teamTask(ctx, afterCommand(args));
@@ -946,7 +951,7 @@ final class AgentCommands {
                 case "events" -> teamEvents(ctx);
                 case "whiteboard" -> teamWhiteboard(ctx);
                 case "abort" -> teamAbort(ctx, afterCommand(args));
-                default -> completedReply(ctx, "用法：/team start <goal>|status|list|resume <sessionId>|archive <sessionId>|suggest <goal>|suggest-current|task <role> <goal>|auto-verify <taskId>|verifier-report <taskId>|verify <taskId> pass|reject|needs-human <reason>|events|whiteboard|abort <taskId>");
+                default -> completedReply(ctx, "用法：/team start <goal>|status|list|resume <sessionId>|archive <sessionId>|suggest <goal>|suggest-current|task <role> <goal>|run-worker <taskId>|run-verifier <taskId>|worker-report <taskId>|auto-verify <taskId>|verifier-report <taskId>|verify <taskId> pass|reject|needs-human <reason>|events|whiteboard|abort <taskId>");
             };
         } catch (IllegalArgumentException | IllegalStateException e) {
             return completedReply(ctx, "team error: " + e.getMessage());
@@ -1154,6 +1159,60 @@ final class AgentCommands {
                 + (!task.revisionRequest().isBlank() ? "\nrevisionRequest: " + task.revisionRequest() : ""));
     }
 
+    private CompletableFuture<OutboundMessage> teamRunWorker(CommandRouter.CommandContext ctx, String rawArgs) {
+        String taskId = commandArg(rawArgs, 0);
+        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
+        resolveActiveTeamSessionId(session);
+        TeamTask task = teamEngine.findTask(taskId);
+        if (task == null) {
+            throw new IllegalArgumentException("team task not found: " + taskId);
+        }
+        WorkerExecutionInput input = workerExecutionInput(task, session, false);
+        WorkerExecutionResult result = teamEngine.runWorker(taskId, input);
+        storeTeamContext(session, task.sessionId());
+        traceEvent(session, TraceEventType.WORKER_FINISHED, "team", "team worker executed", workerTracePayload(result), task.sessionId(), "", "");
+        return completedReply(ctx, "team worker executed\n" + renderWorkerExecutionResult(result, teamEngine.findTask(taskId)));
+    }
+
+    private CompletableFuture<OutboundMessage> teamRunVerifier(CommandRouter.CommandContext ctx, String rawArgs) {
+        String taskId = commandArg(rawArgs, 0);
+        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
+        resolveActiveTeamSessionId(session);
+        TeamTask task = teamEngine.findTask(taskId);
+        if (task == null) {
+            throw new IllegalArgumentException("team task not found: " + taskId);
+        }
+        WorkerExecutionInput input = workerExecutionInput(task, session, true);
+        WorkerExecutionResult result = teamEngine.runVerifier(taskId, input);
+        TeamTask updated = teamEngine.findTask(taskId);
+        ChangeSetService changeSetService = new ChangeSetService(workspace);
+        GitChangeSet latest = changeSetService.latest();
+        if (latest != null && updated != null && updated.verificationResult() != null) {
+            changeSetService.attachVerifierResult(latest.id(), updated.verificationResult());
+        }
+        storeTeamContext(session, task.sessionId());
+        traceEvent(session, TraceEventType.VERIFIER_FINISHED, "team", "team verifier executed", workerTracePayload(result), task.sessionId(), latest != null ? latest.id() : "", "");
+        String changeHint = activeWorkspaceHasDiff(session)
+                ? "\nchangeSetHint: active workspace has diff; run /change create"
+                : "";
+        return completedReply(ctx, "team verifier executed\n" + renderWorkerExecutionResult(result, updated) + changeHint);
+    }
+
+    private CompletableFuture<OutboundMessage> teamWorkerReport(CommandRouter.CommandContext ctx, String rawArgs) {
+        String taskId = commandArg(rawArgs, 0);
+        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
+        resolveActiveTeamSessionId(session);
+        List<WorkerExecutionResult> reports = teamEngine.workerReports(taskId);
+        if (reports.isEmpty()) {
+            return completedReply(ctx, "No worker report for task: " + taskId);
+        }
+        StringBuilder sb = new StringBuilder("team worker report\n");
+        for (WorkerExecutionResult result : reports) {
+            sb.append(renderWorkerExecutionResult(result, teamEngine.findTask(taskId))).append("\n\n");
+        }
+        return completedReply(ctx, sb.toString().trim());
+    }
+
     private CompletableFuture<OutboundMessage> teamAutoVerify(CommandRouter.CommandContext ctx, String rawArgs) {
         String taskId = commandArg(rawArgs, 0);
         Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
@@ -1253,6 +1312,114 @@ final class AgentCommands {
                 verifiedExperienceSources(session),
                 teamEngine.whiteboard(task.sessionId()).readSummary()
         );
+    }
+
+    private WorkerExecutionInput workerExecutionInput(TeamTask task, Session session, boolean verifier) {
+        TaskSummaryService.TaskSummary summary = new TaskSummaryService().summarizeCurrentTask(session);
+        String workspacePath = activeWorkspacePath(session);
+        List<String> findings = new java.util.ArrayList<>();
+        findings.addAll(summary.diffReviews());
+        findings.addAll(summary.changeSetSummaries());
+        if (!summary.traceSummary().isBlank()) {
+            findings.add("trace=" + abbreviate(summary.traceSummary(), 260));
+        }
+        List<String> risks = new java.util.ArrayList<>(summary.blockers());
+        if (activeWorkspaceHasDiff(session)) {
+            risks.add("active workspace has diff; create ChangeSet before final acceptance");
+        }
+        return new WorkerExecutionInput(
+                task.id(),
+                task.sessionId(),
+                verifier ? TeamRole.VERIFIER : task.role(),
+                task.goal(),
+                workspacePath,
+                teamEngine.whiteboard(task.sessionId()).readSummary() + "\n" + renderTaskSummaryForVerifier(summary),
+                summary.changedFiles(),
+                verifiedExperienceSources(session),
+                summary.testCommands(),
+                !task.summary().isBlank() ? task.summary() : summary.goal(),
+                findings,
+                risks,
+                summary.suggestedTests(),
+                List.of(),
+                0d,
+                ""
+        );
+    }
+
+    private String activeWorkspacePath(Session session) {
+        String id = activeWorkspaceSessionId(session);
+        if (!id.isBlank()) {
+            try {
+                ricbot.domain.workspace.WorkspaceSession workspaceSession = new WorkspaceSessionStore(workspace).load(id);
+                if (workspaceSession != null && !workspaceSession.workspacePath().isBlank()) {
+                    return workspaceSession.workspacePath();
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        return workspace.toString();
+    }
+
+    private boolean activeWorkspaceHasDiff(Session session) {
+        String id = activeWorkspaceSessionId(session);
+        if (id.isBlank()) {
+            return false;
+        }
+        try {
+            WorkspaceSessionStore store = new WorkspaceSessionStore(workspace);
+            ricbot.domain.workspace.WorkspaceSession workspaceSession = store.load(id);
+            if (workspaceSession == null) {
+                return false;
+            }
+            String diff = backendFor(workspaceSession, store).diff(id);
+            return diff != null && !diff.isBlank();
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private String renderWorkerExecutionResult(WorkerExecutionResult result, TeamTask task) {
+        return "taskId: " + result.taskId() + "\n"
+                + "role: " + result.role() + "\n"
+                + "workspacePath: " + result.workspacePath() + "\n"
+                + "status: " + result.status() + "\n"
+                + "summary: " + result.summary() + "\n"
+                + "findings: " + renderListInline(result.findings()) + "\n"
+                + "risks: " + renderListInline(result.risks()) + "\n"
+                + "suggestedTests: " + renderListInline(result.suggestedTests()) + "\n"
+                + "artifacts: " + (result.artifacts().isEmpty() ? "none" : String.join(", ", result.artifacts().stream().map(TeamArtifact::path).toList())) + "\n"
+                + "confidence: " + String.format(java.util.Locale.ROOT, "%.2f", result.confidence()) + "\n"
+                + "nextState: " + (task != null ? task.state() : "(unknown)");
+    }
+
+    private Map<String, Object> workerTracePayload(WorkerExecutionResult result) {
+        if (result == null) {
+            return Map.of();
+        }
+        return Map.of(
+                "taskId", result.taskId(),
+                "teamSessionId", result.teamSessionId(),
+                "role", result.role().name(),
+                "workspacePath", result.workspacePath(),
+                "workspaceSessionId", workspaceSessionIdFromPath(result.workspacePath()),
+                "status", result.status(),
+                "confidence", result.confidence()
+        );
+    }
+
+    private String workspaceSessionIdFromPath(String workspacePath) {
+        if (workspacePath == null || workspacePath.isBlank()) {
+            return "";
+        }
+        String normalized = workspacePath.replace('\\', '/');
+        int index = normalized.indexOf("/.workspaces/");
+        if (index < 0) {
+            return "";
+        }
+        String tail = normalized.substring(index + "/.workspaces/".length());
+        int slash = tail.indexOf('/');
+        return slash >= 0 ? tail.substring(0, slash) : tail;
     }
 
     private String renderTaskSummaryForVerifier(TaskSummaryService.TaskSummary summary) {

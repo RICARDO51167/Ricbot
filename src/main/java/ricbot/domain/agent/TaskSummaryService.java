@@ -26,6 +26,7 @@ public final class TaskSummaryService {
                 List.of(),
                 renderTeamFindings(teamContext),
                 renderVerifierReports(teamContext),
+                renderWorkerFindings(teamContext),
                 renderChangeSetSummary(session),
                 renderWorkspaceSummary(session),
                 metadataValue(session, SessionRuntimeKeys.CHANGESET_STATUS_KEY),
@@ -43,7 +44,7 @@ public final class TaskSummaryService {
             List<String> testResults,
             List<String> keyDecisions
     ) {
-        return summarizeCurrentTask(taskState, toolTrace, modifiedFiles, testResults, keyDecisions, List.of(), List.of(), List.of(), List.of(), "", "", "", List.of(), "");
+        return summarizeCurrentTask(taskState, toolTrace, modifiedFiles, testResults, keyDecisions, List.of(), List.of(), List.of(), List.of(), List.of(), "", "", "", List.of(), "");
     }
 
     TaskSummary summarizeCurrentTask(
@@ -54,6 +55,7 @@ public final class TaskSummaryService {
             List<String> keyDecisions,
             List<String> teamFindings,
             List<String> verifierReports,
+            List<String> workerFindings,
             List<String> changeSetSummaries,
             List<String> workspaceSummary,
             String changeSetStatus,
@@ -103,6 +105,7 @@ public final class TaskSummaryService {
                 rollbackHints,
                 new ArrayList<>(dedupe(teamFindings)),
                 new ArrayList<>(dedupe(verifierReports)),
+                new ArrayList<>(dedupe(workerFindings)),
                 new ArrayList<>(dedupe(changeSetSummaries)),
                 new ArrayList<>(dedupe(workspaceSummary)),
                 changeSetStatus,
@@ -155,6 +158,19 @@ public final class TaskSummaryService {
         for (String verifier : stringList(teamContext.get("verifierResults"))) {
             if (out.stream().noneMatch(row -> row.contains(verifier))) {
                 out.add(verifier);
+            }
+        }
+        return new ArrayList<>(dedupe(out));
+    }
+
+    private List<String> renderWorkerFindings(Map<String, Object> teamContext) {
+        if (teamContext == null || teamContext.isEmpty()) {
+            return List.of();
+        }
+        List<String> out = new ArrayList<>(stringList(teamContext.get("workerReports")));
+        for (String worker : stringList(teamContext.get("workerResults"))) {
+            if (out.stream().noneMatch(row -> row.contains(worker))) {
+                out.add(worker);
             }
         }
         return new ArrayList<>(dedupe(out));
@@ -423,6 +439,7 @@ public final class TaskSummaryService {
             List<String> rollbackHints,
             List<String> teamFindings,
             List<String> verifierReports,
+            List<String> workerFindings,
             List<String> changeSetSummaries,
             List<String> workspaceSummary,
             String changeSetStatus,
@@ -449,7 +466,7 @@ public final class TaskSummaryService {
             String notice
         ) {
             this(goal, changedFiles, keyDecisions, testCommands, blockers, nextActions, approvalRecords,
-                    diffReviews, suggestedTests, rollbackHints, teamFindings, verifierReports, List.of(), List.of(), "", "", "", subAgentFindings, "", notice);
+                    diffReviews, suggestedTests, rollbackHints, teamFindings, verifierReports, List.of(), List.of(), List.of(), "", "", "", subAgentFindings, "", notice);
         }
 
         public TaskSummary(
@@ -470,7 +487,7 @@ public final class TaskSummaryService {
             String notice
         ) {
             this(goal, changedFiles, keyDecisions, testCommands, blockers, nextActions, approvalRecords,
-                    diffReviews, suggestedTests, rollbackHints, teamFindings, verifierReports, List.of(), List.of(), "", "", "", subAgentFindings, traceSummary, notice);
+                    diffReviews, suggestedTests, rollbackHints, teamFindings, verifierReports, List.of(), List.of(), List.of(), "", "", "", subAgentFindings, traceSummary, notice);
         }
 
         public TaskSummary(
@@ -489,7 +506,7 @@ public final class TaskSummaryService {
             String notice
         ) {
             this(goal, changedFiles, keyDecisions, testCommands, blockers, nextActions, approvalRecords,
-                    diffReviews, suggestedTests, rollbackHints, teamFindings, List.of(), List.of(), List.of(), "", "", "", subAgentFindings, "", notice);
+                    diffReviews, suggestedTests, rollbackHints, teamFindings, List.of(), List.of(), List.of(), List.of(), "", "", "", subAgentFindings, "", notice);
         }
 
         public TaskSummary {
@@ -505,6 +522,7 @@ public final class TaskSummaryService {
             rollbackHints = rollbackHints != null ? List.copyOf(rollbackHints) : List.of();
             teamFindings = teamFindings != null ? List.copyOf(teamFindings) : List.of();
             verifierReports = verifierReports != null ? List.copyOf(verifierReports) : List.of();
+            workerFindings = workerFindings != null ? List.copyOf(workerFindings) : List.of();
             changeSetSummaries = changeSetSummaries != null ? List.copyOf(changeSetSummaries) : List.of();
             workspaceSummary = workspaceSummary != null ? List.copyOf(workspaceSummary) : List.of();
             changeSetStatus = changeSetStatus != null ? changeSetStatus : "";
@@ -529,6 +547,7 @@ public final class TaskSummaryService {
             out.put("rollback_hints", rollbackHints);
             out.put("team_findings", teamFindings);
             out.put("verifier_reports", verifierReports);
+            out.put("worker_findings", workerFindings);
             out.put("changeset_summary", changeSetSummaries);
             out.put("workspace_summary", workspaceSummary);
             out.put("changeset_status", changeSetStatus);

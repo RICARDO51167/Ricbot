@@ -21,6 +21,7 @@ public class TeamEngine {
     private final TeamSessionStore store;
     private final TraceStore traceStore;
     private final VerificationService verificationService = new VerificationService();
+    private final TeamWorkerExecutor workerExecutor = new TeamWorkerExecutor(verificationService);
     private final Map<String, TeamSession> sessions = new LinkedHashMap<>();
     private final Map<String, TeamTask> tasks = new LinkedHashMap<>();
     private final Map<String, List<TeamEvent>> events = new LinkedHashMap<>();
@@ -82,6 +83,58 @@ public class TeamEngine {
         }
         appendEvent(TeamEvent.of(task.sessionId(), task.id(), task.role(), TeamEvent.WORKER_RESULT_SUBMITTED, summary));
         return task;
+    }
+
+    public WorkerExecutionResult runWorker(String taskId, WorkerExecutionInput input) {
+        TeamTask current = requireTask(taskId);
+        if (current.role() == TeamRole.DEVELOPER) {
+            throw new IllegalStateException("DEVELOPER automatic execution is disabled in V4.8");
+        }
+        WorkerExecutionInput merged = mergeWorkerInput(current, input);
+        traceWorkerLifecycle(TraceEventType.WORKER_STARTED, current, merged, null, "");
+        try {
+            startProducing(taskId);
+            WorkerExecutionResult result = workerExecutor.execute(merged);
+            store.appendWorkerExecution(current.sessionId(), result);
+            TeamTask task = submitWorkerResult(taskId, result.summary(), result.artifacts());
+            startVerifying(task.id());
+            whiteboard(current.sessionId()).appendNote(renderWorkerExecutionNote("Worker execution", result));
+            appendEvent(TeamEvent.of(current.sessionId(), task.id(), result.role(), TeamEvent.WORKER_RESULT_SUBMITTED, result.summary(), Map.of(
+                    "workspacePath", result.workspacePath(),
+                    "status", result.status(),
+                    "confidence", result.confidence()
+            )));
+            traceWorkerLifecycle(TraceEventType.WORKER_FINISHED, task, merged, result, "");
+            return result;
+        } catch (RuntimeException e) {
+            traceWorkerLifecycle(TraceEventType.WORKER_FAILED, current, merged, null, e.getMessage());
+            throw e;
+        }
+    }
+
+    public WorkerExecutionResult runVerifier(String taskId, WorkerExecutionInput input) {
+        TeamTask current = requireTask(taskId);
+        WorkerExecutionInput merged = mergeWorkerInput(current, input, TeamRole.VERIFIER);
+        traceWorkerLifecycle(TraceEventType.VERIFIER_STARTED, current, merged, null, "");
+        try {
+            startVerifying(taskId);
+            WorkerExecutionResult result = workerExecutor.verify(merged);
+            store.appendWorkerExecution(current.sessionId(), result);
+            VerificationResult verification = verificationService.verify(verificationInputFromWorker(merged));
+            TeamTask task = submitVerification(taskId, verification);
+            whiteboard(current.sessionId()).appendNote(renderWorkerExecutionNote("Verifier execution", result));
+            traceWorkerLifecycle(TraceEventType.VERIFIER_FINISHED, task, merged, result, "");
+            return result;
+        } catch (RuntimeException e) {
+            traceWorkerLifecycle(TraceEventType.WORKER_FAILED, current, merged, null, e.getMessage());
+            throw e;
+        }
+    }
+
+    public TeamTask runVerifier(String taskId, VerificationInput input) {
+        startVerifying(taskId);
+        VerificationResult result = verificationService.verify(input != null ? input : VerificationInput.ofTask(requireTask(taskId)));
+        return submitVerification(taskId, result);
     }
 
     public TeamTask startVerifying(String taskId) {
@@ -191,6 +244,11 @@ public class TeamEngine {
         return store.loadVerificationReportsForTask(task.sessionId(), task.id());
     }
 
+    public List<WorkerExecutionResult> workerReports(String taskId) {
+        TeamTask task = requireTask(taskId);
+        return store.loadWorkerReportsForTask(task.sessionId(), task.id());
+    }
+
     public String getStatus(String sessionId) {
         TeamSession session = requireSession(sessionId);
         StringBuilder sb = new StringBuilder();
@@ -266,6 +324,8 @@ public class TeamEngine {
         List<String> verifierResults = new ArrayList<>();
         List<String> revisionRequests = new ArrayList<>();
         List<String> verificationReports = new ArrayList<>();
+        List<String> workerResults = new ArrayList<>();
+        List<String> workerReports = new ArrayList<>();
         for (TeamTask task : session.tasks()) {
             if (task.verificationResult() != null) {
                 verifierResults.add(task.id() + ": " + task.verificationResult().status() + " - " + task.verificationResult().reason());
@@ -275,6 +335,13 @@ public class TeamEngine {
                 revisionRequests.add(task.id() + ": " + task.revisionRequest());
             }
         }
+        for (WorkerExecutionResult result : store.loadWorkerReports(sessionId).stream()
+                .sorted(Comparator.comparing(WorkerExecutionResult::createdAt).reversed())
+                .limit(5)
+                .toList()) {
+            workerResults.add(result.taskId() + ": " + result.role() + " " + result.status() + " - " + result.summary());
+            workerReports.add(renderWorkerReport(result));
+        }
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("session", session.toMap());
         out.put("recentEvents", recentEvents);
@@ -282,7 +349,10 @@ public class TeamEngine {
         out.put("whiteboardSummary", whiteboard.readSummary());
         out.put("verifierResults", verifierResults);
         out.put("verificationReports", verificationReports);
+        out.put("workerResults", workerResults);
+        out.put("workerReports", workerReports);
         out.put("verificationPath", workspace.relativize(store.sessionDir(sessionId).resolve("verification.jsonl")).toString().replace('\\', '/'));
+        out.put("workerPath", workspace.relativize(store.sessionDir(sessionId).resolve("workers.jsonl")).toString().replace('\\', '/'));
         out.put("revisionRequests", revisionRequests);
         return out;
     }
@@ -404,6 +474,136 @@ public class TeamEngine {
             ));
         } catch (Exception ignored) {
         }
+    }
+
+    private WorkerExecutionInput mergeWorkerInput(TeamTask task, WorkerExecutionInput input) {
+        return mergeWorkerInput(task, input, task != null ? task.role() : TeamRole.EXPLORER);
+    }
+
+    private WorkerExecutionInput mergeWorkerInput(TeamTask task, WorkerExecutionInput input, TeamRole roleOverride) {
+        WorkerExecutionInput safe = input != null ? input : WorkerExecutionInput.ofTask(task, workspace.toString(), "");
+        return new WorkerExecutionInput(
+                !safe.taskId().isBlank() ? safe.taskId() : task.id(),
+                !safe.teamSessionId().isBlank() ? safe.teamSessionId() : task.sessionId(),
+                roleOverride != null ? roleOverride : task.role(),
+                !safe.goal().isBlank() ? safe.goal() : task.goal(),
+                !safe.workspacePath().isBlank() ? safe.workspacePath() : workspace.toString(),
+                !safe.whiteboardSummary().isBlank() ? safe.whiteboardSummary() : whiteboard(task.sessionId()).readSummary(),
+                safe.relatedFiles(),
+                safe.verifiedExperience(),
+                safe.constraints(),
+                !safe.summary().isBlank() ? safe.summary() : task.summary(),
+                safe.findings(),
+                safe.risks(),
+                safe.suggestedTests(),
+                safe.artifacts(),
+                safe.confidence(),
+                safe.status()
+        );
+    }
+
+    private VerificationInput verificationInputFromWorker(WorkerExecutionInput input) {
+        return new VerificationInput(
+                input.taskId(),
+                input.goal(),
+                !input.summary().isBlank() ? input.summary() : String.join("; ", input.findings()),
+                input.findings(),
+                input.whiteboardSummary(),
+                List.of(),
+                input.suggestedTests(),
+                input.constraints(),
+                input.verifiedExperience(),
+                input.whiteboardSummary()
+        );
+    }
+
+    private String renderWorkerExecutionNote(String title, WorkerExecutionResult result) {
+        if (result == null) {
+            return title + "\n(no result)";
+        }
+        return title + " for " + result.taskId()
+                + "\nRole: " + result.role()
+                + "\nStatus: " + result.status()
+                + "\nWorkspace: " + result.workspacePath()
+                + "\nSummary: " + result.summary()
+                + (!result.findings().isEmpty() ? "\nFindings: " + String.join("; ", result.findings()) : "")
+                + (!result.risks().isEmpty() ? "\nRisks: " + String.join("; ", result.risks()) : "")
+                + (!result.suggestedTests().isEmpty() ? "\nSuggestedTests: " + String.join("; ", result.suggestedTests()) : "");
+    }
+
+    private String renderWorkerReport(WorkerExecutionResult result) {
+        if (result == null) {
+            return "";
+        }
+        List<String> parts = new ArrayList<>();
+        parts.add("task=" + result.taskId());
+        parts.add("role=" + result.role());
+        parts.add("status=" + result.status());
+        parts.add("workspacePath=" + result.workspacePath());
+        parts.add("summary=" + result.summary());
+        if (!result.findings().isEmpty()) {
+            parts.add("findings=" + String.join("; ", result.findings()));
+        }
+        if (!result.risks().isEmpty()) {
+            parts.add("risks=" + String.join("; ", result.risks()));
+        }
+        if (!result.suggestedTests().isEmpty()) {
+            parts.add("suggestedTests=" + String.join("; ", result.suggestedTests()));
+        }
+        return String.join(" | ", parts);
+    }
+
+    private void traceWorkerLifecycle(
+            TraceEventType type,
+            TeamTask task,
+            WorkerExecutionInput input,
+            WorkerExecutionResult result,
+            String error
+    ) {
+        if (traceStore == null || task == null || type == null) {
+            return;
+        }
+        try {
+            Map<String, Object> payload = new LinkedHashMap<>();
+            payload.put("taskId", task.id());
+            payload.put("teamSessionId", task.sessionId());
+            payload.put("role", input != null ? input.role().name() : task.role().name());
+            payload.put("workspacePath", input != null ? input.workspacePath() : "");
+            payload.put("workspaceSessionId", workspaceSessionIdFromPath(input != null ? input.workspacePath() : ""));
+            payload.put("status", result != null ? result.status() : "");
+            payload.put("confidence", result != null ? result.confidence() : 0d);
+            payload.put("error", error != null ? error : "");
+            traceStore.append(new TraceEvent(
+                    traceStore.traceIdForSession(task.sessionId()),
+                    null,
+                    "",
+                    "",
+                    task.sessionId(),
+                    "",
+                    "",
+                    type,
+                    "team",
+                    result != null ? result.summary() : type.name(),
+                    payload,
+                    null,
+                    null
+            ));
+        } catch (Exception ignored) {
+        }
+    }
+
+    private String workspaceSessionIdFromPath(String workspacePath) {
+        if (workspacePath == null || workspacePath.isBlank()) {
+            return "";
+        }
+        String normalized = workspacePath.replace('\\', '/');
+        int index = normalized.indexOf("/.workspaces/");
+        if (index < 0) {
+            return "";
+        }
+        String tail = normalized.substring(index + "/.workspaces/".length());
+        int slash = tail.indexOf('/');
+        return slash >= 0 ? tail.substring(0, slash) : tail;
     }
 
     private TeamSession requireSession(String sessionId) {

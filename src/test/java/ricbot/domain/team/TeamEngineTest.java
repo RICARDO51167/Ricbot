@@ -187,6 +187,64 @@ class TeamEngineTest {
         assertTrue(task.verificationResult().humanApprovalRequired());
     }
 
+    @Test
+    void runWorkerMovesTaskToVerifyingAndRecordsReport(@TempDir Path workspace) {
+        TraceStore traceStore = new TraceStore(workspace);
+        TeamEngine engine = new TeamEngine(workspace, traceStore);
+        TeamSession session = engine.createSession("Run worker flow");
+        TeamTask task = engine.createTask(session.id(), TeamRole.EXPLORER, "Explore worker execution");
+
+        WorkerExecutionResult result = engine.runWorker(task.id(), workerInput(task, workspace.toString(), List.of(), List.of()));
+        TeamTask updated = engine.findTask(task.id());
+
+        assertEquals(TeamTaskState.VERIFYING, updated.state());
+        assertEquals(TeamRole.EXPLORER, result.role());
+        assertTrue(updated.summary().contains("Explorer summarized"), updated.summary());
+        assertTrue(engine.workerReports(task.id()).toString().contains("Explorer summarized"));
+        assertTrue(engine.whiteboard(session.id()).readSummary().contains("Worker execution"));
+        assertTrue(traceStore.loadEvents(traceStore.traceIdForSession(session.id())).stream().anyMatch(event -> event.type() == TraceEventType.WORKER_FINISHED));
+    }
+
+    @Test
+    void runVerifierPassMovesTaskDone(@TempDir Path workspace) {
+        TeamEngine engine = new TeamEngine(workspace);
+        TeamSession session = engine.createSession("Run verifier pass");
+        TeamTask task = engine.createTask(session.id(), TeamRole.EXPLORER, "Explore safe change");
+        engine.submitWorkerResult(task.id(), "Implemented safe change.", List.of());
+
+        engine.runVerifier(task.id(), workerInput(
+                task,
+                workspace.toString(),
+                List.of("DiffReview risk=LOW"),
+                List.of("./mvnw -q -Dtest='ricbot.domain.team.*Test' test")
+        ));
+        TeamTask updated = engine.findTask(task.id());
+
+        assertEquals(TeamTaskState.DONE, updated.state());
+        assertEquals(VerificationResult.Status.PASS, updated.verificationResult().status());
+        assertTrue(engine.workerReports(task.id()).toString().contains("Verifier accepted"));
+    }
+
+    @Test
+    void runVerifierRejectMovesTaskRevising(@TempDir Path workspace) {
+        TeamEngine engine = new TeamEngine(workspace);
+        TeamSession session = engine.createSession("Run verifier reject");
+        TeamTask task = engine.createTask(session.id(), TeamRole.EXPLORER, "Explore missing tests");
+        engine.submitWorkerResult(task.id(), "Implemented change.", List.of());
+
+        engine.runVerifier(task.id(), workerInput(
+                task,
+                workspace.toString(),
+                List.of("DiffReview risk=MEDIUM suspiciousChanges: filesystem"),
+                List.of()
+        ));
+        TeamTask updated = engine.findTask(task.id());
+
+        assertEquals(TeamTaskState.REVISING, updated.state());
+        assertEquals(VerificationResult.Status.REJECT, updated.verificationResult().status());
+        assertTrue(updated.revisionRequest().contains("Revision requested"));
+    }
+
     private VerificationInput verificationInput(
             TeamTask task,
             List<String> diffReviews,
@@ -204,6 +262,32 @@ class TeamEngineTest {
                 executedTests,
                 List.of(),
                 "whiteboard summary"
+        );
+    }
+
+    private WorkerExecutionInput workerInput(
+            TeamTask task,
+            String workspacePath,
+            List<String> findings,
+            List<String> executedTests
+    ) {
+        return new WorkerExecutionInput(
+                task.id(),
+                task.sessionId(),
+                task.role(),
+                task.goal(),
+                workspacePath,
+                "TaskSummary contains verification context",
+                List.of("src/main/java/ricbot/domain/team/TeamEngine.java"),
+                List.of(),
+                executedTests,
+                "Implemented safe change.",
+                findings,
+                List.of(),
+                List.of("./mvnw -q -Dtest='ricbot.domain.team.*Test' test"),
+                List.of(),
+                0d,
+                ""
         );
     }
 }

@@ -155,6 +155,31 @@ public class TeamSessionStore {
                 .toList();
     }
 
+    public List<WorkerExecutionResult> loadWorkerReports(String sessionId) {
+        List<WorkerExecutionResult> out = new ArrayList<>();
+        for (Map<String, Object> row : readJsonLines(sessionDir(sessionId).resolve("workers.jsonl"))) {
+            WorkerExecutionResult result = WorkerExecutionResult.fromMap(row);
+            if (result != null) {
+                out.add(result);
+            }
+        }
+        return out;
+    }
+
+    public List<WorkerExecutionResult> loadWorkerReportsForTask(String sessionId, String taskId) {
+        String id = taskId != null ? taskId.trim() : "";
+        return loadWorkerReports(sessionId).stream()
+                .filter(result -> id.isBlank() || id.equals(result.taskId()))
+                .toList();
+    }
+
+    public void appendWorkerExecution(String sessionId, WorkerExecutionResult result) {
+        if (result == null) {
+            return;
+        }
+        appendJsonLine(sessionDir(sessionId).resolve("workers.jsonl"), result.toMap());
+    }
+
     public void appendVerification(String sessionId, TeamTask task) {
         if (task == null || task.verificationResult() == null) {
             return;
@@ -206,7 +231,7 @@ public class TeamSessionStore {
             if (!Files.exists(dir.resolve("whiteboard.md"))) {
                 Files.writeString(dir.resolve("whiteboard.md"), "# Team Whiteboard " + dir.getFileName() + "\n", StandardCharsets.UTF_8);
             }
-            for (String file : List.of("tasks.jsonl", "events.jsonl", "artifacts.jsonl")) {
+            for (String file : List.of("tasks.jsonl", "events.jsonl", "artifacts.jsonl", "workers.jsonl")) {
                 Path target = dir.resolve(file);
                 if (!Files.exists(target)) {
                     Files.writeString(target, "", StandardCharsets.UTF_8);

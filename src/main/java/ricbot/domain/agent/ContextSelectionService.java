@@ -200,6 +200,8 @@ final class ContextSelectionService {
         String whiteboardSummary = string(teamContext.get("whiteboardSummary")).replace("\n", " ");
         List<String> verifierResults = stringList(teamContext.get("verifierResults"));
         List<String> verificationReports = stringList(teamContext.get("verificationReports"));
+        List<String> workerResults = stringList(teamContext.get("workerResults"));
+        List<String> workerReports = stringList(teamContext.get("workerReports"));
         List<String> revisionRequests = stringList(teamContext.get("revisionRequests"));
         List<String> parts = new ArrayList<>();
         if (!sessionId.isBlank()) {
@@ -213,6 +215,12 @@ final class ContextSelectionService {
         }
         if (!verifierResults.isEmpty()) {
             parts.add("verifier=" + String.join("; ", verifierResults));
+        }
+        if (!workerResults.isEmpty()) {
+            parts.add("worker=" + String.join("; ", workerResults));
+        }
+        if (!workerReports.isEmpty()) {
+            parts.add("workerReport=" + abbreviate(String.join("; ", workerReports), 360));
         }
         if (!verificationReports.isEmpty()) {
             parts.add("verificationReport=" + abbreviate(String.join("; ", verificationReports), 360));
@@ -238,6 +246,15 @@ final class ContextSelectionService {
                     "verification " + abbreviate(String.join("; ", verificationReports), 420),
                     0.78d,
                     ContextSource.of("team_verification", sessionId + ":verification", verificationPath, "team verification report", 0.78d, metadata)
+            );
+        }
+        if (!workerReports.isEmpty()) {
+            bundle.addItem(
+                    "team_context",
+                    "worker " + abbreviate(String.join("; ", workerReports), 420),
+                    0.78d,
+                    ContextSource.of("team_worker", sessionId + ":worker", string(teamContext.get("workerPath")),
+                            "team worker report", 0.78d, metadata)
             );
         }
         for (Map<String, Object> event : eventRows(teamContext.get("recentEvents")).stream().limit(2).toList()) {

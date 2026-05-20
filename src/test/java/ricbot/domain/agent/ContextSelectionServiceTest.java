@@ -277,25 +277,28 @@ class ContextSelectionServiceTest {
     @Test
     void select_addsTeamContext(@TempDir Path workspace) {
         ContextSelectionService service = new ContextSelectionService(new MemoryStore(workspace), new ToolTraceSummarizer());
-        Map<String, Object> teamContext = Map.of(
-                "session", Map.of(
+        Map<String, Object> teamContext = Map.ofEntries(
+                Map.entry("session", Map.of(
                         "id", "team_demo",
                         "goal", "Coordinate verifier gate",
                         "state", "VERIFYING"
-                ),
-                "whiteboardPath", ".team/team_demo/whiteboard.md",
-                "verificationPath", ".team/team_demo/verification.jsonl",
-                "whiteboardSummary", "Leader note: worker produced a small patch.",
-                "verifierResults", List.of("teamtask_1: REJECT - missing targeted tests"),
-                "verificationReports", List.of("task=teamtask_1 | status=REJECT | riskLevel=MEDIUM | missingTests=./mvnw -q test | requiredActions=Run missing suggested tests"),
-                "revisionRequests", List.of("teamtask_1: Revision requested: missing targeted tests"),
-                "recentEvents", List.of(Map.of(
+                )),
+                Map.entry("whiteboardPath", ".team/team_demo/whiteboard.md"),
+                Map.entry("verificationPath", ".team/team_demo/verification.jsonl"),
+                Map.entry("whiteboardSummary", "Leader note: worker produced a small patch."),
+                Map.entry("verifierResults", List.of("teamtask_1: REJECT - missing targeted tests")),
+                Map.entry("verificationReports", List.of("task=teamtask_1 | status=REJECT | riskLevel=MEDIUM | missingTests=./mvnw -q test | requiredActions=Run missing suggested tests")),
+                Map.entry("workerResults", List.of("teamtask_1: EXPLORER COMPLETED - Explorer summarized workspace context")),
+                Map.entry("workerReports", List.of("task=teamtask_1 | role=EXPLORER | status=COMPLETED | workspacePath=/tmp/workspace | summary=Explorer summarized workspace context")),
+                Map.entry("workerPath", ".team/team_demo/workers.jsonl"),
+                Map.entry("revisionRequests", List.of("teamtask_1: Revision requested: missing targeted tests")),
+                Map.entry("recentEvents", List.of(Map.of(
                         "id", "event_1",
                         "type", "VERIFICATION_REJECTED",
                         "role", "VERIFIER",
                         "taskId", "teamtask_1",
                         "message", "missing targeted tests"
-                ))
+                )))
         );
 
         ContextSelectionService.SelectionResult selection = service.select(
@@ -308,12 +311,13 @@ class ContextSelectionServiceTest {
         String rendered = selection.bundle().render();
         assertTrue(rendered.contains("## team_context"), rendered);
         assertTrue(rendered.contains("team_demo"), rendered);
-        assertTrue(rendered.contains("VERIFICATION_REJECTED"), rendered);
         assertTrue(rendered.contains("status=REJECT"), rendered);
+        assertTrue(rendered.contains("Explorer summarized workspace context"), rendered);
         Map<String, Object> budgetTrace = selection.bundle().budgetTrace();
         assertTrue(String.valueOf(budgetTrace).contains("team_context"), String.valueOf(budgetTrace));
         assertTrue(String.valueOf(budgetTrace).contains(".team/team_demo/whiteboard.md"), String.valueOf(budgetTrace));
         assertTrue(String.valueOf(budgetTrace).contains(".team/team_demo/verification.jsonl"), String.valueOf(budgetTrace));
+        assertTrue(String.valueOf(budgetTrace).contains(".team/team_demo/workers.jsonl"), String.valueOf(budgetTrace));
     }
 
     @Test

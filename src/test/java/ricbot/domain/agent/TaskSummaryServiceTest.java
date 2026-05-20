@@ -165,6 +165,8 @@ class TaskSummaryServiceTest {
                         "goal", "Implement verifier gate"
                 ),
                 "whiteboardSummary", "Leader note: verifier rejected missing tests.",
+                "workerResults", List.of("teamtask_1: EXPLORER COMPLETED - Explorer summarized workspace context"),
+                "workerReports", List.of("task=teamtask_1 | role=EXPLORER | status=COMPLETED | summary=Explorer summarized workspace context"),
                 "verifierResults", List.of("teamtask_1: REJECT - missing tests"),
                 "verificationReports", List.of("task=teamtask_1 | status=REJECT | riskLevel=MEDIUM | missingTests=./mvnw -q test | requiredActions=Run missing suggested tests"),
                 "revisionRequests", List.of("teamtask_1: Revision requested: missing tests")
@@ -178,8 +180,10 @@ class TaskSummaryServiceTest {
         assertTrue(summary.verifierReports().toString().contains("status=REJECT"), summary.verifierReports().toString());
         assertTrue(summary.verifierReports().toString().contains("missingTests="), summary.verifierReports().toString());
         assertTrue(summary.verifierReports().toString().contains("requiredActions="), summary.verifierReports().toString());
+        assertTrue(summary.workerFindings().toString().contains("EXPLORER"), summary.workerFindings().toString());
         assertTrue(summary.toMap().containsKey("team_findings"));
         assertTrue(summary.toMap().containsKey("verifier_reports"));
+        assertTrue(summary.toMap().containsKey("worker_findings"));
     }
 
     @Test

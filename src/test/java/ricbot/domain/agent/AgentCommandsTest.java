@@ -378,6 +378,39 @@ class AgentCommandsTest {
     }
 
     @Test
+    void teamRunWorkerRunVerifierAndWorkerReportCommands(@TempDir Path workspace) throws Exception {
+        SessionManager sessionManager = new SessionManager(workspace);
+        MemoryStore memoryStore = new MemoryStore(workspace);
+        AgentCommands commands = commands(sessionManager, memoryStore, workspace);
+        CommandRouter router = new CommandRouter();
+        commands.register(router);
+
+        router.dispatch(context("/team start V4.8 real worker execution", sessionManager)).get();
+        String created = router.dispatch(context("/team task explorer Explore TeamWorkerExecutor", sessionManager)).get().getContent();
+        String taskId = lineValue(created, "id:");
+
+        String worker = router.dispatch(context("/team run-worker " + taskId, sessionManager)).get().getContent();
+        assertTrue(worker.contains("team worker executed"), worker);
+        assertTrue(worker.contains("role: EXPLORER"), worker);
+        assertTrue(worker.contains("workspacePath: " + workspace.toAbsolutePath().normalize()), worker);
+        assertTrue(worker.contains("nextState: VERIFYING"), worker);
+
+        String report = router.dispatch(context("/team worker-report " + taskId, sessionManager)).get().getContent();
+        assertTrue(report.contains("team worker report"), report);
+        assertTrue(report.contains("Explorer summarized"), report);
+
+        String verifier = router.dispatch(context("/team run-verifier " + taskId, sessionManager)).get().getContent();
+        assertTrue(verifier.contains("team verifier executed"), verifier);
+        assertTrue(verifier.contains("role: VERIFIER"), verifier);
+        assertTrue(verifier.contains("nextState:"), verifier);
+
+        TraceStore traceStore = new TraceStore(workspace);
+        String traceId = traceStore.traceIdForSession("cli:direct");
+        assertTrue(traceStore.loadEvents(traceId).stream().anyMatch(event -> event.type() == TraceEventType.WORKER_FINISHED
+                || event.type() == TraceEventType.VERIFIER_FINISHED), traceStore.loadEvents(traceId).toString());
+    }
+
+    @Test
     void workspaceCommandsCreateLocalAndExposeContextSource(@TempDir Path workspace) throws Exception {
         SessionManager sessionManager = new SessionManager(workspace);
         MemoryStore memoryStore = new MemoryStore(workspace);
