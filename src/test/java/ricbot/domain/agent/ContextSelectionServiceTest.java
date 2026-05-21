@@ -289,8 +289,17 @@ class ContextSelectionServiceTest {
                 Map.entry("verifierResults", List.of("teamtask_1: REJECT - missing targeted tests")),
                 Map.entry("verificationReports", List.of("task=teamtask_1 | status=REJECT | riskLevel=MEDIUM | missingTests=./mvnw -q test | requiredActions=Run missing suggested tests")),
                 Map.entry("workerResults", List.of("teamtask_1: EXPLORER COMPLETED - Explorer summarized workspace context")),
-                Map.entry("workerReports", List.of("task=teamtask_1 | role=EXPLORER | status=COMPLETED | workspacePath=/tmp/workspace | summary=Explorer summarized workspace context")),
+                Map.entry("workerReports", List.of(
+                        "task=teamtask_1 | role=EXPLORER | status=COMPLETED | workspacePath=/tmp/workspace | summary=Explorer summarized workspace context",
+                        "task=teamtask_2 | role=EXPLORER | status=DENIED | workspacePath=/tmp/workspace | summary=Policy-gated role tool-call write_file -> DENY | policy=decision=DENY"
+                )),
                 Map.entry("workerPath", ".team/team_demo/workers.jsonl"),
+                Map.entry("implementationSteps", List.of("step=implstep_1 | task=teamtask_2 | type=READ | status=READY | targetPath=README.md")),
+                Map.entry("blockedImplementationSteps", List.of("step=implstep_2 | task=teamtask_2 | type=EDIT | status=BLOCKED | blockedReason=dependency implstep_1 must be applied first")),
+                Map.entry("implementationStepProgress", Map.of("total", 4, "draft", 1, "ready", 2, "applied", 0, "blocked", 1, "nextStep", "step=implstep_1 | type=READ")),
+                Map.entry("implementationStepsPath", ".team/team_demo/implementation_steps.jsonl"),
+                Map.entry("stepAuditSummary", List.of("task=teamtask_2 totalAuditRecords=3 latest=STEP_BLOCKED step=implstep_2 status=BLOCKED")),
+                Map.entry("stepAuditPath", ".team/team_demo/step_audit.jsonl"),
                 Map.entry("revisionRequests", List.of("teamtask_1: Revision requested: missing targeted tests")),
                 Map.entry("recentEvents", List.of(Map.of(
                         "id", "event_1",
@@ -311,13 +320,17 @@ class ContextSelectionServiceTest {
         String rendered = selection.bundle().render();
         assertTrue(rendered.contains("## team_context"), rendered);
         assertTrue(rendered.contains("team_demo"), rendered);
-        assertTrue(rendered.contains("status=REJECT"), rendered);
+        assertTrue(rendered.contains("REJECT"), rendered);
         assertTrue(rendered.contains("Explorer summarized workspace context"), rendered);
+        assertTrue(rendered.contains("Policy-gated role tool-call"), rendered);
+        assertTrue(rendered.contains("implstep_1"), rendered);
+        assertTrue(rendered.contains("stepAudit"), rendered);
         Map<String, Object> budgetTrace = selection.bundle().budgetTrace();
         assertTrue(String.valueOf(budgetTrace).contains("team_context"), String.valueOf(budgetTrace));
         assertTrue(String.valueOf(budgetTrace).contains(".team/team_demo/whiteboard.md"), String.valueOf(budgetTrace));
         assertTrue(String.valueOf(budgetTrace).contains(".team/team_demo/verification.jsonl"), String.valueOf(budgetTrace));
         assertTrue(String.valueOf(budgetTrace).contains(".team/team_demo/workers.jsonl"), String.valueOf(budgetTrace));
+        assertTrue(String.valueOf(budgetTrace).contains(".team/team_demo/implementation_steps.jsonl"), String.valueOf(budgetTrace));
     }
 
     @Test

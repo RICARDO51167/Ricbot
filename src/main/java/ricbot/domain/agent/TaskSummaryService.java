@@ -27,6 +27,8 @@ public final class TaskSummaryService {
                 renderTeamFindings(teamContext),
                 renderVerifierReports(teamContext),
                 renderWorkerFindings(teamContext),
+                renderImplementationSteps(teamContext),
+                renderStepAudit(teamContext),
                 renderChangeSetSummary(session),
                 renderWorkspaceSummary(session),
                 metadataValue(session, SessionRuntimeKeys.CHANGESET_STATUS_KEY),
@@ -44,7 +46,7 @@ public final class TaskSummaryService {
             List<String> testResults,
             List<String> keyDecisions
     ) {
-        return summarizeCurrentTask(taskState, toolTrace, modifiedFiles, testResults, keyDecisions, List.of(), List.of(), List.of(), List.of(), List.of(), "", "", "", List.of(), "");
+        return summarizeCurrentTask(taskState, toolTrace, modifiedFiles, testResults, keyDecisions, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), "", "", "", List.of(), "");
     }
 
     TaskSummary summarizeCurrentTask(
@@ -56,6 +58,8 @@ public final class TaskSummaryService {
             List<String> teamFindings,
             List<String> verifierReports,
             List<String> workerFindings,
+            List<String> implementationSteps,
+            List<String> stepAudit,
             List<String> changeSetSummaries,
             List<String> workspaceSummary,
             String changeSetStatus,
@@ -106,6 +110,8 @@ public final class TaskSummaryService {
                 new ArrayList<>(dedupe(teamFindings)),
                 new ArrayList<>(dedupe(verifierReports)),
                 new ArrayList<>(dedupe(workerFindings)),
+                new ArrayList<>(dedupe(implementationSteps)),
+                new ArrayList<>(dedupe(stepAudit)),
                 new ArrayList<>(dedupe(changeSetSummaries)),
                 new ArrayList<>(dedupe(workspaceSummary)),
                 changeSetStatus,
@@ -174,6 +180,33 @@ public final class TaskSummaryService {
             }
         }
         return new ArrayList<>(dedupe(out));
+    }
+
+    private List<String> renderImplementationSteps(Map<String, Object> teamContext) {
+        if (teamContext == null || teamContext.isEmpty()) {
+            return List.of();
+        }
+        List<String> out = new ArrayList<>(stringList(teamContext.get("implementationSteps")));
+        for (String blocked : stringList(teamContext.get("blockedImplementationSteps"))) {
+            out.add("blocked: " + blocked);
+        }
+        Object rawProgress = teamContext.get("implementationStepProgress");
+        if (rawProgress instanceof Map<?, ?> progress && !progress.isEmpty()) {
+            out.add("progress total=" + string(progress.get("total"))
+                    + " draft=" + string(progress.get("draft"))
+                    + " ready=" + string(progress.get("ready"))
+                    + " applied=" + string(progress.get("applied"))
+                    + " blocked=" + string(progress.get("blocked"))
+                    + " nextStep=" + string(progress.get("nextStep")));
+        }
+        return new ArrayList<>(dedupe(out));
+    }
+
+    private List<String> renderStepAudit(Map<String, Object> teamContext) {
+        if (teamContext == null || teamContext.isEmpty()) {
+            return List.of();
+        }
+        return new ArrayList<>(dedupe(stringList(teamContext.get("stepAuditSummary"))));
     }
 
     private List<String> renderChangeSetSummary(Session session) {
@@ -440,6 +473,8 @@ public final class TaskSummaryService {
             List<String> teamFindings,
             List<String> verifierReports,
             List<String> workerFindings,
+            List<String> implementationSteps,
+            List<String> stepAudit,
             List<String> changeSetSummaries,
             List<String> workspaceSummary,
             String changeSetStatus,
@@ -466,7 +501,7 @@ public final class TaskSummaryService {
             String notice
         ) {
             this(goal, changedFiles, keyDecisions, testCommands, blockers, nextActions, approvalRecords,
-                    diffReviews, suggestedTests, rollbackHints, teamFindings, verifierReports, List.of(), List.of(), List.of(), "", "", "", subAgentFindings, "", notice);
+                    diffReviews, suggestedTests, rollbackHints, teamFindings, verifierReports, List.of(), List.of(), List.of(), List.of(), List.of(), "", "", "", subAgentFindings, "", notice);
         }
 
         public TaskSummary(
@@ -487,7 +522,7 @@ public final class TaskSummaryService {
             String notice
         ) {
             this(goal, changedFiles, keyDecisions, testCommands, blockers, nextActions, approvalRecords,
-                    diffReviews, suggestedTests, rollbackHints, teamFindings, verifierReports, List.of(), List.of(), List.of(), "", "", "", subAgentFindings, traceSummary, notice);
+                    diffReviews, suggestedTests, rollbackHints, teamFindings, verifierReports, List.of(), List.of(), List.of(), List.of(), List.of(), "", "", "", subAgentFindings, traceSummary, notice);
         }
 
         public TaskSummary(
@@ -506,7 +541,7 @@ public final class TaskSummaryService {
             String notice
         ) {
             this(goal, changedFiles, keyDecisions, testCommands, blockers, nextActions, approvalRecords,
-                    diffReviews, suggestedTests, rollbackHints, teamFindings, List.of(), List.of(), List.of(), List.of(), "", "", "", subAgentFindings, "", notice);
+                    diffReviews, suggestedTests, rollbackHints, teamFindings, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), "", "", "", subAgentFindings, "", notice);
         }
 
         public TaskSummary {
@@ -523,6 +558,8 @@ public final class TaskSummaryService {
             teamFindings = teamFindings != null ? List.copyOf(teamFindings) : List.of();
             verifierReports = verifierReports != null ? List.copyOf(verifierReports) : List.of();
             workerFindings = workerFindings != null ? List.copyOf(workerFindings) : List.of();
+            implementationSteps = implementationSteps != null ? List.copyOf(implementationSteps) : List.of();
+            stepAudit = stepAudit != null ? List.copyOf(stepAudit) : List.of();
             changeSetSummaries = changeSetSummaries != null ? List.copyOf(changeSetSummaries) : List.of();
             workspaceSummary = workspaceSummary != null ? List.copyOf(workspaceSummary) : List.of();
             changeSetStatus = changeSetStatus != null ? changeSetStatus : "";
@@ -548,6 +585,12 @@ public final class TaskSummaryService {
             out.put("team_findings", teamFindings);
             out.put("verifier_reports", verifierReports);
             out.put("worker_findings", workerFindings);
+            out.put("implementation_steps", implementationSteps);
+            out.put("step_audit", stepAudit);
+            out.put("policy_summary", policySummary());
+            out.put("developer_plan", developerPlan());
+            out.put("approved_tool_calls", approvedToolCalls());
+            out.put("changeset_recommendation", changeSetRecommendation());
             out.put("changeset_summary", changeSetSummaries);
             out.put("workspace_summary", workspaceSummary);
             out.put("changeset_status", changeSetStatus);
@@ -557,6 +600,49 @@ public final class TaskSummaryService {
             out.put("trace_summary", traceSummary);
             out.put("notice", notice);
             return out;
+        }
+
+        public List<String> policySummary() {
+            List<String> out = new ArrayList<>();
+            for (String finding : workerFindings) {
+                if (finding != null && finding.toLowerCase(java.util.Locale.ROOT).contains("policy=")) {
+                    out.add(finding);
+                }
+            }
+            return out.stream().distinct().toList();
+        }
+
+        public List<String> developerPlan() {
+            List<String> out = new ArrayList<>();
+            for (String finding : workerFindings) {
+                String lower = finding != null ? finding.toLowerCase(java.util.Locale.ROOT) : "";
+                if (lower.contains("developerplan=") || lower.contains("developer plan")) {
+                    out.add(finding);
+                }
+            }
+            return out.stream().distinct().toList();
+        }
+
+        public List<String> approvedToolCalls() {
+            List<String> out = new ArrayList<>();
+            for (String finding : workerFindings) {
+                String lower = finding != null ? finding.toLowerCase(java.util.Locale.ROOT) : "";
+                if (lower.contains("developer approved tool applied") || lower.contains("decision=approved") || lower.contains("status=applied")) {
+                    out.add(finding);
+                }
+            }
+            return out.stream().distinct().toList();
+        }
+
+        public List<String> changeSetRecommendation() {
+            List<String> out = new ArrayList<>();
+            for (String finding : workerFindings) {
+                String lower = finding != null ? finding.toLowerCase(java.util.Locale.ROOT) : "";
+                if (lower.contains("changesetrecommendation=") || lower.contains("/change create")) {
+                    out.add(finding);
+                }
+            }
+            return out.stream().distinct().toList();
         }
     }
 }

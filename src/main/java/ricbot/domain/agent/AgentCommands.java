@@ -1,5 +1,7 @@
 package ricbot.domain.agent;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import ricbot.domain.change.ChangeSetRenderer;
 import ricbot.domain.change.ChangeSetService;
 import ricbot.domain.change.GitChangeSet;
@@ -18,6 +20,11 @@ import ricbot.domain.message.OutboundMessage;
 import ricbot.domain.message.OutboundMessages;
 import ricbot.domain.note.NoteService;
 import ricbot.domain.note.TaskNoteWriter;
+import ricbot.domain.policy.PolicyDecision;
+import ricbot.domain.policy.PolicyDecisionType;
+import ricbot.domain.policy.PolicyAwareToolExecutor;
+import ricbot.domain.policy.PolicyEngine;
+import ricbot.domain.policy.PolicyRenderer;
 import ricbot.domain.session.Session;
 import ricbot.domain.session.SessionManager;
 import ricbot.domain.security.ApprovalRequest;
@@ -36,6 +43,14 @@ import ricbot.domain.team.TeamEvent;
 import ricbot.domain.team.TeamRole;
 import ricbot.domain.team.TeamSession;
 import ricbot.domain.team.TeamTask;
+import ricbot.domain.team.ImplementationStepGate;
+import ricbot.domain.team.ImplementationStepStatus;
+import ricbot.domain.team.ImplementationStepType;
+import ricbot.domain.team.PendingImplementationStep;
+import ricbot.domain.team.StepGateResult;
+import ricbot.domain.team.StepUpdateRequest;
+import ricbot.domain.team.StepAuditEventType;
+import ricbot.domain.team.StepAuditRecord;
 import ricbot.domain.team.VerificationInput;
 import ricbot.domain.team.VerificationResult;
 import ricbot.domain.team.WorkerExecutionInput;
@@ -66,6 +81,9 @@ import java.util.function.BiConsumer;
 import java.util.function.Function;
 
 final class AgentCommands {
+    private static final ObjectMapper MAPPER = new ObjectMapper().findAndRegisterModules();
+    private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {
+    };
 
     private final SessionManager sessionManager;
     private final MemoryStore memoryStore;
@@ -161,6 +179,8 @@ final class AgentCommands {
         router.prefix("/workspace ", this::workspace);
         router.exact("/trace", this::trace);
         router.prefix("/trace ", this::trace);
+        router.exact("/policy", this::policy);
+        router.prefix("/policy ", this::policy);
         router.exact("/team", this::team);
         router.prefix("/team ", this::team);
         router.prefix("/approve ", this::approve);
@@ -247,6 +267,7 @@ final class AgentCommands {
         String rendered = ContextCommandRenderer.render(trace, detail, sources);
         if (sources || detail) {
             rendered = appendActiveWorkspaceSource(rendered, session);
+            rendered = appendPolicySource(rendered);
         }
         return completedReply(ctx, rendered);
     }
@@ -353,6 +374,45 @@ final class AgentCommands {
             };
         } catch (IllegalArgumentException e) {
             return completedReply(ctx, "trace error: " + e.getMessage());
+        }
+    }
+
+    private CompletableFuture<OutboundMessage> policy(CommandRouter.CommandContext ctx) {
+        String args = trim(ctx.getArgs());
+        String action = args.isBlank() ? "show" : args.split("\\s+")[0].toLowerCase(java.util.Locale.ROOT);
+        PolicyEngine engine = new PolicyEngine(workspace);
+        PolicyRenderer renderer = new PolicyRenderer();
+        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
+        try {
+            return switch (action) {
+                case "show" -> {
+                    String roleRaw = commandArgOrBlank(args, 1);
+                    if (roleRaw.isBlank()) {
+                        yield completedReply(ctx, renderer.renderPolicy(engine.policy()));
+                    }
+                    yield completedReply(ctx, renderer.renderRole(engine.policy(), parseTeamRole(roleRaw)));
+                }
+                case "check" -> {
+                    TeamRole role = parseTeamRole(commandArg(args, 1));
+                    String toolName = commandArg(args, 2);
+                    PolicyDecision decision = engine.evaluate(role, toolName, Map.of(), null);
+                    tracePolicy(session, decision);
+                    yield completedReply(ctx, renderer.renderDecision(decision));
+                }
+                case "check-command" -> {
+                    TeamRole role = parseTeamRole(commandArg(args, 1));
+                    String command = afterNthArg(args, 2);
+                    if (command.isBlank()) {
+                        throw new IllegalArgumentException("missing command");
+                    }
+                    PolicyDecision decision = engine.evaluateCommand(role, command, null);
+                    tracePolicy(session, decision);
+                    yield completedReply(ctx, renderer.renderDecision(decision));
+                }
+                default -> completedReply(ctx, "用法：/policy show [role]|check <role> <toolName>|check-command <role> <command>");
+            };
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            return completedReply(ctx, "policy error: " + e.getMessage());
         }
     }
 
@@ -545,6 +605,12 @@ final class AgentCommands {
         Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
         String teamSessionId = resolveActiveTeamSessionId(session);
         String taskId = latestTeamTaskId(teamSessionId);
+        String developerTaskId = session.getMetadata() != null && session.getMetadata().get(SessionRuntimeKeys.DEVELOPER_TASK_ID_KEY) != null
+                ? String.valueOf(session.getMetadata().get(SessionRuntimeKeys.DEVELOPER_TASK_ID_KEY)).trim()
+                : "";
+        if (!developerTaskId.isBlank()) {
+            taskId = developerTaskId;
+        }
         WorkspaceSessionStore workspaceStore = new WorkspaceSessionStore(workspace);
         String activeWorkspaceId = activeWorkspaceSessionId(session);
         WorkspaceSession activeWorkspace = !activeWorkspaceId.isBlank() ? workspaceStore.load(activeWorkspaceId) : null;
@@ -564,6 +630,13 @@ final class AgentCommands {
                 "workspaceSessionId", changeSet.workspaceSessionId(),
                 "workspacePath", changeSet.workspacePath()
         ), changeSet.teamSessionId(), changeSet.id(), "");
+        if (!changeSet.teamSessionId().isBlank() && !changeSet.taskId().isBlank()) {
+            teamEngine.recordStepAudit(new StepAuditRecord(null, "", changeSet.taskId(), changeSet.teamSessionId(),
+                    StepAuditEventType.STEP_CHANGESET_LINKED, "", "",
+                    "ChangeSet linked to implementation task.", "", "", "", changeSet.id(), "", "", null,
+                    Map.of("changedFiles", changeSet.changedFiles(), "workspaceSessionId", changeSet.workspaceSessionId())));
+            storeTeamContext(session, changeSet.teamSessionId());
+        }
         return completedReply(ctx, "changeset created\n"
                 + "id: " + changeSet.id() + "\n"
                 + "path: .changesets/" + changeSet.id() + "/changeset.json\n"
@@ -944,6 +1017,16 @@ final class AgentCommands {
                 case "run-worker" -> teamRunWorker(ctx, afterCommand(args));
                 case "run-verifier" -> teamRunVerifier(ctx, afterCommand(args));
                 case "worker-report" -> teamWorkerReport(ctx, afterCommand(args));
+                case "tool-call" -> teamToolCall(ctx, afterCommand(args));
+                case "plan-steps" -> teamPlanSteps(ctx, afterCommand(args));
+                case "steps" -> teamSteps(ctx, afterCommand(args));
+                case "show-step" -> teamShowStep(ctx, afterCommand(args));
+                case "next-step" -> teamNextStep(ctx, afterCommand(args));
+                case "update-step" -> teamUpdateStep(ctx, afterCommand(args));
+                case "apply-step" -> teamApplyStep(ctx, afterCommand(args));
+                case "reject-step" -> teamRejectStep(ctx, afterCommand(args));
+                case "step-timeline" -> teamStepTimeline(ctx, afterCommand(args));
+                case "task-timeline", "audit" -> teamTaskTimeline(ctx, afterCommand(args));
                 case "auto-verify" -> teamAutoVerify(ctx, afterCommand(args));
                 case "verifier-report" -> teamVerifierReport(ctx, afterCommand(args));
                 case "task" -> teamTask(ctx, afterCommand(args));
@@ -951,7 +1034,7 @@ final class AgentCommands {
                 case "events" -> teamEvents(ctx);
                 case "whiteboard" -> teamWhiteboard(ctx);
                 case "abort" -> teamAbort(ctx, afterCommand(args));
-                default -> completedReply(ctx, "用法：/team start <goal>|status|list|resume <sessionId>|archive <sessionId>|suggest <goal>|suggest-current|task <role> <goal>|run-worker <taskId>|run-verifier <taskId>|worker-report <taskId>|auto-verify <taskId>|verifier-report <taskId>|verify <taskId> pass|reject|needs-human <reason>|events|whiteboard|abort <taskId>");
+                default -> completedReply(ctx, "用法：/team start <goal>|status|list|resume <sessionId>|archive <sessionId>|suggest <goal>|suggest-current|task <role> <goal>|run-worker <taskId>|run-verifier <taskId>|worker-report <taskId>|tool-call <taskId> <toolName> <jsonArgs>|plan-steps <taskId>|steps <taskId>|show-step <stepId>|next-step <taskId>|update-step <stepId> <jsonUpdate>|apply-step <stepId>|reject-step <stepId>|step-timeline <stepId>|task-timeline <taskId>|audit <taskId>|auto-verify <taskId>|verifier-report <taskId>|verify <taskId> pass|reject|needs-human <reason>|events|whiteboard|abort <taskId>");
             };
         } catch (IllegalArgumentException | IllegalStateException e) {
             return completedReply(ctx, "team error: " + e.getMessage());
@@ -1169,6 +1252,10 @@ final class AgentCommands {
         }
         WorkerExecutionInput input = workerExecutionInput(task, session, false);
         WorkerExecutionResult result = teamEngine.runWorker(taskId, input);
+        if (result.role() == TeamRole.DEVELOPER) {
+            session.getMetadata().put(SessionRuntimeKeys.DEVELOPER_TASK_ID_KEY, task.id());
+            sessionManager.save(session);
+        }
         storeTeamContext(session, task.sessionId());
         traceEvent(session, TraceEventType.WORKER_FINISHED, "team", "team worker executed", workerTracePayload(result), task.sessionId(), "", "");
         return completedReply(ctx, "team worker executed\n" + renderWorkerExecutionResult(result, teamEngine.findTask(taskId)));
@@ -1187,15 +1274,54 @@ final class AgentCommands {
         TeamTask updated = teamEngine.findTask(taskId);
         ChangeSetService changeSetService = new ChangeSetService(workspace);
         GitChangeSet latest = changeSetService.latest();
-        if (latest != null && updated != null && updated.verificationResult() != null) {
+        String activeWorkspaceId = activeWorkspaceSessionId(session);
+        boolean activeDiff = activeWorkspaceHasDiff(session);
+        boolean latestMatchesActiveWorkspace = latest != null && (activeWorkspaceId.isBlank() || activeWorkspaceId.equals(latest.workspaceSessionId()));
+        if (activeDiff && !latestMatchesActiveWorkspace) {
+            VerificationResult reject = new VerificationResult(
+                    VerificationResult.Status.REJECT,
+                    "active workspace diff requires ChangeSet before verifier acceptance",
+                    "Verifier rejected active workspace diff until a ChangeSet is created.",
+                    result.suggestedTests(),
+                    CommandRiskLevel.MEDIUM,
+                    List.of("active workspace has diff but no matching ChangeSet"),
+                    List.of(),
+                    List.of("active workspace diff"),
+                    List.of("Run /change create for active workspace changes before accepting verification."),
+                    List.of(),
+                    false,
+                    0.72d,
+                    null
+            );
+            updated = teamEngine.submitVerification(taskId, reject);
+            traceEvent(session, TraceEventType.WORKSPACE_DIFF_REQUIRES_CHANGESET, "verifier", "workspace diff requires changeset", Map.of(
+                    "taskId", taskId,
+                    "teamSessionId", task.sessionId(),
+                    "workspaceSessionId", activeWorkspaceId,
+                    "workspacePath", input.workspacePath(),
+                    "requiredAction", "/change create"
+            ), task.sessionId(), "", "");
+        }
+        if (latest != null && updated != null && updated.verificationResult() != null
+                && latestMatchesActiveWorkspace
+                && latest.verifierStatus().isBlank()) {
             changeSetService.attachVerifierResult(latest.id(), updated.verificationResult());
         }
+        if (updated != null && updated.verificationResult() != null) {
+            teamEngine.recordStepAudit(new StepAuditRecord(null, "", task.id(), task.sessionId(),
+                    StepAuditEventType.STEP_VERIFIED, "", updated.state().name(),
+                    "Verifier result linked to implementation task.", "", "", "",
+                    latestMatchesActiveWorkspace && latest != null ? latest.id() : "",
+                    updated.verificationResult().status().name(), "", null,
+                    Map.of("reason", updated.verificationResult().reason())));
+        }
         storeTeamContext(session, task.sessionId());
-        traceEvent(session, TraceEventType.VERIFIER_FINISHED, "team", "team verifier executed", workerTracePayload(result), task.sessionId(), latest != null ? latest.id() : "", "");
-        String changeHint = activeWorkspaceHasDiff(session)
+        traceEvent(session, TraceEventType.VERIFIER_FINISHED, "team", "team verifier executed", workerTracePayload(result), task.sessionId(), latestMatchesActiveWorkspace && latest != null ? latest.id() : "", "");
+        String changeHint = activeDiff
                 ? "\nchangeSetHint: active workspace has diff; run /change create"
                 : "";
-        return completedReply(ctx, "team verifier executed\n" + renderWorkerExecutionResult(result, updated) + changeHint);
+        String workspaceSource = !activeWorkspaceId.isBlank() ? "\nworkspaceSource: active workspace " + activeWorkspaceId : "\nworkspaceSource: base workspace";
+        return completedReply(ctx, "team verifier executed\n" + renderWorkerExecutionResult(result, updated) + workspaceSource + changeHint);
     }
 
     private CompletableFuture<OutboundMessage> teamWorkerReport(CommandRouter.CommandContext ctx, String rawArgs) {
@@ -1211,6 +1337,277 @@ final class AgentCommands {
             sb.append(renderWorkerExecutionResult(result, teamEngine.findTask(taskId))).append("\n\n");
         }
         return completedReply(ctx, sb.toString().trim());
+    }
+
+    private CompletableFuture<OutboundMessage> teamToolCall(CommandRouter.CommandContext ctx, String rawArgs) {
+        String taskId = commandArg(rawArgs, 0);
+        String toolName = commandArg(rawArgs, 1);
+        String jsonArgs = afterNthArg(rawArgs, 2);
+        if (jsonArgs.isBlank()) {
+            throw new IllegalArgumentException("missing jsonArgs");
+        }
+        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
+        resolveActiveTeamSessionId(session);
+        TeamTask task = teamEngine.findTask(taskId);
+        if (task == null) {
+            throw new IllegalArgumentException("team task not found: " + taskId);
+        }
+        Map<String, Object> args = parseJsonArgs(jsonArgs);
+        WorkspaceSession workspaceSession = activeWorkspaceSession(session);
+        PolicyAwareToolExecutor executor = new PolicyAwareToolExecutor(
+                new PolicyEngine(workspace),
+                toolRegistry,
+                approvalService,
+                traceStore
+        );
+        PolicyAwareToolExecutor.PolicyToolResult result = teamEngine.executeToolAsRole(
+                task.id(),
+                executor,
+                args,
+                workspaceSession,
+                session.getKey(),
+                toolName
+        );
+        if (task.role() == TeamRole.DEVELOPER) {
+            session.getMetadata().put(SessionRuntimeKeys.DEVELOPER_TASK_ID_KEY, task.id());
+            sessionManager.save(session);
+            if (result.decision().requiresApproval()) {
+                traceEvent(session, TraceEventType.DEVELOPER_TOOL_APPROVAL_REQUIRED, "developer", "developer tool approval required", Map.of(
+                        "taskId", task.id(),
+                        "teamSessionId", task.sessionId(),
+                        "toolName", result.decision().toolName(),
+                        "requestId", result.approvalRequestId(),
+                        "workspaceSessionId", workspaceSession != null ? workspaceSession.id() : "",
+                        "workspacePath", workspaceSession != null ? workspaceSession.workspacePath() : workspace.toString()
+                ), task.sessionId(), "", result.approvalRequestId());
+            }
+        }
+        WorkerExecutionResult report = roleToolCallReport(task, result, workspaceSession);
+        teamEngine.recordRoleToolCall(task.id(), report);
+        storeTeamContext(session, task.sessionId());
+        return completedReply(ctx, renderPolicyToolResult(result, report));
+    }
+
+    private CompletableFuture<OutboundMessage> teamPlanSteps(CommandRouter.CommandContext ctx, String rawArgs) {
+        String taskId = commandArg(rawArgs, 0);
+        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
+        TeamTask task = teamEngine.findTask(taskId);
+        if (task == null) {
+            throw new IllegalArgumentException("team task not found: " + taskId);
+        }
+        List<PendingImplementationStep> steps = teamEngine.createImplementationSteps(taskId);
+        storeTeamContext(session, task.sessionId());
+        for (PendingImplementationStep step : steps) {
+            traceImplementationStep(session, TraceEventType.IMPLEMENTATION_STEP_CREATED, step);
+        }
+        return completedReply(ctx, "implementation steps planned\n" + renderImplementationSteps(steps));
+    }
+
+    private CompletableFuture<OutboundMessage> teamSteps(CommandRouter.CommandContext ctx, String rawArgs) {
+        String taskId = commandArg(rawArgs, 0);
+        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
+        TeamTask task = teamEngine.findTask(taskId);
+        if (task == null) {
+            throw new IllegalArgumentException("team task not found: " + taskId);
+        }
+        List<PendingImplementationStep> steps = teamEngine.listImplementationSteps(taskId);
+        storeTeamContext(session, task.sessionId());
+        return completedReply(ctx, steps.isEmpty() ? "No implementation steps for task: " + taskId : "implementation steps\n" + renderImplementationSteps(steps));
+    }
+
+    private CompletableFuture<OutboundMessage> teamShowStep(CommandRouter.CommandContext ctx, String rawArgs) {
+        PendingImplementationStep step = requireImplementationStep(commandArg(rawArgs, 0));
+        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
+        StepGateResult gate = teamEngine.checkImplementationStepGate(step.id(), stepGateContext(session, step));
+        return completedReply(ctx, renderImplementationStepDetail(step) + "\n\n" + renderStepGate(gate));
+    }
+
+    private CompletableFuture<OutboundMessage> teamNextStep(CommandRouter.CommandContext ctx, String rawArgs) {
+        String taskId = commandArg(rawArgs, 0);
+        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
+        TeamTask task = teamEngine.findTask(taskId);
+        if (task == null) {
+            throw new IllegalArgumentException("team task not found: " + taskId);
+        }
+        List<PendingImplementationStep> steps = teamEngine.listImplementationSteps(taskId);
+        PendingImplementationStep next = new ImplementationStepGate().nextStep(steps, stepGateContext(session, null));
+        storeTeamContext(session, task.sessionId());
+        if (next == null) {
+            return completedReply(ctx, "No pending implementation step for task: " + taskId);
+        }
+        StepGateResult gate = teamEngine.checkImplementationStepGate(next.id(), stepGateContext(session, next));
+        return completedReply(ctx, "next implementation step\n" + renderImplementationStepDetail(next) + "\n\n" + renderStepGate(gate));
+    }
+
+    private CompletableFuture<OutboundMessage> teamUpdateStep(CommandRouter.CommandContext ctx, String rawArgs) {
+        String stepId = commandArg(rawArgs, 0);
+        String jsonUpdate = afterNthArg(rawArgs, 1);
+        if (jsonUpdate.isBlank()) {
+            throw new IllegalArgumentException("missing jsonUpdate");
+        }
+        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
+        PendingImplementationStep before = requireImplementationStep(stepId);
+        StepUpdateRequest request = StepUpdateRequest.fromMap(parseJsonArgs(jsonUpdate));
+        PendingImplementationStep updated = teamEngine.updateImplementationStep(stepId, request, stepGateContext(session, before), "user");
+        storeTeamContext(session, updated.teamSessionId());
+        traceImplementationStep(session, TraceEventType.IMPLEMENTATION_STEP_UPDATED, updated);
+        if (!updated.validationErrors().isEmpty()) {
+            traceImplementationStep(session, TraceEventType.IMPLEMENTATION_STEP_VALIDATION_FAILED, updated);
+        } else if (updated.status() == ImplementationStepStatus.READY) {
+            traceImplementationStep(session, TraceEventType.IMPLEMENTATION_STEP_READY, updated);
+        }
+        return completedReply(ctx, "implementation step updated\n"
+                + "updatedFields: " + renderListInline(request.updatedFields()) + "\n"
+                + renderImplementationStepDetail(updated));
+    }
+
+    private CompletableFuture<OutboundMessage> teamRejectStep(CommandRouter.CommandContext ctx, String rawArgs) {
+        PendingImplementationStep rejected = teamEngine.rejectImplementationStep(commandArg(rawArgs, 0));
+        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
+        storeTeamContext(session, rejected.teamSessionId());
+        traceImplementationStep(session, TraceEventType.IMPLEMENTATION_STEP_REJECTED, rejected);
+        return completedReply(ctx, "implementation step rejected\n" + renderImplementationStepDetail(rejected));
+    }
+
+    private CompletableFuture<OutboundMessage> teamStepTimeline(CommandRouter.CommandContext ctx, String rawArgs) {
+        String stepId = commandArg(rawArgs, 0);
+        PendingImplementationStep step = requireImplementationStep(stepId);
+        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
+        storeTeamContext(session, step.teamSessionId());
+        return completedReply(ctx, teamEngine.renderStepTimeline(stepId));
+    }
+
+    private CompletableFuture<OutboundMessage> teamTaskTimeline(CommandRouter.CommandContext ctx, String rawArgs) {
+        String taskId = commandArg(rawArgs, 0);
+        TeamTask task = teamEngine.findTask(taskId);
+        if (task == null) {
+            throw new IllegalArgumentException("team task not found: " + taskId);
+        }
+        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
+        storeTeamContext(session, task.sessionId());
+        String normalized = rawArgs != null ? rawArgs.toLowerCase(java.util.Locale.ROOT) : "";
+        if (normalized.contains("--json")) {
+            return completedReply(ctx, teamEngine.renderJsonTaskAudit(taskId));
+        }
+        return completedReply(ctx, teamEngine.renderTaskAudit(taskId, normalized.contains("--compact")));
+    }
+
+    private CompletableFuture<OutboundMessage> teamApplyStep(CommandRouter.CommandContext ctx, String rawArgs) {
+        PendingImplementationStep step = requireImplementationStep(commandArg(rawArgs, 0));
+        if (step.status() == ImplementationStepStatus.REJECTED || step.status() == ImplementationStepStatus.APPLIED) {
+            return completedReply(ctx, "implementation step not applicable\n" + renderImplementationStepDetail(step));
+        }
+        if (step.status() == ImplementationStepStatus.DRAFT) {
+            List<String> errors = new ImplementationStepGate().validateFields(step);
+            return completedReply(ctx, "implementation step is DRAFT; run /team update-step before apply-step\n"
+                    + "validationErrors: " + renderListInline(errors.isEmpty() ? step.validationErrors() : errors) + "\n\n"
+                    + renderImplementationStepDetail(step));
+        }
+        if (step.status() == ImplementationStepStatus.BLOCKED) {
+            return completedReply(ctx, "implementation step is BLOCKED\n" + renderImplementationStepDetail(step));
+        }
+        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
+        StepGateResult gate = teamEngine.checkImplementationStepGate(step.id(), stepGateContext(session, step));
+        traceImplementationStepGate(session, TraceEventType.IMPLEMENTATION_STEP_GATE_CHECKED, step, gate);
+        if (gate.blocked()) {
+            PendingImplementationStep blocked = teamEngine.blockImplementationStep(step.id(), gate);
+            storeTeamContext(session, blocked.teamSessionId());
+            traceImplementationStep(session, TraceEventType.IMPLEMENTATION_STEP_BLOCKED, blocked);
+            traceImplementationStepGate(session, TraceEventType.IMPLEMENTATION_STEP_BLOCKED, blocked, gate);
+            return completedReply(ctx, "implementation step blocked\n"
+                    + renderImplementationStepDetail(blocked)
+                    + "\n\n" + renderStepGate(gate));
+        }
+        return switch (step.type()) {
+            case READ, EDIT, WRITE, EXEC_TEST -> applyToolBackedStep(ctx, step);
+            case CREATE_CHANGESET -> applyCreateChangeSetStep(ctx, step);
+            case RUN_VERIFIER -> teamRunVerifier(ctx, step.taskId()).thenApply(message -> {
+                PendingImplementationStep applied = teamEngine.applyImplementationStep(step.id());
+                Session currentSession = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
+                storeTeamContext(currentSession, applied.teamSessionId());
+                return OutboundMessages.of(ctx.getMsg().getChannel(), ctx.getMsg().getChatId(),
+                        message.getContent() + "\n\nimplementation step applied\n" + renderImplementationStepDetail(applied));
+            });
+        };
+    }
+
+    private CompletableFuture<OutboundMessage> applyToolBackedStep(CommandRouter.CommandContext ctx, PendingImplementationStep step) {
+        if (step.status() == ImplementationStepStatus.DRAFT && (step.type() == ImplementationStepType.EDIT || step.type() == ImplementationStepType.WRITE)) {
+            PendingImplementationStep failed = teamEngine.failImplementationStep(step.id(), Map.of("reason", "draft step is missing executable edit/write arguments"));
+            return completedReply(ctx, "implementation step failed\n" + renderImplementationStepDetail(failed));
+        }
+        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
+        WorkspaceSession workspaceSession = activeWorkspaceSession(session);
+        Map<String, Object> args = stepArgs(step);
+        args.put("__implementation_step_id", step.id());
+        PolicyAwareToolExecutor executor = new PolicyAwareToolExecutor(new PolicyEngine(workspace), toolRegistry, approvalService, traceStore);
+        PolicyAwareToolExecutor.PolicyToolResult result = executor.execute(
+                step.role(),
+                toolNameForStep(step),
+                args,
+                workspaceSession,
+                session.getKey(),
+                step.teamSessionId(),
+                step.taskId()
+        );
+        PendingImplementationStep updated;
+        if (result.decision().denied()) {
+            updated = teamEngine.failImplementationStep(step.id(), result.decision().toMap());
+            traceImplementationStep(session, TraceEventType.IMPLEMENTATION_STEP_FAILED, updated);
+        } else if (result.decision().requiresApproval()) {
+            updated = teamEngine.markImplementationStepApprovalRequired(step.id(), result.decision().toMap());
+            teamEngine.recordStepAudit(new StepAuditRecord(null, updated.id(), updated.taskId(), updated.teamSessionId(),
+                    StepAuditEventType.STEP_APPROVAL_REQUIRED, step.status().name(), updated.status().name(),
+                    "Implementation step approval required.", result.approvalRequestId(), toolNameForStep(step), "",
+                    "", "", "", null, result.decision().toMap()));
+            traceImplementationStep(session, TraceEventType.IMPLEMENTATION_STEP_APPROVAL_REQUIRED, updated);
+        } else if (result.executed()) {
+            updated = teamEngine.applyImplementationStep(step.id());
+            teamEngine.recordStepAudit(new StepAuditRecord(null, updated.id(), updated.taskId(), updated.teamSessionId(),
+                    StepAuditEventType.STEP_TOOL_APPLIED, step.status().name(), updated.status().name(),
+                    "Implementation step tool applied.", "", toolNameForStep(step), result.resultSummary(),
+                    "", "", "", null, Map.of()));
+            traceImplementationStep(session, TraceEventType.IMPLEMENTATION_STEP_APPLIED, updated);
+        } else {
+            updated = teamEngine.failImplementationStep(step.id(), result.decision().toMap());
+            traceImplementationStep(session, TraceEventType.IMPLEMENTATION_STEP_FAILED, updated);
+        }
+        storeTeamContext(session, updated.teamSessionId());
+        return completedReply(ctx, "implementation step apply result\n"
+                + "policy decision: " + result.decision().decisionType() + "\n"
+                + "reasons: " + renderListInline(result.decision().reasons()) + "\n"
+                + (!result.approvalRequestId().isBlank() ? "approval requestId: " + result.approvalRequestId() + "\n" : "")
+                + "tool result: " + (result.resultSummary().isBlank() ? "none" : result.resultSummary()) + "\n\n"
+                + renderImplementationStepDetail(updated));
+    }
+
+    private CompletableFuture<OutboundMessage> applyCreateChangeSetStep(CommandRouter.CommandContext ctx, PendingImplementationStep step) {
+        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
+        ChangeSetService service = new ChangeSetService(workspace);
+        ChangeSetRenderer renderer = new ChangeSetRenderer();
+        WorkspaceSession activeWorkspace = activeWorkspaceSession(session);
+        GitChangeSet changeSet = activeWorkspace != null
+                ? service.createFromWorkspace(activeWorkspace.id(), Path.of(activeWorkspace.workspacePath()), ctx.getKey(), step.teamSessionId(), step.taskId())
+                : service.createFromWorkingTree(ctx.getKey(), step.teamSessionId(), step.taskId());
+        teamEngine.recordArtifact(step.teamSessionId(), new TeamArtifact(null, step.taskId(), ".changesets/" + changeSet.id() + "/changeset.json", "ChangeSet " + changeSet.id(), "changeset", null));
+        storeChangeSetContext(session, changeSet, renderer);
+        PendingImplementationStep applied = teamEngine.applyImplementationStep(step.id());
+        teamEngine.recordStepAudit(new StepAuditRecord(null, applied.id(), applied.taskId(), applied.teamSessionId(),
+                StepAuditEventType.STEP_CHANGESET_LINKED, step.status().name(), applied.status().name(),
+                "ChangeSet linked to implementation step.", "", "", "",
+                changeSet.id(), "", "", null, Map.of("changedFiles", changeSet.changedFiles())));
+        storeTeamContext(session, step.teamSessionId());
+        traceImplementationStep(session, TraceEventType.IMPLEMENTATION_STEP_APPLIED, applied);
+        traceEvent(session, activeWorkspace != null ? TraceEventType.CHANGESET_CREATED_FROM_WORKSPACE : TraceEventType.CHANGESET_CREATED, "change", "changeset created from implementation step", Map.of(
+                "stepId", step.id(),
+                "status", changeSet.status().name(),
+                "changedFiles", changeSet.changedFiles(),
+                "workspaceSessionId", changeSet.workspaceSessionId(),
+                "workspacePath", changeSet.workspacePath()
+        ), changeSet.teamSessionId(), changeSet.id(), "");
+        return completedReply(ctx, "implementation step applied\n"
+                + renderImplementationStepDetail(applied)
+                + "\n\nchangeset created\nid: " + changeSet.id() + "\n" + renderer.renderStatus(changeSet));
     }
 
     private CompletableFuture<OutboundMessage> teamAutoVerify(CommandRouter.CommandContext ctx, String rawArgs) {
@@ -1351,7 +1748,7 @@ final class AgentCommands {
         String id = activeWorkspaceSessionId(session);
         if (!id.isBlank()) {
             try {
-                ricbot.domain.workspace.WorkspaceSession workspaceSession = new WorkspaceSessionStore(workspace).load(id);
+                WorkspaceSession workspaceSession = new WorkspaceSessionStore(workspace).load(id);
                 if (workspaceSession != null && !workspaceSession.workspacePath().isBlank()) {
                     return workspaceSession.workspacePath();
                 }
@@ -1359,6 +1756,18 @@ final class AgentCommands {
             }
         }
         return workspace.toString();
+    }
+
+    private WorkspaceSession activeWorkspaceSession(Session session) {
+        String id = activeWorkspaceSessionId(session);
+        if (id.isBlank()) {
+            return null;
+        }
+        try {
+            return new WorkspaceSessionStore(workspace).load(id);
+        } catch (Exception ignored) {
+            return null;
+        }
     }
 
     private boolean activeWorkspaceHasDiff(Session session) {
@@ -1379,6 +1788,30 @@ final class AgentCommands {
         }
     }
 
+    private ImplementationStepGate.GateContext stepGateContext(Session session, PendingImplementationStep step) {
+        return new ImplementationStepGate.GateContext(
+                activeWorkspaceHasDiff(session) || new ChangeSetService(workspace).hasWorkingTreeChanges(),
+                changeSetExistsFor(step)
+        );
+    }
+
+    private boolean changeSetExistsFor(PendingImplementationStep step) {
+        try {
+            GitChangeSet latest = new ChangeSetService(workspace).latest();
+            if (latest == null) {
+                return false;
+            }
+            if (step == null) {
+                return true;
+            }
+            return step.teamSessionId().isBlank()
+                    || latest.teamSessionId().isBlank()
+                    || step.teamSessionId().equals(latest.teamSessionId());
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
     private String renderWorkerExecutionResult(WorkerExecutionResult result, TeamTask task) {
         return "taskId: " + result.taskId() + "\n"
                 + "role: " + result.role() + "\n"
@@ -1388,9 +1821,278 @@ final class AgentCommands {
                 + "findings: " + renderListInline(result.findings()) + "\n"
                 + "risks: " + renderListInline(result.risks()) + "\n"
                 + "suggestedTests: " + renderListInline(result.suggestedTests()) + "\n"
+                + "policy: " + renderListInline(result.policySummary()) + "\n"
+                + "developerPlan: " + renderListInline(result.developerPlan()) + "\n"
+                + "requiredApprovals: " + renderListInline(result.requiredApprovals()) + "\n"
+                + "nextActions: " + renderListInline(result.nextActions()) + "\n"
+                + "changeSetRecommendation: " + (result.changeSetRecommendation().isBlank() ? "none" : result.changeSetRecommendation()) + "\n"
                 + "artifacts: " + (result.artifacts().isEmpty() ? "none" : String.join(", ", result.artifacts().stream().map(TeamArtifact::path).toList())) + "\n"
                 + "confidence: " + String.format(java.util.Locale.ROOT, "%.2f", result.confidence()) + "\n"
                 + "nextState: " + (task != null ? task.state() : "(unknown)");
+    }
+
+    private WorkerExecutionResult roleToolCallReport(
+            TeamTask task,
+            PolicyAwareToolExecutor.PolicyToolResult result,
+            WorkspaceSession workspaceSession
+    ) {
+        PolicyDecision decision = result.decision();
+        String workspacePath = workspaceSession != null && !workspaceSession.workspacePath().isBlank()
+                ? workspaceSession.workspacePath()
+                : workspace.toString();
+        List<String> findings = new java.util.ArrayList<>();
+        findings.add("tool=" + decision.toolName());
+        findings.add("decision=" + decision.decisionType());
+        if (result.executed()) {
+            findings.add("tool result=" + abbreviate(result.resultSummary(), 240));
+        }
+        List<String> risks = new java.util.ArrayList<>();
+        if (decision.denied()) {
+            risks.add("policy denied tool execution");
+        }
+        if (decision.requiresApproval()) {
+            risks.add("approval required before execution");
+        }
+        if (task.role() == TeamRole.DEVELOPER && workspaceSession == null) {
+            risks.add("local workspace warning: create a worktree with /workspace create --mode worktree before editing shared code");
+        }
+        String changeSetRecommendation = task.role() == TeamRole.DEVELOPER
+                ? "After approved edit/write tool calls, run /change create, then /team run-verifier " + task.id() + ", then /summary."
+                : "";
+        List<String> nextActions = task.role() == TeamRole.DEVELOPER
+                ? List.of("/change create", "/team run-verifier " + task.id(), "/summary")
+                : List.of();
+        List<String> policySummary = List.of(
+                "role=" + decision.role(),
+                "tool=" + decision.toolName(),
+                "decision=" + decision.decisionType(),
+                "requiresApproval=" + decision.requiresApproval(),
+                "denied=" + decision.denied(),
+                "requestId=" + result.approvalRequestId(),
+                "reasons=" + String.join(",", decision.reasons())
+        );
+        String status = decision.denied()
+                ? "DENIED"
+                : decision.requiresApproval()
+                ? "APPROVAL_REQUIRED"
+                : result.executed() ? "EXECUTED" : "SKIPPED";
+        return new WorkerExecutionResult(
+                task.id(),
+                task.sessionId(),
+                task.role(),
+                task.goal(),
+                workspacePath,
+                teamEngine.whiteboard(task.sessionId()).readSummary(),
+                List.of(),
+                List.of(),
+                List.of(),
+                "Policy-gated role tool-call " + decision.toolName() + " -> " + decision.decisionType(),
+                findings,
+                risks,
+                List.of(),
+                List.of(new TeamArtifact(
+                        null,
+                        task.id(),
+                        ".team/" + task.sessionId() + "/workers.jsonl",
+                        "Policy-gated tool call for " + task.id(),
+                        "role_tool_call",
+                        null
+                )),
+                policySummary,
+                List.of(),
+                decision.requiresApproval() ? List.of(decision.toolName() + " requires approval requestId=" + result.approvalRequestId()) : List.of(),
+                nextActions,
+                changeSetRecommendation,
+                result.executed() ? 0.72d : 0.45d,
+                status,
+                null
+        );
+    }
+
+    private String renderPolicyToolResult(PolicyAwareToolExecutor.PolicyToolResult result, WorkerExecutionResult report) {
+        PolicyDecision decision = result.decision();
+        return "team role tool-call\n"
+                + "taskId: " + report.taskId() + "\n"
+                + "role: " + decision.role() + "\n"
+                + "toolName: " + decision.toolName() + "\n"
+                + "workspacePath: " + report.workspacePath() + "\n"
+                + "policy decision: " + decision.decisionType() + "\n"
+                + "reasons: " + renderListInline(decision.reasons()) + "\n"
+                + "requiresApproval: " + decision.requiresApproval() + "\n"
+                + "denied: " + decision.denied() + "\n"
+                + (!result.approvalRequestId().isBlank() ? "approval requestId: " + result.approvalRequestId() + "\n" : "")
+                + "tool result: " + (result.resultSummary().isBlank() ? "none" : result.resultSummary()) + "\n"
+                + (report.risks().stream().anyMatch(risk -> risk.startsWith("local workspace warning"))
+                ? "warning: local workspace is active; consider /workspace create --mode worktree <goal>\n"
+                : "")
+                + (!report.changeSetRecommendation().isBlank() ? "next: " + report.changeSetRecommendation() + "\n" : "")
+                + "status: " + report.status();
+    }
+
+    private PendingImplementationStep requireImplementationStep(String stepId) {
+        PendingImplementationStep step = teamEngine.findImplementationStep(stepId);
+        if (step == null) {
+            throw new IllegalArgumentException("implementation step not found: " + stepId);
+        }
+        return step;
+    }
+
+    private String renderImplementationSteps(List<PendingImplementationStep> steps) {
+        StringBuilder sb = new StringBuilder();
+        List<PendingImplementationStep> safeSteps = steps != null ? steps : List.of();
+        sb.append("counts: DRAFT=").append(countSteps(safeSteps, ImplementationStepStatus.DRAFT))
+                .append(" READY=").append(countSteps(safeSteps, ImplementationStepStatus.READY))
+                .append(" BLOCKED=").append(countSteps(safeSteps, ImplementationStepStatus.BLOCKED))
+                .append(" APPLIED=").append(countSteps(safeSteps, ImplementationStepStatus.APPLIED))
+                .append("\n");
+        for (PendingImplementationStep step : safeSteps) {
+            sb.append("- ").append(step.id())
+                    .append(" [").append(step.type()).append("] ")
+                    .append(step.status())
+                    .append(" order=").append(step.orderIndex())
+                    .append(!step.targetPath().isBlank() ? " target=" + step.targetPath() : "")
+                    .append(!step.command().isBlank() ? " command=" + step.command() : "")
+                    .append(!step.dependsOnStepIds().isEmpty() ? " dependsOn=" + String.join(",", step.dependsOnStepIds()) : "")
+                    .append(!step.blockedReason().isBlank() ? " blockedReason=" + step.blockedReason() : "")
+                    .append(!step.requiredBeforeApply().isEmpty() ? " requiredBeforeApply=" + String.join("; ", step.requiredBeforeApply()) : "")
+                    .append(" reason=").append(step.reason())
+                    .append("\n");
+        }
+        return sb.toString().trim();
+    }
+
+    private long countSteps(List<PendingImplementationStep> steps, ImplementationStepStatus status) {
+        return steps.stream().filter(step -> step.status() == status).count();
+    }
+
+    private String renderImplementationStepDetail(PendingImplementationStep step) {
+        return "implementation step\n"
+                + "id: " + step.id() + "\n"
+                + "taskId: " + step.taskId() + "\n"
+                + "teamSessionId: " + step.teamSessionId() + "\n"
+                + "role: " + step.role() + "\n"
+                + "type: " + step.type() + "\n"
+                + "status: " + step.status() + "\n"
+                + "targetPath: " + (step.targetPath().isBlank() ? "none" : step.targetPath()) + "\n"
+                + "command: " + (step.command().isBlank() ? "none" : step.command()) + "\n"
+                + "oldText: " + (step.oldText().isBlank() ? "none" : abbreviate(step.oldText(), 120)) + "\n"
+                + "newText: " + (step.newText().isBlank() ? "none" : abbreviate(step.newText(), 120)) + "\n"
+                + "riskLevel: " + step.riskLevel() + "\n"
+                + "requiresApproval: " + step.requiresApproval() + "\n"
+                + "orderIndex: " + step.orderIndex() + "\n"
+                + "dependsOn: " + (step.dependsOnStepIds().isEmpty() ? "none" : String.join(", ", step.dependsOnStepIds())) + "\n"
+                + "unblocks: " + (step.unblocksStepIds().isEmpty() ? "none" : String.join(", ", step.unblocksStepIds())) + "\n"
+                + "blockedBy: " + (step.blockedBy().isEmpty() ? "none" : String.join(", ", step.blockedBy())) + "\n"
+                + "blockedReason: " + (step.blockedReason().isBlank() ? "none" : step.blockedReason()) + "\n"
+                + "qualityGate: " + (step.qualityGate().isBlank() ? "none" : step.qualityGate()) + "\n"
+                + "requiredBeforeApply: " + (step.requiredBeforeApply().isEmpty() ? "none" : String.join("; ", step.requiredBeforeApply())) + "\n"
+                + "validationErrors: " + (step.validationErrors().isEmpty() ? "none" : String.join("; ", step.validationErrors())) + "\n"
+                + "lastUpdatedBy: " + (step.lastUpdatedBy().isBlank() ? "none" : step.lastUpdatedBy()) + "\n"
+                + "updateReason: " + (step.updateReason().isBlank() ? "none" : step.updateReason()) + "\n"
+                + "reason: " + step.reason();
+    }
+
+    private String renderStepGate(StepGateResult gate) {
+        if (gate == null) {
+            return "gate: unknown";
+        }
+        return "gate: " + (gate.allowed() ? "ALLOW" : "BLOCKED") + "\n"
+                + "reasons: " + renderListInline(gate.reasons()) + "\n"
+                + "requiredActions: " + renderListInline(gate.requiredActions()) + "\n"
+                + "nextSuggestedCommand: " + (gate.nextSuggestedCommand().isBlank() ? "none" : gate.nextSuggestedCommand());
+    }
+
+    private String toolNameForStep(PendingImplementationStep step) {
+        return switch (step.type()) {
+            case READ -> "read_file";
+            case EDIT -> "edit_file";
+            case WRITE -> "write_file";
+            case EXEC_TEST -> "exec";
+            default -> throw new IllegalArgumentException("step is not tool-backed: " + step.type());
+        };
+    }
+
+    private Map<String, Object> stepArgs(PendingImplementationStep step) {
+        Map<String, Object> args = new java.util.LinkedHashMap<>();
+        switch (step.type()) {
+            case READ -> {
+                args.put("path", step.targetPath());
+                args.put("offset", 1);
+                args.put("limit", 200);
+            }
+            case EDIT -> {
+                args.put("path", step.targetPath());
+                args.put("old_text", step.oldText());
+                args.put("new_text", step.newText());
+                args.put("replace_all", false);
+            }
+            case WRITE -> {
+                args.put("path", step.targetPath());
+                args.put("content", step.newText());
+            }
+            case EXEC_TEST -> args.put("command", step.command());
+            default -> {
+            }
+        }
+        return args;
+    }
+
+    private void traceImplementationStep(Session session, TraceEventType type, PendingImplementationStep step) {
+        if (step == null) {
+            return;
+        }
+        Map<String, Object> payload = new java.util.LinkedHashMap<>();
+        payload.put("stepId", step.id());
+        payload.put("taskId", step.taskId());
+        payload.put("teamSessionId", step.teamSessionId());
+        payload.put("type", step.type().name());
+        payload.put("targetPath", step.targetPath());
+        payload.put("command", step.command());
+        payload.put("status", step.status().name());
+        payload.put("orderIndex", step.orderIndex());
+        payload.put("blockedBy", step.blockedBy());
+        payload.put("blockedReason", step.blockedReason());
+        payload.put("requiredBeforeApply", step.requiredBeforeApply());
+        payload.put("lastUpdatedBy", step.lastUpdatedBy());
+        payload.put("updateReason", step.updateReason());
+        payload.put("validationErrors", step.validationErrors());
+        traceEvent(session, type, "team", "implementation step lifecycle", payload, step.teamSessionId(), "", "");
+    }
+
+    private void traceImplementationStepGate(Session session, TraceEventType type, PendingImplementationStep step, StepGateResult gate) {
+        if (step == null || gate == null) {
+            return;
+        }
+        traceEvent(session, type, "team", "implementation step gate", Map.of(
+                "stepId", step.id(),
+                "taskId", step.taskId(),
+                "teamSessionId", step.teamSessionId(),
+                "type", step.type().name(),
+                "status", step.status().name(),
+                "reasons", gate.reasons(),
+                "requiredActions", gate.requiredActions(),
+                "nextSuggestedCommand", gate.nextSuggestedCommand()
+        ), step.teamSessionId(), "", "");
+    }
+
+    private void tracePolicy(Session session, PolicyDecision decision) {
+        if (decision == null) {
+            return;
+        }
+        TraceEventType type = decision.decisionType() == PolicyDecisionType.DENY
+                ? TraceEventType.POLICY_DENIED
+                : decision.decisionType() == PolicyDecisionType.REQUIRE_APPROVAL
+                ? TraceEventType.POLICY_APPROVAL_REQUIRED
+                : TraceEventType.POLICY_EVALUATED;
+        traceEvent(session, type, "policy", "policy evaluated", Map.of(
+                "role", decision.role().name(),
+                "toolName", decision.toolName(),
+                "decisionType", decision.decisionType().name(),
+                "reasons", decision.reasons(),
+                "riskLevel", decision.riskLevel().name(),
+                "requiresApproval", decision.requiresApproval(),
+                "denied", decision.denied()
+        ), "", "", "");
     }
 
     private Map<String, Object> workerTracePayload(WorkerExecutionResult result) {
@@ -1456,6 +2158,16 @@ final class AgentCommands {
     private String mapValue(Map<?, ?> map, String key) {
         Object value = map != null ? map.get(key) : null;
         return value != null ? String.valueOf(value) : "";
+    }
+
+    private String stringArg(Map<String, Object> map, String key) {
+        Object value = map != null ? map.get(key) : null;
+        return value != null ? String.valueOf(value).trim() : "";
+    }
+
+    private List<String> changedFilesFromApprovedArgs(Map<String, Object> args) {
+        String path = stringArg(args, "path");
+        return path.isBlank() ? List.of() : List.of(path);
     }
 
     private String renderRawList(Object raw) {
@@ -1578,9 +2290,92 @@ final class AgentCommands {
                     + "\n无法恢复执行：" + e.getMessage());
         }
         Object result = toolRegistry.executeApproved(pendingToolCall.toolName(), pendingToolCall.arguments());
+        String developerHint = recordApprovedDeveloperToolCall(session, pendingToolCall, result, request.requestId());
         return completedReply(ctx, "已批准并恢复执行：" + request.requestId()
                 + "\ntool: " + pendingToolCall.toolName()
-                + "\n\n" + String.valueOf(result));
+                + "\n\n" + String.valueOf(result)
+                + developerHint);
+    }
+
+    private String recordApprovedDeveloperToolCall(
+            Session session,
+            PendingToolCall pendingToolCall,
+            Object result,
+            String requestId
+    ) {
+        Map<String, Object> arguments = pendingToolCall != null ? pendingToolCall.arguments() : Map.of();
+        String role = stringArg(arguments, "__role");
+        String taskId = stringArg(arguments, "__task_id");
+        if (!"DEVELOPER".equalsIgnoreCase(role) || taskId.isBlank()) {
+            return "";
+        }
+        TeamTask task = teamEngine.findTask(taskId);
+        if (task == null) {
+            return "";
+        }
+        String workspaceSessionId = stringArg(arguments, "__workspace_session_id");
+        String workspacePath = stringArg(arguments, "__workspace_path");
+        String stepId = stringArg(arguments, "__implementation_step_id");
+        if (workspacePath.isBlank()) {
+            workspacePath = workspace.toString();
+        }
+        String summary = abbreviate(String.valueOf(result), 420);
+        WorkerExecutionResult report = new WorkerExecutionResult(
+                task.id(),
+                task.sessionId(),
+                task.role(),
+                task.goal(),
+                workspacePath,
+                teamEngine.whiteboard(task.sessionId()).readSummary(),
+                List.of(),
+                List.of(),
+                List.of(),
+                "Developer approved tool applied: " + pendingToolCall.toolName(),
+                List.of("tool=" + pendingToolCall.toolName(), "tool result=" + summary),
+                List.of(),
+                List.of(),
+                List.of(new TeamArtifact(
+                        null,
+                        task.id(),
+                        ".team/" + task.sessionId() + "/workers.jsonl",
+                        "Developer tool applied for " + task.id(),
+                        "developer_tool_call",
+                        null
+                )),
+                List.of("role=DEVELOPER", "tool=" + pendingToolCall.toolName(), "decision=APPROVED", "requestId=" + requestId),
+                List.of(),
+                List.of(pendingToolCall.toolName() + " approved requestId=" + requestId),
+                List.of("/change create", "/team run-verifier " + task.id(), "/summary"),
+                "Approved changes were applied. Run /change create, then /team run-verifier " + task.id() + ".",
+                0.74d,
+                "APPLIED",
+                null
+        );
+        teamEngine.recordRoleToolCall(task.id(), report);
+        if (!stepId.isBlank()) {
+            PendingImplementationStep applied = teamEngine.applyImplementationStep(stepId);
+            teamEngine.recordStepAudit(new StepAuditRecord(null, applied.id(), applied.taskId(), applied.teamSessionId(),
+                    StepAuditEventType.STEP_APPROVED, "", applied.status().name(),
+                    "Implementation step approval consumed.", requestId, pendingToolCall.toolName(), "",
+                    "", "", "", null, Map.of()));
+            teamEngine.recordStepAudit(new StepAuditRecord(null, applied.id(), applied.taskId(), applied.teamSessionId(),
+                    StepAuditEventType.STEP_TOOL_APPLIED, "", applied.status().name(),
+                    "Approved tool call applied.", requestId, pendingToolCall.toolName(), summary,
+                    "", "", "", null, Map.of("changedFiles", changedFilesFromApprovedArgs(arguments))));
+            traceImplementationStep(session, TraceEventType.IMPLEMENTATION_STEP_APPLIED, applied);
+        }
+        storeTeamContext(session, task.sessionId());
+        traceEvent(session, TraceEventType.DEVELOPER_TOOL_APPLIED, "developer", "developer approved tool applied", Map.of(
+                "taskId", task.id(),
+                "teamSessionId", task.sessionId(),
+                "toolName", pendingToolCall.toolName(),
+                "requestId", requestId,
+                "workspaceSessionId", workspaceSessionId,
+                "workspacePath", workspacePath,
+                "stepId", stepId,
+                "changedFiles", changedFilesFromApprovedArgs(arguments)
+        ), task.sessionId(), "", requestId);
+        return "\n\nnext: /change create\nnext: /team run-verifier " + task.id() + "\nnext: /summary";
     }
 
     private CompletableFuture<OutboundMessage> approveChangeAction(
@@ -1781,6 +2576,15 @@ final class AgentCommands {
         return prefix + "\nworkspace_session\n- workspace id=" + id + " path=" + source + " label=active workspace session";
     }
 
+    private String appendPolicySource(String rendered) {
+        String source = new PolicyEngine(workspace).policy().source();
+        if (rendered.contains(source)) {
+            return rendered;
+        }
+        String prefix = rendered.startsWith("暂无 context trace") ? "ricbot context\n\ntop sources" : rendered;
+        return prefix + "\npolicy\n- role_tool_policy path=" + source + " label=active policy source";
+    }
+
     private List<String> verifiedExperienceSources(Session session) {
         return contextSourcePaths(session).stream()
                 .filter(path -> path.contains("experience/verified.jsonl"))
@@ -1838,6 +2642,14 @@ final class AgentCommands {
         return value.substring(start).trim();
     }
 
+    private static Map<String, Object> parseJsonArgs(String raw) {
+        try {
+            return MAPPER.readValue(raw, MAP_TYPE);
+        } catch (Exception e) {
+            throw new IllegalArgumentException("jsonArgs must be a JSON object: " + e.getMessage());
+        }
+    }
+
     private static String abbreviate(String value, int maxChars) {
         String safe = value != null ? value.trim().replaceAll("\\s+", " ") : "";
         return safe.length() <= maxChars ? safe : safe.substring(0, Math.max(0, maxChars)) + "...";
@@ -1849,5 +2661,26 @@ final class AgentCommands {
             throw new IllegalArgumentException("missing id");
         }
         return parts[index];
+    }
+
+    private static String commandArgOrBlank(String args, int index) {
+        String[] parts = trim(args).split("\\s+");
+        return parts.length > index ? parts[index] : "";
+    }
+
+    private static String afterNthArg(String args, int index) {
+        String[] parts = trim(args).split("\\s+");
+        if (parts.length <= index) {
+            return "";
+        }
+        int pos = 0;
+        for (int i = 0; i < index; i++) {
+            pos = trim(args).indexOf(parts[i], pos);
+            if (pos < 0) {
+                return "";
+            }
+            pos += parts[i].length();
+        }
+        return trim(args).substring(Math.min(pos, trim(args).length())).trim();
     }
 }

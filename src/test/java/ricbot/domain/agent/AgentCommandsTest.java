@@ -25,6 +25,8 @@ import ricbot.domain.trace.TraceStore;
 import ricbot.infra.config.Config;
 import ricbot.integration.command.CommandRouter;
 import ricbot.tool.api.ToolRegistry;
+import ricbot.tool.filesystem.EditFileTool;
+import ricbot.tool.filesystem.ReadFileTool;
 import ricbot.tool.filesystem.WriteFileTool;
 
 import java.nio.file.Files;
@@ -411,6 +413,204 @@ class AgentCommandsTest {
     }
 
     @Test
+    void teamToolCallUsesPolicyAwareExecutor(@TempDir Path workspace) throws Exception {
+        Files.writeString(workspace.resolve("README.md"), "team tool-call\n");
+        SessionManager sessionManager = new SessionManager(workspace);
+        MemoryStore memoryStore = new MemoryStore(workspace);
+        ApprovalService approvalService = new ApprovalService();
+        AgentCommands commands = commandsWithTools(sessionManager, memoryStore, workspace, approvalService);
+        CommandRouter router = new CommandRouter();
+        commands.register(router);
+
+        router.dispatch(context("/team start V4.10 role tool calls", sessionManager)).get();
+        String explorerCreated = router.dispatch(context("/team task explorer Inspect README", sessionManager)).get().getContent();
+        String explorerTaskId = lineValue(explorerCreated, "id:");
+
+        String read = router.dispatch(context("/team tool-call " + explorerTaskId + " read_file {\"path\":\"README.md\",\"offset\":1,\"limit\":20}", sessionManager)).get().getContent();
+        assertTrue(read.contains("team role tool-call"), read);
+        assertTrue(read.contains("policy decision: ALLOW"), read);
+        assertTrue(read.contains("team tool-call"), read);
+
+        String denied = router.dispatch(context("/team tool-call " + explorerTaskId + " write_file {\"path\":\"blocked.txt\",\"content\":\"no\"}", sessionManager)).get().getContent();
+        assertTrue(denied.contains("policy decision: DENY"), denied);
+        assertTrue(denied.contains("denied: true"), denied);
+        assertTrue(Files.notExists(workspace.resolve("blocked.txt")));
+
+        String developerCreated = router.dispatch(context("/team task developer Edit README", sessionManager)).get().getContent();
+        String developerTaskId = lineValue(developerCreated, "id:");
+        String developerPlan = router.dispatch(context("/team run-worker " + developerTaskId, sessionManager)).get().getContent();
+        assertTrue(developerPlan.contains("Developer Plan"), developerPlan);
+        assertTrue(developerPlan.contains("changeSetRecommendation:"), developerPlan);
+        assertEquals("team tool-call\n", Files.readString(workspace.resolve("README.md")));
+
+        String approval = router.dispatch(context("/team tool-call " + developerTaskId + " edit_file {\"path\":\"README.md\",\"old_text\":\"team\",\"new_text\":\"policy\"}", sessionManager)).get().getContent();
+        assertTrue(approval.contains("policy decision: REQUIRE_APPROVAL"), approval);
+        assertTrue(approval.contains("approval requestId:"), approval);
+        assertTrue(approval.contains("/change create"), approval);
+        String requestId = lineValue(approval, "approval requestId:");
+        assertNotNull(approvalService.find(requestId));
+
+        String applied = router.dispatch(context("/approve " + requestId, sessionManager)).get().getContent();
+        assertTrue(applied.contains("已批准并恢复执行"), applied);
+        assertTrue(applied.contains("DiffReview"), applied);
+        assertTrue(applied.contains("/change create"), applied);
+        assertTrue(applied.contains("/team run-verifier " + developerTaskId), applied);
+        assertEquals("policy tool-call\n", Files.readString(workspace.resolve("README.md")));
+
+        String report = router.dispatch(context("/team worker-report " + explorerTaskId, sessionManager)).get().getContent();
+        assertTrue(report.contains("Policy-gated role tool-call"), report);
+        String developerReport = router.dispatch(context("/team worker-report " + developerTaskId, sessionManager)).get().getContent();
+        assertTrue(developerReport.contains("Developer approved tool applied"), developerReport);
+
+        String summary = router.dispatch(context("/summary", sessionManager)).get().getContent();
+        assertTrue(summary.contains("Policy"), summary);
+        assertTrue(summary.contains("policy-gated") || summary.contains("Policy-gated"), summary);
+        assertTrue(summary.contains("Approved Tool Calls"), summary);
+        assertTrue(summary.contains("ChangeSet Recommendation"), summary);
+
+        TraceStore traceStore = new TraceStore(workspace);
+        String traceId = traceStore.traceIdForSession("cli:direct");
+        assertTrue(traceStore.loadEvents(traceId).stream().anyMatch(event -> event.type() == TraceEventType.POLICY_EVALUATED), traceStore.loadEvents(traceId).toString());
+        assertTrue(traceStore.loadEvents(traceId).stream().anyMatch(event -> event.type() == TraceEventType.POLICY_DENIED), traceStore.loadEvents(traceId).toString());
+        assertTrue(traceStore.loadEvents(traceId).stream().anyMatch(event -> event.type() == TraceEventType.POLICY_APPROVAL_REQUIRED), traceStore.loadEvents(traceId).toString());
+        assertTrue(traceStore.loadEvents(traceId).stream().anyMatch(event -> event.type() == TraceEventType.DEVELOPER_TOOL_APPROVAL_REQUIRED), traceStore.loadEvents(traceId).toString());
+        assertTrue(traceStore.loadEvents(traceId).stream().anyMatch(event -> event.type() == TraceEventType.DEVELOPER_TOOL_APPLIED), traceStore.loadEvents(traceId).toString());
+    }
+
+    @Test
+    void teamImplementationStepCommandsPlanApplyShowAndReject(@TempDir Path workspace) throws Exception {
+        Files.writeString(workspace.resolve("README.md"), "team step\n");
+        SessionManager sessionManager = new SessionManager(workspace);
+        MemoryStore memoryStore = new MemoryStore(workspace);
+        ApprovalService approvalService = new ApprovalService();
+        AgentCommands commands = commandsWithTools(sessionManager, memoryStore, workspace, approvalService);
+        CommandRouter router = new CommandRouter();
+        commands.register(router);
+
+        router.dispatch(context("/team start V4.12 implementation steps", sessionManager)).get();
+        String created = router.dispatch(context("/team task developer Replace team with policy in README.md", sessionManager)).get().getContent();
+        String taskId = lineValue(created, "id:");
+        router.dispatch(context("/team run-worker " + taskId, sessionManager)).get();
+
+        String planned = router.dispatch(context("/team plan-steps " + taskId, sessionManager)).get().getContent();
+        assertTrue(planned.contains("implementation steps planned"), planned);
+        assertTrue(planned.contains("[READ]"), planned);
+        assertTrue(planned.contains("[EDIT]"), planned);
+        String readStepId = stepId(planned, "[READ]");
+        String editStepId = stepId(planned, "[EDIT]");
+
+        String listed = router.dispatch(context("/team steps " + taskId, sessionManager)).get().getContent();
+        assertTrue(listed.contains(readStepId), listed);
+        assertTrue(listed.contains("order="), listed);
+        assertTrue(listed.contains("dependsOn="), listed);
+        String next = router.dispatch(context("/team next-step " + taskId, sessionManager)).get().getContent();
+        assertTrue(next.contains("next implementation step"), next);
+        assertTrue(next.contains("type: READ"), next);
+        String shown = router.dispatch(context("/team show-step " + readStepId, sessionManager)).get().getContent();
+        assertTrue(shown.contains("type: READ"), shown);
+        assertTrue(shown.contains("gate: ALLOW"), shown);
+
+        String editBlocked = router.dispatch(context("/team apply-step " + editStepId, sessionManager)).get().getContent();
+        assertTrue(editBlocked.contains("implementation step blocked"), editBlocked);
+        assertTrue(editBlocked.contains("requiredActions:"), editBlocked);
+        String blockedListed = router.dispatch(context("/team steps " + taskId, sessionManager)).get().getContent();
+        assertTrue(blockedListed.contains("blockedReason="), blockedListed);
+
+        String readApplied = router.dispatch(context("/team apply-step " + readStepId, sessionManager)).get().getContent();
+        assertTrue(readApplied.contains("policy decision: ALLOW"), readApplied);
+        assertTrue(readApplied.contains("status: APPLIED"), readApplied);
+        assertTrue(readApplied.contains("team step"), readApplied);
+
+        String editUpdated = router.dispatch(context("/team update-step " + editStepId + " {\"updateReason\":\"refresh after read\"}", sessionManager)).get().getContent();
+        assertTrue(editUpdated.contains("implementation step updated"), editUpdated);
+        assertTrue(editUpdated.contains("status: READY"), editUpdated);
+        assertTrue(editUpdated.contains("validationErrors: none"), editUpdated);
+
+        String editApproval = router.dispatch(context("/team apply-step " + editStepId, sessionManager)).get().getContent();
+        assertTrue(editApproval.contains("policy decision: REQUIRE_APPROVAL"), editApproval);
+        assertTrue(editApproval.contains("approval requestId:"), editApproval);
+        String requestId = lineValue(editApproval, "approval requestId:");
+        assertNotNull(approvalService.find(requestId));
+
+        String approved = router.dispatch(context("/approve " + requestId, sessionManager)).get().getContent();
+        assertTrue(approved.contains("DiffReview"), approved);
+        assertEquals("policy step\n", Files.readString(workspace.resolve("README.md")));
+        String editShown = router.dispatch(context("/team show-step " + editStepId, sessionManager)).get().getContent();
+        assertTrue(editShown.contains("status: APPLIED"), editShown);
+        String teamSessionId = lineValue(editShown, "teamSessionId:");
+        String stepTimeline = router.dispatch(context("/team step-timeline " + editStepId, sessionManager)).get().getContent();
+        assertTrue(stepTimeline.contains("step timeline"), stepTimeline);
+        assertTrue(stepTimeline.contains("STEP_APPROVAL_REQUIRED"), stepTimeline);
+        assertTrue(stepTimeline.contains("STEP_TOOL_APPLIED"), stepTimeline);
+        String taskTimeline = router.dispatch(context("/team task-timeline " + taskId, sessionManager)).get().getContent();
+        assertTrue(taskTimeline.contains("task step audit"), taskTimeline);
+        assertTrue(taskTimeline.contains("totalAuditRecords="), taskTimeline);
+        String audit = router.dispatch(context("/team audit " + taskId, sessionManager)).get().getContent();
+        assertTrue(audit.contains("task step audit"), audit);
+        String compactAudit = router.dispatch(context("/team audit " + taskId + " --compact", sessionManager)).get().getContent();
+        assertTrue(compactAudit.contains("compact step audit"), compactAudit);
+        assertTrue(compactAudit.contains("auditHealth="), compactAudit);
+        String jsonAudit = router.dispatch(context("/team audit " + taskId + " --json", sessionManager)).get().getContent();
+        assertTrue(jsonAudit.contains("\"summary\""), jsonAudit);
+        assertTrue(jsonAudit.contains("\"auditHealth\""), jsonAudit);
+
+        String rejectStepId = stepId(planned, "[RUN_VERIFIER]");
+        String rejected = router.dispatch(context("/team reject-step " + rejectStepId, sessionManager)).get().getContent();
+        assertTrue(rejected.contains("status: REJECTED"), rejected);
+
+        String summary = router.dispatch(context("/summary", sessionManager)).get().getContent();
+        assertTrue(summary.contains("Implementation Steps"), summary);
+        assertTrue(summary.contains("implstep_"), summary);
+
+        TraceStore traceStore = new TraceStore(workspace);
+        String traceId = traceStore.traceIdForSession("cli:direct");
+        assertTrue(traceStore.loadEvents(traceId).stream().anyMatch(event -> event.type() == TraceEventType.IMPLEMENTATION_STEP_CREATED), traceStore.loadEvents(traceId).toString());
+        assertTrue(traceStore.loadEvents(traceId).stream().anyMatch(event -> event.type() == TraceEventType.IMPLEMENTATION_STEP_APPLIED), traceStore.loadEvents(traceId).toString());
+        assertTrue(traceStore.loadEvents(traceId).stream().anyMatch(event -> event.type() == TraceEventType.IMPLEMENTATION_STEP_APPROVAL_REQUIRED), traceStore.loadEvents(traceId).toString());
+        assertTrue(traceStore.loadEvents(traceId).stream().anyMatch(event -> event.type() == TraceEventType.IMPLEMENTATION_STEP_REJECTED), traceStore.loadEvents(traceId).toString());
+        assertTrue(traceStore.loadEvents(traceId).stream().anyMatch(event -> event.type() == TraceEventType.IMPLEMENTATION_STEP_GATE_CHECKED), traceStore.loadEvents(traceId).toString());
+        assertTrue(traceStore.loadEvents(traceId).stream().anyMatch(event -> event.type() == TraceEventType.IMPLEMENTATION_STEP_BLOCKED), traceStore.loadEvents(traceId).toString());
+        assertTrue(traceStore.loadEvents(traceId).stream().anyMatch(event -> event.type() == TraceEventType.IMPLEMENTATION_STEP_UPDATED), traceStore.loadEvents(traceId).toString());
+        assertTrue(traceStore.loadEvents(traceId).stream().anyMatch(event -> event.type() == TraceEventType.IMPLEMENTATION_STEP_READY), traceStore.loadEvents(traceId).toString());
+        String teamTraceId = traceStore.traceIdForSession(teamSessionId);
+        assertTrue(traceStore.loadEvents(teamTraceId).stream().anyMatch(event -> event.type() == TraceEventType.STEP_AUDIT_RECORDED), traceStore.loadEvents(teamTraceId).toString());
+    }
+
+    @Test
+    void teamUpdateStepValidatesDraftBeforeApply(@TempDir Path workspace) throws Exception {
+        Files.writeString(workspace.resolve("README.md"), "draft step\n");
+        SessionManager sessionManager = new SessionManager(workspace);
+        MemoryStore memoryStore = new MemoryStore(workspace);
+        AgentCommands commands = commandsWithTools(sessionManager, memoryStore, workspace, new ApprovalService());
+        CommandRouter router = new CommandRouter();
+        commands.register(router);
+
+        router.dispatch(context("/team start V4.14 update steps", sessionManager)).get();
+        String created = router.dispatch(context("/team task developer Update README.md", sessionManager)).get().getContent();
+        String taskId = lineValue(created, "id:");
+        router.dispatch(context("/team run-worker " + taskId, sessionManager)).get();
+        String planned = router.dispatch(context("/team plan-steps " + taskId, sessionManager)).get().getContent();
+        String editStepId = stepId(planned, "[EDIT]");
+
+        String draftApply = router.dispatch(context("/team apply-step " + editStepId, sessionManager)).get().getContent();
+        assertTrue(draftApply.contains("implementation step is DRAFT"), draftApply);
+        assertTrue(draftApply.contains("validationErrors:"), draftApply);
+
+        String invalidUpdate = router.dispatch(context("/team update-step " + editStepId + " {\"targetPath\":\"README.md\",\"updateReason\":\"still missing edit text\"}", sessionManager)).get().getContent();
+        assertTrue(invalidUpdate.contains("status: DRAFT"), invalidUpdate);
+        assertTrue(invalidUpdate.contains("EDIT requires oldText"), invalidUpdate);
+
+        String shown = router.dispatch(context("/team show-step " + editStepId, sessionManager)).get().getContent();
+        assertTrue(shown.contains("validationErrors:"), shown);
+        assertTrue(shown.contains("EDIT requires newText"), shown);
+
+        TraceStore traceStore = new TraceStore(workspace);
+        String traceId = traceStore.traceIdForSession("cli:direct");
+        assertTrue(traceStore.loadEvents(traceId).stream().anyMatch(event -> event.type() == TraceEventType.IMPLEMENTATION_STEP_UPDATED), traceStore.loadEvents(traceId).toString());
+        assertTrue(traceStore.loadEvents(traceId).stream().anyMatch(event -> event.type() == TraceEventType.IMPLEMENTATION_STEP_VALIDATION_FAILED), traceStore.loadEvents(traceId).toString());
+    }
+
+    @Test
     void workspaceCommandsCreateLocalAndExposeContextSource(@TempDir Path workspace) throws Exception {
         SessionManager sessionManager = new SessionManager(workspace);
         MemoryStore memoryStore = new MemoryStore(workspace);
@@ -492,6 +692,35 @@ class AgentCommandsTest {
         assertEquals("initial\n", Files.readString(workspace.resolve("README.md")));
         assertTrue(new TraceStore(workspace).loadEvents(new TraceStore(workspace).traceIdForSession("cli:direct"))
                 .stream().anyMatch(event -> event.type() == TraceEventType.CHANGESET_CREATED_FROM_WORKSPACE));
+    }
+
+    @Test
+    void teamVerifierRequiresChangeSetForActiveWorkspaceDiff(@TempDir Path workspace) throws Exception {
+        initGitRepo(workspace);
+        SessionManager sessionManager = new SessionManager(workspace);
+        MemoryStore memoryStore = new MemoryStore(workspace);
+        AgentCommands commands = commands(sessionManager, memoryStore, workspace);
+        CommandRouter router = new CommandRouter();
+        commands.register(router);
+
+        String createdWorkspace = router.dispatch(context("/workspace create --mode worktree verifier sandbox", sessionManager)).get().getContent();
+        String workspacePath = lineValue(createdWorkspace, "workspacePath:");
+        Files.writeString(Path.of(workspacePath).resolve("README.md"), "initial\nneeds changeset\n");
+        router.dispatch(context("/team start Verify active workspace diff", sessionManager)).get();
+        String createdTask = router.dispatch(context("/team task explorer Review active workspace", sessionManager)).get().getContent();
+        String taskId = lineValue(createdTask, "id:");
+
+        String verifier = router.dispatch(context("/team run-verifier " + taskId, sessionManager)).get().getContent();
+        assertTrue(verifier.contains("changeSetHint: active workspace has diff; run /change create"), verifier);
+        assertTrue(verifier.contains("nextState: REVISING"), verifier);
+
+        String report = router.dispatch(context("/team verifier-report " + taskId, sessionManager)).get().getContent();
+        assertTrue(report.contains("/change create"), report);
+        TraceStore traceStore = new TraceStore(workspace);
+        assertTrue(traceStore.loadEvents(traceStore.traceIdForSession("cli:direct")).stream()
+                .anyMatch(event -> event.type() == TraceEventType.WORKSPACE_DIFF_REQUIRES_CHANGESET), traceStore.loadEvents(traceStore.traceIdForSession("cli:direct")).toString());
+
+        git(Path.of(workspacePath), "restore", "--", "README.md");
     }
 
     @Test
@@ -623,6 +852,37 @@ class AgentCommandsTest {
         String exported = router.dispatch(context("/trace export " + traceId, sessionManager)).get().getContent();
         assertTrue(exported.contains("\"traceId\":\"" + traceId + "\""), exported);
         assertTrue(exported.contains("\"type\":\"CHANGESET_CREATED\""), exported);
+    }
+
+    @Test
+    void policyCommandsShowAndCheck(@TempDir Path workspace) throws Exception {
+        SessionManager sessionManager = new SessionManager(workspace);
+        MemoryStore memoryStore = new MemoryStore(workspace);
+        AgentCommands commands = commands(sessionManager, memoryStore, workspace);
+        CommandRouter router = new CommandRouter();
+        commands.register(router);
+
+        String shown = router.dispatch(context("/policy show", sessionManager)).get().getContent();
+        assertTrue(shown.contains("role tool policy"), shown);
+        assertTrue(shown.contains("EXPLORER"), shown);
+
+        String explorer = router.dispatch(context("/policy show EXPLORER", sessionManager)).get().getContent();
+        assertTrue(explorer.contains("read_file"), explorer);
+        assertTrue(explorer.contains("write"), explorer);
+
+        String denied = router.dispatch(context("/policy check EXPLORER write_file", sessionManager)).get().getContent();
+        assertTrue(denied.contains("decision: DENY"), denied);
+        assertTrue(denied.contains("denied: true"), denied);
+
+        String test = router.dispatch(context("/policy check-command TESTER ./mvnw test", sessionManager)).get().getContent();
+        assertTrue(test.contains("decision:"), test);
+        assertTrue(test.contains("role: TESTER"), test);
+
+        TraceStore traceStore = new TraceStore(workspace);
+        String traceId = traceStore.traceIdForSession("cli:direct");
+        assertTrue(traceStore.loadEvents(traceId).stream().anyMatch(event -> event.type() == TraceEventType.POLICY_DENIED
+                || event.type() == TraceEventType.POLICY_EVALUATED
+                || event.type() == TraceEventType.POLICY_APPROVAL_REQUIRED), traceStore.loadEvents(traceId).toString());
     }
 
     @Test
@@ -940,6 +1200,16 @@ class AgentCommandsTest {
         throw new AssertionError("missing " + prefix + " in: " + text);
     }
 
+    private static String stepId(String text, String typeMarker) {
+        for (String line : text.split("\\R")) {
+            String trimmed = line.trim();
+            if (trimmed.startsWith("- implstep_") && trimmed.contains(typeMarker)) {
+                return trimmed.substring(2).split("\\s+")[0];
+            }
+        }
+        throw new AssertionError("missing step " + typeMarker + " in: " + text);
+    }
+
     private static List<String> experienceIds(String text) {
         java.util.ArrayList<String> ids = new java.util.ArrayList<>();
         for (String line : text.split("\\R")) {
@@ -968,6 +1238,31 @@ class AgentCommandsTest {
                 msg -> "cli:direct",
                 key -> List.<Future<?>>of(),
                 (key, reason) -> {}
+        );
+    }
+
+    private static AgentCommands commandsWithTools(
+            SessionManager sessionManager,
+            MemoryStore memoryStore,
+            Path workspace,
+            ApprovalService approvalService
+    ) {
+        ToolRegistry tools = new ToolRegistry();
+        tools.register(new ReadFileTool(workspace, workspace, List.of()));
+        tools.register(new WriteFileTool(workspace, workspace));
+        tools.register(new EditFileTool(workspace, workspace));
+        return new AgentCommands(
+                sessionManager,
+                memoryStore,
+                null,
+                new Config.DreamConfig(),
+                "model",
+                workspace,
+                msg -> "cli:direct",
+                key -> List.<Future<?>>of(),
+                (key, reason) -> {},
+                approvalService,
+                tools
         );
     }
 

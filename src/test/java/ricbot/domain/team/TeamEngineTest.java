@@ -11,6 +11,7 @@ import ricbot.domain.trace.TraceStore;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class TeamEngineTest {
@@ -203,6 +204,107 @@ class TeamEngineTest {
         assertTrue(engine.workerReports(task.id()).toString().contains("Explorer summarized"));
         assertTrue(engine.whiteboard(session.id()).readSummary().contains("Worker execution"));
         assertTrue(traceStore.loadEvents(traceStore.traceIdForSession(session.id())).stream().anyMatch(event -> event.type() == TraceEventType.WORKER_FINISHED));
+    }
+
+    @Test
+    void runDeveloperWorkerRecordsDeveloperPlan(@TempDir Path workspace) {
+        TraceStore traceStore = new TraceStore(workspace);
+        TeamEngine engine = new TeamEngine(workspace, traceStore);
+        TeamSession session = engine.createSession("Run developer plan");
+        TeamTask task = engine.createTask(session.id(), TeamRole.DEVELOPER, "Edit README.md safely");
+
+        WorkerExecutionResult result = engine.runWorker(task.id(), workerInput(task, workspace.toString(), List.of("README.md"), List.of()));
+
+        assertEquals("PLANNED", result.status());
+        assertTrue(result.developerPlan().toString().contains("README.md"), result.developerPlan().toString());
+        assertTrue(result.changeSetRecommendation().contains("/change create"), result.changeSetRecommendation());
+        assertTrue(engine.workerReports(task.id()).toString().contains("developerPlan="), engine.workerReports(task.id()).toString());
+        assertTrue(traceStore.loadEvents(traceStore.traceIdForSession(session.id())).stream().anyMatch(event -> event.type() == TraceEventType.DEVELOPER_PLAN_CREATED));
+    }
+
+    @Test
+    void createListFindApplyAndRejectImplementationSteps(@TempDir Path workspace) {
+        TeamEngine engine = new TeamEngine(workspace, new TraceStore(workspace));
+        TeamSession session = engine.createSession("Implementation steps");
+        TeamTask task = engine.createTask(session.id(), TeamRole.DEVELOPER, "Edit README.md safely");
+        engine.runWorker(task.id(), workerInput(task, workspace.toString(), List.of("README.md"), List.of()));
+
+        List<PendingImplementationStep> created = engine.createImplementationSteps(task.id());
+        assertTrue(created.stream().anyMatch(step -> step.type() == ImplementationStepType.READ), created.toString());
+        assertTrue(created.stream().anyMatch(step -> step.type() == ImplementationStepType.CREATE_CHANGESET), created.toString());
+
+        List<PendingImplementationStep> listed = engine.listImplementationSteps(task.id());
+        assertEquals(created.size(), listed.size());
+        PendingImplementationStep read = listed.stream().filter(step -> step.type() == ImplementationStepType.READ).findFirst().orElseThrow();
+        assertEquals(read.id(), engine.findImplementationStep(read.id()).id());
+
+        PendingImplementationStep editBeforeRead = listed.stream().filter(step -> step.type() == ImplementationStepType.EDIT).findFirst().orElseThrow();
+        StepGateResult blockedGate = engine.checkImplementationStepGate(editBeforeRead.id(), ImplementationStepGate.GateContext.empty());
+        assertTrue(blockedGate.blocked(), blockedGate.toString());
+        PendingImplementationStep blocked = engine.blockImplementationStep(editBeforeRead.id(), blockedGate);
+        assertEquals(ImplementationStepStatus.BLOCKED, blocked.status());
+
+        PendingImplementationStep applied = engine.applyImplementationStep(read.id());
+        assertEquals(ImplementationStepStatus.APPLIED, applied.status());
+
+        PendingImplementationStep rejectable = listed.stream().filter(step -> step.type() == ImplementationStepType.EDIT).findFirst().orElseThrow();
+        PendingImplementationStep rejected = engine.rejectImplementationStep(rejectable.id());
+        assertEquals(ImplementationStepStatus.REJECTED, rejected.status());
+        assertTrue(Files.exists(workspace.resolve(".team").resolve(session.id()).resolve("implementation_steps.jsonl")));
+        assertTrue(Files.exists(workspace.resolve(".team").resolve(session.id()).resolve("step_audit.jsonl")));
+        assertTrue(engine.stepAuditByStep(read.id()).stream().anyMatch(record -> record.eventType() == StepAuditEventType.STEP_CREATED), engine.stepAuditByStep(read.id()).toString());
+        assertTrue(engine.stepAuditByStep(read.id()).stream().anyMatch(record -> record.eventType() == StepAuditEventType.STEP_APPLY_REQUESTED), engine.stepAuditByStep(read.id()).toString());
+        assertTrue(engine.stepAuditByTask(task.id()).stream().anyMatch(record -> record.eventType() == StepAuditEventType.STEP_BLOCKED), engine.stepAuditByTask(task.id()).toString());
+        assertTrue(engine.renderStepTimeline(read.id()).contains("STEP_APPLY_REQUESTED"));
+        assertTrue(engine.contextSnapshot(session.id()).toString().contains("implementationSteps"), engine.contextSnapshot(session.id()).toString());
+        assertTrue(engine.contextSnapshot(session.id()).toString().contains("implementationStepProgress"), engine.contextSnapshot(session.id()).toString());
+        assertTrue(engine.contextSnapshot(session.id()).toString().contains("stepAuditSummary"), engine.contextSnapshot(session.id()).toString());
+    }
+
+    @Test
+    void updateDraftEditStepCanBecomeReadyOrBlocked(@TempDir Path workspace) {
+        TeamEngine engine = new TeamEngine(workspace, new TraceStore(workspace));
+        TeamSession session = engine.createSession("Update draft step");
+        TeamTask task = engine.createTask(session.id(), TeamRole.DEVELOPER, "Update README.md");
+        engine.runWorker(task.id(), workerInput(task, workspace.toString(), List.of("README.md"), List.of()));
+        List<PendingImplementationStep> steps = engine.createImplementationSteps(task.id());
+        PendingImplementationStep read = steps.stream().filter(step -> step.type() == ImplementationStepType.READ).findFirst().orElseThrow();
+        PendingImplementationStep edit = steps.stream().filter(step -> step.type() == ImplementationStepType.EDIT).findFirst().orElseThrow();
+        assertEquals(ImplementationStepStatus.DRAFT, edit.status());
+
+        PendingImplementationStep blocked = engine.updateImplementationStep(edit.id(), new StepUpdateRequest(
+                "", "old", "new", "", "", List.of(), "fill edit args"
+        ));
+        assertEquals(ImplementationStepStatus.BLOCKED, blocked.status());
+        assertTrue(blocked.blockedReason().contains(read.id()), blocked.toString());
+
+        engine.applyImplementationStep(read.id());
+        PendingImplementationStep ready = engine.updateImplementationStep(edit.id(), new StepUpdateRequest(
+                "", null, null, "", "", List.of(), "refresh after read"
+        ));
+        assertEquals(ImplementationStepStatus.READY, ready.status());
+        assertTrue(ready.validationErrors().isEmpty(), ready.toString());
+        assertEquals("user", ready.lastUpdatedBy());
+        assertTrue(engine.stepAuditByStep(edit.id()).stream().anyMatch(record -> record.eventType() == StepAuditEventType.STEP_UPDATED), engine.stepAuditByStep(edit.id()).toString());
+        assertTrue(engine.stepAuditByStep(edit.id()).stream().anyMatch(record -> record.eventType() == StepAuditEventType.STEP_READY), engine.stepAuditByStep(edit.id()).toString());
+    }
+
+    @Test
+    void appliedStepCannotBeUpdated(@TempDir Path workspace) {
+        TeamEngine engine = new TeamEngine(workspace);
+        TeamSession session = engine.createSession("Applied step immutable");
+        TeamTask task = engine.createTask(session.id(), TeamRole.DEVELOPER, "Update README.md");
+        engine.runWorker(task.id(), workerInput(task, workspace.toString(), List.of("README.md"), List.of()));
+        PendingImplementationStep read = engine.createImplementationSteps(task.id()).stream()
+                .filter(step -> step.type() == ImplementationStepType.READ)
+                .findFirst()
+                .orElseThrow();
+
+        engine.applyImplementationStep(read.id());
+
+        assertThrows(IllegalStateException.class, () -> engine.updateImplementationStep(read.id(), new StepUpdateRequest(
+                "README.md", null, null, "", "", List.of(), "should fail"
+        )));
     }
 
     @Test

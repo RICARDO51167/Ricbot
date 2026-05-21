@@ -202,6 +202,10 @@ final class ContextSelectionService {
         List<String> verificationReports = stringList(teamContext.get("verificationReports"));
         List<String> workerResults = stringList(teamContext.get("workerResults"));
         List<String> workerReports = stringList(teamContext.get("workerReports"));
+        List<String> implementationSteps = stringList(teamContext.get("implementationSteps"));
+        List<String> blockedImplementationSteps = stringList(teamContext.get("blockedImplementationSteps"));
+        List<String> stepAuditSummary = stringList(teamContext.get("stepAuditSummary"));
+        Map<?, ?> stepProgress = teamContext.get("implementationStepProgress") instanceof Map<?, ?> progress ? progress : Map.of();
         List<String> revisionRequests = stringList(teamContext.get("revisionRequests"));
         List<String> parts = new ArrayList<>();
         if (!sessionId.isBlank()) {
@@ -221,6 +225,23 @@ final class ContextSelectionService {
         }
         if (!workerReports.isEmpty()) {
             parts.add("workerReport=" + abbreviate(String.join("; ", workerReports), 360));
+        }
+        if (!implementationSteps.isEmpty()) {
+            parts.add("implementationSteps=" + abbreviate(String.join("; ", implementationSteps), 360));
+        }
+        if (!blockedImplementationSteps.isEmpty()) {
+            parts.add("blockedSteps=" + abbreviate(String.join("; ", blockedImplementationSteps), 240));
+        }
+        if (!stepAuditSummary.isEmpty()) {
+            parts.add("stepAudit=" + abbreviate(String.join("; ", stepAuditSummary), 300));
+        }
+        if (!stepProgress.isEmpty()) {
+            parts.add("stepProgress=total:" + string(stepProgress.get("total"))
+                    + " draft:" + string(stepProgress.get("draft"))
+                    + " ready:" + string(stepProgress.get("ready"))
+                    + " applied:" + string(stepProgress.get("applied"))
+                    + " blocked:" + string(stepProgress.get("blocked"))
+                    + " next:" + abbreviate(string(stepProgress.get("nextStep")), 180));
         }
         if (!verificationReports.isEmpty()) {
             parts.add("verificationReport=" + abbreviate(String.join("; ", verificationReports), 360));
@@ -255,6 +276,24 @@ final class ContextSelectionService {
                     0.78d,
                     ContextSource.of("team_worker", sessionId + ":worker", string(teamContext.get("workerPath")),
                             "team worker report", 0.78d, metadata)
+            );
+        }
+        if (!implementationSteps.isEmpty()) {
+            bundle.addItem(
+                    "team_context",
+                    "implementation steps " + abbreviate(String.join("; ", implementationSteps), 420),
+                    0.77d,
+                    ContextSource.of("team_implementation_steps", sessionId + ":implementation_steps", string(teamContext.get("implementationStepsPath")),
+                            "team implementation steps", 0.77d, metadata)
+            );
+        }
+        if (!stepAuditSummary.isEmpty()) {
+            bundle.addItem(
+                    "team_context",
+                    "step audit " + abbreviate(String.join("; ", stepAuditSummary), 420),
+                    0.76d,
+                    ContextSource.of("team_step_audit", sessionId + ":step_audit", string(teamContext.get("stepAuditPath")),
+                            "team step audit", 0.76d, metadata)
             );
         }
         for (Map<String, Object> event : eventRows(teamContext.get("recentEvents")).stream().limit(2).toList()) {

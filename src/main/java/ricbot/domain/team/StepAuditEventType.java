@@ -1,0 +1,16 @@
+package ricbot.domain.team;
+
+public enum StepAuditEventType {
+    STEP_CREATED,
+    STEP_UPDATED,
+    STEP_READY,
+    STEP_BLOCKED,
+    STEP_APPLY_REQUESTED,
+    STEP_APPROVAL_REQUIRED,
+    STEP_APPROVED,
+    STEP_TOOL_APPLIED,
+    STEP_REJECTED,
+    STEP_FAILED,
+    STEP_CHANGESET_LINKED,
+    STEP_VERIFIED
+}

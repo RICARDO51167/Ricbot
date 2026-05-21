@@ -33,6 +33,14 @@ class TaskNoteWriterTest {
         assertTrue(markdown.contains("status=REJECT"), markdown);
         assertTrue(markdown.contains("## Worker Findings"), markdown);
         assertTrue(markdown.contains("Explorer summarized workspace context"), markdown);
+        assertTrue(markdown.contains("## Developer Plan"), markdown);
+        assertTrue(markdown.contains("Edit README.md"), markdown);
+        assertTrue(markdown.contains("## Approved Tool Calls"), markdown);
+        assertTrue(markdown.contains("Developer approved tool applied"), markdown);
+        assertTrue(markdown.contains("## Policy"), markdown);
+        assertTrue(markdown.contains("default-policy"), markdown);
+        assertTrue(markdown.contains("## ChangeSet Recommendation"), markdown);
+        assertTrue(markdown.contains("/change create"), markdown);
         assertTrue(markdown.contains("## Workspace"), markdown);
         assertTrue(markdown.contains(".workspaces/workspace_demo/session.json"), markdown);
         assertTrue(markdown.contains("## SubAgent Findings"), markdown);
@@ -82,7 +90,13 @@ class TaskNoteWriterTest {
                 List.of("git checkout -- src/main/java/ricbot/domain/note/TaskNoteWriter.java"),
                 List.of("team team_demo state=VERIFYING goal=V3.4 task notes"),
                 List.of("task=teamtask_demo | status=REJECT | missingTests=./mvnw -q test | requiredActions=Run tests"),
-                List.of("task=teamtask_demo | role=EXPLORER | status=COMPLETED | summary=Explorer summarized workspace context"),
+                List.of(
+                        "task=teamtask_demo | role=EXPLORER | status=COMPLETED | summary=Explorer summarized workspace context | policy=source=default-policy; decision=ALLOW",
+                        "task=teamtask_dev | role=DEVELOPER | status=PLANNED | summary=Developer Plan created | developerPlan=goal=Edit README.md | changeSetRecommendation=After approved edit/write tool calls, run /change create",
+                        "task=teamtask_dev | role=DEVELOPER | status=APPLIED | summary=Developer approved tool applied: edit_file | policy=role=DEVELOPER; decision=APPROVED"
+                ),
+                List.of("step=implstep_demo | task=teamtask_dev | type=READ | status=READY | targetPath=README.md"),
+                List.of("task=teamtask_dev totalAuditRecords=4 latest=STEP_TOOL_APPLIED step=implstep_demo status=APPLIED"),
                 List.of(),
                 List.of("workspace workspace_demo | type: GIT_WORKTREE | status: ACTIVE", "source=.workspaces/workspace_demo/session.json"),
                 "",

@@ -47,7 +47,13 @@ public class TaskNoteWriter {
         listSection(sb, "Rollback Hints", summary.rollbackHints(), "未生成回滚提示");
         listSection(sb, "Team Findings", summary.teamFindings(), "未记录 Team 状态");
         listSection(sb, "Worker Findings", summary.workerFindings(), "未记录 Worker Report");
+        listSection(sb, "Developer Plan", summary.developerPlan(), "未记录 Developer Plan");
+        listSection(sb, "Implementation Steps", summary.implementationSteps(), "未记录 Implementation Steps");
+        listSection(sb, "Step Audit", summary.stepAudit(), "未记录 Step Audit");
+        listSection(sb, "Approved Tool Calls", summary.approvedToolCalls(), "未记录已审批工具调用");
+        listSection(sb, "Policy", summary.policySummary(), "未记录 Policy 评估");
         listSection(sb, "Verifier Report", summary.verifierReports(), "未记录 Verifier Report");
+        listSection(sb, "ChangeSet Recommendation", summary.changeSetRecommendation(), "未记录 ChangeSet 建议");
         listSection(sb, "ChangeSet", changeSetLines(summary), "未记录 ChangeSet");
         listSection(sb, "Workspace", summary.workspaceSummary(), "未记录 Workspace session");
         listSection(sb, "SubAgent Findings", summary.subAgentFindings(), "未记录子代理摘要");
@@ -90,6 +96,15 @@ public class TaskNoteWriter {
         }
         if (summary != null && !summary.workerFindings().isEmpty()) {
             tags.add("worker");
+        }
+        if (summary != null && !summary.policySummary().isEmpty()) {
+            tags.add("policy");
+        }
+        if (summary != null && !summary.developerPlan().isEmpty()) {
+            tags.add("developer-plan");
+        }
+        if (summary != null && !summary.implementationSteps().isEmpty()) {
+            tags.add("implementation-step");
         }
         if (summary != null && !summary.changeSetSummaries().isEmpty()) {
             tags.add("changeset");

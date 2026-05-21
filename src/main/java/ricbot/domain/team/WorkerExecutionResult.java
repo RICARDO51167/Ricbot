@@ -21,10 +21,40 @@ public record WorkerExecutionResult(
         List<String> risks,
         List<String> suggestedTests,
         List<TeamArtifact> artifacts,
+        List<String> policySummary,
+        List<String> developerPlan,
+        List<String> requiredApprovals,
+        List<String> nextActions,
+        String changeSetRecommendation,
         double confidence,
         String status,
         String createdAt
 ) {
+    public WorkerExecutionResult(
+            String taskId,
+            String teamSessionId,
+            TeamRole role,
+            String goal,
+            String workspacePath,
+            String whiteboardSummary,
+            List<String> relatedFiles,
+            List<String> verifiedExperience,
+            List<String> constraints,
+            String summary,
+            List<String> findings,
+            List<String> risks,
+            List<String> suggestedTests,
+            List<TeamArtifact> artifacts,
+            List<String> policySummary,
+            double confidence,
+            String status,
+            String createdAt
+    ) {
+        this(taskId, teamSessionId, role, goal, workspacePath, whiteboardSummary, relatedFiles,
+                verifiedExperience, constraints, summary, findings, risks, suggestedTests, artifacts,
+                policySummary, List.of(), List.of(), List.of(), "", confidence, status, createdAt);
+    }
+
     public WorkerExecutionResult {
         taskId = clean(taskId);
         teamSessionId = clean(teamSessionId);
@@ -40,6 +70,11 @@ public record WorkerExecutionResult(
         risks = copy(risks);
         suggestedTests = copy(suggestedTests);
         artifacts = artifacts != null ? List.copyOf(artifacts) : List.of();
+        policySummary = copy(policySummary);
+        developerPlan = copy(developerPlan);
+        requiredApprovals = copy(requiredApprovals);
+        nextActions = copy(nextActions);
+        changeSetRecommendation = clean(changeSetRecommendation);
         confidence = Math.max(0d, Math.min(1d, confidence));
         status = !clean(status).isBlank() ? status.trim() : "COMPLETED";
         createdAt = !clean(createdAt).isBlank() ? createdAt : Instant.now().toString();
@@ -61,6 +96,11 @@ public record WorkerExecutionResult(
         out.put("risks", risks);
         out.put("suggestedTests", suggestedTests);
         out.put("artifacts", artifacts.stream().map(TeamArtifact::toMap).toList());
+        out.put("policySummary", policySummary);
+        out.put("developerPlan", developerPlan);
+        out.put("requiredApprovals", requiredApprovals);
+        out.put("nextActions", nextActions);
+        out.put("changeSetRecommendation", changeSetRecommendation);
         out.put("confidence", confidence);
         out.put("status", status);
         out.put("createdAt", createdAt);
@@ -86,6 +126,11 @@ public record WorkerExecutionResult(
                 stringList(raw.get("risks")),
                 stringList(raw.get("suggestedTests")),
                 artifacts(raw.get("artifacts")),
+                stringList(raw.get("policySummary")),
+                stringList(raw.get("developerPlan")),
+                stringList(raw.get("requiredApprovals")),
+                stringList(raw.get("nextActions")),
+                string(raw.get("changeSetRecommendation")),
                 doubleValue(raw.get("confidence")),
                 string(raw.get("status")),
                 string(raw.get("createdAt"))

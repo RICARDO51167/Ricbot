@@ -8,6 +8,7 @@ public final class SessionRuntimeKeys {
     public static final String SUBAGENT_RESULTS_KEY = "subagent_results";
     public static final String TEAM_SESSION_ID_KEY = "team_session_id";
     public static final String TEAM_CONTEXT_KEY = "team_context";
+    public static final String DEVELOPER_TASK_ID_KEY = "developer_task_id";
     public static final String CHANGESET_ID_KEY = "changeset_id";
     public static final String CHANGESET_SUMMARY_KEY = "changeset_summary";
     public static final String CHANGESET_STATUS_KEY = "changeset_status";

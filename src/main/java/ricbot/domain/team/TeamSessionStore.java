@@ -173,6 +173,40 @@ public class TeamSessionStore {
                 .toList();
     }
 
+    public List<PendingImplementationStep> loadImplementationSteps(String sessionId) {
+        List<PendingImplementationStep> out = new ArrayList<>();
+        for (Map<String, Object> row : readJsonLines(sessionDir(sessionId).resolve("implementation_steps.jsonl"))) {
+            PendingImplementationStep step = PendingImplementationStep.fromMap(row);
+            if (step != null) {
+                out.add(step);
+            }
+        }
+        return out;
+    }
+
+    public List<PendingImplementationStep> loadImplementationStepsForTask(String sessionId, String taskId) {
+        String id = taskId != null ? taskId.trim() : "";
+        return loadImplementationSteps(sessionId).stream()
+                .filter(step -> id.isBlank() || id.equals(step.taskId()))
+                .toList();
+    }
+
+    public PendingImplementationStep findImplementationStep(String sessionId, String stepId) {
+        String id = stepId != null ? stepId.trim() : "";
+        if (id.isBlank()) {
+            return null;
+        }
+        return loadImplementationSteps(sessionId).stream()
+                .filter(step -> id.equals(step.id()))
+                .findFirst()
+                .orElse(null);
+    }
+
+    public void saveImplementationSteps(String sessionId, List<PendingImplementationStep> steps) {
+        writeJsonLines(sessionDir(sessionId).resolve("implementation_steps.jsonl"),
+                (steps != null ? steps : List.<PendingImplementationStep>of()).stream().map(PendingImplementationStep::toMap).toList());
+    }
+
     public void appendWorkerExecution(String sessionId, WorkerExecutionResult result) {
         if (result == null) {
             return;
@@ -231,7 +265,7 @@ public class TeamSessionStore {
             if (!Files.exists(dir.resolve("whiteboard.md"))) {
                 Files.writeString(dir.resolve("whiteboard.md"), "# Team Whiteboard " + dir.getFileName() + "\n", StandardCharsets.UTF_8);
             }
-            for (String file : List.of("tasks.jsonl", "events.jsonl", "artifacts.jsonl", "workers.jsonl")) {
+            for (String file : List.of("tasks.jsonl", "events.jsonl", "artifacts.jsonl", "workers.jsonl", "implementation_steps.jsonl")) {
                 Path target = dir.resolve(file);
                 if (!Files.exists(target)) {
                     Files.writeString(target, "", StandardCharsets.UTF_8);
