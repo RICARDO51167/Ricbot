@@ -43,6 +43,7 @@ import ricbot.domain.team.TeamEvent;
 import ricbot.domain.team.TeamRole;
 import ricbot.domain.team.TeamSession;
 import ricbot.domain.team.TeamTask;
+import ricbot.domain.team.TeamTaskReport;
 import ricbot.domain.team.ImplementationStepGate;
 import ricbot.domain.team.ImplementationStepStatus;
 import ricbot.domain.team.ImplementationStepType;
@@ -1018,6 +1019,7 @@ final class AgentCommands {
                 case "run-worker" -> teamRunWorker(ctx, afterCommand(args));
                 case "run-verifier" -> teamRunVerifier(ctx, afterCommand(args));
                 case "worker-report" -> teamWorkerReport(ctx, afterCommand(args));
+                case "report" -> teamTaskReport(ctx, afterCommand(args));
                 case "tool-call" -> teamToolCall(ctx, afterCommand(args));
                 case "plan-steps" -> teamPlanSteps(ctx, afterCommand(args));
                 case "steps" -> teamSteps(ctx, afterCommand(args));
@@ -1035,7 +1037,7 @@ final class AgentCommands {
                 case "events" -> teamEvents(ctx);
                 case "whiteboard" -> teamWhiteboard(ctx);
                 case "abort" -> teamAbort(ctx, afterCommand(args));
-                default -> completedReply(ctx, "用法：/team start <goal>|status|list|resume <sessionId>|archive <sessionId>|suggest <goal>|suggest-current|task <role> <goal>|run-worker <taskId>|run-verifier <taskId>|worker-report <taskId>|tool-call <taskId> <toolName> <jsonArgs>|plan-steps <taskId>|steps <taskId>|show-step <stepId>|next-step <taskId>|update-step <stepId> <jsonUpdate>|apply-step <stepId>|reject-step <stepId>|step-timeline <stepId>|task-timeline <taskId>|audit <taskId>|auto-verify <taskId>|verifier-report <taskId>|verify <taskId> pass|reject|needs-human <reason>|events|whiteboard|abort <taskId>");
+                default -> completedReply(ctx, "用法：/team start <goal>|status|list|resume <sessionId>|archive <sessionId>|suggest <goal>|suggest-current|task <role> <goal>|run-worker <taskId>|run-verifier <taskId>|worker-report <taskId>|report <taskId>|tool-call <taskId> <toolName> <jsonArgs>|plan-steps <taskId>|steps <taskId>|show-step <stepId>|next-step <taskId>|update-step <stepId> <jsonUpdate>|apply-step <stepId>|reject-step <stepId>|step-timeline <stepId>|task-timeline <taskId>|audit <taskId>|auto-verify <taskId>|verifier-report <taskId>|verify <taskId> pass|reject|needs-human <reason>|events|whiteboard|abort <taskId>");
             };
         } catch (IllegalArgumentException | IllegalStateException e) {
             return completedReply(ctx, "team error: " + e.getMessage());
@@ -1338,6 +1340,25 @@ final class AgentCommands {
             sb.append(renderWorkerExecutionResult(result, teamEngine.findTask(taskId))).append("\n\n");
         }
         return completedReply(ctx, sb.toString().trim());
+    }
+
+    private CompletableFuture<OutboundMessage> teamTaskReport(CommandRouter.CommandContext ctx, String rawArgs) {
+        String taskId = commandArg(rawArgs, 0);
+        TeamTask task = teamEngine.findTask(taskId);
+        if (task == null) {
+            throw new IllegalArgumentException("team task not found: " + taskId);
+        }
+        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
+        storeTeamContext(session, task.sessionId());
+        TeamTaskReport report = teamEngine.taskReport(taskId);
+        if (teamReportFlags(rawArgs).contains("--json")) {
+            try {
+                return completedReply(ctx, MAPPER.writeValueAsString(report.toMap()));
+            } catch (Exception e) {
+                throw new IllegalStateException("failed to render team task report json: " + e.getMessage());
+            }
+        }
+        return completedReply(ctx, renderTeamTaskReport(report));
     }
 
     private CompletableFuture<OutboundMessage> teamToolCall(CommandRouter.CommandContext ctx, String rawArgs) {
@@ -1965,6 +1986,25 @@ final class AgentCommands {
                     .append("\n");
         }
         return sb.toString().trim();
+    }
+
+    private String renderTeamTaskReport(TeamTaskReport report) {
+        return "team task report\n"
+                + "taskId: " + report.taskId() + "\n"
+                + "teamSessionId: " + (report.teamSessionId().isBlank() ? "none" : report.teamSessionId()) + "\n"
+                + "title: " + (report.title().isBlank() ? "none" : report.title()) + "\n"
+                + "status: " + report.status() + "\n"
+                + "health: " + report.health() + "\n"
+                + "progress: " + report.completedSteps() + "/" + report.totalSteps()
+                + " failed=" + report.failedSteps()
+                + " pending=" + report.pendingSteps() + "\n"
+                + "linkedAuditRecords: " + report.linkedAuditRecords() + "\n"
+                + "latestEvent: " + (report.latestEvent().isBlank() ? "none" : report.latestEvent()) + "\n"
+                + "latestChangeSet: " + (report.latestChangeSet().isBlank() ? "none" : report.latestChangeSet()) + "\n"
+                + "latestVerifier: " + (report.latestVerifier().isBlank() ? "none" : report.latestVerifier()) + "\n"
+                + "durationMillis: " + report.durationMillis() + "\n"
+                + "warnings: " + renderListInline(report.warnings()) + "\n"
+                + "suggestedNextActions: " + renderListInline(report.suggestedNextActions());
     }
 
     private long countSteps(List<PendingImplementationStep> steps, ImplementationStepStatus status) {
@@ -2679,6 +2719,24 @@ final class AgentCommands {
             }
             if (!flag.equals("--compact") && !flag.equals("--json")) {
                 throw new IllegalArgumentException("unsupported audit flag: " + parts[i]);
+            }
+            if (!flags.contains(flag)) {
+                flags.add(flag);
+            }
+        }
+        return flags;
+    }
+
+    private static List<String> teamReportFlags(String args) {
+        String[] parts = trim(args).split("\\s+");
+        List<String> flags = new ArrayList<>();
+        for (int i = 1; i < parts.length; i++) {
+            String flag = parts[i].trim().toLowerCase(java.util.Locale.ROOT);
+            if (flag.isBlank()) {
+                continue;
+            }
+            if (!flag.equals("--json")) {
+                throw new IllegalArgumentException("unsupported report flag: " + parts[i]);
             }
             if (!flags.contains(flag)) {
                 flags.add(flag);

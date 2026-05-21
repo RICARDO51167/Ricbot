@@ -560,6 +560,16 @@ class AgentCommandsTest {
         String jsonAudit = router.dispatch(context("/team audit " + taskId + " --json", sessionManager)).get().getContent();
         assertTrue(jsonAudit.contains("\"summary\""), jsonAudit);
         assertTrue(jsonAudit.contains("\"auditHealth\""), jsonAudit);
+        String report = router.dispatch(context("/team report " + taskId, sessionManager)).get().getContent();
+        assertTrue(report.contains("team task report"), report);
+        assertTrue(report.contains("status: RUNNING"), report);
+        assertTrue(report.contains("health: WARNING"), report);
+        assertTrue(report.contains("progress:"), report);
+        assertTrue(report.contains("suggestedNextActions:"), report);
+        String reportJson = router.dispatch(context("/team report " + taskId + " --json", sessionManager)).get().getContent();
+        assertTrue(reportJson.contains("\"status\":\"RUNNING\""), reportJson);
+        assertTrue(reportJson.contains("\"health\":\"WARNING\""), reportJson);
+        assertTrue(reportJson.contains("\"suggestedNextActions\""), reportJson);
 
         String rejectStepId = stepId(planned, "[RUN_VERIFIER]");
         String rejected = router.dispatch(context("/team reject-step " + rejectStepId, sessionManager)).get().getContent();

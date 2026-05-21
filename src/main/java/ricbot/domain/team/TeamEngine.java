@@ -26,6 +26,7 @@ public class TeamEngine {
     private final VerificationService verificationService = new VerificationService();
     private final TeamWorkerExecutor workerExecutor;
     private final StepAuditService stepAuditService;
+    private final TeamTaskReportService taskReportService;
     private final Map<String, TeamSession> sessions = new LinkedHashMap<>();
     private final Map<String, TeamTask> tasks = new LinkedHashMap<>();
     private final Map<String, List<TeamEvent>> events = new LinkedHashMap<>();
@@ -40,6 +41,7 @@ public class TeamEngine {
         this.traceStore = traceStore;
         this.workerExecutor = new TeamWorkerExecutor(verificationService, new PolicyEngine(this.workspace));
         this.stepAuditService = new StepAuditService(this.workspace, traceStore);
+        this.taskReportService = new TeamTaskReportService(stepAuditService);
         restoreKnownSessions();
     }
 
@@ -489,6 +491,11 @@ public class TeamEngine {
 
     public String renderJsonCompactTaskAudit(String taskId) {
         return stepAuditService.renderJsonCompactTaskAudit(taskId);
+    }
+
+    public TeamTaskReport taskReport(String taskId) {
+        TeamTask task = requireTask(taskId);
+        return taskReportService.buildReport(task.sessionId(), task.id(), task.goal());
     }
 
     public PendingImplementationStep nextImplementationStep(String taskId, ImplementationStepGate.GateContext context) {
