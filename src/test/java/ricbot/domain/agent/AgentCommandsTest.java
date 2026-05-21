@@ -1193,6 +1193,42 @@ class AgentCommandsTest {
         assertTrue(restored.contains("status: VERIFIED"), restored);
     }
 
+    @Test
+    void experiencePromoteSkillCommandCreatesGeneratedSkillAndRejectsInvalidStatus(@TempDir Path workspace) throws Exception {
+        SessionManager sessionManager = new SessionManager(workspace);
+        MemoryStore memoryStore = new MemoryStore(workspace);
+        ExperienceStore store = new ExperienceStore(workspace);
+        ExperienceEntry verified = store.verify(store.addCandidate(experience("Filesystem Generated Skill", 0.9d)).id());
+        ExperienceEntry candidate = store.addCandidate(experience("Candidate Generated Skill", 0.7d));
+
+        AgentCommands commands = new AgentCommands(
+                sessionManager,
+                memoryStore,
+                null,
+                new Config.DreamConfig(),
+                "model",
+                workspace,
+                msg -> "cli:direct",
+                key -> List.<Future<?>>of(),
+                (key, reason) -> {}
+        );
+        CommandRouter router = new CommandRouter();
+        commands.register(router);
+
+        String promoted = router.dispatch(context("/experience promote-skill " + verified.id(), sessionManager)).get().getContent();
+        assertTrue(promoted.contains("experience skill promoted"), promoted);
+        assertTrue(promoted.contains("skillName: filesystem-generated-skill"), promoted);
+        assertTrue(promoted.contains("path: skills/generated/filesystem-generated-skill.md"), promoted);
+        assertTrue(Files.readString(workspace.resolve("skills/generated/filesystem-generated-skill.md")).contains("source_experience_id: " + verified.id()));
+
+        String candidateRejected = router.dispatch(context("/experience promote-skill " + candidate.id(), sessionManager)).get().getContent();
+        assertTrue(candidateRejected.contains("experience error:"), candidateRejected);
+        assertTrue(candidateRejected.contains("only VERIFIED experience"), candidateRejected);
+
+        String missing = router.dispatch(context("/experience promote-skill exp_missing", sessionManager)).get().getContent();
+        assertTrue(missing.contains("experience error: experience not found: exp_missing"), missing);
+    }
+
     private CommandRouter.CommandContext context(String raw, SessionManager sessionManager) {
         InboundMessage msg = new InboundMessage("cli", "user", "direct", raw);
         Session session = sessionManager.getOrCreate("cli:direct");

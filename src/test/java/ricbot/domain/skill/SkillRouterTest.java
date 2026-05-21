@@ -426,4 +426,50 @@ public class SkillRouterTest {
         assertTrue(result.renderedContext().contains("[skill truncated]"), result.renderedContext());
         assertTrue(result.selectedSkills().contains("large"));
     }
+
+    @Test
+    void generatedMarkdownSkillsAreLoadedAndRoutedByKeywords(@TempDir Path workspace) throws Exception {
+        Path skillsDir = workspace.resolve("skills");
+        Files.createDirectories(skillsDir.resolve("base"));
+        Files.createDirectories(skillsDir.resolve("generated"));
+
+        Files.writeString(skillsDir.resolve("base").resolve("SKILL.md"), """
+                ---
+                always: true
+                ---
+                Base rules.
+                """);
+
+        Files.writeString(skillsDir.resolve("generated").resolve("filesystem-safety-rule.md"), """
+                ---
+                name: filesystem-safety-rule
+                source: experience
+                priority: 70
+                keywords:
+                  - filesystem-safety
+                  - writefile
+                channels:
+                  - cli
+                ---
+                Generated filesystem safety body.
+                """);
+
+        SkillsLoader loader = new SkillsLoader(workspace, skillsDir, Set.of());
+        assertTrue(loader.listSkills(false).stream()
+                .anyMatch(row -> "filesystem-safety-rule".equals(row.get("name")) && "generated".equals(row.get("source"))));
+
+        SkillRouter router = new SkillRouter(loader, 2, 10000);
+        SkillRouter.SelectionResult result = router.selectAndRender(new SkillRoutingContext(
+                workspace,
+                "cli",
+                "c1",
+                "please apply filesystem-safety before writefile changes",
+                List.of("read_file"),
+                Map.of(),
+                Map.of()
+        ));
+
+        assertTrue(result.renderedContext().contains("Generated filesystem safety body."), result.renderedContext());
+        assertTrue(result.selectedSkills().contains("filesystem-safety-rule"), result.selectedSkills().toString());
+    }
 }

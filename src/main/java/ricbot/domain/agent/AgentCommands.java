@@ -14,6 +14,7 @@ import ricbot.domain.experience.ExperienceExtractor;
 import ricbot.domain.experience.ExperienceOutcome;
 import ricbot.domain.experience.ExperiencePromoter;
 import ricbot.domain.experience.ExperienceRenderer;
+import ricbot.domain.experience.ExperienceSkillPromoter;
 import ricbot.domain.experience.ExperienceStore;
 import ricbot.domain.message.InboundMessage;
 import ricbot.domain.message.OutboundMessage;
@@ -323,13 +324,15 @@ final class AgentCommands {
                         + renderer.renderDetail(store.archive(commandArg(args, 1))));
                 case "promote" -> completedReply(ctx, "experience promoted\n"
                         + renderer.renderDetail(new ExperiencePromoter(new NoteService(workspace), store).promote(commandArg(args, 1))));
+                case "promote-skill" -> completedReply(ctx, renderExperienceSkillPromotion(
+                        new ExperienceSkillPromoter(workspace, store).promote(commandArg(args, 1), args.contains("--force"))));
                 case "demote" -> completedReply(ctx, "experience demoted\n"
                         + renderer.renderDetail(store.demote(commandArg(args, 1))));
                 case "restore" -> completedReply(ctx, "experience restored\n"
                         + renderer.renderDetail(store.restore(commandArg(args, 1))));
                 case "stats" -> completedReply(ctx, renderer.renderStats(store.stats()));
                 case "review" -> completedReply(ctx, renderer.renderReview(store.review(20)));
-                default -> completedReply(ctx, "用法：/experience extract|list|show <id>|verify <id>|reject <id>|feedback <id> success|failure|neutral|usage <id>|stale|archive <id>|promote <id>|demote <id>|restore <id>|stats|review");
+                default -> completedReply(ctx, "用法：/experience extract|list|show <id>|verify <id>|reject <id>|feedback <id> success|failure|neutral|usage <id>|stale|archive <id>|promote <id>|promote-skill <id>|demote <id>|restore <id>|stats|review");
             };
         } catch (IllegalArgumentException | IllegalStateException e) {
             return completedReply(ctx, "experience error: " + e.getMessage());
@@ -351,6 +354,27 @@ final class AgentCommands {
         return completedReply(ctx, "experience extracted: " + stored.size()
                 + "\nfile: " + workspace.relativize(store.candidatesFile())
                 + "\n\n" + renderer.renderList(stored));
+    }
+
+    private String renderExperienceSkillPromotion(ExperienceSkillPromoter.PromotionResult result) {
+        String relativePath;
+        try {
+            relativePath = workspace.relativize(result.skillPath().toAbsolutePath().normalize()).toString();
+        } catch (Exception e) {
+            relativePath = result.skillPath().toString();
+        }
+        if (result.alreadyExists()) {
+            return "experience skill already exists\n"
+                    + "sourceExperienceId: " + result.sourceExperienceId() + "\n"
+                    + "skillName: " + result.skillName() + "\n"
+                    + "path: " + relativePath + "\n"
+                    + "hint: rerun with --force to overwrite";
+        }
+        return "experience skill promoted\n"
+                + "sourceExperienceId: " + result.sourceExperienceId() + "\n"
+                + "skillName: " + result.skillName() + "\n"
+                + "path: " + relativePath + "\n"
+                + "created: " + result.created();
     }
 
     private CompletableFuture<OutboundMessage> trace(CommandRouter.CommandContext ctx) {

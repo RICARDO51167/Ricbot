@@ -271,6 +271,7 @@ public class SkillsLoader {
 
             Map<String, SkillEntry> byName = new LinkedHashMap<>();
             scanDir(workspaceSkills, "workspace", byName, null);
+            scanGeneratedSkills(workspaceSkills.resolve("generated"), byName, null);
 
             Set<String> workspaceNames = new HashSet<>(byName.keySet());
             if (Files.exists(builtinSkills)) {
@@ -875,6 +876,30 @@ public class SkillsLoader {
             }
         } catch (Exception e) {
             log.debug("扫描技能目录失败: {}", base, e);
+        }
+    }
+
+    private void scanGeneratedSkills(Path base, Map<String, SkillEntry> out, Set<String> skipNames) {
+        if (!Files.exists(base)) {
+            return;
+        }
+        try (DirectoryStream<Path> stream = Files.newDirectoryStream(base, "*.md")) {
+            for (Path skillFile : stream) {
+                if (!Files.isRegularFile(skillFile)) {
+                    continue;
+                }
+                String filename = skillFile.getFileName().toString();
+                String name = filename.endsWith(".md") ? filename.substring(0, filename.length() - 3) : filename;
+                if (name.isBlank()) {
+                    continue;
+                }
+                if (skipNames != null && skipNames.contains(name)) {
+                    continue;
+                }
+                out.putIfAbsent(name, new SkillEntry(name, skillFile, "generated", null));
+            }
+        } catch (Exception e) {
+            log.debug("扫描 generated 技能目录失败: {}", base, e);
         }
     }
 
