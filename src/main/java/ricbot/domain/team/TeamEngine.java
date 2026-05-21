@@ -487,6 +487,10 @@ public class TeamEngine {
         return stepAuditService.renderJsonTaskAudit(taskId);
     }
 
+    public String renderJsonCompactTaskAudit(String taskId) {
+        return stepAuditService.renderJsonCompactTaskAudit(taskId);
+    }
+
     public PendingImplementationStep nextImplementationStep(String taskId, ImplementationStepGate.GateContext context) {
         return new ImplementationStepGate().nextStep(listImplementationSteps(taskId), context);
     }

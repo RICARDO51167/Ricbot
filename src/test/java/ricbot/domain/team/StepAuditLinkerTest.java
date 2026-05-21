@@ -35,6 +35,19 @@ class StepAuditLinkerTest {
     }
 
     @Test
+    void targetPathLinksToMatchingEditStep() {
+        PendingImplementationStep edit = step("edit_1", ImplementationStepType.EDIT, ImplementationStepStatus.READY);
+        StepAuditRecord audit = new StepAuditRecord(null, "", "task_1", "team_1",
+                StepAuditEventType.STEP_TOOL_APPLIED, "", "", "tool applied", "", "", "", "", "", "", null,
+                Map.of("targetPath", "README.md"));
+
+        StepAuditRecord linked = linker.link(List.of(edit), List.of(audit)).get(0);
+
+        assertEquals("edit_1", linked.stepId());
+        assertEquals("HIGH", linked.metadata().get("linkConfidence"));
+    }
+
+    @Test
     void existingStepIdIsNotOverwritten() {
         PendingImplementationStep edit = step("edit_1", ImplementationStepType.EDIT, ImplementationStepStatus.APPLIED);
         StepAuditRecord existing = record("manual_step", StepAuditEventType.STEP_CHANGESET_LINKED, "changeset_1", "");
@@ -42,6 +55,28 @@ class StepAuditLinkerTest {
         StepAuditRecord linked = linker.link(List.of(edit), List.of(existing)).get(0);
 
         assertEquals("manual_step", linked.stepId());
+    }
+
+    @Test
+    void unlinkedRecordsRemainUnlinked() {
+        StepAuditRecord audit = record("", StepAuditEventType.STEP_UPDATED, "", "");
+
+        StepAuditRecord linked = linker.link(List.of(), List.of(audit)).get(0);
+
+        assertEquals("", linked.stepId());
+    }
+
+    @Test
+    void duplicateChangeSetRecordsCanLinkToSameAppliedStep() {
+        PendingImplementationStep edit = step("edit_1", ImplementationStepType.EDIT, ImplementationStepStatus.APPLIED);
+
+        List<StepAuditRecord> linked = linker.link(List.of(edit), List.of(
+                record("", StepAuditEventType.STEP_CHANGESET_LINKED, "changeset_1", ""),
+                record("", StepAuditEventType.STEP_CHANGESET_LINKED, "changeset_2", "")
+        ));
+
+        assertEquals("edit_1", linked.get(0).stepId());
+        assertEquals("edit_1", linked.get(1).stepId());
     }
 
     private PendingImplementationStep step(String id, ImplementationStepType type, ImplementationStepStatus status) {

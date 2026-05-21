@@ -73,6 +73,7 @@ import ricbot.tool.api.ToolRegistry;
 import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -1485,11 +1486,16 @@ final class AgentCommands {
         }
         Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
         storeTeamContext(session, task.sessionId());
-        String normalized = rawArgs != null ? rawArgs.toLowerCase(java.util.Locale.ROOT) : "";
-        if (normalized.contains("--json")) {
+        List<String> flags = teamAuditFlags(rawArgs);
+        boolean compact = flags.contains("--compact");
+        boolean json = flags.contains("--json");
+        if (json && compact) {
+            return completedReply(ctx, teamEngine.renderJsonCompactTaskAudit(taskId));
+        }
+        if (json) {
             return completedReply(ctx, teamEngine.renderJsonTaskAudit(taskId));
         }
-        return completedReply(ctx, teamEngine.renderTaskAudit(taskId, normalized.contains("--compact")));
+        return completedReply(ctx, teamEngine.renderTaskAudit(taskId, compact));
     }
 
     private CompletableFuture<OutboundMessage> teamApplyStep(CommandRouter.CommandContext ctx, String rawArgs) {
@@ -2661,6 +2667,24 @@ final class AgentCommands {
             throw new IllegalArgumentException("missing id");
         }
         return parts[index];
+    }
+
+    private static List<String> teamAuditFlags(String args) {
+        String[] parts = trim(args).split("\\s+");
+        List<String> flags = new ArrayList<>();
+        for (int i = 1; i < parts.length; i++) {
+            String flag = parts[i].trim().toLowerCase(java.util.Locale.ROOT);
+            if (flag.isBlank()) {
+                continue;
+            }
+            if (!flag.equals("--compact") && !flag.equals("--json")) {
+                throw new IllegalArgumentException("unsupported audit flag: " + parts[i]);
+            }
+            if (!flags.contains(flag)) {
+                flags.add(flag);
+            }
+        }
+        return flags;
     }
 
     private static String commandArgOrBlank(String args, int index) {

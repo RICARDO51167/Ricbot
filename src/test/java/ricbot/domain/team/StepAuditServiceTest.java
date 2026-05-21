@@ -1,10 +1,14 @@
 package ricbot.domain.team;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import ricbot.domain.security.CommandRiskLevel;
 
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
@@ -12,6 +16,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class StepAuditServiceTest {
+    private static final ObjectMapper MAPPER = new ObjectMapper().findAndRegisterModules();
 
     @Test
     void appendListAndRenderTimeline(@TempDir Path workspace) {
@@ -46,8 +51,55 @@ class StepAuditServiceTest {
         assertTrue(service.listByTask("task_1").isEmpty());
     }
 
+    @Test
+    void compactSummaryReadsImplementationStepsJsonl(@TempDir Path workspace) throws Exception {
+        writeStep(workspace, step("step_ready", "task_1", ImplementationStepStatus.READY));
+        StepAuditService service = new StepAuditService(workspace);
+
+        StepAuditSummary summary = service.summarizeTask("task_1");
+
+        assertEquals(1, summary.totalSteps());
+        assertEquals(1, summary.readyCount());
+        assertTrue(service.renderCompactTaskAudit("task_1").contains("total=1"));
+    }
+
+    @Test
+    void compactSummarySkipsBadImplementationStepLines(@TempDir Path workspace) throws Exception {
+        Path file = workspace.resolve(".team").resolve("team_1").resolve("implementation_steps.jsonl");
+        Files.createDirectories(file.getParent());
+        Files.writeString(file, "{bad json}\n", StandardCharsets.UTF_8, StandardOpenOption.CREATE);
+        Files.writeString(file, MAPPER.writeValueAsString(step("step_ready", "task_1", ImplementationStepStatus.READY).toMap()) + "\n",
+                StandardCharsets.UTF_8, StandardOpenOption.APPEND);
+
+        StepAuditSummary summary = new StepAuditService(workspace).summarizeTask("task_1");
+
+        assertEquals(1, summary.totalSteps());
+        assertTrue(summary.warnings().stream().anyMatch(warning -> warning.contains("skipped invalid jsonl line")), summary.warnings().toString());
+    }
+
+    @Test
+    void missingImplementationStepsFileDegradesToWarning(@TempDir Path workspace) {
+        StepAuditSummary summary = new StepAuditService(workspace).summarizeTask("missing_task");
+
+        assertEquals(0, summary.totalSteps());
+        assertTrue(summary.warnings().contains("no implementation steps found"), summary.warnings().toString());
+        assertTrue(new StepAuditService(workspace).renderCompactTaskAudit("missing_task").contains("no implementation steps found"));
+    }
+
     private StepAuditRecord record(String stepId, String taskId, String teamSessionId, StepAuditEventType eventType, String before, String after) {
         return new StepAuditRecord(null, stepId, taskId, teamSessionId, eventType,
                 before, after, eventType.name(), "", "", "", "", "", "", null, Map.of());
+    }
+
+    private void writeStep(Path workspace, PendingImplementationStep step) throws Exception {
+        Path file = workspace.resolve(".team").resolve(step.teamSessionId()).resolve("implementation_steps.jsonl");
+        Files.createDirectories(file.getParent());
+        Files.writeString(file, MAPPER.writeValueAsString(step.toMap()) + "\n", StandardCharsets.UTF_8,
+                StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+    }
+
+    private PendingImplementationStep step(String id, String taskId, ImplementationStepStatus status) {
+        return new PendingImplementationStep(id, "team_1", taskId, TeamRole.DEVELOPER, ImplementationStepType.READ,
+                "README.md", "", "", "", "read target", CommandRiskLevel.SAFE, false, Map.of(), status, null, null);
     }
 }

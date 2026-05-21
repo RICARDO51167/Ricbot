@@ -545,11 +545,18 @@ class AgentCommandsTest {
         String taskTimeline = router.dispatch(context("/team task-timeline " + taskId, sessionManager)).get().getContent();
         assertTrue(taskTimeline.contains("task step audit"), taskTimeline);
         assertTrue(taskTimeline.contains("totalAuditRecords="), taskTimeline);
+        String compactTaskTimeline = router.dispatch(context("/team task-timeline " + taskId + " --compact", sessionManager)).get().getContent();
+        assertTrue(compactTaskTimeline.contains("compact step audit"), compactTaskTimeline);
+        assertTrue(compactTaskTimeline.contains("linkedAuditEvents="), compactTaskTimeline);
         String audit = router.dispatch(context("/team audit " + taskId, sessionManager)).get().getContent();
         assertTrue(audit.contains("task step audit"), audit);
         String compactAudit = router.dispatch(context("/team audit " + taskId + " --compact", sessionManager)).get().getContent();
         assertTrue(compactAudit.contains("compact step audit"), compactAudit);
         assertTrue(compactAudit.contains("auditHealth="), compactAudit);
+        String compactJsonAudit = router.dispatch(context("/team audit " + taskId + " --compact --json", sessionManager)).get().getContent();
+        assertTrue(compactJsonAudit.contains("\"auditHealth\""), compactJsonAudit);
+        assertTrue(compactJsonAudit.contains("\"totalSteps\""), compactJsonAudit);
+        assertTrue(compactJsonAudit.contains("\"warnings\""), compactJsonAudit);
         String jsonAudit = router.dispatch(context("/team audit " + taskId + " --json", sessionManager)).get().getContent();
         assertTrue(jsonAudit.contains("\"summary\""), jsonAudit);
         assertTrue(jsonAudit.contains("\"auditHealth\""), jsonAudit);

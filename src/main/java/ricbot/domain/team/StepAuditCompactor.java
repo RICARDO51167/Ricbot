@@ -1,5 +1,6 @@
 package ricbot.domain.team;
 
+import java.time.Instant;
 import java.util.Comparator;
 import java.util.List;
 
@@ -13,6 +14,10 @@ public class StepAuditCompactor {
         StepAuditRecord latest = safeRecords.stream()
                 .max(Comparator.comparing(StepAuditRecord::createdAt))
                 .orElse(null);
+        StepAuditRecord first = safeRecords.stream()
+                .min(Comparator.comparing(StepAuditRecord::createdAt))
+                .orElse(null);
+        long durationMillis = durationMillis(first, latest);
         List<String> linkedChangeSetIds = safeRecords.stream()
                 .map(StepAuditRecord::changeSetId)
                 .filter(value -> value != null && !value.isBlank())
@@ -77,12 +82,28 @@ public class StepAuditCompactor {
                 latestChangeSetId,
                 latestVerificationStatus,
                 latest != null ? latest.eventType().name() : "",
+                first != null ? first.createdAt() : "",
+                latest != null ? latest.createdAt() : "",
+                durationMillis,
+                (int) safeRecords.stream().filter(record -> !record.stepId().isBlank()).count(),
                 unresolvedBlocked,
                 failedSteps,
                 readySteps,
                 nextSuggested,
-                health
+                health,
+                List.of()
         );
+    }
+
+    private long durationMillis(StepAuditRecord first, StepAuditRecord latest) {
+        if (first == null || latest == null) {
+            return 0L;
+        }
+        try {
+            return Math.max(0L, Instant.parse(latest.createdAt()).toEpochMilli() - Instant.parse(first.createdAt()).toEpochMilli());
+        } catch (Exception e) {
+            return 0L;
+        }
     }
 
     private int count(List<StepAuditRecord> records, StepAuditEventType type) {

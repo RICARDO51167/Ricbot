@@ -78,11 +78,10 @@ public class StepAuditService {
     }
 
     public StepAuditSummary summarizeTask(String taskId) {
-        List<PendingImplementationStep> steps = loadStepsForTask(taskId);
+        StepLoadResult stepLoad = loadStepsForTaskResult(taskId);
+        List<PendingImplementationStep> steps = stepLoad.steps();
         List<StepAuditRecord> linked = linkedRecords(taskId, steps);
-        StepAuditSummary summary = new StepAuditCompactor().compact(taskId, steps, linked);
-        traceSummary(summary);
-        return summary;
+        return new StepAuditCompactor().compact(taskId, steps, linked).withWarnings(stepLoad.warnings());
     }
 
     public String renderStepTimeline(String stepId) {
@@ -119,8 +118,16 @@ public class StepAuditService {
         if (records.isEmpty()) {
             return "No step audit records for task: " + taskId;
         }
+        StepAuditRecord latest = records.stream()
+                .max(Comparator.comparing(StepAuditRecord::createdAt))
+                .orElse(null);
         StringBuilder sb = new StringBuilder("task step audit\n");
-        sb.append(summarizeTask(taskId).renderCompact()).append("\n");
+        sb.append("task=").append(taskId)
+                .append(" totalAuditRecords=").append(records.size())
+                .append(" latest=").append(latest != null ? latest.eventType() : "none")
+                .append(" step=").append(latest != null ? latest.stepId() : "none")
+                .append(" status=").append(latest != null && !latest.afterStatus().isBlank() ? latest.afterStatus() : "none")
+                .append("\n");
         for (StepAuditRecord record : records) {
             sb.append("- step=").append(record.stepId())
                     .append(" event=").append(record.eventType())
@@ -135,6 +142,15 @@ public class StepAuditService {
 
     public String renderCompactTaskAudit(String taskId) {
         return "compact step audit\n" + summarizeTask(taskId).renderCompact();
+    }
+
+    public String renderJsonCompactTaskAudit(String taskId) {
+        try {
+            return MAPPER.writeValueAsString(summarizeTask(taskId).toMap());
+        } catch (Exception e) {
+            warn("step audit compact json render failed: " + e.getMessage());
+            return "{\"error\":\"step audit compact json render failed\"}";
+        }
     }
 
     public String renderJsonTaskAudit(String taskId) {
@@ -178,22 +194,30 @@ public class StepAuditService {
 
     private List<StepAuditRecord> linkedRecords(String taskId, List<PendingImplementationStep> steps) {
         List<StepAuditRecord> records = listByTask(taskId);
-        List<StepAuditRecord> linked = new StepAuditLinker().link(steps, records);
-        if (linked.stream().anyMatch(record -> !record.stepId().isBlank() && record.metadata().containsKey("linkConfidence"))) {
-            traceLinked(taskId, linked);
-        }
-        return linked;
+        return new StepAuditLinker().link(steps, records);
     }
 
     private List<PendingImplementationStep> loadStepsForTask(String taskId) {
+        return loadStepsForTaskResult(taskId).steps();
+    }
+
+    private StepLoadResult loadStepsForTaskResult(String taskId) {
         String id = taskId != null ? taskId.trim() : "";
         if (id.isBlank() || !Files.isDirectory(teamRoot)) {
-            return List.of();
+            return new StepLoadResult(List.of(), List.of("no implementation steps found"));
         }
         List<PendingImplementationStep> out = new ArrayList<>();
+        List<String> warnings = new ArrayList<>();
+        boolean sawStepFile = false;
         try (var stream = Files.list(teamRoot)) {
             for (Path dir : stream.filter(Files::isDirectory).toList()) {
-                for (Map<String, Object> row : readJsonLines(dir.resolve("implementation_steps.jsonl"))) {
+                Path stepFile = dir.resolve("implementation_steps.jsonl");
+                if (Files.exists(stepFile)) {
+                    sawStepFile = true;
+                }
+                JsonLines lines = readJsonLines(stepFile);
+                warnings.addAll(lines.warnings());
+                for (Map<String, Object> row : lines.rows()) {
                     PendingImplementationStep step = PendingImplementationStep.fromMap(row);
                     if (step != null && id.equals(step.taskId())) {
                         out.add(step);
@@ -201,26 +225,42 @@ public class StepAuditService {
                 }
             }
         } catch (Exception e) {
-            warn("step audit load steps failed: " + e.getMessage());
+            String warning = "step audit load steps failed: " + e.getMessage();
+            warnings.add(warning);
+            warn(warning);
         }
-        return out;
+        if (!sawStepFile || out.isEmpty()) {
+            warnings.add("no implementation steps found");
+        }
+        return new StepLoadResult(out, warnings);
     }
 
-    private List<Map<String, Object>> readJsonLines(Path file) {
+    private JsonLines readJsonLines(Path file) {
         if (!Files.exists(file)) {
-            return List.of();
+            return new JsonLines(List.of(), List.of());
         }
         List<Map<String, Object>> out = new ArrayList<>();
+        List<String> warnings = new ArrayList<>();
         try {
+            int lineNo = 0;
             for (String line : Files.readAllLines(file, StandardCharsets.UTF_8)) {
+                lineNo++;
                 if (line != null && !line.isBlank()) {
-                    out.add(MAPPER.readValue(line, MAP_TYPE));
+                    try {
+                        out.add(MAPPER.readValue(line, MAP_TYPE));
+                    } catch (Exception e) {
+                        String warning = "skipped invalid jsonl line " + file.getFileName() + ":" + lineNo;
+                        warnings.add(warning);
+                        warn(warning + ": " + e.getMessage());
+                    }
                 }
             }
         } catch (Exception e) {
-            warn("step audit jsonl read failed: " + e.getMessage());
+            String warning = "step audit jsonl read failed: " + e.getMessage();
+            warnings.add(warning);
+            warn(warning);
         }
-        return out;
+        return new JsonLines(out, warnings);
     }
 
     private List<StepAuditRecord> readAuditFile(Path file) {
@@ -340,5 +380,11 @@ public class StepAuditService {
 
     private void warn(String message) {
         System.err.println("warning: " + message);
+    }
+
+    private record StepLoadResult(List<PendingImplementationStep> steps, List<String> warnings) {
+    }
+
+    private record JsonLines(List<Map<String, Object>> rows, List<String> warnings) {
     }
 }

@@ -22,11 +22,16 @@ public record StepAuditSummary(
         String latestChangeSetId,
         String latestVerificationStatus,
         String latestEvent,
+        String firstEventAt,
+        String latestEventAt,
+        long durationMillis,
+        int linkedAuditEventsCount,
         List<String> unresolvedBlockedSteps,
         List<String> failedSteps,
         List<String> readySteps,
         String nextSuggestedStepId,
-        StepAuditHealth auditHealth
+        StepAuditHealth auditHealth,
+        List<String> warnings
 ) {
     public StepAuditSummary {
         taskId = clean(taskId);
@@ -35,11 +40,16 @@ public record StepAuditSummary(
         latestChangeSetId = clean(latestChangeSetId);
         latestVerificationStatus = clean(latestVerificationStatus);
         latestEvent = clean(latestEvent);
+        firstEventAt = clean(firstEventAt);
+        latestEventAt = clean(latestEventAt);
+        durationMillis = Math.max(0L, durationMillis);
+        linkedAuditEventsCount = Math.max(0, linkedAuditEventsCount);
         unresolvedBlockedSteps = copy(unresolvedBlockedSteps);
         failedSteps = copy(failedSteps);
         readySteps = copy(readySteps);
         nextSuggestedStepId = clean(nextSuggestedStepId);
         auditHealth = auditHealth != null ? auditHealth : StepAuditHealth.NEEDS_REVIEW;
+        warnings = copy(warnings);
     }
 
     public Map<String, Object> toMap() {
@@ -60,28 +70,54 @@ public record StepAuditSummary(
         out.put("latestChangeSetId", latestChangeSetId);
         out.put("latestVerificationStatus", latestVerificationStatus);
         out.put("latestEvent", latestEvent);
+        out.put("firstEventAt", firstEventAt);
+        out.put("latestEventAt", latestEventAt);
+        out.put("durationMillis", durationMillis);
+        out.put("linkedAuditEventsCount", linkedAuditEventsCount);
         out.put("unresolvedBlockedSteps", unresolvedBlockedSteps);
         out.put("failedSteps", failedSteps);
         out.put("readySteps", readySteps);
         out.put("nextSuggestedStepId", nextSuggestedStepId);
         out.put("auditHealth", auditHealth.name());
+        out.put("warnings", warnings);
         return out;
     }
 
     public String renderCompact() {
+        int completed = appliedCount + rejectedCount;
+        int pending = Math.max(0, totalSteps - completed - failedCount);
         return "task=" + taskId
+                + " teamSessionId=" + (teamSessionId.isBlank() ? "none" : teamSessionId)
                 + " auditHealth=" + auditHealth
-                + " totalSteps=" + totalSteps
+                + "\nsteps: total=" + totalSteps
+                + " completed=" + completed
+                + " pending=" + pending
                 + " ready=" + readyCount
                 + " blocked=" + blockedCount
                 + " applied=" + appliedCount
+                + " rejected=" + rejectedCount
                 + " failed=" + failedCount
+                + "\nmilestones: created=" + createdCount
+                + " updated=" + updatedCount
                 + " approvalsRequired=" + approvalRequiredCount
                 + " toolApplied=" + toolAppliedCount
-                + " latestEvent=" + (latestEvent.isBlank() ? "none" : latestEvent)
-                + " latestChangeSetId=" + (latestChangeSetId.isBlank() ? "none" : latestChangeSetId)
-                + " latestVerificationStatus=" + (latestVerificationStatus.isBlank() ? "none" : latestVerificationStatus)
-                + " nextSuggestedStepId=" + (nextSuggestedStepId.isBlank() ? "none" : nextSuggestedStepId);
+                + " linkedAuditEvents=" + linkedAuditEventsCount
+                + "\nlatest: event=" + (latestEvent.isBlank() ? "none" : latestEvent)
+                + " changeSet=" + (latestChangeSetId.isBlank() ? "none" : latestChangeSetId)
+                + " verifier=" + (latestVerificationStatus.isBlank() ? "none" : latestVerificationStatus)
+                + " nextSuggestedStepId=" + (nextSuggestedStepId.isBlank() ? "none" : nextSuggestedStepId)
+                + "\ntime: firstEventAt=" + (firstEventAt.isBlank() ? "none" : firstEventAt)
+                + " latestEventAt=" + (latestEventAt.isBlank() ? "none" : latestEventAt)
+                + " durationMillis=" + durationMillis
+                + "\nwarnings: " + (warnings.isEmpty() ? "none" : String.join("; ", warnings));
+    }
+
+    public StepAuditSummary withWarnings(List<String> nextWarnings) {
+        return new StepAuditSummary(taskId, teamSessionId, totalSteps, createdCount, updatedCount, readyCount,
+                blockedCount, appliedCount, rejectedCount, failedCount, approvalRequiredCount, toolAppliedCount,
+                linkedChangeSetIds, latestChangeSetId, latestVerificationStatus, latestEvent, firstEventAt,
+                latestEventAt, durationMillis, linkedAuditEventsCount, unresolvedBlockedSteps, failedSteps,
+                readySteps, nextSuggestedStepId, auditHealth, nextWarnings);
     }
 
     private static List<String> copy(List<String> values) {
