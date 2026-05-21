@@ -5,98 +5,42 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 对应 Python: ProviderSpec
- *
- * 主要目标：
- * 1. 描述一个 provider 的元数据
- * 2. 作为 registry 的单条配置项
+ * Provider 规格定义
  */
 public class ProviderSpec {
 
-    /**
-     * 配置字段名，如 openai / anthropic / dashscope
-     */
     private String name;
 
-    /**
-     * 用于模型名匹配的关键字
-     */
     private List<String> keywords = new ArrayList<>();
 
-    /**
-     * API key 对应的环境变量
-     */
     private String envKey = "";
 
-    /**
-     * 展示名称
-     */
     private String displayName = "";
 
-    /**
-     * backend 类型:
-     * openai_compat / anthropic / azure_openai / openai_codex / github_copilot
-     */
     private String backend = "openai_compat";
 
-    /**
-     * 额外环境变量映射
-     */
     private List<EnvExtra> envExtras = new ArrayList<>();
 
-    /**
-     * 是否是 gateway
-     */
     private boolean gateway = false;
 
-    /**
-     * 是否本地 provider
-     */
     private boolean local = false;
 
-    /**
-     * 通过 key 前缀检测
-     */
     private String detectByKeyPrefix = "";
 
-    /**
-     * 通过 api_base 关键字检测
-     */
     private String detectByBaseKeyword = "";
 
-    /**
-     * 默认 API base
-     */
     private String defaultApiBase = "";
 
-    /**
-     * 是否发送前剥离 model 前缀
-     */
     private boolean stripModelPrefix = false;
 
-    /**
-     * 是否支持 max_completion_tokens
-     */
     private boolean supportsMaxCompletionTokens = false;
 
-    /**
-     * 模型级参数覆盖
-     */
     private List<ModelOverride> modelOverrides = new ArrayList<>();
 
-    /**
-     * 是否 OAuth provider
-     */
     private boolean oauth = false;
 
-    /**
-     * 是否 direct provider
-     */
     private boolean direct = false;
 
-    /**
-     * 是否支持 prompt caching
-     */
     private boolean supportsPromptCaching = false;
 
     public ProviderSpec() {
@@ -284,9 +228,6 @@ public class ProviderSpec {
                 '}';
     }
 
-    /**
-     * 对应 Python env_extras 元组项
-     */
     public static class EnvExtra {
         private String envName;
         private String envValueTemplate;
@@ -316,9 +257,6 @@ public class ProviderSpec {
         }
     }
 
-    /**
-     * 对应 Python model_overrides
-     */
     public static class ModelOverride {
         private String pattern;
         private Map<String, Object> overrides;

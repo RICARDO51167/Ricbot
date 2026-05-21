@@ -3,7 +3,7 @@ package ricbot.integration.channel;
 import ricbot.infra.runtime.RestartSupport;
 
 /**
- * 重启通知工具，占位版。
+ * 重启通知工具类
  */
 public class RestartUtils {
 
