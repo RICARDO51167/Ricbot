@@ -1,0 +1,97 @@
+# Changelog
+
+## V4.30 - Console Tool/MCP Viewer
+
+- 新增 Console Tool/MCP 只读看板，展示 builtin、MCP、generated 工具概览。
+- 展示 MCP server 状态、transport、enabled tools 和 loaded tool count。
+- MCP command/env/header 等敏感字段脱敏，不支持从 Console 调用工具或启停 server。
+
+## V4.29 - Console Fixed Smoke Eval
+
+- 新增 `POST /console/api/evals/smoke`，从 Console 触发固定 golden smoke。
+- 固定使用 `evals/golden.jsonl`、`target/eval-console-smoke-workspace` 和 deterministic smoke provider。
+- Eval artifact 写入 Console workspace 的 `.ricbot/evals`，可直接在 Eval Dashboard 查看。
+
+## V4.28 - Console Workspace Actions
+
+- Console 开放受控 workspace 后处理：Create ChangeSet 和 Discard managed worktree。
+- Discard 要求 `confirm=true`，只允许 Ricbot 管理的 active `GIT_WORKTREE`。
+- Workspace actions 复用 Console auth、Origin/Referer、rate limit 和 action audit。
+
+## V4.27 - Provider Capability Runtime Fallback
+
+- Provider capability 从诊断展示接入 AgentRunner 运行时策略。
+- 明确 `supportsToolCalling=false` 时不暴露 tools，streaming/vision 能力明确不支持时做降级提示。
+- `UNKNOWN` 保持原行为，只记录 capability warning。
+
+## V4.26 - Enterprise IM Webhook Ingress
+
+- 新增 Feishu、DingTalk、WeCom 统一 webhook endpoint。
+- 支持文本事件标准化为 `InboundMessage` 并进入 MessageBus。
+- 增加签名/token 校验、事件去重和部分加密能力说明。
+
+## V4.25 - Console Action Audit + Security
+
+- Console POST action 统一写入 `console-actions.jsonl` 审计。
+- 增加 Origin/Referer CSRF-lite 防护、轻量 rate limit 和敏感字段脱敏。
+- Experience/approval 写操作补充幂等和重复提交保护。
+
+## V4.24 - Console Experience/Approval Actions
+
+- Console 开放 experience verify/reject/promote-skill。
+- Console 开放 pending approval list 和 approve/reject。
+- 写操作复用 API auth，并保持人工确认边界。
+
+## V4.23 - Eval Dashboard
+
+- 新增 Eval Runs Viewer，读取 `.ricbot/evals` artifact。
+- Console 展示 run summary、失败 case、manifest 和 report。
+- 防止 runId 路径穿越，manifest/report 做脱敏和 HTML escape。
+
+## V4.22 - Web Console
+
+- 新增本地只读 Web Console。
+- 展示 Config Doctor、latest trace、team reports、workspace sessions、experience 数据。
+- 默认面向本地使用，Console API 不暴露敏感配置。
+
+## V4.21 - Config Doctor + Provider Capability
+
+- 新增 `config doctor`，启动前诊断配置、环境变量、provider 推断和未生效字段。
+- 新增 ProviderCapability / ModelCapability 静态能力描述。
+- README 明确已生效、部分生效和预留配置字段。
+
+## V4.20 - Trace Viewer / Run Timeline
+
+- 新增 trace viewer 与 run timeline 展示能力。
+- 支持查看最近 trace、事件列表和运行摘要。
+- 为 Console 和后续调试闭环提供统一 trace 数据源。
+
+## V4.19 - Workspace Lifecycle + ChangeSet Review
+
+- 新增 workspace list/status/diff/discard 生命周期能力。
+- 新增 ChangeSet create/status/diff/commit-message/approve 等 review 工作流。
+- worktree-backed 任务可以通过 ChangeSet 收口到可审阅变更。
+
+## V4.18 - Worktree-backed Team Execution
+
+- Team task 支持受管 git worktree 隔离执行。
+- Worker/verifier 绑定同一工作区，失败后保留 worktree 便于排查。
+- Team report 与 workspace diff 形成任务后处理入口。
+
+## V4.17 - Experience to Generated Skill
+
+- Verified experience 支持 promote 为 generated skill。
+- 经验治理从候选、验证扩展到可复用技能资产。
+- 避免 candidate/rejected experience 污染上下文。
+
+## V4.16 - TeamTaskReport
+
+- 新增 TeamTaskReport，汇总 team task 状态、事件、产物和风险。
+- 为 `/team report` 和 Console team 区块提供数据基础。
+- 改善多角色任务执行后的人工审阅体验。
+
+## V4.15 - StepAudit Compact Summary
+
+- 新增 StepAudit compact summary，压缩实现步骤和审计记录。
+- 为长任务、team execution 和 trace 复盘减少上下文噪音。
+- 改善任务执行后的可读摘要和后续决策输入。
