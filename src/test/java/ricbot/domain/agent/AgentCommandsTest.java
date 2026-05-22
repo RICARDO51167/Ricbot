@@ -664,6 +664,13 @@ class AgentCommandsTest {
         assertTrue(changeSet.contains("changedFiles: README.md"), changeSet);
         String changeSetJson = router.dispatch(context("/change create " + taskId + " --json", sessionManager)).get().getContent();
         assertTrue(changeSetJson.contains("\"workspaceSessionId\":\"" + workspaceId + "\""), changeSetJson);
+        String taskTrace = router.dispatch(context("/trace show " + taskId, sessionManager)).get().getContent();
+        assertTrue(taskTrace.contains("trace timeline"), taskTrace);
+        assertTrue(taskTrace.contains("taskId: " + taskId), taskTrace);
+        assertTrue(taskTrace.contains("relatedWorkspace: " + workspaceId), taskTrace);
+        String taskTraceJson = router.dispatch(context("/trace show " + taskId + " --json", sessionManager)).get().getContent();
+        assertTrue(taskTraceJson.contains("\"taskId\":\"" + taskId + "\""), taskTraceJson);
+        assertTrue(taskTraceJson.contains("\"relatedWorkspace\""), taskTraceJson);
         String discardRejected = router.dispatch(context("/workspace discard " + taskId, sessionManager)).get().getContent();
         assertTrue(discardRejected.contains("discard requires --force"), discardRejected);
         String discarded = router.dispatch(context("/workspace discard " + taskId + " --force", sessionManager)).get().getContent();
@@ -900,15 +907,18 @@ class AgentCommandsTest {
         assertTrue(listed.contains("types=CHANGESET_CREATED"), listed);
 
         String last = router.dispatch(context("/trace last", sessionManager)).get().getContent();
-        assertTrue(last.contains("trace " + traceId), last);
-        assertTrue(last.contains("eventTypes: CHANGESET_CREATED"), last);
-        assertTrue(last.contains("changeSets: " + changeSetId), last);
-        assertTrue(last.contains("path: .traces/" + traceId + "/events.jsonl"), last);
+        assertTrue(last.contains("trace timeline"), last);
+        assertTrue(last.contains("traceId: " + traceId), last);
+        assertTrue(last.contains("CHANGESET_CREATED"), last);
+        assertTrue(last.contains("changeSetId=" + changeSetId), last);
 
         String shown = router.dispatch(context("/trace show " + traceId, sessionManager)).get().getContent();
-        assertTrue(shown.contains("eventCount: 1"), shown);
-        assertTrue(shown.contains("commitHash: none"), shown);
-        assertTrue(shown.contains("rollbackStatus: none"), shown);
+        assertTrue(shown.contains("trace timeline"), shown);
+        assertTrue(shown.contains("status: COMPLETED"), shown);
+        assertTrue(shown.contains("CHANGESET_CREATED"), shown);
+        String shownJson = router.dispatch(context("/trace show " + traceId + " --json", sessionManager)).get().getContent();
+        assertTrue(shownJson.contains("\"traceId\":\"" + traceId + "\""), shownJson);
+        assertTrue(shownJson.contains("\"events\""), shownJson);
 
         String events = router.dispatch(context("/trace events " + traceId, sessionManager)).get().getContent();
         assertTrue(events.contains("trace events"), events);

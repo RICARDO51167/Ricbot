@@ -62,6 +62,8 @@ import ricbot.domain.trace.TraceEvent;
 import ricbot.domain.trace.TraceEventType;
 import ricbot.domain.trace.TraceRenderer;
 import ricbot.domain.trace.TraceStore;
+import ricbot.domain.trace.TraceTimeline;
+import ricbot.domain.trace.TraceViewerService;
 import ricbot.domain.workspace.GitWorktreeWorkspaceBackend;
 import ricbot.domain.workspace.LocalWorkspaceBackend;
 import ricbot.domain.workspace.WorkspaceBackend;
@@ -383,24 +385,31 @@ final class AgentCommands {
         String args = trim(ctx.getArgs());
         String action = args.isBlank() ? "last" : args.split("\\s+")[0].toLowerCase(java.util.Locale.ROOT);
         TraceRenderer renderer = new TraceRenderer();
+        TraceViewerService viewer = new TraceViewerService(workspace);
         try {
             return switch (action) {
                 case "last" -> {
-                    TraceStore.TraceSummary latest = traceStore.loadLatestTrace();
-                    yield completedReply(ctx, renderer.renderSummary(latest, latest != null ? traceStore.loadEvents(latest.traceId()) : List.of()));
+                    TraceTimeline timeline = viewer.lastTimeline();
+                    yield completedReply(ctx, renderer.renderTimeline(timeline));
                 }
                 case "list" -> completedReply(ctx, renderer.renderList(traceStore.listTraces().stream()
                         .map(traceStore::summarize)
                         .toList()));
                 case "show" -> {
-                    String traceId = commandArg(args, 1);
-                    yield completedReply(ctx, renderer.renderSummary(traceStore.summarize(traceId), traceStore.loadEvents(traceId)));
+                    String id = commandArg(args, 1);
+                    TraceTimeline timeline = viewer.show(id);
+                    if (containsFlag(args, "--json")) {
+                        yield completedReply(ctx, MAPPER.writeValueAsString(timeline.toMap()));
+                    }
+                    yield completedReply(ctx, renderer.renderTimeline(timeline));
                 }
                 case "events" -> completedReply(ctx, renderer.renderEvents(traceStore.loadEvents(commandArg(args, 1))));
                 case "export" -> completedReply(ctx, renderer.renderExport(traceStore.loadEvents(commandArg(args, 1))));
-                default -> completedReply(ctx, "用法：/trace last|list|show <traceId>|events <traceId>|export <traceId>");
+                default -> completedReply(ctx, "用法：/trace last|list|show <taskId|runId|sessionId> [--json]|events <traceId>|export <traceId>");
             };
         } catch (IllegalArgumentException e) {
+            return completedReply(ctx, "trace error: " + e.getMessage());
+        } catch (Exception e) {
             return completedReply(ctx, "trace error: " + e.getMessage());
         }
     }

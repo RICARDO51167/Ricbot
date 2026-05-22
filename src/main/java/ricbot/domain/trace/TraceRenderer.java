@@ -92,4 +92,58 @@ public class TraceRenderer {
         }
         return sb.toString().stripTrailing();
     }
+
+    public String renderTimeline(TraceTimeline timeline) {
+        if (timeline == null || (timeline.events().isEmpty() && !timeline.warnings().isEmpty())) {
+            return timeline == null ? "No trace found." : "No trace found.\nwarnings: " + String.join("; ", timeline.warnings());
+        }
+        StringBuilder sb = new StringBuilder("trace timeline\n");
+        sb.append("traceId: ").append(blank(timeline.traceId())).append("\n");
+        sb.append("sessionId: ").append(blank(timeline.sessionId())).append("\n");
+        sb.append("taskId: ").append(blank(timeline.taskId())).append("\n");
+        sb.append("status: ").append(timeline.status()).append("\n");
+        sb.append("startedAt: ").append(blank(timeline.startedAt())).append("\n");
+        sb.append("endedAt: ").append(blank(timeline.endedAt())).append("\n");
+        sb.append("summary: ").append(blank(timeline.summary())).append("\n");
+        sb.append("relatedWorkspace: ").append(related(timeline.relatedWorkspace(), "id")).append("\n");
+        sb.append("relatedChangeSet: ").append(related(timeline.relatedChangeSet(), "id")).append("\n");
+        sb.append("relatedReport: ").append(reportSummary(timeline.relatedReport())).append("\n");
+        sb.append("warnings: ").append(timeline.warnings().isEmpty() ? "none" : String.join("; ", timeline.warnings())).append("\n\n");
+        sb.append("timeline\n");
+        if (timeline.events().isEmpty()) {
+            sb.append("- none\n");
+        } else {
+            for (TraceTimelineEvent event : timeline.events()) {
+                sb.append("- ").append(blank(event.timestamp()))
+                        .append(" [").append(event.severity()).append("]")
+                        .append(" ").append(event.source())
+                        .append(" ").append(event.type())
+                        .append(" ").append(event.title())
+                        .append(event.detail().isBlank() ? "" : " | " + event.detail())
+                        .append(event.refs().isEmpty() ? "" : " | refs=" + event.refs())
+                        .append("\n");
+            }
+        }
+        return sb.toString().trim();
+    }
+
+    private String related(java.util.Map<String, Object> values, String key) {
+        if (values == null || values.isEmpty()) {
+            return "none";
+        }
+        Object id = values.get(key);
+        return id != null && !String.valueOf(id).isBlank() ? String.valueOf(id) : values.toString();
+    }
+
+    private String reportSummary(java.util.Map<String, Object> report) {
+        if (report == null || report.isEmpty()) {
+            return "none";
+        }
+        return "status=" + report.getOrDefault("status", "")
+                + " health=" + report.getOrDefault("health", "");
+    }
+
+    private String blank(String value) {
+        return value != null && !value.isBlank() ? value : "none";
+    }
 }
