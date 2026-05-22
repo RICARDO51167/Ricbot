@@ -1,5 +1,11 @@
 # Changelog
 
+## V5.3 - Gateway Webhook Docs + Smoke Templates
+
+- 新增 Feishu、DingTalk、WeCom webhook 入站实测文档，覆盖 endpoint、文本消息示例、校验规则、去重和当前限制。
+- 新增企业 IM webhook 配置模板，使用环境变量占位并保留本地 API 安全配置示例。
+- 新增 `scripts/webhook-smoke.sh`，使用 curl 本地模拟三类企业 IM 文本消息和重复事件，不访问真实平台。
+
 ## V5.2 - Console UI Polish + Demo Flow
 
 - Console 顶部新增 Demo Flow，把 config、team、workspace、trace、experience、eval 和 release-check 映射成演示路径。

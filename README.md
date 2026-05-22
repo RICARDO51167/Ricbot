@@ -107,6 +107,14 @@ sh scripts/smoke.sh
 
 该脚本只运行快速测试、打包、config doctor 和固定 smoke eval，不会访问真实模型。
 
+Gateway webhook 本地 smoke：
+
+```bash
+sh scripts/webhook-smoke.sh
+```
+
+该脚本默认请求 `http://127.0.0.1:8000`，可通过 `RICBOT_BASE_URL` 覆盖；它只用 curl 模拟 Feishu、DingTalk、WeCom 文本入站和重复事件，不访问真实平台，也不会启动服务。
+
 发布门禁：
 
 ```bash
@@ -215,7 +223,7 @@ java -jar target/Ricbot-1.0-SNAPSHOT.jar eval smoke --scenarios evals/golden.jso
 - Console 不支持 team run、eval learn、eval compare、eval replay
 - Console 不支持 git merge 或 git commit
 - Console MCP Hub 当前只读，不支持 reload/reconnect/启停 server，也不能调用工具
-- Feishu / DingTalk / WeCom 文本入站已支持，复杂加密回调、附件、语音仍是部分支持
+- Feishu / DingTalk / WeCom 文本入站已支持；附件、图片、语音和 Feishu/WeCom 加密回调解密当前不支持
 - Provider capability 是静态/启发式；只有明确 `false` 的能力才触发运行时降级，`UNKNOWN` 不阻断
 - OpenAI-compatible 聚合网关和本地模型的 capability 可能需要用户通过 provider/model 配置显式修正
 
@@ -224,6 +232,9 @@ java -jar target/Ricbot-1.0-SNAPSHOT.jar eval smoke --scenarios evals/golden.jso
 - [CHANGELOG.md](CHANGELOG.md)：V4.15-V5.0 能力演进
 - [docs/demo/end-to-end-coding-agent.md](docs/demo/end-to-end-coding-agent.md)：端到端演示
 - [docs/security/console-safety.md](docs/security/console-safety.md)：Console 安全边界
+- [docs/gateway/feishu-webhook.md](docs/gateway/feishu-webhook.md)：Feishu webhook 入站配置、示例和排查
+- [docs/gateway/dingtalk-webhook.md](docs/gateway/dingtalk-webhook.md)：DingTalk webhook 签名、示例和排查
+- [docs/gateway/wecom-webhook.md](docs/gateway/wecom-webhook.md)：WeCom webhook token、示例和限制
 - [docs/demo/self-improving-agent-loop.md](docs/demo/self-improving-agent-loop.md)：自改进闭环演示
 - [docs/reference/full-readme-v4.md](docs/reference/full-readme-v4.md)：迁移前完整 README
 - [examples/context_engineering_flow.md](examples/context_engineering_flow.md)
