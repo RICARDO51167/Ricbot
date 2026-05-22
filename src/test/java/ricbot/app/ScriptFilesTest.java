@@ -19,5 +19,23 @@ class ScriptFilesTest {
         assertFalse(content.contains("sk-"));
         assertFalse(content.contains("Bearer "));
         assertFalse(content.contains("api.openai.com"));
+        assertTrue(content.contains(".ricbot/eval-baselines/golden"));
+        assertTrue(content.contains("## Baseline"));
+        assertTrue(content.contains("## Eval Compare"));
+        assertTrue(content.contains("## Final Decision"));
+    }
+
+    @Test
+    void evalBaselineScript_supportsCreateAndShow() throws Exception {
+        Path script = Path.of("scripts", "eval-baseline.sh");
+        assertTrue(Files.isRegularFile(script));
+        String content = Files.readString(script);
+        assertTrue(content.startsWith("#!/usr/bin/env sh"));
+        assertTrue(content.contains("create_baseline"));
+        assertTrue(content.contains("show_baseline"));
+        assertTrue(content.contains(".ricbot/eval-baselines"));
+        assertFalse(content.contains("sk-"));
+        assertFalse(content.contains("Bearer "));
+        assertFalse(content.contains("api.openai.com"));
     }
 }

@@ -1,5 +1,12 @@
 # Changelog
 
+## V5.1 - Eval Baseline Management + Regression Report
+
+- 固定 baseline 目录为 `.ricbot/eval-baselines/golden`，release-check 自动识别并纳入 compare。
+- 增强 `scripts/eval-baseline.sh`，支持 `create`、`show` 和 `create --force`。
+- `target/release-check-report.md` 新增 Baseline、Eval Compare 和 Final Decision 区块，明确 regressions、improvements、unchanged 和 warnings。
+- pass -> fail 回归会阻断发布，fail -> pass 作为 improvement 记录；baseline 缺失仍为 warning。
+
 ## V5.0 - Eval CI Gate + Release Quality Gate
 
 - 新增本地 `scripts/release-check.sh`，串联全量测试、打包、config doctor、fixed smoke eval 和可选 eval compare。

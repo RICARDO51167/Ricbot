@@ -85,21 +85,25 @@ sh scripts/smoke.sh
 sh scripts/release-check.sh
 ```
 
-`release-check.sh` 会顺序执行全量测试、打包、config doctor、固定 smoke eval，并在存在 baseline 时执行 eval compare。报告写入 `target/release-check-report.md`。
+`release-check.sh` 会顺序执行全量测试、打包、config doctor、固定 smoke eval，并在存在 baseline 时执行 eval compare。baseline 固定读取 `.ricbot/eval-baselines/golden`，报告写入 `target/release-check-report.md`。
 
 结果规则：
 
-- `PASS`：测试、打包、fixed smoke eval 通过，且 compare 无回归
+- `PASS`：测试、打包、fixed smoke eval 通过，且 compare 无 pass -> fail 回归
 - `WARNING`：核心门禁通过，但 config doctor 报告缺本地 key，或没有 eval baseline 可比较
-- `FAIL`：测试/打包/smoke eval 失败，或 eval compare 发现 pass -> fail 回归
+- `FAIL`：测试/打包/smoke eval 失败，或 eval compare 发现 pass -> fail 回归；fail -> pass 会作为 improvement 记录，不阻断
 
 config doctor 缺少真实 API key 只作为诊断 warning，不会阻断 release-check；fixed smoke eval 使用确定性 provider，不需要真实 key。CI 中可直接调用 `sh scripts/release-check.sh`，再上传 `target/release-check-report.md`。
 
-可选生成 baseline：
+baseline 管理：
 
 ```bash
-sh scripts/eval-baseline.sh
+sh scripts/eval-baseline.sh create
+sh scripts/eval-baseline.sh show
+sh scripts/eval-baseline.sh create --force
 ```
+
+`create` 使用固定 `evals/golden.jsonl` 和 deterministic smoke provider，不访问真实模型、外网或真实 API key；baseline 已存在时默认拒绝覆盖，需要显式 `--force`。
 
 ## Console 能力总览
 
