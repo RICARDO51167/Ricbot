@@ -777,6 +777,14 @@ Console 提供只读页面和 JSON API：
 - `GET /console/api/team-reports`
 - `GET /console/api/workspaces`
 - `GET /console/api/experiences`
+- `POST /console/api/experiences/<id>/verify`
+- `POST /console/api/experiences/<id>/reject`
+- `POST /console/api/experiences/<id>/promote-skill`
+- `GET /console/api/approvals`
+- `POST /console/api/approvals/<id>/approve`
+- `POST /console/api/approvals/<id>/reject`
+- `GET /console/api/evals`
+- `GET /console/api/evals/<run-id>`
 
 页面展示：
 
@@ -785,11 +793,21 @@ Console 提供只读页面和 JSON API：
 - Team task reports
 - Workspace sessions
 - Experience candidates / verified items
+- Experience actions：candidate 可人工 `Verify` / `Reject`；verified 可 `Promote Skill` 生成 `skills/generated/*.md`
+- Pending approvals：展示待审批请求，可人工 `Approve` / `Reject`
+- Eval runs：读取 `workspace/.ricbot/evals` 下最近的 run，展示 passed/failed/skipped、`provider_mode`、model、`failures_by_kind`，展开后查看失败 case 和转义后的 `report.md`
 
 安全说明：
 
-- 本轮 Console 不提供 discard、verify、promote 等写操作
+- Console 不提供 workspace discard、change create、team run、eval run 等高风险写操作
+- 当前写操作只开放 experience candidate/skill promotion 和 approval approve/reject 两类人工确认动作
+- 页面上的写操作都使用 `POST`，会弹出浏览器确认框；如果配置了 `api.bearer_token`，Console POST 同样要求 Bearer 鉴权
+- Console 不支持执行 shell、丢弃 worktree、创建 change、运行 team task 或启动 eval
+- Console 不支持从页面启动 eval，只读读取已有 artifact
 - Console API 不输出真实 API key，也不允许任意路径读取
+- Approval 列表中的 tool args 会对 key/token/secret/password 等字段脱敏
+- Eval viewer 只读取当前 workspace 内的 `.ricbot/evals`，`run-id` 会做路径穿越校验；manifest 中疑似 key/token/secret/password 的字段会降级为 `[REDACTED]`
+- `report.md` 在页面中按文本转义展示，不会作为 HTML 注入；但 eval artifact 仍可能包含模型输出和本地路径，分享前请自行确认敏感信息
 - 默认 API 监听是 `127.0.0.1`；不要把 Console 暴露到公网
 - 如果你把 `api.host` 配成 `0.0.0.0`，`serve` 会要求 `api.bearer_token`，启动日志也会提示 Console 随 API 暴露的风险
 - 本轮没有 WebSocket 实时推送，页面通过 HTTP 拉取数据

@@ -89,6 +89,13 @@ public class ApprovalService {
         return requests.get(requestId);
     }
 
+    public List<ApprovalRequest> listPending() {
+        return requests.values().stream()
+                .filter(request -> request.status() == ApprovalRequest.ApprovalStatus.PENDING)
+                .sorted((left, right) -> right.createdAt().compareTo(left.createdAt()))
+                .toList();
+    }
+
     public PendingToolCall consumeApprovedToolCall(String requestId) {
         ApprovalRequest existing = find(requestId);
         if (existing == null) {

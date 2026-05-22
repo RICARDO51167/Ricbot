@@ -162,8 +162,30 @@ final class ConsolePage {
                       cursor: pointer;
                     }
                     button:hover { border-color: var(--accent); color: var(--accent); }
+                    .pre {
+                      margin-top: 10px;
+                      max-height: 280px;
+                      overflow: auto;
+                      white-space: pre-wrap;
+                      overflow-wrap: anywhere;
+                      border: 1px solid var(--line);
+                      border-radius: 8px;
+                      padding: 10px;
+                      background: #f8fafb;
+                      color: var(--ink);
+                      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+                      font-size: 12px;
+                      line-height: 1.45;
+                    }
+                    .row {
+                      display: flex;
+                      align-items: center;
+                      justify-content: space-between;
+                      gap: 10px;
+                    }
                     @media (max-width: 860px) {
                       .span-4, .span-6, .span-8 { grid-column: span 12; }
+                      .row { align-items: flex-start; flex-direction: column; }
                       .bar { align-items: flex-start; flex-direction: column; }
                       .meta { justify-content: flex-start; }
                     }
@@ -188,6 +210,8 @@ final class ConsolePage {
                     <section class="span-4" id="workspace-card"></section>
                     <section class="span-6" id="team-card"></section>
                     <section class="span-6" id="experience-list-card"></section>
+                    <section class="span-12" id="approval-card"></section>
+                    <section class="span-12" id="eval-card"></section>
                   </main>
                   <script>
                     const endpoints = {
@@ -196,7 +220,9 @@ final class ConsolePage {
                       traces: "/console/api/traces",
                       teams: "/console/api/team-reports",
                       workspaces: "/console/api/workspaces",
-                      experiences: "/console/api/experiences"
+                      experiences: "/console/api/experiences",
+                      approvals: "/console/api/approvals",
+                      evals: "/console/api/evals"
                     };
 
                     const esc = (value) => String(value ?? "")
@@ -207,6 +233,15 @@ final class ConsolePage {
 
                     async function getJson(name) {
                       const response = await fetch(endpoints[name], { headers: { "Accept": "application/json" } });
+                      const json = await response.json();
+                      if (!response.ok) {
+                        throw new Error(json?.error?.message || response.statusText);
+                      }
+                      return json;
+                    }
+
+                    async function postJson(url) {
+                      const response = await fetch(url, { method: "POST", headers: { "Accept": "application/json" } });
                       const json = await response.json();
                       if (!response.ok) {
                         throw new Error(json?.error?.message || response.statusText);
@@ -325,13 +360,153 @@ final class ConsolePage {
                         ${rows.length === 0 ? empty("No experience items") : `
                           <div class="list">${rows.slice(0, 10).map(item => `
                             <div class="item">
-                              <div class="title">${esc(item.title || item.id)}</div>
-                              <div class="kv"><span>${esc(item.bucket)}</span><span>${esc(item.type)}</span><span>${esc(item.confidence)}</span></div>
+                              <div class="row">
+                                <div>
+                                  <div class="title">${esc(item.title || item.id)}</div>
+                                  <div class="kv"><span>${esc(item.bucket)}</span><span>${esc(item.type)}</span><span>${esc(item.confidence)}</span></div>
+                                </div>
+                                <div>
+                                  ${item.status === "CANDIDATE" || item.bucket === "candidate" ? `<button type="button" data-exp-action="verify" data-exp-id="${esc(item.id)}">Verify</button> <button type="button" data-exp-action="reject" data-exp-id="${esc(item.id)}">Reject</button>` : ""}
+                                  ${item.status === "VERIFIED" || item.bucket === "verified" ? `<button type="button" data-exp-action="promote-skill" data-exp-id="${esc(item.id)}">Promote Skill</button>` : ""}
+                                </div>
+                              </div>
                               <div class="sub">${esc(item.whenToApply || item.content)}</div>
                             </div>
                           `).join("")}</div>
                         `}
                       `;
+                      document.querySelectorAll("[data-exp-action]").forEach(button => {
+                        button.addEventListener("click", () => runExperienceAction(
+                          button.getAttribute("data-exp-id"),
+                          button.getAttribute("data-exp-action")
+                        ));
+                      });
+                    }
+
+                    async function runExperienceAction(id, action) {
+                      const label = action === "promote-skill" ? "Promote Skill" : action === "verify" ? "Verify" : "Reject";
+                      if (!confirm(`${label} experience ${id}?`)) return;
+                      try {
+                        await postJson(`/console/api/experiences/${encodeURIComponent(id)}/${action}`);
+                        const experiences = await getJson("experiences");
+                        renderExperiences(experiences);
+                      } catch (error) {
+                        document.getElementById("experience-list-card").innerHTML = errorCard("experience action", error);
+                      }
+                    }
+
+                    function renderApprovals(data) {
+                      const items = data.items || [];
+                      document.getElementById("approval-card").innerHTML = `
+                        <h2>Approvals</h2>
+                        ${items.length === 0 ? empty("No pending approvals") : `
+                          <div class="list">${items.slice(0, 12).map(item => {
+                            const risk = item.riskAssessment || {};
+                            const tool = item.pendingToolCall || {};
+                            const change = item.pendingChangeAction || {};
+                            return `
+                              <div class="item">
+                                <div class="row">
+                                  <div>
+                                    <div class="title">${esc(item.requestId)}</div>
+                                    <div class="kv"><span>${pill(item.status)}</span><span>${esc(risk.riskLevel || "")}</span><span>${esc(risk.toolName || tool.toolName || change.actionType || "")}</span></div>
+                                    <div class="sub">${esc((risk.reasons || []).join(" · ") || risk.command || change.changeSetId || "")}</div>
+                                  </div>
+                                  <div>
+                                    <button type="button" data-approval-action="approve" data-approval-id="${esc(item.requestId)}">Approve</button>
+                                    <button type="button" data-approval-action="reject" data-approval-id="${esc(item.requestId)}">Reject</button>
+                                  </div>
+                                </div>
+                              </div>
+                            `;
+                          }).join("")}</div>
+                        `}
+                      `;
+                      document.querySelectorAll("[data-approval-action]").forEach(button => {
+                        button.addEventListener("click", () => runApprovalAction(
+                          button.getAttribute("data-approval-id"),
+                          button.getAttribute("data-approval-action")
+                        ));
+                      });
+                    }
+
+                    async function runApprovalAction(id, action) {
+                      const label = action === "approve" ? "Approve" : "Reject";
+                      if (!confirm(`${label} approval ${id}?`)) return;
+                      try {
+                        await postJson(`/console/api/approvals/${encodeURIComponent(id)}/${action}`);
+                        renderApprovals(await getJson("approvals"));
+                      } catch (error) {
+                        document.getElementById("approval-card").innerHTML = errorCard("approval action", error);
+                      }
+                    }
+
+                    function renderEvals(data) {
+                      const items = data.items || [];
+                      document.getElementById("eval-card").innerHTML = `
+                        <h2>Eval Runs</h2>
+                        ${items.length === 0 ? empty("No eval runs") : `
+                          <div class="list">${items.slice(0, 12).map(run => {
+                            const failures = run.failuresByKind || {};
+                            const failureText = Object.entries(failures).map(([kind, count]) => `${kind}:${count}`).join(" · ");
+                            return `
+                              <div class="item" id="eval-${esc(run.runId)}">
+                                <div class="row">
+                                  <div>
+                                    <div class="title">${esc(run.runId || "eval run")}</div>
+                                    <div class="kv">
+                                      <span>${esc(run.passed || 0)} passed</span>
+                                      <span>${esc(run.failed || 0)} failed</span>
+                                      <span>${esc(run.skipped || 0)} skipped</span>
+                                      <span>${esc(run.providerMode || "provider")}</span>
+                                      <span>${esc(run.model || "model")}</span>
+                                    </div>
+                                    <div class="sub">${esc(run.createdAt || run.startedAt || "")}${failureText ? " · " + esc(failureText) : ""}</div>
+                                    ${(run.warnings || []).length ? `<div class="sub">${esc((run.warnings || []).join(" · "))}</div>` : ""}
+                                  </div>
+                                  <button type="button" data-run-id="${esc(run.runId)}">Detail</button>
+                                </div>
+                                <div class="eval-detail" id="eval-detail-${esc(run.runId)}"></div>
+                              </div>
+                            `;
+                          }).join("")}</div>
+                        `}
+                      `;
+                      document.querySelectorAll("[data-run-id]").forEach(button => {
+                        button.addEventListener("click", () => loadEvalDetail(button.getAttribute("data-run-id")));
+                      });
+                    }
+
+                    async function loadEvalDetail(runId) {
+                      const target = document.getElementById(`eval-detail-${runId}`);
+                      if (!target) return;
+                      target.innerHTML = empty("Loading detail");
+                      try {
+                        const response = await fetch(`${endpoints.evals}/${encodeURIComponent(runId)}`, { headers: { "Accept": "application/json" } });
+                        const json = await response.json();
+                        if (!response.ok) {
+                          throw new Error(json?.error?.message || response.statusText);
+                        }
+                        const cases = json.cases || [];
+                        const failing = cases.filter(item => !["pass", "skipped", "xfail"].includes(String(item.status || "")));
+                        const manifest = json.manifest || {};
+                        target.innerHTML = `
+                          <div class="list">
+                            ${failing.length === 0 ? empty("No failing cases") : failing.slice(0, 12).map(item => `
+                              <div class="item">
+                                <div class="title">${esc(item.id)}</div>
+                                <div class="kv"><span>${pill(item.status)}</span><span>${esc(item.failureKind || "unknown")}</span><span>${esc(item.durationMs)}ms</span><span>${esc((item.tools || []).join(", "))}</span></div>
+                                <div class="sub">${esc(item.artifactPath)}</div>
+                              </div>
+                            `).join("")}
+                          </div>
+                          <div class="sub">manifest: ${esc(manifest.provider_mode || "")} ${esc(manifest.model || "")}</div>
+                          ${json.reportMarkdown ? `<div class="pre">${esc(json.reportMarkdown)}</div>` : ""}
+                          ${(json.warnings || []).length ? `<div class="sub">${esc((json.warnings || []).join(" · "))}</div>` : ""}
+                        `;
+                      } catch (error) {
+                        target.innerHTML = errorCard("eval detail", error);
+                      }
                     }
 
                     async function load() {
@@ -341,7 +516,9 @@ final class ConsolePage {
                         traces: "trace-card",
                         teams: "team-card",
                         workspaces: "workspace-card",
-                        experiences: "experience-card"
+                        experiences: "experience-card",
+                        approvals: "approval-card",
+                        evals: "eval-card"
                       };
                       Object.values(cards).forEach(id => document.getElementById(id).innerHTML = empty("Loading"));
                       document.getElementById("experience-list-card").innerHTML = empty("Loading");
@@ -351,7 +528,9 @@ final class ConsolePage {
                         ["traces", renderTrace],
                         ["workspaces", renderWorkspaces],
                         ["teams", renderTeams],
-                        ["experiences", renderExperiences]
+                        ["experiences", renderExperiences],
+                        ["approvals", renderApprovals],
+                        ["evals", renderEvals]
                       ];
                       for (const [name, render] of jobs) {
                         try {

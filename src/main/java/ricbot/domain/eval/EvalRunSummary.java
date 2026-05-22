@@ -1,6 +1,10 @@
 package ricbot.domain.eval;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
+
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 public class EvalRunSummary {
@@ -22,6 +26,10 @@ public class EvalRunSummary {
     private Map<String, Integer> totalUsage = new LinkedHashMap<>();
     private Map<String, Integer> failuresByKind = new LinkedHashMap<>();
     private String artifactDir;
+    private String providerMode;
+    private String model;
+    private String reportPath;
+    private List<String> warnings = new ArrayList<>();
 
     public String getRunId() {
         return runId;
@@ -183,5 +191,84 @@ public class EvalRunSummary {
     public EvalRunSummary setArtifactDir(String artifactDir) {
         this.artifactDir = artifactDir;
         return this;
+    }
+
+    @JsonIgnore
+    public String getCreatedAt() {
+        return startedAt;
+    }
+
+    @JsonIgnore
+    public int getXpass() {
+        return unexpectedPassed;
+    }
+
+    @JsonIgnore
+    public String getProviderMode() {
+        return providerMode;
+    }
+
+    public EvalRunSummary setProviderMode(String providerMode) {
+        this.providerMode = providerMode;
+        return this;
+    }
+
+    @JsonIgnore
+    public String getModel() {
+        return model;
+    }
+
+    public EvalRunSummary setModel(String model) {
+        this.model = model;
+        return this;
+    }
+
+    @JsonIgnore
+    public String getReportPath() {
+        return reportPath;
+    }
+
+    public EvalRunSummary setReportPath(String reportPath) {
+        this.reportPath = reportPath;
+        return this;
+    }
+
+    @JsonIgnore
+    public List<String> getWarnings() {
+        return warnings;
+    }
+
+    public EvalRunSummary setWarnings(List<String> warnings) {
+        this.warnings = warnings != null ? new ArrayList<>(warnings) : new ArrayList<>();
+        return this;
+    }
+
+    public Map<String, Object> toMap() {
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("runId", runId);
+        out.put("createdAt", getCreatedAt());
+        out.put("startedAt", startedAt);
+        out.put("endedAt", endedAt);
+        out.put("providerMode", providerMode);
+        out.put("model", model);
+        out.put("total", total);
+        out.put("passed", passed);
+        out.put("failed", failed);
+        out.put("skipped", skipped);
+        out.put("expectedFailed", expectedFailed);
+        out.put("xpass", getXpass());
+        out.put("unexpectedPassed", unexpectedPassed);
+        out.put("durationMs", durationMs);
+        out.put("durationP50Ms", durationP50Ms);
+        out.put("durationP95Ms", durationP95Ms);
+        out.put("totalModelCalls", totalModelCalls);
+        out.put("totalToolCalls", totalToolCalls);
+        out.put("totalWorkspaceChanges", totalWorkspaceChanges);
+        out.put("totalUsage", totalUsage);
+        out.put("failuresByKind", failuresByKind);
+        out.put("artifactDir", artifactDir);
+        out.put("reportPath", reportPath);
+        out.put("warnings", warnings);
+        return out;
     }
 }

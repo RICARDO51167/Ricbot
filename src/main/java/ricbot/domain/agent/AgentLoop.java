@@ -562,6 +562,7 @@ public class AgentLoop {
     public SubagentManager getSubagents() { return subagents; }
     public SessionManager getSessions() { return sessionManager; }
     public ToolRegistry getTools() { return tools; }
+    public ApprovalService getApprovalService() { return approvalService; }
 
     public MCPLoader getMcpLoader() { return mcpLoader; }
 
