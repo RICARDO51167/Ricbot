@@ -37,6 +37,7 @@ import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.ArrayDeque;
@@ -74,6 +75,7 @@ public final class ConsoleController {
         server.createContext("/console/api/experiences", experiencesHandler(appContext));
         server.createContext("/console/api/approvals", approvalsHandler(appContext));
         server.createContext("/console/api/actions", actionsHandler(appContext));
+        server.createContext("/console/api/release-check", releaseCheckHandler(appContext));
         server.createContext("/console/api/evals", evalsHandler(appContext));
         server.createContext("/console", pageHandler(appContext));
     }
@@ -128,6 +130,10 @@ public final class ConsoleController {
 
     public static HttpHandler actionsHandler(RicbotApiAppContext appContext) {
         return new ApiHandler(appContext, ConsoleController::actions);
+    }
+
+    public static HttpHandler releaseCheckHandler(RicbotApiAppContext appContext) {
+        return new ApiHandler(appContext, ConsoleController::releaseCheck);
     }
 
     public static HttpHandler evalsHandler(RicbotApiAppContext appContext) {
@@ -341,6 +347,59 @@ public final class ConsoleController {
                 .map(ConsoleActionAuditRecord::toMap)
                 .toList();
         return Map.of("items", items);
+    }
+
+    private static Map<String, Object> releaseCheck(RicbotApiAppContext appContext) throws IOException {
+        Path report = Path.of("target", "release-check-report.md").toAbsolutePath().normalize();
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("reportPath", "target/release-check-report.md");
+        out.put("command", "sh scripts/release-check.sh");
+        if (!Files.isRegularFile(report)) {
+            out.put("status", "empty");
+            out.put("exists", false);
+            out.put("message", "release-check report not found");
+            return out;
+        }
+        String markdown = redactSensitiveText(Files.readString(report, StandardCharsets.UTF_8));
+        out.put("status", "found");
+        out.put("exists", true);
+        out.put("generatedAt", lineValue(markdown, "- generated_at: "));
+        out.put("finalStatus", lineValue(markdown, "- final_status: "));
+        out.put("baselineStatus", lineValue(markdown, "- baseline_status: "));
+        out.put("evalCompareStatus", tableValue(markdown, "eval compare"));
+        out.put("reportMarkdown", markdown.length() > 20_000 ? markdown.substring(0, 20_000) + "\n\n[truncated]" : markdown);
+        return out;
+    }
+
+    private static String lineValue(String text, String prefix) {
+        for (String line : text.split("\\R")) {
+            if (line.startsWith(prefix)) {
+                return line.substring(prefix.length()).trim();
+            }
+        }
+        return "";
+    }
+
+    private static String tableValue(String text, String step) {
+        String needle = "| " + step + " |";
+        for (String line : text.split("\\R")) {
+            if (line.startsWith(needle)) {
+                String[] parts = line.split("\\|");
+                return parts.length >= 3 ? parts[2].trim() : "";
+            }
+        }
+        return "";
+    }
+
+    private static String redactSensitiveText(String text) {
+        String out = text != null ? text : "";
+        out = out.replaceAll("(?i)(api[_-]?key\\s*[:=]\\s*)[^\\s`|]+", "$1[REDACTED]");
+        out = out.replaceAll("(?i)(token\\s*[:=]\\s*)[^\\s`|]+", "$1[REDACTED]");
+        out = out.replaceAll("(?i)(secret\\s*[:=]\\s*)[^\\s`|]+", "$1[REDACTED]");
+        out = out.replaceAll("(?i)(password\\s*[:=]\\s*)[^\\s`|]+", "$1[REDACTED]");
+        out = out.replaceAll("(?i)(authorization\\s*[:=]\\s*)[^\\s`|]+", "$1[REDACTED]");
+        out = out.replaceAll("(?i)bearer\\s+[^\\s`|]+", "Bearer [REDACTED]");
+        return out;
     }
 
     private static Map<String, Object> verifyExperience(RicbotApiAppContext appContext, String id) {

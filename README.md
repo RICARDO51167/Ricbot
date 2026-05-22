@@ -71,6 +71,34 @@ java -jar target/Ricbot-1.0-SNAPSHOT.jar serve \
 http://127.0.0.1:8000/console
 ```
 
+## 5 分钟演示路径
+
+先生成发布门禁报告，供 Console 展示：
+
+```bash
+sh scripts/release-check.sh
+```
+
+再做一次配置诊断：
+
+```bash
+java -jar target/Ricbot-1.0-SNAPSHOT.jar config doctor \
+  -c config/ricbot.config.json
+```
+
+启动服务并打开 Console：
+
+```bash
+java -jar target/Ricbot-1.0-SNAPSHOT.jar serve \
+  -c config/ricbot.config.json
+```
+
+```text
+http://127.0.0.1:8000/console
+```
+
+演示时从顶部 Demo Flow 讲起：Config Doctor 对应启动前诊断，Team Reports / Workspaces / Trace 对应 team run 后处理，Experience 对应经验治理，Eval Runs 和 Release Check 对应确定性评测门禁，Tools / MCP 展示运行时工具面。没有真实 key 时 config doctor 可能是 `WARNING` 或 `ERROR`，但 fixed smoke eval 和 release-check 的本地 smoke 部分不会访问真实模型。
+
 本地 smoke 脚本：
 
 ```bash

@@ -138,14 +138,23 @@ http://127.0.0.1:8000/console
 
 在 Console 中查看：
 
+- Demo Flow：用 10 步把 CLI 闭环映射到页面卡片，适合先给面试官或评审建立全景
 - Config Doctor
 - Latest Trace
 - Team Reports
 - Workspaces
 - Experience Items
 - Eval Runs
+- Release Check
 - Tools / MCP
 - Recent Console Actions
+
+讲解建议：
+
+- 先指顶部 Demo Flow：说明 Ricbot 不是单点聊天机器人，而是 `/team run -> report -> workspace diff -> change create -> trace -> experience -> eval -> release-check` 的工程闭环。
+- 再看每个卡片右上角的数量和更新时间：有数据说明对应 CLI 能力已经产生 artifact，空状态则会提示下一步应该运行哪条命令。
+- 遇到没有真实 key 的环境，解释 config doctor 的 warning/error 是诊断信号；fixed smoke eval、eval baseline 和 release-check 的 smoke 门禁仍然是 deterministic，不会访问真实模型或外网。
+- Release Check 卡片只读展示 `target/release-check-report.md`，Console 不会从页面启动发布门禁。
 
 ## 10. 运行 Fixed Smoke Eval
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## V5.2 - Console UI Polish + Demo Flow
+
+- Console 顶部新增 Demo Flow，把 config、team、workspace、trace、experience、eval 和 release-check 映射成演示路径。
+- Console 卡片补充 empty/loading/error、数量 badge、last updated 和单卡刷新体验。
+- 新增只读 `GET /console/api/release-check`，固定读取 `target/release-check-report.md` 并做敏感文本脱敏。
+- 优化现有 Console action 按钮的 loading/disabled 状态，避免演示时重复点击。
+
 ## V5.1 - Eval Baseline Management + Regression Report
 
 - 固定 baseline 目录为 `.ricbot/eval-baselines/golden`，release-check 自动识别并纳入 compare。

@@ -406,7 +406,9 @@ public class RicbotApiServerTest {
             assertEquals(200, consoleExchange.getResponseCode(), consoleExchange.responseText());
             String console = consoleExchange.responseText();
             assertTrue(console.contains("<title>Ricbot Console</title>"), console);
+            assertTrue(console.contains("Demo Flow"), console);
             assertTrue(console.contains("/console/api/config-doctor"), console);
+            assertTrue(console.contains("/console/api/release-check"), console);
 
             String health = handleGet(ConsoleController.healthHandler(app), "/console/api/health");
             assertTrue(health.contains("\"status\":\"ok\""), health);
@@ -439,6 +441,9 @@ public class RicbotApiServerTest {
             String experiences = handleGet(ConsoleController.experiencesHandler(app), "/console/api/experiences");
             assertTrue(experiences.contains("\"candidates\""), experiences);
             assertTrue(experiences.contains("\"verified\""), experiences);
+
+            String releaseCheck = handleGet(ConsoleController.releaseCheckHandler(app), "/console/api/release-check");
+            assertTrue(releaseCheck.contains("\"reportPath\":\"target/release-check-report.md\""), releaseCheck);
 
             Path evalRun = workspace.resolve(".ricbot").resolve("evals").resolve("run-console");
             Files.createDirectories(evalRun);
@@ -484,6 +489,59 @@ public class RicbotApiServerTest {
             assertTrue(chat.contains("\"object\":\"chat.completion\""), chat);
             assertTrue(chat.contains("\"content\":\"pong\""), chat);
         } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void consoleReleaseCheckEndpoint_readsOnlyFixedReportAndRedactsSecrets(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildLoopNoStart(workspace);
+        Config config = new Config();
+        config.getAgents().getDefaults().setWorkspace(workspace.toString());
+        Path report = Path.of("target", "release-check-report.md");
+        String original = Files.isRegularFile(report) ? Files.readString(report) : null;
+        try {
+            var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", config, null, workspace);
+
+            Files.deleteIfExists(report);
+            String missing = handleGet(ConsoleController.releaseCheckHandler(app), "/console/api/release-check?path=../../secret");
+            assertTrue(missing.contains("\"exists\":false"), missing);
+            assertFalse(missing.contains("secret"), missing);
+
+            Files.createDirectories(report.getParent());
+            Files.writeString(report, """
+                    # Ricbot Release Check Report
+
+                    - generated_at: 2026-05-22T08:00:00Z
+                    - final_status: PASS
+
+                    ## Baseline
+
+                    - baseline_status: FOUND
+
+                    ## Steps
+
+                    | Step | Result |
+                    | --- | --- |
+                    | eval compare | PASS |
+
+                    token: should-not-leak
+                    """);
+
+            String found = handleGet(ConsoleController.releaseCheckHandler(app), "/console/api/release-check");
+            assertTrue(found.contains("\"exists\":true"), found);
+            assertTrue(found.contains("\"finalStatus\":\"PASS\""), found);
+            assertTrue(found.contains("\"baselineStatus\":\"FOUND\""), found);
+            assertTrue(found.contains("\"evalCompareStatus\":\"PASS\""), found);
+            assertTrue(found.contains("[REDACTED]"), found);
+            assertFalse(found.contains("should-not-leak"), found);
+        } finally {
+            if (original != null) {
+                Files.createDirectories(report.getParent());
+                Files.writeString(report, original);
+            } else {
+                Files.deleteIfExists(report);
+            }
             loop.stop();
         }
     }
