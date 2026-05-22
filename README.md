@@ -264,6 +264,7 @@ java -jar target/Ricbot-1.0-SNAPSHOT.jar eval smoke --scenarios evals/golden.jso
 - [CHANGELOG.md](CHANGELOG.md)：V4.15-V5.0 能力演进
 - [docs/demo/end-to-end-coding-agent.md](docs/demo/end-to-end-coding-agent.md)：端到端演示
 - [docs/security/console-safety.md](docs/security/console-safety.md)：Console 安全边界
+- [docs/mcp/mcp-diagnostics.md](docs/mcp/mcp-diagnostics.md)：MCP 配置诊断、工具启用解释和 schema snapshot
 - [docs/gateway/feishu-webhook.md](docs/gateway/feishu-webhook.md)：Feishu webhook 入站配置、示例和排查
 - [docs/gateway/dingtalk-webhook.md](docs/gateway/dingtalk-webhook.md)：DingTalk webhook 签名、示例和排查
 - [docs/gateway/wecom-webhook.md](docs/gateway/wecom-webhook.md)：WeCom webhook token、示例和限制

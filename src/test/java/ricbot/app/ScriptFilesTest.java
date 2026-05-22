@@ -45,7 +45,8 @@ class ScriptFilesTest {
         List<Path> docs = List.of(
                 Path.of("docs", "gateway", "feishu-webhook.md"),
                 Path.of("docs", "gateway", "dingtalk-webhook.md"),
-                Path.of("docs", "gateway", "wecom-webhook.md")
+                Path.of("docs", "gateway", "wecom-webhook.md"),
+                Path.of("docs", "mcp", "mcp-diagnostics.md")
         );
         for (Path doc : docs) {
             assertTrue(Files.isRegularFile(doc), doc.toString());
@@ -57,6 +58,7 @@ class ScriptFilesTest {
         assertTrue(Files.readString(docs.get(0)).contains("POST /webhook/feishu"));
         assertTrue(Files.readString(docs.get(1)).contains("POST /webhook/dingtalk"));
         assertTrue(Files.readString(docs.get(2)).contains("POST /webhook/wecom"));
+        assertTrue(Files.readString(docs.get(3)).contains("GET /console/api/mcp/diagnostics"));
 
         List<Path> examples = List.of(
                 Path.of("config", "examples", "feishu-webhook.json"),

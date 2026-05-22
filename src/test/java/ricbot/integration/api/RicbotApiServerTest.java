@@ -436,6 +436,14 @@ public class RicbotApiServerTest {
             assertTrue(mcp.contains("[REDACTED]"), mcp);
             assertFalse(mcp.contains("secret-token-value"), mcp);
             assertFalse(mcp.contains("secret-env-token"), mcp);
+
+            String mcpDiagnostics = handleGet(ConsoleController.mcpDiagnosticsHandler(app), "/console/api/mcp/diagnostics");
+            assertTrue(mcpDiagnostics.contains("\"schemaHash\""), mcpDiagnostics);
+            assertTrue(mcpDiagnostics.contains("\"registeredToolNames\""), mcpDiagnostics);
+            assertTrue(mcpDiagnostics.contains("\"disabledReason\""), mcpDiagnostics);
+            assertTrue(mcpDiagnostics.contains("[REDACTED]"), mcpDiagnostics);
+            assertFalse(mcpDiagnostics.contains("secret-token-value"), mcpDiagnostics);
+            assertFalse(mcpDiagnostics.contains("secret-env-token"), mcpDiagnostics);
             assertFalse(mcp.contains("visible-value"), mcp);
 
             String experiences = handleGet(ConsoleController.experiencesHandler(app), "/console/api/experiences");

@@ -599,7 +599,18 @@ public final class MCPAdapters {
             Map<String, Config.MCPServerConfig> mcpServers,
             ToolRegistry registry
     ) {
-        Map<String, MCPServerConnection> serverConnections = new HashMap<>();
+        return connectMcpServersDetailed(mcpServers, registry).connections();
+    }
+
+    public static MCPConnectReport connectMcpServersDetailed(
+            Map<String, Config.MCPServerConfig> mcpServers,
+            ToolRegistry registry
+    ) {
+        Map<String, MCPServerConnection> serverConnections = new LinkedHashMap<>();
+        Map<String, MCPServerLoadInfo> serverInfo = new LinkedHashMap<>();
+        if (mcpServers == null || mcpServers.isEmpty()) {
+            return new MCPConnectReport(serverConnections, serverInfo);
+        }
         List<Future<ServerConnectResult>> futures = new ArrayList<>();
 
         ExecutorService executor = createConnectExecutor(mcpServers.size());
@@ -618,13 +629,26 @@ public final class MCPAdapters {
                 if (result != null && result.connection() != null) {
                     serverConnections.put(result.name(), result.connection());
                 }
+                if (result != null && result.info() != null) {
+                    serverInfo.put(result.name(), result.info());
+                }
             } catch (Exception e) {
                 log.error("MCP 服务器 '{}' 连接任务失败: {}", name, e.getMessage(), e);
+                serverInfo.put(name, new MCPServerLoadInfo(
+                        name,
+                        "unknown",
+                        "FAILED",
+                        List.of(),
+                        List.of(),
+                        List.of(),
+                        e.getClass().getSimpleName() + ": " + e.getMessage(),
+                        List.of("connect task failed")
+                ));
             }
         }
 
         executor.shutdown();
-        return serverConnections;
+        return new MCPConnectReport(serverConnections, serverInfo);
     }
 
     public static List<MCPServerHealth> healthReport(Map<String, MCPServerConnection> connections, int timeoutSeconds) {
@@ -688,10 +712,10 @@ public final class MCPAdapters {
             ToolRegistry registry
     ) {
         MCPServerConnection connection = null;
+        String transportType = cfg != null ? cfg.getType() : "";
+        List<String> configWarnings = new ArrayList<>();
 
         try {
-            String transportType = cfg.getType();
-
             if (transportType == null || transportType.isBlank()) {
                 if (cfg.getCommand() != null && !cfg.getCommand().isBlank()) {
                     transportType = "stdio";
@@ -701,14 +725,32 @@ public final class MCPAdapters {
                             : "streamableHttp";
                 } else {
                     log.warn("MCP 服务器 '{}': 未配置 command 或 url，已跳过", name);
-                    return new ServerConnectResult(name, null);
+                    return new ServerConnectResult(name, null, new MCPServerLoadInfo(
+                            name,
+                            "unknown",
+                            "DISABLED",
+                            List.of(),
+                            List.of(),
+                            List.of(),
+                            "missing command or url",
+                            List.of("missing command or url")
+                    ));
                 }
             }
 
             connection = connectTransport(name, cfg, transportType);
 
             if (connection == null) {
-                return new ServerConnectResult(name, null);
+                return new ServerConnectResult(name, null, new MCPServerLoadInfo(
+                        name,
+                        transportType,
+                        "FAILED",
+                        List.of(),
+                        List.of(),
+                        List.of(),
+                        "transport connection failed",
+                        List.of("transport connection failed")
+                ));
             }
 
             MCPClientSession session = connection.getSession();
@@ -724,6 +766,8 @@ public final class MCPAdapters {
             List<MCPToolDefinition> toolDefs = session.listTools();
             List<String> availableRawNames = new ArrayList<>();
             List<String> availableWrappedNames = new ArrayList<>();
+            List<String> registeredToolNames = new ArrayList<>();
+            List<String> filteredToolNames = new ArrayList<>();
 
             for (MCPToolDefinition toolDef : toolDefs) {
                 availableRawNames.add(toolDef.getName());
@@ -737,6 +781,7 @@ public final class MCPAdapters {
                         && !enabledTools.contains(toolDef.getName())
                         && !enabledTools.contains(wrappedName)) {
                     log.debug("MCP：跳过工具 '{}'（来自服务器 '{}'，不在 enabledTools 中）", wrappedName, name);
+                    filteredToolNames.add(wrappedName);
                     continue;
                 }
 
@@ -748,6 +793,7 @@ public final class MCPAdapters {
                 );
                 registry.register(wrapper);
                 registeredCount++;
+                registeredToolNames.add(wrapper.getName());
 
                 if (enabledTools.contains(toolDef.getName())) {
                     matchedEnabledTools.add(toolDef.getName());
@@ -771,6 +817,7 @@ public final class MCPAdapters {
                             String.join(", ", availableRawNames),
                             String.join(", ", availableWrappedNames)
                     );
+                    configWarnings.add("enabledTools unmatched: " + String.join(", ", unmatched));
                 }
             }
 
@@ -801,7 +848,16 @@ public final class MCPAdapters {
             }
 
             log.info("MCP 服务器 '{}': 已连接，已注册能力数：{}", name, registeredCount);
-            return new ServerConnectResult(name, managedConnection);
+            return new ServerConnectResult(name, managedConnection, new MCPServerLoadInfo(
+                    name,
+                    transportType,
+                    "CONNECTED",
+                    List.copyOf(availableRawNames),
+                    List.copyOf(registeredToolNames),
+                    List.copyOf(filteredToolNames),
+                    "",
+                    List.copyOf(configWarnings)
+            ));
 
         } catch (Exception e) {
             String text = String.valueOf(e.getMessage()).toLowerCase();
@@ -827,7 +883,20 @@ public final class MCPAdapters {
                 }
             }
 
-            return new ServerConnectResult(name, null);
+            List<String> warnings = new ArrayList<>(configWarnings);
+            if (!hint.isBlank()) {
+                warnings.add(hint.trim());
+            }
+            return new ServerConnectResult(name, null, new MCPServerLoadInfo(
+                    name,
+                    transportType != null && !transportType.isBlank() ? transportType : "unknown",
+                    "FAILED",
+                    List.of(),
+                    List.of(),
+                    List.of(),
+                    e.getClass().getSimpleName() + ": " + e.getMessage(),
+                    List.copyOf(warnings)
+            ));
         }
     }
 
@@ -838,7 +907,25 @@ public final class MCPAdapters {
     public record NullableBranch(Map<String, Object> branch, boolean nullable) {
     }
 
-    public record ServerConnectResult(String name, MCPServerConnection connection) {
+    public record MCPConnectReport(
+            Map<String, MCPServerConnection> connections,
+            Map<String, MCPServerLoadInfo> servers
+    ) {
+    }
+
+    public record MCPServerLoadInfo(
+            String name,
+            String transportType,
+            String status,
+            List<String> rawToolNames,
+            List<String> registeredToolNames,
+            List<String> filteredToolNames,
+            String lastError,
+            List<String> configWarnings
+    ) {
+    }
+
+    public record ServerConnectResult(String name, MCPServerConnection connection, MCPServerLoadInfo info) {
     }
 
     public record MCPServerHealth(String name, String status, int toolCount, String error) {

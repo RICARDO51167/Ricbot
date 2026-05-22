@@ -31,6 +31,7 @@ import ricbot.domain.workspace.WorkspaceSessionStatus;
 import ricbot.domain.workspace.WorkspaceSessionStore;
 import ricbot.integration.api.RicbotApiAppContext;
 import ricbot.integration.api.RicbotApiServer;
+import ricbot.integration.mcp.MCPDiagnosticService;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -68,6 +69,7 @@ public final class ConsoleController {
         server.createContext("/console/api/traces", tracesHandler(appContext));
         server.createContext("/console/api/team-reports", teamReportsHandler(appContext));
         server.createContext("/console/api/tools", toolsHandler(appContext));
+        server.createContext("/console/api/mcp/diagnostics", mcpDiagnosticsHandler(appContext));
         server.createContext("/console/api/mcp", mcpHandler(appContext));
         server.createContext("/console/api/workspaces/", workspaceActionsHandler(appContext));
         server.createContext("/console/api/workspaces", workspacesHandler(appContext));
@@ -106,6 +108,10 @@ public final class ConsoleController {
 
     public static HttpHandler mcpHandler(RicbotApiAppContext appContext) {
         return new ApiHandler(appContext, ConsoleController::mcp);
+    }
+
+    public static HttpHandler mcpDiagnosticsHandler(RicbotApiAppContext appContext) {
+        return new ApiHandler(appContext, ConsoleController::mcpDiagnostics);
     }
 
     public static HttpHandler workspacesHandler(RicbotApiAppContext appContext) {
@@ -220,6 +226,26 @@ public final class ConsoleController {
                 appContext.getAgentLoop().getMcpLoader(),
                 appContext.getConfig()
         ).mcp();
+    }
+
+    private static Map<String, Object> mcpDiagnostics(RicbotApiAppContext appContext) {
+        if (appContext.getAgentLoop() == null) {
+            return Map.of(
+                    "configuredCount", 0,
+                    "connectedCount", 0,
+                    "mcpToolCount", 0,
+                    "schemaHash", "",
+                    "warnings", List.of(),
+                    "servers", List.of(),
+                    "tools", List.of(),
+                    "schemaSummary", List.of()
+            );
+        }
+        return new MCPDiagnosticService(
+                appContext.getAgentLoop().getTools(),
+                appContext.getAgentLoop().getMcpLoader(),
+                appContext.getConfig()
+        ).diagnostics();
     }
 
     private static Map<String, Object> createWorkspaceChangeSet(RicbotApiAppContext appContext, String id) {

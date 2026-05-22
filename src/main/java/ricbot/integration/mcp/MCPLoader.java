@@ -25,6 +25,7 @@ public class MCPLoader implements AutoCloseable {
     private volatile Map<String, Object> serverConfigs;
     // 已建立的 MCP 服务器连接映射，键为服务名，值为连接对象
     private final Map<String, MCPServerConnection> connections = new ConcurrentHashMap<>();
+    private volatile Map<String, MCPAdapters.MCPServerLoadInfo> lastLoadInfo = new LinkedHashMap<>();
 
     /**
      * 构造函数
@@ -78,11 +79,14 @@ public class MCPLoader implements AutoCloseable {
         // 如果没有解析出任何有效配置，记录日志并返回
         if (parsed.isEmpty()) {
             log.info("MCP: 未发现可用 server 配置，跳过加载。");
+            lastLoadInfo = new LinkedHashMap<>();
             return;
         }
 
         // 建立与服务器的连接，并将连接对象存入 connections 映射中，同时注册工具到 registry
-        Map<String, MCPServerConnection> newConnections = MCPAdapters.connectMcpServers(parsed, registry);
+        MCPAdapters.MCPConnectReport report = MCPAdapters.connectMcpServersDetailed(parsed, registry);
+        Map<String, MCPServerConnection> newConnections = report.connections();
+        lastLoadInfo = new LinkedHashMap<>(report.servers());
         // 将新建立的连接全部放入 connections 映射中
         connections.putAll(newConnections);
         // 计算连接失败的服务器数量
@@ -112,7 +116,11 @@ public class MCPLoader implements AutoCloseable {
         // 断开指定服务器的连接
         disconnectServer(serverName, "reload_server");
         // 尝试重新连接指定的服务器
-        Map<String, MCPServerConnection> connected = MCPAdapters.connectMcpServers(Map.of(serverName, cfg), registry);
+        MCPAdapters.MCPConnectReport report = MCPAdapters.connectMcpServersDetailed(Map.of(serverName, cfg), registry);
+        Map<String, MCPServerConnection> connected = report.connections();
+        Map<String, MCPAdapters.MCPServerLoadInfo> info = new LinkedHashMap<>(lastLoadInfo);
+        info.putAll(report.servers());
+        lastLoadInfo = info;
         // 获取新建立的连接对象
         MCPServerConnection conn = connected.get(serverName);
         // 如果连接对象为 null，表示重连失败，记录警告日志并返回 false
@@ -208,6 +216,14 @@ public class MCPLoader implements AutoCloseable {
     public synchronized Map<String, MCPServerConnection> getConnections() {
         // 返回一个不可修改的 LinkedHashMap 副本，防止外部修改内部状态
         return Collections.unmodifiableMap(new LinkedHashMap<>(connections));
+    }
+
+    public synchronized Map<String, Object> getServerConfigs() {
+        return Collections.unmodifiableMap(new LinkedHashMap<>(serverConfigs));
+    }
+
+    public synchronized Map<String, MCPAdapters.MCPServerLoadInfo> getLastLoadInfo() {
+        return Collections.unmodifiableMap(new LinkedHashMap<>(lastLoadInfo));
     }
 
     private List<Map<String, Object>> registeredMcpTools() {
