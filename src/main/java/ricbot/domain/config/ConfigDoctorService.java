@@ -61,7 +61,8 @@ public final class ConfigDoctorService {
         report.setEffectivePorts(effectivePorts(resolvedConfig));
         report.setEnabledTools(enabledTools(resolvedConfig));
         report.setMcpServers(mcpServers(resolvedConfig));
-        report.setProviderCapability(capabilityResolver.resolve(resolvedConfig, providerName, model));
+        ProviderCapability providerCapability = capabilityResolver.resolve(resolvedConfig, providerName, model);
+        report.setProviderCapability(providerCapability);
 
         if (!Files.exists(resolvedPath)) {
             report.addWarning("配置文件不存在，将使用默认配置：" + resolvedPath);
@@ -72,6 +73,7 @@ public final class ConfigDoctorService {
         diagnoseProvider(rawConfig, resolvedConfig, providerName, spec, model, apiBase, apiKey, report);
         diagnosePorts(resolvedConfig, rawJson, report);
         diagnoseTools(resolvedConfig, rawJson, report);
+        diagnoseModelCapabilityOverrides(rawJson, resolvedConfig, providerName, model, providerCapability, report);
         diagnoseMcp(resolvedConfig, report);
         return report;
     }
@@ -224,6 +226,62 @@ public final class ConfigDoctorService {
                 report.addWarning("MCP server '" + entry.getKey() + "' 使用未知 type：" + type);
                 report.addSuggestedFix("将 MCP server type 设置为 stdio、sse 或 streamableHttp。");
             }
+        }
+    }
+
+    private void diagnoseModelCapabilityOverrides(
+            Map<String, Object> rawJson,
+            Config config,
+            String providerName,
+            String model,
+            ProviderCapability providerCapability,
+            ConfigDoctorReport report
+    ) {
+        Map<String, Object> rawOverrides = capabilityOverrides(rawJson);
+        for (Map.Entry<String, Object> entry : rawOverrides.entrySet()) {
+            String key = entry.getKey();
+            Map<String, Object> value = copyObjectMap(entry.getValue() instanceof Map<?, ?> map ? map : Map.of());
+            warnInvalidTokenValue(key, "contextWindowTokens", value.get("contextWindowTokens"), report);
+            warnInvalidTokenValue(key, "maxOutputTokens", value.get("maxOutputTokens"), report);
+
+            if (!capabilityResolver.overrideAppliesTo(key, providerName, model)) {
+                report.addWarning("model_capabilities." + key + " 当前未被默认模型使用，仅作为低优先级提示。");
+            }
+        }
+
+        if (providerCapability != null
+                && (ProviderCapability.SOURCE_USER_OVERRIDE.equals(providerCapability.source())
+                || ProviderCapability.SOURCE_MIXED.equals(providerCapability.source()))) {
+            report.addWarning("当前 provider capability 包含用户 override；这是本地声明，不是在线探测，可能与实际 provider 能力不一致。");
+            report.addSuggestedFix("如遇到工具调用、流式输出或 JSON mode 异常，请核对 model_capabilities 中的能力声明。");
+        }
+    }
+
+    private Map<String, Object> capabilityOverrides(Map<String, Object> rawJson) {
+        Object value = rawJson.containsKey("model_capabilities")
+                ? rawJson.get("model_capabilities")
+                : rawJson.get("modelCapabilities");
+        return copyObjectMap(value instanceof Map<?, ?> map ? map : Map.of());
+    }
+
+    private void warnInvalidTokenValue(String modelKey, String field, Object value, ConfigDoctorReport report) {
+        if (value == null) {
+            return;
+        }
+        Integer parsed = parseInteger(value);
+        if (parsed == null || parsed <= 0) {
+            report.addWarning("model_capabilities." + modelKey + "." + field + " 必须是正数，当前值已被忽略。");
+        }
+    }
+
+    private static Integer parseInteger(Object value) {
+        if (value instanceof Number n) {
+            return n.intValue();
+        }
+        try {
+            return value != null ? Integer.valueOf(String.valueOf(value)) : null;
+        } catch (Exception e) {
+            return null;
         }
     }
 

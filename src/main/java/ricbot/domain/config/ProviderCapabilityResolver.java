@@ -5,6 +5,7 @@ import ricbot.integration.llm.provider.ProviderRegistry;
 import ricbot.integration.llm.provider.ProviderSpec;
 
 import java.util.Locale;
+import java.util.Map;
 
 /**
  * 静态/启发式 Provider capability 解析器。
@@ -23,7 +24,8 @@ public final class ProviderCapabilityResolver {
         String apiBase = config != null ? config.getApiBase(model) : null;
         Integer contextWindow = defaults != null ? defaults.getContextWindowTokens() : null;
         Integer maxOutput = defaults != null ? defaults.getMaxTokens() : null;
-        return resolve(providerName, model, apiBase, contextWindow, maxOutput);
+        ProviderCapability inferred = resolve(providerName, model, apiBase, contextWindow, maxOutput);
+        return applyOverride(inferred, config, providerName, model);
     }
 
     public ProviderCapability resolve(
@@ -75,6 +77,7 @@ public final class ProviderCapabilityResolver {
                 : inferContextWindow(lowerModel);
         int maxOutput = maxOutputTokens != null && maxOutputTokens > 0 ? maxOutputTokens : -1;
 
+        String source = inferredSource(spec, lowerModel, resolvedProvider, toolCalling, streaming, vision, jsonMode);
         return new ProviderCapability(
                 resolvedProvider != null && !resolvedProvider.isBlank() ? resolvedProvider : UNKNOWN,
                 new ModelCapability(
@@ -87,8 +90,100 @@ public final class ProviderCapabilityResolver {
                         contextWindow,
                         maxOutput,
                         backend
-                )
+                ),
+                source
         );
+    }
+
+    private ProviderCapability applyOverride(ProviderCapability inferred, Config config, String providerName, String model) {
+        Config.ModelCapabilityOverride override = findOverride(config, providerName, model);
+        if (override == null || !override.hasAnyField() || inferred == null || inferred.modelCapability() == null) {
+            return inferred;
+        }
+        ModelCapability base = inferred.modelCapability();
+        ModelCapability merged = new ModelCapability(
+                base.model(),
+                firstNonNull(override.getSupportsToolCalling(), base.supportsToolCalling()),
+                firstNonNull(override.getSupportsStreaming(), base.supportsStreaming()),
+                firstNonNull(override.getSupportsVision(), base.supportsVision()),
+                firstNonNull(override.getSupportsJsonMode(), base.supportsJsonMode()),
+                firstNonNull(override.getSupportsReasoningEffort(), base.supportsReasoningEffort()),
+                override.getContextWindowTokens() != null ? override.getContextWindowTokens() : base.contextWindowTokens(),
+                override.getMaxOutputTokens() != null ? override.getMaxOutputTokens() : base.maxOutputTokens(),
+                firstNonNull(override.getApiMode(), base.apiMode())
+        );
+        String source = override.isComplete()
+                ? ProviderCapability.SOURCE_USER_OVERRIDE
+                : ProviderCapability.SOURCE_MIXED;
+        return new ProviderCapability(inferred.providerName(), merged, source);
+    }
+
+    public Config.ModelCapabilityOverride findOverride(Config config, String providerName, String model) {
+        if (config == null || config.getModelCapabilities() == null || config.getModelCapabilities().isEmpty()) {
+            return null;
+        }
+        Map<String, Config.ModelCapabilityOverride> overrides = config.getModelCapabilities();
+        for (String key : overrideKeys(providerName, model)) {
+            Config.ModelCapabilityOverride override = overrides.get(key);
+            if (override != null) {
+                return override;
+            }
+        }
+        return null;
+    }
+
+    public boolean overrideAppliesTo(String overrideKey, String providerName, String model) {
+        if (overrideKey == null || overrideKey.isBlank()) {
+            return false;
+        }
+        for (String key : overrideKeys(providerName, model)) {
+            if (overrideKey.trim().equalsIgnoreCase(key)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static String[] overrideKeys(String providerName, String model) {
+        String normalizedModel = model != null ? model.trim() : "";
+        String normalizedProvider = providerName != null ? providerName.trim() : "";
+        int slash = normalizedModel.indexOf('/');
+        String bareModel = slash > 0 ? normalizedModel.substring(slash + 1) : normalizedModel;
+        String providerFromModel = slash > 0 ? normalizedModel.substring(0, slash) : normalizedProvider;
+        return new String[] {
+                normalizedModel,
+                bareModel,
+                !providerFromModel.isBlank() && !bareModel.isBlank() ? providerFromModel + "/" + bareModel : ""
+        };
+    }
+
+    private static String firstNonNull(String override, String fallback) {
+        return override != null ? override : fallback;
+    }
+
+    private static String inferredSource(
+            ProviderSpec spec,
+            String lowerModel,
+            String providerName,
+            String toolCalling,
+            String streaming,
+            String vision,
+            String jsonMode
+    ) {
+        if (spec == null) {
+            return ProviderCapability.SOURCE_HEURISTIC;
+        }
+        if (isNonChatModel(lowerModel)
+                || looksKnownOpenAiCompatibleChatModel(lowerModel, providerName)
+                || looksAnthropicVisionCapable(lowerModel)
+                || looksVisionCapable(lowerModel)
+                || TRUE.equals(toolCalling)
+                || TRUE.equals(streaming)
+                || TRUE.equals(jsonMode)
+                || FALSE.equals(vision)) {
+            return ProviderCapability.SOURCE_STATIC;
+        }
+        return ProviderCapability.SOURCE_HEURISTIC;
     }
 
     public String resolveProviderName(String providerName, String model, String apiBase) {

@@ -93,7 +93,7 @@ public class AgentLoop {
     /** Provider 重试模式（透传到运行规格） */
     private final String providerRetryMode;
     /** 静态/启发式 Provider capability，用于运行时保守降级。 */
-    private final ProviderCapability providerCapability;
+    private ProviderCapability providerCapability;
     /** 会话自动归档 TTL（分钟），0 表示禁用 */
     private final int sessionTtlMinutes;
 
@@ -354,6 +354,12 @@ public class AgentLoop {
         // 注册默认工具
         registerDefaultTools();
         registerCommandRoutes();
+    }
+
+    public void setProviderCapability(ProviderCapability providerCapability) {
+        if (providerCapability != null) {
+            this.providerCapability = providerCapability;
+        }
     }
 
     private static ExecutorService createWorkerExecutor() {

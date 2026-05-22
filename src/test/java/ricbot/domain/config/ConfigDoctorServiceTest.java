@@ -125,6 +125,87 @@ class ConfigDoctorServiceTest {
     }
 
     @Test
+    void providerCapability_appliesUserOverrideAndReportsMixedSource(@TempDir Path tempDir) throws Exception {
+        Path configPath = writeConfig(tempDir, """
+                {
+                  "agents": {"defaults": {"model": "qwen-plus", "workspace": "%s"}},
+                  "providers": {"dashscope": {"api_key": "sk-test"}},
+                  "model_capabilities": {
+                    "qwen-plus": {
+                      "supportsToolCalling": false,
+                      "maxOutputTokens": 8192
+                    }
+                  },
+                  "tools": {"restrictToWorkspace": true, "web": {"enable": false}, "exec": {"enable": false}}
+                }
+                """.formatted(jsonPath(tempDir.resolve("workspace"))));
+
+        ConfigDoctorReport report = doctor().diagnose(ConfigLoader.loadConfig(configPath), configPath);
+
+        assertEquals("false", report.getProviderCapability().modelCapability().supportsToolCalling());
+        assertEquals(8192, report.getProviderCapability().modelCapability().maxOutputTokens());
+        assertEquals(ProviderCapability.SOURCE_MIXED, report.getProviderCapability().source());
+        assertTrue(report.getWarnings().stream().anyMatch(s -> s.contains("用户 override")), report.getWarnings().toString());
+    }
+
+    @Test
+    void providerCapability_completeUserOverrideReportsUserOverrideSource(@TempDir Path tempDir) throws Exception {
+        Path configPath = writeConfig(tempDir, """
+                {
+                  "agents": {"defaults": {"model": "private-model", "workspace": "%s"}},
+                  "providers": {"openai": {"api_key": "sk-test"}},
+                  "model_capabilities": {
+                    "private-model": {
+                      "supportsToolCalling": true,
+                      "supportsStreaming": false,
+                      "supportsVision": false,
+                      "supportsJsonMode": true,
+                      "supportsReasoningEffort": "UNKNOWN",
+                      "contextWindowTokens": 4096,
+                      "maxOutputTokens": 1024,
+                      "apiMode": "openai-compatible"
+                    }
+                  },
+                  "tools": {"restrictToWorkspace": true, "web": {"enable": false}, "exec": {"enable": false}}
+                }
+                """.formatted(jsonPath(tempDir.resolve("workspace"))));
+
+        ConfigDoctorReport report = doctor().diagnose(ConfigLoader.loadConfig(configPath), configPath);
+
+        assertEquals("true", report.getProviderCapability().modelCapability().supportsToolCalling());
+        assertEquals("false", report.getProviderCapability().modelCapability().supportsStreaming());
+        assertEquals(ProviderCapability.SOURCE_USER_OVERRIDE, report.getProviderCapability().source());
+    }
+
+    @Test
+    void invalidCapabilityTokenCounts_reportWarning(@TempDir Path tempDir) throws Exception {
+        Path configPath = writeConfig(tempDir, """
+                {
+                  "agents": {"defaults": {"model": "private-model", "workspace": "%s"}},
+                  "providers": {"openai": {"api_key": "sk-test"}},
+                  "model_capabilities": {
+                    "private-model": {
+                      "supportsToolCalling": true,
+                      "contextWindowTokens": 0,
+                      "maxOutputTokens": -3
+                    },
+                    "unused-model": {
+                      "supportsToolCalling": true,
+                      "contextWindowTokens": "bad"
+                    }
+                  },
+                  "tools": {"restrictToWorkspace": true, "web": {"enable": false}, "exec": {"enable": false}}
+                }
+                """.formatted(jsonPath(tempDir.resolve("workspace"))));
+
+        ConfigDoctorReport report = doctor().diagnose(ConfigLoader.loadConfig(configPath), configPath);
+
+        assertTrue(report.getWarnings().stream().anyMatch(s -> s.contains("contextWindowTokens") && s.contains("正数")), report.getWarnings().toString());
+        assertTrue(report.getWarnings().stream().anyMatch(s -> s.contains("maxOutputTokens") && s.contains("正数")), report.getWarnings().toString());
+        assertTrue(report.getWarnings().stream().anyMatch(s -> s.contains("unused-model") && s.contains("未被默认模型使用")), report.getWarnings().toString());
+    }
+
+    @Test
     void unknownMcpType_reportsWarning(@TempDir Path tempDir) throws Exception {
         Path configPath = writeConfig(tempDir, """
                 {

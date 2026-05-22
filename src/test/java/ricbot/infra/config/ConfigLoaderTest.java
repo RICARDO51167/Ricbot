@@ -83,6 +83,79 @@ class ConfigLoaderTest {
     }
 
     @Test
+    void loadConfig_readsModelCapabilityOverrides(@TempDir Path tempDir) throws Exception {
+        Path configPath = tempDir.resolve("capabilities.json");
+        Files.writeString(configPath, """
+                {
+                  "model_capabilities": {
+                    "qwen-plus": {
+                      "supportsToolCalling": true,
+                      "supportsStreaming": "UNKNOWN",
+                      "supportsVision": false,
+                      "supportsJsonMode": true,
+                      "supportsReasoningEffort": false,
+                      "contextWindowTokens": 131072,
+                      "maxOutputTokens": 8192,
+                      "apiMode": "openai-compatible"
+                    }
+                  }
+                }
+                """);
+
+        Config config = ConfigLoader.loadConfig(configPath);
+        Config.ModelCapabilityOverride override = config.getModelCapabilities().get("qwen-plus");
+
+        assertNotNull(override);
+        assertEquals("true", override.getSupportsToolCalling());
+        assertEquals("UNKNOWN", override.getSupportsStreaming());
+        assertEquals("false", override.getSupportsVision());
+        assertEquals(131072, override.getContextWindowTokens());
+        assertEquals(8192, override.getMaxOutputTokens());
+        assertEquals("openai-compatible", override.getApiMode());
+    }
+
+    @Test
+    void loadConfig_withoutCapabilityOverridesKeepsOldConfigBehavior(@TempDir Path tempDir) throws Exception {
+        Path configPath = tempDir.resolve("old.json");
+        Files.writeString(configPath, """
+                {
+                  "agents": {"defaults": {"model": "gpt-4o-mini"}},
+                  "providers": {"openai": {"api_key": "sk-test"}}
+                }
+                """);
+
+        Config config = ConfigLoader.loadConfig(configPath);
+
+        assertTrue(config.getModelCapabilities().isEmpty());
+        assertEquals("gpt-4o-mini", config.getAgents().getDefaults().getModel());
+        assertEquals("sk-test", config.getProviders().getOpenai().getApiKey());
+    }
+
+    @Test
+    void loadConfig_ignoresInvalidCapabilityTokenCounts(@TempDir Path tempDir) throws Exception {
+        Path configPath = tempDir.resolve("invalid-capabilities.json");
+        Files.writeString(configPath, """
+                {
+                  "model_capabilities": {
+                    "private-model": {
+                      "supportsToolCalling": true,
+                      "contextWindowTokens": 0,
+                      "maxOutputTokens": -1
+                    }
+                  }
+                }
+                """);
+
+        Config config = ConfigLoader.loadConfig(configPath);
+        Config.ModelCapabilityOverride override = config.getModelCapabilities().get("private-model");
+
+        assertNotNull(override);
+        assertEquals("true", override.getSupportsToolCalling());
+        assertNull(override.getContextWindowTokens());
+        assertNull(override.getMaxOutputTokens());
+    }
+
+    @Test
     void loadConfig_readsEnterpriseWebhookChannelSettings(@TempDir Path tempDir) throws Exception {
         Path configPath = tempDir.resolve("webhooks.json");
         Files.writeString(configPath, """

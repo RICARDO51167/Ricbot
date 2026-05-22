@@ -1,5 +1,12 @@
 # Changelog
 
+## V5.4 - Provider Capability Override
+
+- 新增顶层 `model_capabilities` 配置，用于覆盖特定模型的 tool calling、streaming、vision、JSON mode、reasoning effort 和 token 窗口能力。
+- Provider capability resolver 先执行静态/启发式推断，再合并用户 override，并在 Config Doctor 中展示 `STATIC`、`HEURISTIC`、`USER_OVERRIDE` 或 `MIXED` 来源。
+- Config Doctor 增加 capability override 风险提示、非法 token 数 warning 和未命中当前默认模型的低优先级提示。
+- 运行时仍只消费最终 ProviderCapability；明确 `false` 的 override 会触发现有 tool/streaming 降级策略。
+
 ## V5.3 - Gateway Webhook Docs + Smoke Templates
 
 - 新增 Feishu、DingTalk、WeCom webhook 入站实测文档，覆盖 endpoint、文本消息示例、校验规则、去重和当前限制。

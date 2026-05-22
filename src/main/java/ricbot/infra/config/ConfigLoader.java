@@ -400,6 +400,11 @@ public final class ConfigLoader {
             pc.setExtraHeaders(stringMap(p.containsKey("extra_headers") ? p.get("extra_headers") : p.get("extraHeaders")));
         }
 
+        // --- 处理 model_capabilities 部分 ---
+        config.setModelCapabilities(parseModelCapabilities(
+                data.containsKey("model_capabilities") ? data.get("model_capabilities") : data.get("modelCapabilities")
+        ));
+
         // --- 处理 tools 部分 ---
         Map<String, Object> tools = asMap(data.get("tools"));
         // 设置 restrictToWorkspace
@@ -601,6 +606,25 @@ public final class ConfigLoader {
         }
         root.put("providers", providers);
 
+        Map<String, Object> modelCapabilities = new LinkedHashMap<>();
+        for (Map.Entry<String, Config.ModelCapabilityOverride> entry : config.getModelCapabilities().entrySet()) {
+            Config.ModelCapabilityOverride override = entry.getValue();
+            if (override == null || !override.hasAnyField()) {
+                continue;
+            }
+            Map<String, Object> value = new LinkedHashMap<>();
+            putIfNotNull(value, "supportsToolCalling", override.getSupportsToolCalling());
+            putIfNotNull(value, "supportsStreaming", override.getSupportsStreaming());
+            putIfNotNull(value, "supportsVision", override.getSupportsVision());
+            putIfNotNull(value, "supportsJsonMode", override.getSupportsJsonMode());
+            putIfNotNull(value, "supportsReasoningEffort", override.getSupportsReasoningEffort());
+            putIfNotNull(value, "contextWindowTokens", override.getContextWindowTokens());
+            putIfNotNull(value, "maxOutputTokens", override.getMaxOutputTokens());
+            putIfNotNull(value, "apiMode", override.getApiMode());
+            modelCapabilities.put(entry.getKey(), value);
+        }
+        root.put("model_capabilities", modelCapabilities);
+
         // --- 构建 tools 部分 ---
         Map<String, Object> tools = new LinkedHashMap<>();
         
@@ -735,6 +759,63 @@ public final class ConfigLoader {
 
     // helpers
     // 辅助方法区域
+
+    private static Map<String, Config.ModelCapabilityOverride> parseModelCapabilities(Object value) {
+        Map<String, Object> raw = asMap(value);
+        Map<String, Config.ModelCapabilityOverride> out = new LinkedHashMap<>();
+        for (Map.Entry<String, Object> entry : raw.entrySet()) {
+            String model = entry.getKey() != null ? entry.getKey().trim() : "";
+            if (model.isBlank()) {
+                continue;
+            }
+            Map<String, Object> map = asMap(entry.getValue());
+            Config.ModelCapabilityOverride override = new Config.ModelCapabilityOverride();
+            override.setSupportsToolCalling(capabilityFlag(map.get("supportsToolCalling")));
+            override.setSupportsStreaming(capabilityFlag(map.get("supportsStreaming")));
+            override.setSupportsVision(capabilityFlag(map.get("supportsVision")));
+            override.setSupportsJsonMode(capabilityFlag(map.get("supportsJsonMode")));
+            override.setSupportsReasoningEffort(capabilityFlag(map.get("supportsReasoningEffort")));
+            override.setContextWindowTokens(positiveInteger(map.get("contextWindowTokens")));
+            override.setMaxOutputTokens(positiveInteger(map.get("maxOutputTokens")));
+            override.setApiMode(string(map.get("apiMode"), null));
+            if (override.hasAnyField()) {
+                out.put(model, override);
+            }
+        }
+        return out;
+    }
+
+    private static String capabilityFlag(Object value) {
+        if (value instanceof Boolean b) {
+            return Boolean.toString(b);
+        }
+        String text = string(value, null);
+        if (text == null || text.isBlank()) {
+            return null;
+        }
+        String normalized = text.trim();
+        if ("true".equalsIgnoreCase(normalized)) {
+            return "true";
+        }
+        if ("false".equalsIgnoreCase(normalized)) {
+            return "false";
+        }
+        if ("unknown".equalsIgnoreCase(normalized)) {
+            return "UNKNOWN";
+        }
+        return null;
+    }
+
+    private static Integer positiveInteger(Object value) {
+        Integer parsed = integerValue(value, null);
+        return parsed != null && parsed > 0 ? parsed : null;
+    }
+
+    private static void putIfNotNull(Map<String, Object> target, String key, Object value) {
+        if (value != null) {
+            target.put(key, value);
+        }
+    }
 
     /**
      * 安全地将对象转换为 String-Object Map。

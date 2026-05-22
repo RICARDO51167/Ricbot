@@ -1130,6 +1130,7 @@ public final class CliCommands {
 
         sb.append("provider capability\n");
         sb.append("  providerName: ").append(value(capability.get("providerName"))).append("\n");
+        sb.append("  source: ").append(value(capability.get("source"))).append("\n");
         sb.append("  model: ").append(value(capability.get("model"))).append("\n");
         sb.append("  supportsToolCalling: ").append(value(capability.get("supportsToolCalling"))).append("\n");
         sb.append("  supportsStreaming: ").append(value(capability.get("supportsStreaming"))).append("\n");

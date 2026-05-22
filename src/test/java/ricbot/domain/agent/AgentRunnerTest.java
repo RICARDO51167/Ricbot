@@ -4,10 +4,12 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import ricbot.domain.config.ModelCapability;
 import ricbot.domain.config.ProviderCapability;
+import ricbot.domain.config.ProviderCapabilityResolver;
 import ricbot.domain.hook.AgentHook;
 import ricbot.domain.agent.AgentRunResult;
 import ricbot.domain.agent.AgentRunSpec;
 import ricbot.domain.agent.AgentRunner;
+import ricbot.infra.config.Config;
 import ricbot.integration.llm.api.LLMProvider;
 import ricbot.integration.llm.api.LLMResponse;
 import ricbot.integration.llm.api.OpenAIResponsesSupport;
@@ -576,6 +578,110 @@ public class AgentRunnerTest {
         assertEquals("unsupported_capability", result.getStopReason());
         assertTrue(result.getFinalContent().contains("不支持图片输入"));
         assertEquals(0, calls.get());
+    }
+
+    @Test
+    void runner_usesCapabilityOverrideToHideTools() throws Exception {
+        ToolRegistry tools = new ToolRegistry();
+        tools.register(echoTool());
+        AtomicInteger calls = new AtomicInteger(0);
+        Config config = new Config();
+        config.getAgents().getDefaults().setModel("qwen-plus");
+        Config.ModelCapabilityOverride override = new Config.ModelCapabilityOverride();
+        override.setSupportsToolCalling("false");
+        config.getModelCapabilities().put("qwen-plus", override);
+        ProviderCapability capability = new ProviderCapabilityResolver().resolve(config, "dashscope", "qwen-plus");
+
+        LLMProvider provider = new LLMProvider("k", "http://localhost") {
+            @Override
+            public LLMResponse chat(
+                    List<Map<String, Object>> messages,
+                    List<Map<String, Object>> toolsDef,
+                    String model,
+                    Integer maxTokens,
+                    Double temperature,
+                    String reasoningEffort,
+                    Object toolChoice
+            ) {
+                calls.incrementAndGet();
+                assertTrue(toolsDef.isEmpty());
+                return new LLMResponse().setContent("override no tools").setFinishReason("stop");
+            }
+        };
+
+        AgentRunResult result = new AgentRunner(provider).run(new AgentRunSpec()
+                .setInitialMessages(List.of(Map.of("role", "user", "content", "use tool")))
+                .setTools(tools)
+                .setModel("qwen-plus")
+                .setProviderCapability(capability)
+                .setMaxIterations(2));
+
+        assertEquals("override no tools", result.getFinalContent());
+        assertEquals(1, calls.get());
+        assertTrue(result.getRunEvents().stream().anyMatch(e ->
+                "TOOLS_NOT_EXPOSED".equals(e.get("decision"))));
+    }
+
+    @Test
+    void runner_usesCapabilityOverrideToDisableStreaming() throws Exception {
+        AtomicInteger chatCalls = new AtomicInteger(0);
+        AtomicInteger streamCalls = new AtomicInteger(0);
+        Config config = new Config();
+        config.getAgents().getDefaults().setModel("qwen-plus");
+        Config.ModelCapabilityOverride override = new Config.ModelCapabilityOverride();
+        override.setSupportsStreaming("false");
+        config.getModelCapabilities().put("qwen-plus", override);
+        ProviderCapability capability = new ProviderCapabilityResolver().resolve(config, "dashscope", "qwen-plus");
+
+        LLMProvider provider = new LLMProvider("k", "http://localhost") {
+            @Override
+            public LLMResponse chat(
+                    List<Map<String, Object>> messages,
+                    List<Map<String, Object>> toolsDef,
+                    String model,
+                    Integer maxTokens,
+                    Double temperature,
+                    String reasoningEffort,
+                    Object toolChoice
+            ) {
+                chatCalls.incrementAndGet();
+                return new LLMResponse().setContent("override fallback").setFinishReason("stop");
+            }
+
+            @Override
+            public LLMResponse chatStream(
+                    List<Map<String, Object>> messages,
+                    List<Map<String, Object>> tools,
+                    String model,
+                    Integer maxTokens,
+                    Double temperature,
+                    String reasoningEffort,
+                    Object toolChoice,
+                    StreamDeltaHandler onDelta,
+                    StreamEndHandler onEnd
+            ) {
+                streamCalls.incrementAndGet();
+                return new LLMResponse().setContent("stream").setFinishReason("stop");
+            }
+        };
+
+        AgentRunResult result = new AgentRunner(provider).run(new AgentRunSpec()
+                .setInitialMessages(List.of(Map.of("role", "user", "content", "hello")))
+                .setModel("qwen-plus")
+                .setProviderCapability(capability)
+                .setHook(new AgentHook() {
+                    @Override
+                    public boolean wantsStreaming() {
+                        return true;
+                    }
+                })
+                .setMaxIterations(2));
+
+        assertEquals("override fallback", result.getFinalContent());
+        assertEquals(1, chatCalls.get());
+        assertEquals(0, streamCalls.get());
+        assertTrue(result.getRunEvents().stream().anyMatch(e ->
+                "STREAMING_DISABLED_FALLBACK_TO_CHAT".equals(e.get("decision"))));
     }
 
     private static ProviderCapability capability(String tools, String streaming, String vision) {

@@ -49,6 +49,8 @@ public class Config {
     private GatewayConfig gateway = new GatewayConfig();
     /** API 配置 */
     private ApiConfig api = new ApiConfig();
+    /** 用户声明的模型能力覆盖，不做在线探测。 */
+    private Map<String, ModelCapabilityOverride> modelCapabilities = new LinkedHashMap<>();
 
     public Config() {
     }
@@ -59,6 +61,10 @@ public class Config {
 
     public void setApi(ApiConfig api) {
         this.api = api != null ? api : new ApiConfig();
+    }
+
+    public void setModelCapabilities(Map<String, ModelCapabilityOverride> modelCapabilities) {
+        this.modelCapabilities = modelCapabilities != null ? modelCapabilities : new LinkedHashMap<>();
     }
 
     /**
@@ -473,6 +479,40 @@ public class Config {
 
         public void setExtraHeaders(Map<String, String> extraHeaders) {
             this.extraHeaders = extraHeaders != null ? extraHeaders : new LinkedHashMap<>();
+        }
+    }
+
+    @Data
+    public static class ModelCapabilityOverride {
+        private String supportsToolCalling;
+        private String supportsStreaming;
+        private String supportsVision;
+        private String supportsJsonMode;
+        private String supportsReasoningEffort;
+        private Integer contextWindowTokens;
+        private Integer maxOutputTokens;
+        private String apiMode;
+
+        public boolean hasAnyField() {
+            return supportsToolCalling != null
+                    || supportsStreaming != null
+                    || supportsVision != null
+                    || supportsJsonMode != null
+                    || supportsReasoningEffort != null
+                    || contextWindowTokens != null
+                    || maxOutputTokens != null
+                    || apiMode != null;
+        }
+
+        public boolean isComplete() {
+            return supportsToolCalling != null
+                    && supportsStreaming != null
+                    && supportsVision != null
+                    && supportsJsonMode != null
+                    && supportsReasoningEffort != null
+                    && contextWindowTokens != null
+                    && maxOutputTokens != null
+                    && apiMode != null;
         }
     }
 

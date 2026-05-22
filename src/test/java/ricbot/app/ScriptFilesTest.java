@@ -61,7 +61,8 @@ class ScriptFilesTest {
         List<Path> examples = List.of(
                 Path.of("config", "examples", "feishu-webhook.json"),
                 Path.of("config", "examples", "dingtalk-webhook.json"),
-                Path.of("config", "examples", "wecom-webhook.json")
+                Path.of("config", "examples", "wecom-webhook.json"),
+                Path.of("config", "examples", "model-capabilities.json")
         );
         for (Path example : examples) {
             assertTrue(Files.isRegularFile(example), example.toString());

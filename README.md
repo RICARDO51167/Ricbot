@@ -141,6 +141,38 @@ sh scripts/eval-baseline.sh create --force
 
 `create` 使用固定 `evals/golden.jsonl` 和 deterministic smoke provider，不访问真实模型、外网或真实 API key；baseline 已存在时默认拒绝覆盖，需要显式 `--force`。
 
+## Provider Capability Override
+
+Ricbot 默认通过静态/启发式规则推断模型能力。对于 OpenAI-compatible 中转、私有模型、代理网关或同名模型能力不一致的部署，可以用顶层 `model_capabilities` 声明覆盖：
+
+```json
+{
+  "agents": {
+    "defaults": {
+      "model": "qwen-plus"
+    }
+  },
+  "model_capabilities": {
+    "qwen-plus": {
+      "supportsToolCalling": true,
+      "supportsStreaming": true,
+      "supportsVision": false,
+      "supportsJsonMode": true,
+      "supportsReasoningEffort": false,
+      "contextWindowTokens": 131072,
+      "maxOutputTokens": 8192,
+      "apiMode": "openai-compatible"
+    }
+  }
+}
+```
+
+本轮选择顶层 `model_capabilities`，因为当前配置模型已经以 `agents.defaults.model` 为核心入口，`ProviderCapabilityResolver` 集中负责 provider/model 能力合并；顶层结构实现面小，也避免把各 provider 配置改成新的嵌套弱类型。需要区分 provider 时，可以把 key 写成 `provider/model`，例如 `dashscope/qwen-plus`。
+
+合并规则：先读取静态/启发式 capability，再应用用户 override；只覆盖显式配置的字段，未配置字段保持原推断。布尔能力支持 `true`、`false` 和 `"UNKNOWN"` 三态；`contextWindowTokens`、`maxOutputTokens` 必须是正数，否则会被忽略并由 config doctor 给出 warning。
+
+Config Doctor 会在 provider capability 中展示 `source`：`STATIC`、`HEURISTIC`、`USER_OVERRIDE` 或 `MIXED`。Override 是用户声明，不是在线探测；错误声明可能导致运行时主动降级，或把不支持的能力暴露给 provider 后触发调用错误。完整示例见 [config/examples/model-capabilities.json](config/examples/model-capabilities.json)。
+
 ## Console 能力总览
 
 Console 默认跟随 `serve` 启动，建议只绑定 `127.0.0.1`。
@@ -224,7 +256,7 @@ java -jar target/Ricbot-1.0-SNAPSHOT.jar eval smoke --scenarios evals/golden.jso
 - Console 不支持 git merge 或 git commit
 - Console MCP Hub 当前只读，不支持 reload/reconnect/启停 server，也不能调用工具
 - Feishu / DingTalk / WeCom 文本入站已支持；附件、图片、语音和 Feishu/WeCom 加密回调解密当前不支持
-- Provider capability 是静态/启发式；只有明确 `false` 的能力才触发运行时降级，`UNKNOWN` 不阻断
+- Provider capability 默认是静态/启发式，也支持 `model_capabilities` 用户覆盖；只有最终结果明确为 `false` 的能力才触发运行时降级，`UNKNOWN` 不阻断
 - OpenAI-compatible 聚合网关和本地模型的 capability 可能需要用户通过 provider/model 配置显式修正
 
 ## 文档地图
