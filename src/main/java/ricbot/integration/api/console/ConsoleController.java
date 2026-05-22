@@ -26,18 +26,26 @@ import ricbot.integration.api.RicbotApiServer;
 
 import java.io.IOException;
 import java.io.OutputStream;
+import java.net.InetSocketAddress;
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.Instant;
+import java.util.ArrayDeque;
 import java.util.Comparator;
+import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.LongSupplier;
 import java.util.regex.Pattern;
 
 public final class ConsoleController {
     private static final Pattern SAFE_ID = Pattern.compile("[A-Za-z0-9._-]+");
+    private static final ConsolePostRateLimiter RATE_LIMITER = new ConsolePostRateLimiter(20, 10_000L, System::currentTimeMillis);
 
     private ConsoleController() {
     }
@@ -51,6 +59,7 @@ public final class ConsoleController {
         server.createContext("/console/api/experiences/", experienceActionsHandler(appContext));
         server.createContext("/console/api/experiences", experiencesHandler(appContext));
         server.createContext("/console/api/approvals", approvalsHandler(appContext));
+        server.createContext("/console/api/actions", actionsHandler(appContext));
         server.createContext("/console/api/evals", evalsHandler(appContext));
         server.createContext("/console", pageHandler(appContext));
     }
@@ -89,6 +98,10 @@ public final class ConsoleController {
 
     public static HttpHandler approvalsHandler(RicbotApiAppContext appContext) {
         return new ApprovalHandler(appContext);
+    }
+
+    public static HttpHandler actionsHandler(RicbotApiAppContext appContext) {
+        return new ApiHandler(appContext, ConsoleController::actions);
     }
 
     public static HttpHandler evalsHandler(RicbotApiAppContext appContext) {
@@ -194,6 +207,13 @@ public final class ConsoleController {
         EvalRunsViewerService service = new EvalRunsViewerService(appContext.getWorkspace());
         EvalRunDetail detail = service.detail(runId);
         return detail.toMap();
+    }
+
+    private static Map<String, Object> actions(RicbotApiAppContext appContext) {
+        List<Map<String, Object>> items = new ConsoleActionAuditService(appContext.getWorkspace()).recent(30).stream()
+                .map(ConsoleActionAuditRecord::toMap)
+                .toList();
+        return Map.of("items", items);
     }
 
     private static Map<String, Object> verifyExperience(RicbotApiAppContext appContext, String id) {
@@ -368,7 +388,11 @@ public final class ConsoleController {
                 || normalized.equals("password")
                 || normalized.endsWith("password")
                 || normalized.equals("token")
-                || normalized.endsWith("token");
+                || normalized.endsWith("token")
+                || normalized.equals("bearer")
+                || normalized.contains("bearer")
+                || normalized.equals("cookie")
+                || normalized.equals("setcookie");
     }
 
     @FunctionalInterface
@@ -407,57 +431,39 @@ public final class ConsoleController {
                 RicbotApiServer.writeErrorJson(exchange, 405, "不支持的 HTTP 方法", "invalid_request_error");
                 return;
             }
-            if (!appContext.isAuthorized(exchange)) {
-                RicbotApiServer.writeErrorJson(exchange, 401, "缺少或无效的 Bearer token", "authentication_error");
+            String[] parts = actionParts(exchange, "/console/api/experiences/");
+            if (parts.length != 2) {
+                RicbotApiServer.writeErrorJson(exchange, 404, "资源不存在", "not_found");
                 return;
             }
-            try {
-                String[] parts = actionParts(exchange, "/console/api/experiences/");
-                if (parts.length != 2) {
-                    RicbotApiServer.writeErrorJson(exchange, 404, "资源不存在", "not_found");
-                    return;
-                }
-                String id = requireSafeId(parts[0], "experience id");
-                Map<String, Object> result = switch (parts[1]) {
-                    case "verify" -> verifyExperience(appContext, id);
-                    case "reject" -> rejectExperience(appContext, id);
-                    case "promote-skill" -> promoteExperienceSkill(appContext, id);
-                    default -> null;
-                };
-                if (result == null) {
-                    RicbotApiServer.writeErrorJson(exchange, 404, "资源不存在", "not_found");
-                    return;
-                }
-                RicbotApiServer.writeJson(exchange, 200, result);
-            } catch (ConsoleNotFoundException e) {
-                RicbotApiServer.writeErrorJson(exchange, 404, e.getMessage(), "not_found");
-            } catch (ConsoleConflictException e) {
-                RicbotApiServer.writeErrorJson(exchange, 409, e.getMessage(), "conflict");
-            } catch (IllegalArgumentException e) {
-                RicbotApiServer.writeErrorJson(exchange, 404, e.getMessage(), "not_found");
-            } catch (Exception e) {
-                RicbotApiServer.writeJson(exchange, 500, Map.of(
-                        "error", Map.of(
-                                "message", e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName(),
-                                "type", "console_error"
-                        )
-                ));
-            }
+            String id = parts[0];
+            String action = switch (parts[1]) {
+                case "verify" -> "experience.verify";
+                case "reject" -> "experience.reject";
+                case "promote-skill" -> "experience.promoteSkill";
+                default -> "";
+            };
+            executeConsolePostAction(exchange, appContext, action, "EXPERIENCE", id, () -> switch (parts[1]) {
+                case "verify" -> verifyExperience(appContext, requireSafeId(id, "experience id"));
+                case "reject" -> rejectExperience(appContext, requireSafeId(id, "experience id"));
+                case "promote-skill" -> promoteExperienceSkill(appContext, requireSafeId(id, "experience id"));
+                default -> throw new ConsoleNotFoundException("资源不存在");
+            });
         }
     }
 
     private record ApprovalHandler(RicbotApiAppContext appContext) implements HttpHandler {
         @Override
         public void handle(HttpExchange exchange) throws IOException {
-            if (!appContext.isAuthorized(exchange)) {
-                RicbotApiServer.writeErrorJson(exchange, 401, "缺少或无效的 Bearer token", "authentication_error");
-                return;
-            }
             String method = exchange.getRequestMethod();
             try {
                 String path = exchange.getRequestURI() != null ? exchange.getRequestURI().getRawPath() : "";
                 if ("GET".equalsIgnoreCase(method)
                         && ("/console/api/approvals".equals(path) || "/console/api/approvals/".equals(path))) {
+                    if (!appContext.isAuthorized(exchange)) {
+                        RicbotApiServer.writeErrorJson(exchange, 401, "缺少或无效的 Bearer token", "authentication_error");
+                        return;
+                    }
                     RicbotApiServer.writeJson(exchange, 200, listApprovals(appContext));
                     return;
                 }
@@ -470,17 +476,17 @@ public final class ConsoleController {
                     RicbotApiServer.writeErrorJson(exchange, 404, "资源不存在", "not_found");
                     return;
                 }
-                String id = requireSafeId(parts[0], "approval id");
-                Map<String, Object> result = switch (parts[1]) {
-                    case "approve" -> approveApproval(appContext, id);
-                    case "reject" -> rejectApproval(appContext, id);
-                    default -> null;
+                String id = parts[0];
+                String action = switch (parts[1]) {
+                    case "approve" -> "approval.approve";
+                    case "reject" -> "approval.reject";
+                    default -> "";
                 };
-                if (result == null) {
-                    RicbotApiServer.writeErrorJson(exchange, 404, "资源不存在", "not_found");
-                    return;
-                }
-                RicbotApiServer.writeJson(exchange, 200, result);
+                executeConsolePostAction(exchange, appContext, action, "APPROVAL", id, () -> switch (parts[1]) {
+                    case "approve" -> approveApproval(appContext, requireSafeId(id, "approval id"));
+                    case "reject" -> rejectApproval(appContext, requireSafeId(id, "approval id"));
+                    default -> throw new ConsoleNotFoundException("资源不存在");
+                });
             } catch (ConsoleNotFoundException e) {
                 RicbotApiServer.writeErrorJson(exchange, 404, e.getMessage(), "not_found");
             } catch (ConsoleConflictException e) {
@@ -508,6 +514,190 @@ public final class ConsoleController {
             return new String[0];
         }
         return rest.split("/", -1);
+    }
+
+    @FunctionalInterface
+    private interface ConsoleActionSupplier {
+        Map<String, Object> execute() throws Exception;
+    }
+
+    private static void executeConsolePostAction(
+            HttpExchange exchange,
+            RicbotApiAppContext appContext,
+            String action,
+            String targetType,
+            String targetId,
+            ConsoleActionSupplier supplier
+    ) throws IOException {
+        String requestId = UUID.randomUUID().toString();
+        String safeAction = action != null && !action.isBlank() ? action : "console.unknown";
+        String safeTargetId = targetId != null ? targetId : "";
+        String remoteAddress = remoteAddress(exchange);
+        String userAgent = exchange.getRequestHeaders().getFirst("User-Agent");
+        List<String> warnings = originWarnings(exchange);
+
+        if (!appContext.isAuthorized(exchange)) {
+            audit(appContext, safeAction, targetType, safeTargetId, "UNAUTHORIZED", operator(exchange, appContext),
+                    remoteAddress, userAgent, "unauthorized console action", warnings, requestId);
+            RicbotApiServer.writeJson(exchange, 401, errorBody("缺少或无效的 Bearer token", "authentication_error", warnings));
+            return;
+        }
+        String originError = originError(exchange, appContext);
+        if (originError != null) {
+            audit(appContext, safeAction, targetType, safeTargetId, "UNAUTHORIZED", operator(exchange, appContext),
+                    remoteAddress, userAgent, originError, warnings, requestId);
+            RicbotApiServer.writeJson(exchange, 403, errorBody(originError, "forbidden", warnings));
+            return;
+        }
+        if (!RATE_LIMITER.allow(remoteAddress, safeAction)) {
+            audit(appContext, safeAction, targetType, safeTargetId, "FAILED", operator(exchange, appContext),
+                    remoteAddress, userAgent, "console action rate limit exceeded", warnings, requestId);
+            RicbotApiServer.writeJson(exchange, 429, errorBody("Console action rate limit exceeded", "rate_limit_exceeded", warnings));
+            return;
+        }
+
+        try {
+            Map<String, Object> result = supplier.execute();
+            List<String> auditWarnings = audit(appContext, safeAction, targetType, safeTargetId, "SUCCESS", operator(exchange, appContext),
+                    remoteAddress, userAgent, String.valueOf(result.getOrDefault("message", "console action succeeded")), warnings, requestId);
+            RicbotApiServer.writeJson(exchange, 200, withWarnings(result, combineWarnings(warnings, auditWarnings)));
+        } catch (ConsoleNotFoundException e) {
+            List<String> auditWarnings = audit(appContext, safeAction, targetType, safeTargetId, "NOT_FOUND", operator(exchange, appContext),
+                    remoteAddress, userAgent, e.getMessage(), warnings, requestId);
+            RicbotApiServer.writeJson(exchange, 404, errorBody(e.getMessage(), "not_found", combineWarnings(warnings, auditWarnings)));
+        } catch (ConsoleConflictException e) {
+            List<String> auditWarnings = audit(appContext, safeAction, targetType, safeTargetId, "CONFLICT", operator(exchange, appContext),
+                    remoteAddress, userAgent, e.getMessage(), warnings, requestId);
+            RicbotApiServer.writeJson(exchange, 409, errorBody(e.getMessage(), "conflict", combineWarnings(warnings, auditWarnings)));
+        } catch (IllegalArgumentException e) {
+            List<String> auditWarnings = audit(appContext, safeAction, targetType, safeTargetId, "NOT_FOUND", operator(exchange, appContext),
+                    remoteAddress, userAgent, e.getMessage(), warnings, requestId);
+            RicbotApiServer.writeJson(exchange, 404, errorBody(e.getMessage(), "not_found", combineWarnings(warnings, auditWarnings)));
+        } catch (Exception e) {
+            String message = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+            List<String> auditWarnings = audit(appContext, safeAction, targetType, safeTargetId, "FAILED", operator(exchange, appContext),
+                    remoteAddress, userAgent, message, warnings, requestId);
+            RicbotApiServer.writeJson(exchange, 500, errorBody(message, "console_error", combineWarnings(warnings, auditWarnings)));
+        }
+    }
+
+    private static List<String> combineWarnings(List<String> first, List<String> second) {
+        List<String> out = new java.util.ArrayList<>();
+        if (first != null) {
+            out.addAll(first);
+        }
+        if (second != null) {
+            out.addAll(second);
+        }
+        return out.stream().filter(value -> value != null && !value.isBlank()).distinct().toList();
+    }
+
+    private static Map<String, Object> withWarnings(Map<String, Object> result, List<String> warnings) {
+        Map<String, Object> out = new LinkedHashMap<>(result != null ? result : Map.of());
+        List<String> existing = out.get("warnings") instanceof List<?> list
+                ? list.stream().map(String::valueOf).toList()
+                : List.of();
+        List<String> merged = new java.util.ArrayList<>(existing);
+        if (warnings != null) {
+            merged.addAll(warnings);
+        }
+        out.put("warnings", merged.stream().filter(value -> value != null && !value.isBlank()).distinct().toList());
+        return out;
+    }
+
+    private static Map<String, Object> errorBody(String message, String type, List<String> warnings) {
+        Map<String, Object> error = new LinkedHashMap<>();
+        error.put("message", message != null ? message : "");
+        error.put("type", type);
+        error.put("warnings", warnings != null ? warnings : List.of());
+        return Map.of("error", error);
+    }
+
+    private static List<String> audit(
+            RicbotApiAppContext appContext,
+            String action,
+            String targetType,
+            String targetId,
+            String result,
+            String operator,
+            String remoteAddress,
+            String userAgent,
+            String message,
+            List<String> warnings,
+            String requestId
+    ) {
+        List<String> safeWarnings = warnings != null ? warnings : List.of();
+        ConsoleActionAuditRecord record = new ConsoleActionAuditRecord(
+                null,
+                null,
+                action,
+                targetType,
+                targetId,
+                result,
+                operator,
+                remoteAddress,
+                userAgent,
+                message,
+                safeWarnings,
+                requestId
+        );
+        return new ConsoleActionAuditService(appContext.getWorkspace()).append(record);
+    }
+
+    private static List<String> originWarnings(HttpExchange exchange) {
+        String origin = exchange.getRequestHeaders().getFirst("Origin");
+        String referer = exchange.getRequestHeaders().getFirst("Referer");
+        if ((origin == null || origin.isBlank()) && (referer == null || referer.isBlank())) {
+            return List.of("Origin/Referer header missing; allowed for CLI/curl console action");
+        }
+        return List.of();
+    }
+
+    private static String originError(HttpExchange exchange, RicbotApiAppContext appContext) {
+        String origin = exchange.getRequestHeaders().getFirst("Origin");
+        if (origin != null && !origin.isBlank() && !isAllowedConsoleOrigin(origin, appContext, exchange)) {
+            return "invalid Console action Origin";
+        }
+        String referer = exchange.getRequestHeaders().getFirst("Referer");
+        if ((origin == null || origin.isBlank()) && referer != null && !referer.isBlank()
+                && !isAllowedConsoleOrigin(referer, appContext, exchange)) {
+            return "invalid Console action Referer";
+        }
+        return null;
+    }
+
+    private static boolean isAllowedConsoleOrigin(String raw, RicbotApiAppContext appContext, HttpExchange exchange) {
+        try {
+            URI uri = URI.create(raw);
+            String scheme = uri.getScheme();
+            if (!"http".equalsIgnoreCase(scheme) && !"https".equalsIgnoreCase(scheme)) {
+                return false;
+            }
+            String host = uri.getHost();
+            if (host == null || !RicbotApiAppContext.isLoopbackHost(host)) {
+                return false;
+            }
+            int port = uri.getPort();
+            int localPort = exchange.getLocalAddress() != null ? exchange.getLocalAddress().getPort() : -1;
+            return port < 0 || localPort <= 0 || port == localPort;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private static String operator(HttpExchange exchange, RicbotApiAppContext appContext) {
+        String authorization = exchange.getRequestHeaders().getFirst("Authorization");
+        if (authorization != null && authorization.regionMatches(true, 0, "Bearer ", 0, 7)) {
+            return "api-token";
+        }
+        return appContext.isConsoleExposedBeyondLoopback() ? "anonymous" : "console";
+    }
+
+    private static String remoteAddress(HttpExchange exchange) {
+        InetSocketAddress remote = exchange.getRemoteAddress();
+        return remote != null && remote.getAddress() != null
+                ? remote.getAddress().getHostAddress()
+                : remote != null ? remote.getHostString() : "";
     }
 
     private record EvalRunsHandler(RicbotApiAppContext appContext) implements HttpHandler {
@@ -587,6 +777,35 @@ public final class ConsoleController {
     private static final class ConsoleNotFoundException extends RuntimeException {
         private ConsoleNotFoundException(String message) {
             super(message);
+        }
+    }
+
+    private static final class ConsolePostRateLimiter {
+        private final int maxRequests;
+        private final long windowMillis;
+        private final LongSupplier clock;
+        private final Map<String, Deque<Long>> hits = new ConcurrentHashMap<>();
+
+        private ConsolePostRateLimiter(int maxRequests, long windowMillis, LongSupplier clock) {
+            this.maxRequests = maxRequests;
+            this.windowMillis = windowMillis;
+            this.clock = clock;
+        }
+
+        private boolean allow(String remoteAddress, String action) {
+            long now = clock.getAsLong();
+            String key = (remoteAddress != null ? remoteAddress : "") + "|" + (action != null ? action : "");
+            Deque<Long> deque = hits.computeIfAbsent(key, ignored -> new ArrayDeque<>());
+            synchronized (deque) {
+                while (!deque.isEmpty() && now - deque.peekFirst() > windowMillis) {
+                    deque.removeFirst();
+                }
+                if (deque.size() >= maxRequests) {
+                    return false;
+                }
+                deque.addLast(now);
+                return true;
+            }
         }
     }
 }

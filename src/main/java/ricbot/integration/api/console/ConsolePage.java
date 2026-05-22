@@ -211,6 +211,7 @@ final class ConsolePage {
                     <section class="span-6" id="team-card"></section>
                     <section class="span-6" id="experience-list-card"></section>
                     <section class="span-12" id="approval-card"></section>
+                    <section class="span-12" id="action-card"></section>
                     <section class="span-12" id="eval-card"></section>
                   </main>
                   <script>
@@ -222,6 +223,7 @@ final class ConsolePage {
                       workspaces: "/console/api/workspaces",
                       experiences: "/console/api/experiences",
                       approvals: "/console/api/approvals",
+                      actions: "/console/api/actions",
                       evals: "/console/api/evals"
                     };
 
@@ -441,6 +443,22 @@ final class ConsolePage {
                       }
                     }
 
+                    function renderActions(data) {
+                      const items = data.items || [];
+                      document.getElementById("action-card").innerHTML = `
+                        <h2>Console Actions</h2>
+                        ${items.length === 0 ? empty("No console actions") : `
+                          <div class="list">${items.slice(0, 10).map(item => `
+                            <div class="item">
+                              <div class="title">${esc(item.action)}</div>
+                              <div class="kv"><span>${pill(item.result)}</span><span>${esc(item.targetType)}</span><span>${esc(item.targetId)}</span><span>${esc(item.timestamp)}</span></div>
+                              <div class="sub">${esc(item.message)}</div>
+                            </div>
+                          `).join("")}</div>
+                        `}
+                      `;
+                    }
+
                     function renderEvals(data) {
                       const items = data.items || [];
                       document.getElementById("eval-card").innerHTML = `
@@ -518,6 +536,7 @@ final class ConsolePage {
                         workspaces: "workspace-card",
                         experiences: "experience-card",
                         approvals: "approval-card",
+                        actions: "action-card",
                         evals: "eval-card"
                       };
                       Object.values(cards).forEach(id => document.getElementById(id).innerHTML = empty("Loading"));
@@ -530,6 +549,7 @@ final class ConsolePage {
                         ["teams", renderTeams],
                         ["experiences", renderExperiences],
                         ["approvals", renderApprovals],
+                        ["actions", renderActions],
                         ["evals", renderEvals]
                       ];
                       for (const [name, render] of jobs) {

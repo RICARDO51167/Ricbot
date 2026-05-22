@@ -22,6 +22,7 @@ import ricbot.domain.security.CommandRiskLevel;
 import ricbot.domain.security.RiskAssessment;
 import ricbot.domain.session.SessionManager;
 import ricbot.infra.config.Config;
+import ricbot.integration.api.console.ConsoleActionAuditService;
 import ricbot.integration.api.console.ConsoleController;
 import ricbot.integration.llm.api.LLMProvider;
 import ricbot.integration.llm.api.LLMResponse;
@@ -467,11 +468,16 @@ public class RicbotApiServerTest {
             ConsoleController.experienceActionsHandler(app).handle(verify);
             assertEquals(200, verify.getResponseCode(), verify.responseText());
             assertTrue(verify.responseText().contains("\"action\":\"experience.verify\""), verify.responseText());
+            assertTrue(verify.responseText().contains("Origin/Referer header missing"), verify.responseText());
             assertEquals(ExperienceStatus.VERIFIED, store.find(verifyCandidate.id()).status());
 
             TestExchange verifyAgain = postExchangeRaw("/console/api/experiences/" + verifyCandidate.id() + "/verify", "");
             ConsoleController.experienceActionsHandler(app).handle(verifyAgain);
             assertEquals(409, verifyAgain.getResponseCode(), verifyAgain.responseText());
+            String auditsAfterConflict = handleGet(ConsoleController.actionsHandler(app), "/console/api/actions");
+            assertTrue(auditsAfterConflict.contains("\"action\":\"experience.verify\""), auditsAfterConflict);
+            assertTrue(auditsAfterConflict.contains("\"result\":\"SUCCESS\""), auditsAfterConflict);
+            assertTrue(auditsAfterConflict.contains("\"result\":\"CONFLICT\""), auditsAfterConflict);
 
             ExperienceEntry rejectCandidate = store.addCandidate(experience("Reject Me"));
             TestExchange reject = postExchangeRaw("/console/api/experiences/" + rejectCandidate.id() + "/reject", "");
@@ -491,6 +497,13 @@ public class RicbotApiServerTest {
             assertTrue(promote.responseText().contains("\"action\":\"experience.promoteSkill\""), promote.responseText());
             assertTrue(promote.responseText().contains("\"skillName\""), promote.responseText());
             assertTrue(Files.exists(workspace.resolve("skills").resolve("generated")));
+            Path generatedSkill = Files.list(workspace.resolve("skills").resolve("generated")).findFirst().orElseThrow();
+            Files.writeString(generatedSkill, "sentinel");
+            TestExchange promoteAgain = postExchangeRaw("/console/api/experiences/" + verified.id() + "/promote-skill", "");
+            ConsoleController.experienceActionsHandler(app).handle(promoteAgain);
+            assertEquals(200, promoteAgain.getResponseCode(), promoteAgain.responseText());
+            assertTrue(promoteAgain.responseText().contains("\"alreadyExists\":true"), promoteAgain.responseText());
+            assertEquals("sentinel", Files.readString(generatedSkill));
 
             TestExchange getWrite = getExchange("/console/api/experiences/" + verified.id() + "/reject");
             ConsoleController.experienceActionsHandler(app).handle(getWrite);
@@ -532,6 +545,9 @@ public class RicbotApiServerTest {
             TestExchange approve = postExchangeRaw("/console/api/approvals/" + approveRequest.requestId() + "/approve", "");
             ConsoleController.approvalsHandler(app).handle(approve);
             assertEquals(200, approve.getResponseCode(), approve.responseText());
+            assertTrue(approve.responseText().contains("[REDACTED]"), approve.responseText());
+            assertFalse(approve.responseText().contains("secret-token"), approve.responseText());
+            assertFalse(approve.responseText().contains("secret-password"), approve.responseText());
             assertEquals(ApprovalRequest.ApprovalStatus.APPROVED, loop.getApprovalService().find(approveRequest.requestId()).status());
             assertFalse(loop.getApprovalService().find(approveRequest.requestId()).consumed());
 
@@ -551,6 +567,14 @@ public class RicbotApiServerTest {
             TestExchange getWrite = getExchange("/console/api/approvals/" + rejectRequest.requestId() + "/approve");
             ConsoleController.approvalsHandler(app).handle(getWrite);
             assertEquals(405, getWrite.getResponseCode(), getWrite.responseText());
+
+            String actions = handleGet(ConsoleController.actionsHandler(app), "/console/api/actions");
+            assertTrue(actions.contains("\"action\":\"approval.approve\""), actions);
+            assertTrue(actions.contains("\"action\":\"approval.reject\""), actions);
+            assertTrue(actions.contains("\"result\":\"CONFLICT\""), actions);
+            assertFalse(actions.contains("secret-token"), actions);
+            assertFalse(actions.contains("secret-password"), actions);
+            assertFalse(actions.contains("\"hidden\""), actions);
         } finally {
             loop.stop();
         }
@@ -567,11 +591,78 @@ public class RicbotApiServerTest {
             TestExchange unauthorized = postExchangeRaw("/console/api/experiences/" + candidate.id() + "/verify", "");
             ConsoleController.experienceActionsHandler(app).handle(unauthorized);
             assertEquals(401, unauthorized.getResponseCode(), unauthorized.responseText());
+            assertTrue(new ConsoleActionAuditService(workspace).recent(5).stream()
+                    .anyMatch(record -> "UNAUTHORIZED".equals(record.result()) && "experience.verify".equals(record.action())));
 
             TestExchange authorized = postExchangeRaw("/console/api/experiences/" + candidate.id() + "/verify", "");
             authorized.getRequestHeaders().set("Authorization", "Bearer console-token");
             ConsoleController.experienceActionsHandler(app).handle(authorized);
             assertEquals(200, authorized.getResponseCode(), authorized.responseText());
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void consolePostActions_rejectInvalidOriginAndDoNotAffectChatApi(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildLoop(workspace);
+        Config config = new Config();
+        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", config, null, workspace);
+        ExperienceEntry candidate = new ExperienceStore(workspace).addCandidate(experience("Origin Me"));
+
+        try {
+            TestExchange invalidOrigin = postExchangeRaw("/console/api/experiences/" + candidate.id() + "/verify", "");
+            invalidOrigin.getRequestHeaders().set("Origin", "https://evil.example");
+            ConsoleController.experienceActionsHandler(app).handle(invalidOrigin);
+            assertEquals(403, invalidOrigin.getResponseCode(), invalidOrigin.responseText());
+            assertEquals(ExperienceStatus.CANDIDATE, new ExperienceStore(workspace).find(candidate.id()).status());
+            assertTrue(new ConsoleActionAuditService(workspace).recent(5).stream()
+                    .anyMatch(record -> "UNAUTHORIZED".equals(record.result()) && record.message().contains("Origin")));
+
+            TestExchange validOrigin = postExchangeRaw("/console/api/experiences/" + candidate.id() + "/verify", "");
+            validOrigin.getRequestHeaders().set("Origin", "http://127.0.0.1:8080");
+            ConsoleController.experienceActionsHandler(app).handle(validOrigin);
+            assertEquals(200, validOrigin.getResponseCode(), validOrigin.responseText());
+
+            TestExchange chatExchange = postExchange("/v1/chat/completions", Map.of(
+                    "model", "gpt-4o-mini",
+                    "messages", List.of(Map.of("role", "user", "content", "ping"))
+            ));
+            chatExchange.getRequestHeaders().set("Origin", "https://evil.example");
+            new RicbotApiServer.ChatCompletionsHandler(app).handle(chatExchange);
+            assertEquals(200, chatExchange.getResponseCode(), chatExchange.responseText());
+            assertTrue(chatExchange.responseText().contains("\"content\":\"pong\""), chatExchange.responseText());
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void consolePostActions_rateLimitRepeatedActions(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildLoop(workspace);
+        Config config = new Config();
+        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", config, null, workspace);
+        var handler = ConsoleController.approvalsHandler(app);
+
+        try {
+            int lastCode = -1;
+            String lastBody = "";
+            for (int i = 0; i < 21; i++) {
+                ApprovalRequest request = loop.getApprovalService().createRequest(
+                        RiskAssessment.of(CommandRiskLevel.MEDIUM, List.of("rate limit test"), "", "write_file", List.of("file-" + i + ".txt")),
+                        "write_file",
+                        Map.of("path", "file-" + i + ".txt"),
+                        "rate-limit-" + i
+                );
+                TestExchange exchange = postExchangeRaw("/console/api/approvals/" + request.requestId() + "/reject", "");
+                exchange.setRemoteAddress(new InetSocketAddress("127.0.0.2", 12345));
+                handler.handle(exchange);
+                lastCode = exchange.getResponseCode();
+                lastBody = exchange.responseText();
+            }
+
+            assertEquals(429, lastCode, lastBody);
+            assertTrue(lastBody.contains("rate_limit_exceeded"), lastBody);
         } finally {
             loop.stop();
         }
@@ -793,6 +884,7 @@ public class RicbotApiServerTest {
         private final URI requestUri;
         private final String method;
         private InputStream requestBody;
+        private InetSocketAddress remoteAddress = new InetSocketAddress("127.0.0.1", 12345);
         private final ByteArrayOutputStream responseBody = new ByteArrayOutputStream();
         private final Map<String, Object> attributes = new HashMap<>();
         private int responseCode = -1;
@@ -806,6 +898,10 @@ public class RicbotApiServerTest {
 
         String responseText() {
             return responseBody.toString(StandardCharsets.UTF_8);
+        }
+
+        void setRemoteAddress(InetSocketAddress remoteAddress) {
+            this.remoteAddress = remoteAddress;
         }
 
         @Override
@@ -855,7 +951,7 @@ public class RicbotApiServerTest {
 
         @Override
         public InetSocketAddress getRemoteAddress() {
-            return new InetSocketAddress("127.0.0.1", 12345);
+            return remoteAddress;
         }
 
         @Override

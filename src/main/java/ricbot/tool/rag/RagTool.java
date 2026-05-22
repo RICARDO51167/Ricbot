@@ -100,7 +100,7 @@ public class RagTool extends Tool {
         if (report == null) {
             return "索引操作完成，但未返回详细报告。";
         }
-        return "RAG Index Updated:\n"
+        return "rag index updated\n"
                 + "  Files: " + report.files() + "\n"
                 + "  Chunks: " + report.chunks() + "\n"
                 + "  Symbol Files: " + report.symbols() + "\n"
