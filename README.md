@@ -27,6 +27,8 @@ Ricbot 是一个 Java 17 Agent Runtime：把 CLI、OpenAI-compatible API、多�
 
 端到端演示脚本见 [docs/demo/end-to-end-coding-agent.md](docs/demo/end-to-end-coding-agent.md)。
 
+Demo / Interview 材料见 [docs/demo/demo-script.md](docs/demo/demo-script.md)、[docs/architecture/ricbot-architecture.md](docs/architecture/ricbot-architecture.md)、[docs/interview/project-pitch.md](docs/interview/project-pitch.md) 和 [docs/resume/ricbot-bullets.md](docs/resume/ricbot-bullets.md)。
+
 ## Quickstart
 
 环境要求：
@@ -98,6 +100,8 @@ http://127.0.0.1:8000/console
 ```
 
 演示时从顶部 Demo Flow 讲起：Config Doctor 对应启动前诊断，Team Reports / Workspaces / Trace 对应 team run 后处理，Experience 对应经验治理，Eval Runs 和 Release Check 对应确定性评测门禁，Tools / MCP 展示运行时工具面。没有真实 key 时 config doctor 可能是 `WARNING` 或 `ERROR`，但 fixed smoke eval 和 release-check 的本地 smoke 部分不会访问真实模型。
+
+最终推荐演示路径：`config doctor -> release-check -> Console Demo Flow -> team run --worktree --verify -> workspace diff/change create -> trace/eval/experience -> tools/MCP diagnostics`。完整讲稿见 [docs/demo/demo-script.md](docs/demo/demo-script.md)。
 
 本地 smoke 脚本：
 
@@ -262,6 +266,11 @@ java -jar target/Ricbot-1.0-SNAPSHOT.jar eval smoke --scenarios evals/golden.jso
 ## 文档地图
 
 - [CHANGELOG.md](CHANGELOG.md)：V4.15-V5.0 能力演进
+- [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md)：Demo release 发布前检查清单
+- [docs/architecture/ricbot-architecture.md](docs/architecture/ricbot-architecture.md)：Ricbot 分层架构与扩展点
+- [docs/demo/demo-script.md](docs/demo/demo-script.md)：5-8 分钟演示讲稿
+- [docs/interview/project-pitch.md](docs/interview/project-pitch.md)：面试项目 pitch 和追问回答
+- [docs/resume/ricbot-bullets.md](docs/resume/ricbot-bullets.md)：简历 bullet 多版本
 - [docs/demo/end-to-end-coding-agent.md](docs/demo/end-to-end-coding-agent.md)：端到端演示
 - [docs/security/console-safety.md](docs/security/console-safety.md)：Console 安全边界
 - [docs/mcp/mcp-diagnostics.md](docs/mcp/mcp-diagnostics.md)：MCP 配置诊断、工具启用解释和 schema snapshot
