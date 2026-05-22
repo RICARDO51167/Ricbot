@@ -1054,7 +1054,16 @@ java -jar target/Ricbot-1.0-SNAPSHOT.jar config doctor \
 - `restrictToWorkspace=false` 的安全风险
 - Provider `api_base` 为空或模型/Provider 推断不明确
 
-Provider capability 只是静态元数据与启发式结果，不参与 Provider 主调用链；无法确认时会以 `UNKNOWN` 或 `-1` 降级。
+Provider capability 是静态元数据与启发式结果，无法确认时会以 `UNKNOWN` 或 `-1` 降级。运行时只会参考“明确为 false”的能力做保守降级，例如不向不支持 tool calling 的模型暴露 tools、把不支持 streaming 的请求降级为非流式、拒绝明确不支持 vision 的图片输入；`UNKNOWN` 不阻断运行，会保留原行为并写入运行事件 warning。用户仍应通过显式 provider/model、`api_base` 与配置覆盖来修正能力推断。
+
+运行时能力策略当前范围：
+
+- `supportsToolCalling=false`：不暴露 tools，不进入工具调用循环；如果模型仍返回 tool calls，会返回清晰降级提示
+- `supportsToolCalling=UNKNOWN`：保持原工具调用行为，并记录 `capability_warning`
+- `supportsStreaming=false`：流式请求自动降级为普通 chat 请求
+- `supportsStreaming=UNKNOWN`：保持原流式行为，并记录 `capability_warning`
+- `supportsVision=false`：检测到图片内容块时直接提示当前模型不支持图片输入
+- `contextWindowTokens > 0`：估算上下文接近窗口阈值时记录 warning，提醒优先使用现有压缩/裁剪链路
 
 ### 7.8 MCP 工具怎么接入
 

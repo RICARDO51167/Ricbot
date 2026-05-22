@@ -2,6 +2,9 @@ package ricbot.domain.agent;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import ricbot.domain.config.ModelCapability;
+import ricbot.domain.config.ProviderCapability;
+import ricbot.domain.hook.AgentHook;
 import ricbot.domain.agent.AgentRunResult;
 import ricbot.domain.agent.AgentRunSpec;
 import ricbot.domain.agent.AgentRunner;
@@ -410,5 +413,206 @@ public class AgentRunnerTest {
         assertEquals("ok", result.getFinalContent());
         assertEquals(1, directCalls.get());
         assertEquals(0, retryCalls.get());
+    }
+
+    @Test
+    void runner_doesNotExposeTools_whenCapabilityDisablesToolCalling() throws Exception {
+        ToolRegistry tools = new ToolRegistry();
+        tools.register(echoTool());
+        AtomicInteger calls = new AtomicInteger(0);
+
+        LLMProvider provider = new LLMProvider("k", "http://localhost") {
+            @Override
+            public LLMResponse chat(
+                    List<Map<String, Object>> messages,
+                    List<Map<String, Object>> toolsDef,
+                    String model,
+                    Integer maxTokens,
+                    Double temperature,
+                    String reasoningEffort,
+                    Object toolChoice
+            ) {
+                calls.incrementAndGet();
+                assertTrue(toolsDef.isEmpty());
+                return new LLMResponse().setContent("no tools").setFinishReason("stop");
+            }
+        };
+
+        AgentRunResult result = new AgentRunner(provider).run(new AgentRunSpec()
+                .setInitialMessages(List.of(Map.of("role", "user", "content", "read file")))
+                .setTools(tools)
+                .setModel("text-embedding-3-small")
+                .setProviderCapability(capability("false", "true", "UNKNOWN"))
+                .setMaxIterations(2));
+
+        assertEquals("no tools", result.getFinalContent());
+        assertEquals(1, calls.get());
+        assertTrue(result.getRunEvents().stream().anyMatch(e ->
+                "capability_warning".equals(e.get("type"))
+                        && "TOOLS_NOT_EXPOSED".equals(e.get("decision"))));
+    }
+
+    @Test
+    void runner_keepsTools_whenToolCallingCapabilityIsUnknown() throws Exception {
+        ToolRegistry tools = new ToolRegistry();
+        tools.register(echoTool());
+
+        LLMProvider provider = new LLMProvider("k", "http://localhost") {
+            @Override
+            public LLMResponse chat(
+                    List<Map<String, Object>> messages,
+                    List<Map<String, Object>> toolsDef,
+                    String model,
+                    Integer maxTokens,
+                    Double temperature,
+                    String reasoningEffort,
+                    Object toolChoice
+            ) {
+                assertFalse(toolsDef.isEmpty());
+                return new LLMResponse().setContent("ok").setFinishReason("stop");
+            }
+        };
+
+        AgentRunResult result = new AgentRunner(provider).run(new AgentRunSpec()
+                .setInitialMessages(List.of(Map.of("role", "user", "content", "use tool if needed")))
+                .setTools(tools)
+                .setModel("private-chat")
+                .setProviderCapability(capability("UNKNOWN", "UNKNOWN", "UNKNOWN"))
+                .setMaxIterations(2));
+
+        assertEquals("ok", result.getFinalContent());
+        assertTrue(result.getRunEvents().stream().anyMatch(e ->
+                "capability_warning".equals(e.get("type"))
+                        && "KEEP_EXISTING_BEHAVIOR".equals(e.get("decision"))));
+    }
+
+    @Test
+    void runner_fallsBackToNonStreaming_whenCapabilityDisablesStreaming() throws Exception {
+        AtomicInteger chatCalls = new AtomicInteger(0);
+        AtomicInteger streamCalls = new AtomicInteger(0);
+
+        LLMProvider provider = new LLMProvider("k", "http://localhost") {
+            @Override
+            public LLMResponse chat(
+                    List<Map<String, Object>> messages,
+                    List<Map<String, Object>> toolsDef,
+                    String model,
+                    Integer maxTokens,
+                    Double temperature,
+                    String reasoningEffort,
+                    Object toolChoice
+            ) {
+                chatCalls.incrementAndGet();
+                return new LLMResponse().setContent("fallback").setFinishReason("stop");
+            }
+
+            @Override
+            public LLMResponse chatStream(
+                    List<Map<String, Object>> messages,
+                    List<Map<String, Object>> tools,
+                    String model,
+                    Integer maxTokens,
+                    Double temperature,
+                    String reasoningEffort,
+                    Object toolChoice,
+                    StreamDeltaHandler onDelta,
+                    StreamEndHandler onEnd
+            ) {
+                streamCalls.incrementAndGet();
+                return new LLMResponse().setContent("stream").setFinishReason("stop");
+            }
+        };
+
+        AgentRunResult result = new AgentRunner(provider).run(new AgentRunSpec()
+                .setInitialMessages(List.of(Map.of("role", "user", "content", "hello")))
+                .setModel("no-stream-model")
+                .setProviderCapability(capability("UNKNOWN", "false", "UNKNOWN"))
+                .setHook(new AgentHook() {
+                    @Override
+                    public boolean wantsStreaming() {
+                        return true;
+                    }
+                })
+                .setMaxIterations(2));
+
+        assertEquals("fallback", result.getFinalContent());
+        assertEquals(1, chatCalls.get());
+        assertEquals(0, streamCalls.get());
+        assertTrue(result.getRunEvents().stream().anyMatch(e ->
+                "STREAMING_DISABLED_FALLBACK_TO_CHAT".equals(e.get("decision"))));
+    }
+
+    @Test
+    void runner_rejectsImageInput_whenVisionCapabilityIsFalse() throws Exception {
+        AtomicInteger calls = new AtomicInteger(0);
+        LLMProvider provider = new LLMProvider("k", "http://localhost") {
+            @Override
+            public LLMResponse chat(
+                    List<Map<String, Object>> messages,
+                    List<Map<String, Object>> toolsDef,
+                    String model,
+                    Integer maxTokens,
+                    Double temperature,
+                    String reasoningEffort,
+                    Object toolChoice
+            ) {
+                calls.incrementAndGet();
+                return new LLMResponse().setContent("should not call").setFinishReason("stop");
+            }
+        };
+
+        AgentRunResult result = new AgentRunner(provider).run(new AgentRunSpec()
+                .setInitialMessages(List.of(Map.of(
+                        "role", "user",
+                        "content", List.of(
+                                Map.of("type", "text", "text", "describe"),
+                                Map.of("type", "image_url", "image_url", Map.of("url", "data:image/png;base64,AA=="))
+                        )
+                )))
+                .setModel("text-only")
+                .setProviderCapability(capability("UNKNOWN", "true", "false"))
+                .setMaxIterations(2));
+
+        assertEquals("unsupported_capability", result.getStopReason());
+        assertTrue(result.getFinalContent().contains("不支持图片输入"));
+        assertEquals(0, calls.get());
+    }
+
+    private static ProviderCapability capability(String tools, String streaming, String vision) {
+        return new ProviderCapability("test", new ModelCapability(
+                "test-model",
+                tools,
+                streaming,
+                vision,
+                "UNKNOWN",
+                "UNKNOWN",
+                -1,
+                -1,
+                "test"
+        ));
+    }
+
+    private static Tool echoTool() {
+        return new Tool() {
+            @Override
+            public String getName() {
+                return "echo";
+            }
+
+            @Override
+            public String getDescription() {
+                return "echo";
+            }
+
+            @Override
+            public List<ToolParam> getParams() {
+                return List.of(new ToolParam("text", "string", "text", false));
+            }
+
+            @Override
+            public Object execute(Map<String, Object> params) {
+                return params != null ? params.get("text") : "";
+            }
+        };
     }
 }

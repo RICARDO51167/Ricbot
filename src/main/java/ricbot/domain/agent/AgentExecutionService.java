@@ -1,5 +1,6 @@
 package ricbot.domain.agent;
 
+import ricbot.domain.config.ProviderCapability;
 import ricbot.domain.hook.AgentHook;
 import ricbot.infra.runtime.RuntimeUtils;
 import ricbot.tool.api.ToolRegistry;
@@ -29,6 +30,8 @@ final class AgentExecutionService {
     private final int contextWindowTokens;
     // 上下文块数量限制（可选）
     private final Integer contextBlockLimit;
+    // 静态/启发式模型能力，用于运行时保守降级
+    private final ProviderCapability providerCapability;
 
     // 构造函数，初始化所有必要配置
     AgentExecutionService(
@@ -42,6 +45,33 @@ final class AgentExecutionService {
             int contextWindowTokens,
             Integer contextBlockLimit
     ) {
+        this(
+                runner,
+                tools,
+                workspace,
+                model,
+                maxIterations,
+                maxToolResultChars,
+                providerRetryMode,
+                contextWindowTokens,
+                contextBlockLimit,
+                null
+        );
+    }
+
+    // 构造函数，初始化所有必要配置
+    AgentExecutionService(
+            AgentRunner runner,
+            ToolRegistry tools,
+            Path workspace,
+            String model,
+            int maxIterations,
+            int maxToolResultChars,
+            String providerRetryMode,
+            int contextWindowTokens,
+            Integer contextBlockLimit,
+            ProviderCapability providerCapability
+    ) {
         this.runner = runner;
         this.tools = tools;
         this.workspace = workspace;
@@ -51,6 +81,7 @@ final class AgentExecutionService {
         this.providerRetryMode = providerRetryMode;
         this.contextWindowTokens = contextWindowTokens;
         this.contextBlockLimit = contextBlockLimit;
+        this.providerCapability = providerCapability;
     }
 
     // 执行交互式 Agent 任务
@@ -158,6 +189,7 @@ final class AgentExecutionService {
                 .setSessionKey(sessionKey) // 设置会话密钥
                 .setContextWindowTokens(contextWindowTokens) // 设置上下文窗口令牌数
                 .setContextBlockLimit(contextBlockLimit) // 设置上下文块限制
+                .setProviderCapability(providerCapability) // 设置模型能力元数据
                 .setCheckpointCallback(checkpointCallback) // 设置检查点回调
                 // 设置工具生命周期回调，用于记录工具执行状态
                 .setToolLifecycleCallback(new AgentRunSpec.ToolLifecycleCallback() {

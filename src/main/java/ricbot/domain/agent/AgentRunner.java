@@ -1,6 +1,9 @@
 package ricbot.domain.agent;
 
 import com.fasterxml.jackson.databind.ObjectMapper; // JSON 对象映射器，用于处理 JSON 数据
+import ricbot.domain.config.ModelCapability;
+import ricbot.domain.config.ProviderCapability;
+import ricbot.domain.config.ProviderCapabilityResolver;
 import ricbot.domain.hook.AgentHook; // Agent 钩子接口，用于在生命周期中插入自定义逻辑
 import ricbot.domain.hook.AgentHookContext; // Agent 钩子上下文，包含当前执行状态信息
 import ricbot.tool.api.ToolRegistry; // 工具注册表，用于管理和执行工具
@@ -113,7 +116,19 @@ public class AgentRunner implements AutoCloseable {
         AgentHook hook = spec.getHook();
         // 获取工具注册表
         ToolRegistry tools = spec.getTools();
-        List<Map<String, Object>> toolDefinitions = tools != null ? tools.getDefinitions() : List.of();
+        ProviderCapability capability = spec.getProviderCapability();
+        RuntimePolicy runtimePolicy = resolveRuntimePolicy(spec, capability, tools, messages, runEvents);
+        List<Map<String, Object>> toolDefinitions = runtimePolicy.toolDefinitions();
+        if (runtimePolicy.unsupportedVisionMessage() != null) {
+            result.setFinalContent(runtimePolicy.unsupportedVisionMessage());
+            result.setMessages(messages);
+            result.setStopReason("unsupported_capability");
+            result.setError(runtimePolicy.unsupportedVisionMessage());
+            result.setToolsUsed(toolsUsed);
+            result.setToolEvents(toolEvents);
+            finishRunResult(result, runId, runStartedAt, iterationsCompleted, runEvents);
+            return result;
+        }
 
         // 开始主循环，最多执行 spec.getMaxIterations() 次
         for (int iteration = 1; iteration <= spec.getMaxIterations(); iteration++) {
@@ -133,7 +148,7 @@ public class AgentRunner implements AutoCloseable {
                     "tool_definition_count", toolDefinitions.size()
             )));
             try {
-                response = requestModel(spec, messages, toolDefinitions, hook, iteration);
+                response = requestModel(spec, messages, toolDefinitions, hook, iteration, runtimePolicy.disableStreaming());
             } catch (Exception e) {
                 // 如果发生异常，且存在钩子，执行错误钩子
                 if (hook != null) {
@@ -196,6 +211,15 @@ public class AgentRunner implements AutoCloseable {
                 // 确定停止原因，优先使用模型返回的 finishReason，否则默认为 "stop"
                 stopReason = response.getFinishReason() != null ? response.getFinishReason() : "stop";
                 break; // 跳出循环
+            }
+            if (runtimePolicy.disableToolCalling()) {
+                addCapabilityWarning(runEvents, 0, capability, "supportsToolCalling", "IGNORED_MODEL_TOOL_CALLS",
+                        "模型 capability 标记为不支持 tool calling，运行时不会进入工具调用循环。");
+                finalContent = response.getContent() != null && !response.getContent().isBlank()
+                        ? finalizeContent(hook, context, response.getContent())
+                        : "当前模型不支持工具调用，已跳过工具执行。请切换支持 tool calling 的模型后重试。";
+                stopReason = "unsupported_capability";
+                break;
             }
             // 增加连续工具调用轮数计数
             consecutiveToolTurns++;
@@ -325,9 +349,10 @@ public class AgentRunner implements AutoCloseable {
             List<Map<String, Object>> messages,
             List<Map<String, Object>> toolDefinitions,
             AgentHook hook,
-            int iteration
+            int iteration,
+            boolean forceNonStreaming
     ) throws Exception {
-        if (hook != null && hook.wantsStreaming()) {
+        if (!forceNonStreaming && hook != null && hook.wantsStreaming()) {
             return provider.chatStream(
                     messages,
                     toolDefinitions,
@@ -363,6 +388,165 @@ public class AgentRunner implements AutoCloseable {
         }
 
         return provider.chatWithRetry(messages, toolDefinitions, spec.getModel());
+    }
+
+    private RuntimePolicy resolveRuntimePolicy(
+            AgentRunSpec spec,
+            ProviderCapability capability,
+            ToolRegistry tools,
+            List<Map<String, Object>> messages,
+            List<Map<String, Object>> runEvents
+    ) {
+        List<Map<String, Object>> definitions = tools != null ? tools.getDefinitions() : List.of();
+        boolean disableToolCalling = false;
+        boolean disableStreaming = false;
+        String unsupportedVisionMessage = null;
+
+        if (capability == null || capability.modelCapability() == null) {
+            return new RuntimePolicy(definitions, false, false, null);
+        }
+
+        ModelCapability modelCapability = capability.modelCapability();
+        if (isCapabilityFalse(modelCapability.supportsToolCalling())) {
+            disableToolCalling = true;
+            if (!definitions.isEmpty()) {
+                addCapabilityWarning(runEvents, 0, capability, "supportsToolCalling", "TOOLS_NOT_EXPOSED",
+                        "模型 capability 标记为不支持 tool calling，本次请求不会向模型暴露 tools。");
+            }
+            definitions = List.of();
+        } else if (isCapabilityUnknown(modelCapability.supportsToolCalling()) && !definitions.isEmpty()) {
+            addCapabilityWarning(runEvents, 0, capability, "supportsToolCalling", "KEEP_EXISTING_BEHAVIOR",
+                    "模型 tool calling capability 未知，保持现有工具调用行为。");
+        }
+
+        if (spec.getHook() != null && spec.getHook().wantsStreaming()) {
+            if (isCapabilityFalse(modelCapability.supportsStreaming())) {
+                disableStreaming = true;
+                addCapabilityWarning(runEvents, 0, capability, "supportsStreaming", "STREAMING_DISABLED_FALLBACK_TO_CHAT",
+                        "模型 capability 标记为不支持 streaming，已自动降级为非流式请求。");
+            } else if (isCapabilityUnknown(modelCapability.supportsStreaming())) {
+                addCapabilityWarning(runEvents, 0, capability, "supportsStreaming", "KEEP_EXISTING_BEHAVIOR",
+                        "模型 streaming capability 未知，保持现有流式请求行为。");
+            }
+        }
+
+        if (isCapabilityFalse(modelCapability.supportsVision()) && containsImageContent(messages)) {
+            unsupportedVisionMessage = "当前模型不支持图片输入，请换用支持 vision 的模型，或改用文本描述后重试。";
+            addCapabilityWarning(runEvents, 0, capability, "supportsVision", "REJECT_IMAGE_INPUT",
+                    unsupportedVisionMessage);
+        }
+
+        int window = modelCapability.contextWindowTokens();
+        if (window > 0) {
+            int estimate = estimateMessageTokens(messages);
+            if (estimate > Math.max(1, (int) (window * 0.85))) {
+                addCapabilityWarning(runEvents, 0, capability, "contextWindowTokens", "CONTEXT_NEAR_LIMIT",
+                        "估算上下文接近模型窗口，后续应优先使用已有压缩/裁剪链路。");
+            }
+        }
+
+        return new RuntimePolicy(definitions, disableToolCalling, disableStreaming, unsupportedVisionMessage);
+    }
+
+    private void addCapabilityWarning(
+            List<Map<String, Object>> runEvents,
+            int iteration,
+            ProviderCapability capability,
+            String capabilityName,
+            String decision,
+            String message
+    ) {
+        RuntimeCapabilityWarning warning = new RuntimeCapabilityWarning(
+                capability != null ? capability.providerName() : ProviderCapabilityResolver.UNKNOWN,
+                capability != null && capability.modelCapability() != null ? capability.modelCapability().model() : "",
+                capabilityName,
+                decision,
+                message
+        );
+        runEvents.add(runEvent("capability_warning", iteration, warning.toMap()));
+        log.warn("runtime capability warning: {}", warning.toMap());
+    }
+
+    private boolean isCapabilityFalse(String value) {
+        return ProviderCapabilityResolver.FALSE.equalsIgnoreCase(value != null ? value.trim() : "");
+    }
+
+    private boolean isCapabilityUnknown(String value) {
+        return ProviderCapabilityResolver.UNKNOWN.equalsIgnoreCase(value != null ? value.trim() : "");
+    }
+
+    private boolean containsImageContent(List<Map<String, Object>> messages) {
+        if (messages == null) {
+            return false;
+        }
+        for (Map<String, Object> message : messages) {
+            if (message == null) {
+                continue;
+            }
+            if (contentContainsImage(message.get("content"))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean contentContainsImage(Object content) {
+        if (content instanceof List<?> list) {
+            for (Object item : list) {
+                if (item instanceof Map<?, ?> raw) {
+                    Object type = raw.get("type");
+                    if ("image_url".equals(type) || "input_image".equals(type) || "image".equals(type)) {
+                        return true;
+                    }
+                    if (raw.containsKey("image_url") || raw.containsKey("image")) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    private int estimateMessageTokens(List<Map<String, Object>> messages) {
+        if (messages == null || messages.isEmpty()) {
+            return 0;
+        }
+        int chars = 0;
+        for (Map<String, Object> message : messages) {
+            if (message == null) {
+                continue;
+            }
+            chars += estimateContentChars(message.get("content"));
+        }
+        return Math.max(1, chars / 4);
+    }
+
+    private int estimateContentChars(Object content) {
+        if (content == null) {
+            return 0;
+        }
+        if (content instanceof String s) {
+            return s.length();
+        }
+        if (content instanceof List<?> list) {
+            int total = 0;
+            for (Object item : list) {
+                if (item instanceof Map<?, ?> raw) {
+                    Object text = raw.get("text");
+                    if (text != null) {
+                        total += String.valueOf(text).length();
+                    }
+                    Object imageUrl = raw.get("image_url");
+                    if (imageUrl != null) {
+                        total += 256;
+                    }
+                } else if (item != null) {
+                    total += String.valueOf(item).length();
+                }
+            }
+            return total;
+        }
+        return String.valueOf(content).length();
     }
 
     private boolean shouldSkipProviderRetry(String retryMode) {
@@ -679,6 +863,13 @@ public class AgentRunner implements AutoCloseable {
     private record ToolExecution(String name, Map<String, Object> toolMsg, Map<String, Object> event) {}
 
     private record IndexedToolExecution(int index, ToolExecution execution) {}
+
+    private record RuntimePolicy(
+            List<Map<String, Object>> toolDefinitions,
+            boolean disableToolCalling,
+            boolean disableStreaming,
+            String unsupportedVisionMessage
+    ) {}
 
     /**
      * 函数式接口，允许抛出异常

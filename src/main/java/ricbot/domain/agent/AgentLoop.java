@@ -12,6 +12,8 @@ import ricbot.domain.memory.Consolidator;
 import ricbot.domain.memory.Dream;
 import ricbot.domain.memory.MemoryStore;
 import ricbot.domain.experience.ExperienceStore;
+import ricbot.domain.config.ProviderCapability;
+import ricbot.domain.config.ProviderCapabilityResolver;
 import ricbot.domain.note.NoteService;
 import ricbot.domain.rag.WorkspaceRagService;
 import ricbot.domain.security.ApprovalService;
@@ -90,6 +92,8 @@ public class AgentLoop {
     private final boolean unifiedSession;
     /** Provider 重试模式（透传到运行规格） */
     private final String providerRetryMode;
+    /** 静态/启发式 Provider capability，用于运行时保守降级。 */
+    private final ProviderCapability providerCapability;
     /** 会话自动归档 TTL（分钟），0 表示禁用 */
     private final int sessionTtlMinutes;
 
@@ -223,6 +227,13 @@ public class AgentLoop {
                 ? providerRetryMode
                 : defaults.getProviderRetryMode();
         this.sessionTtlMinutes = sessionTtlMinutes > 0 ? sessionTtlMinutes : defaults.getSessionTtlMinutes();
+        this.providerCapability = new ProviderCapabilityResolver().resolve(
+                null,
+                this.model,
+                this.provider != null ? this.provider.getApiBase() : null,
+                this.contextWindowTokens,
+                defaults.getMaxTokens()
+        );
 
         // 初始化核心组件
         this.contextBuilder = new ContextBuilder(this.workspace, timezone, disabledSkills);
@@ -312,7 +323,8 @@ public class AgentLoop {
                 this.maxToolResultChars,
                 this.providerRetryMode,
                 this.contextWindowTokens,
-                this.contextBlockLimit
+                this.contextBlockLimit,
+                this.providerCapability
         );
         this.sessionPersistenceService = new SessionPersistenceService(this.sessionManager, this.maxToolResultChars, this.memoryStore);
         this.mcpLoader = new MCPLoader(this.tools, this.mcpServers);

@@ -4,6 +4,7 @@ package ricbot.domain.agent;
 import lombok.Getter;
 import lombok.Setter;
 import lombok.experimental.Accessors;
+import ricbot.domain.config.ProviderCapability;
 import ricbot.domain.hook.AgentHook;
 import ricbot.tool.api.ToolRegistry;
 
@@ -55,6 +56,8 @@ public class AgentRunSpec {
     private Integer contextBlockLimit;
     // 提供商重试模式，默认为标准模式
     private String providerRetryMode = "standard";
+    // 静态/启发式 Provider capability，用于运行时保守降级。
+    private ProviderCapability providerCapability;
 
     /**
      * checkpoint 回调，用于保存中间状态

@@ -26,6 +26,7 @@ public final class ConfigDoctorService {
 
     private final EnvLookup envLookup;
     private final CommandAvailabilityChecker commandChecker;
+    private final ProviderCapabilityResolver capabilityResolver = new ProviderCapabilityResolver();
 
     public ConfigDoctorService() {
         this(System::getenv, ConfigDoctorService::defaultCommandExists);
@@ -60,7 +61,7 @@ public final class ConfigDoctorService {
         report.setEffectivePorts(effectivePorts(resolvedConfig));
         report.setEnabledTools(enabledTools(resolvedConfig));
         report.setMcpServers(mcpServers(resolvedConfig));
-        report.setProviderCapability(ProviderCapability.infer(resolvedConfig, providerName, model));
+        report.setProviderCapability(capabilityResolver.resolve(resolvedConfig, providerName, model));
 
         if (!Files.exists(resolvedPath)) {
             report.addWarning("配置文件不存在，将使用默认配置：" + resolvedPath);
