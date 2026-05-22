@@ -306,6 +306,8 @@ public class DingTalkChannel extends BaseChannel {
         private String appKey = "";
         // 钉钉应用的 AppSecret
         private String appSecret = "";
+        // 入站 webhook 签名密钥；为空时回退 appSecret
+        private String webhookSecret = "";
         // 允许发送消息的来源列表
         private List<String> allowFrom = new ArrayList<>();
     }

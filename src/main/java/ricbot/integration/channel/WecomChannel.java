@@ -44,6 +44,7 @@ public class WecomChannel extends BaseChannel {
         private boolean enabled = false;
         private String botId = "";
         private String secret = "";
+        private String token = "";
         private List<String> allowFrom = new ArrayList<>();
         private String welcomeMessage = "";
     }

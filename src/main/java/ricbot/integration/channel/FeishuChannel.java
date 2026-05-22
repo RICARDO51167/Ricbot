@@ -349,6 +349,8 @@ public class FeishuChannel extends BaseChannel {
         private boolean enabled = false; // 是否启用
         private String appId = ""; // App ID
         private String appSecret = ""; // App Secret
+        private String webhookToken = ""; // 事件订阅 verification token
+        private String encryptKey = ""; // 事件订阅加密 key（本轮仅预留）
         private List<String> allowFrom = new ArrayList<>(); // 允许的来源列表
     }
 

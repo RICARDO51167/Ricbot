@@ -15,6 +15,7 @@ import ricbot.domain.message.OutboundMessage;
 import ricbot.domain.session.Session;
 import ricbot.infra.config.Config;
 import ricbot.integration.api.console.ConsoleController;
+import ricbot.integration.api.webhook.ChannelWebhookController;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -112,6 +113,7 @@ public class RicbotApiServer {
         server.createContext("/v1/mcp", new McpHandler(appContext));
         server.createContext("/v1/memory", new MemoryHandler(appContext));
         server.createContext("/health", new HealthHandler(appContext));
+        ChannelWebhookController.register(server, appContext);
         ConsoleController.register(server, appContext);
         server.createContext("/", new RicbotWebUiHandler());
         server.setExecutor(RicbotApiSupport.newApiExecutor());

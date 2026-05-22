@@ -109,8 +109,8 @@ User / CLI / API / Channel
 | 多渠道入口 | QQ | 已支持 | 含网关连接、文本/附件处理、出站上传 |
 | 多渠道入口 | Weixin | 已支持 | 轮询收发、状态持久化、上下文 token/typing 维护 |
 | 多渠道入口 | Email | 已支持 | IMAP 轮询 + SMTP 回复 |
-| 多渠道入口 | Feishu / DingTalk | 部分支持 | 已支持出站 HTTP 与 webhook 事件解析核心；仍未内置公开 webhook server |
-| 多渠道入口 | WeCom | 部分支持 | 出站可发；入站接收依赖外部 Webhook / WebSocket 代理 |
+| 多渠道入口 | Feishu / DingTalk | 部分支持 | 已支持出站 HTTP、公开 webhook server 和文本入站标准化；加密事件仍为预留能力 |
+| 多渠道入口 | WeCom | 部分支持 | 出站可发；公开 webhook server 支持 token 校验与文本入站，复杂加密回调仍为预留能力 |
 
 ### 3.2 Agent 运行时
 
@@ -187,7 +187,7 @@ User / CLI / API / Channel
 
 | 模块 | 当前状态 | 说明 |
 | --- | --- | --- |
-| Feishu / DingTalk / WeCom 入站 | 当前部分支持 | Feishu/DingTalk 有 webhook 解析核心，WeCom 有可注入 client 的入站链路；仍需外部 HTTP/WebSocket 代理接入 |
+| Feishu / DingTalk / WeCom 入站 | 当前部分支持 | 已内置 `/webhook/feishu`、`/webhook/dingtalk`、`/webhook/wecom` 文本入站闭环；附件、语音和完整加密回调仍未展开 |
 | `streamableHttp` MCP | 当前部分支持 | 已补基础 JSON-RPC over HTTP 集成测试；仍需覆盖更多 MCP 规范兼容场景 |
 | 配置/注释历史包袱 | 基本清理 | 仍保留少量旧变量/旧目录 fallback 以兼容已有用户配置 |
 
@@ -1115,11 +1115,63 @@ Provider capability 只是静态元数据与启发式结果，不参与 Provider
 
 #### Feishu / DingTalk / WeCom
 
-建议理解为：
+`serve` 会复用同一个 API server 暴露企业 IM 入站 webhook：
 
-- Feishu：当前更适合作为出站通知渠道
-- DingTalk：当前更适合作为出站机器人渠道
-- WeCom：当前发送链路较清晰，接收入站仍需额外代理配合
+- `POST /webhook/feishu`
+- `POST /webhook/dingtalk`
+- `POST /webhook/wecom`
+
+当前入站支持范围：
+
+- 文本消息会标准化为 `InboundMessage` 并进入现有 `MessageBus` / `AgentLoop`
+- 会话键稳定为 `feishu:<chatId>`、`dingtalk:<conversationId>`、`wecom:<roomId or externalUserId>`
+- 图片、附件、语音等非文本消息本轮只返回 success + unsupported 提示，不会投递给 Agent
+- 基于 `platform + eventId` 做 5 分钟内存去重，重复回调直接返回 success，不重复投递
+
+配置示例：
+
+```json
+{
+  "channels": {
+    "feishu": {
+      "enabled": true,
+      "appId": "cli_xxx",
+      "appSecret": "${FEISHU_APP_SECRET}",
+      "webhookToken": "${FEISHU_WEBHOOK_TOKEN}",
+      "encryptKey": "",
+      "allowFrom": ["*"]
+    },
+    "dingtalk": {
+      "enabled": true,
+      "appKey": "dingxxx",
+      "appSecret": "${DINGTALK_APP_SECRET}",
+      "webhookSecret": "${DINGTALK_WEBHOOK_SECRET}",
+      "allowFrom": ["*"]
+    },
+    "wecom": {
+      "enabled": true,
+      "botId": "bot_xxx",
+      "secret": "${WECOM_SECRET}",
+      "token": "${WECOM_WEBHOOK_TOKEN}",
+      "allowFrom": ["*"]
+    }
+  }
+}
+```
+
+平台校验说明：
+
+- Feishu：支持 URL verification challenge；配置 `webhookToken` 后会校验事件中的 `token`。`encryptKey` 为预留字段，本轮不做加密事件解密。
+- DingTalk：配置 `webhookSecret` 后校验 `timestamp + "\n" + secret` 的 HMAC-SHA256 + Base64 签名，兼容 query/header 传入 `timestamp` 和 `sign`；未配置时仅做开发模式解析。
+- WeCom：配置 `token` 后校验 query/body 中的 token；`msg_signature` 加密回调本轮为预留能力。
+
+安全说明：
+
+- webhook endpoint 不复用 Console Bearer auth，而使用平台 token/sign 校验
+- 请求体上限为 1 MiB；JSON 解析失败返回 400
+- raw event 进入 metadata 前会脱敏 token、secret、signature、authorization、cookie 等字段
+- 生产环境不要把 webhook 暴露给公网时省略平台 token/sign 配置
+- 如果没有启用对应出站 channel，入站仍会投递到 MessageBus，响应会标记 `outboundConfigured=false`
 
 ### 7.10 Session / Memory / Dream / Cron / Heartbeat 怎么工作
 
