@@ -2,8 +2,11 @@ package ricbot.integration.api;
 
 import com.sun.net.httpserver.HttpExchange;
 import ricbot.domain.agent.AgentLoop;
+import ricbot.infra.config.Config;
+import ricbot.infra.config.ConfigLoader;
 
 import java.net.InetAddress;
+import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.Map;
@@ -26,6 +29,9 @@ public class RicbotApiAppContext {
     private final String bindHost;
     private final String bearerToken;
     private final boolean requireAuth;
+    private final Config config;
+    private final Path configPath;
+    private final Path workspace;
     private final Map<String, SessionLockEntry> sessionLocks = new ConcurrentHashMap<>();
     private volatile long lastLockCleanupMillis = 0L;
 
@@ -36,12 +42,28 @@ public class RicbotApiAppContext {
             String bindHost,
             String bearerToken
     ) {
+        this(agentLoop, modelName, requestTimeoutMillis, bindHost, bearerToken, null, null, null);
+    }
+
+    public RicbotApiAppContext(
+            AgentLoop agentLoop,
+            String modelName,
+            long requestTimeoutMillis,
+            String bindHost,
+            String bearerToken,
+            Config config,
+            Path configPath,
+            Path workspace
+    ) {
         this.agentLoop = agentLoop;
         this.modelName = modelName != null ? modelName : "ricbot";
         this.requestTimeoutMillis = requestTimeoutMillis > 0 ? requestTimeoutMillis : 120_000L;
         this.bindHost = bindHost != null && !bindHost.isBlank() ? bindHost : "127.0.0.1";
         this.bearerToken = bearerToken != null ? bearerToken.trim() : "";
         this.requireAuth = !this.bearerToken.isBlank() || !isLoopbackHost(this.bindHost);
+        this.config = config != null ? config : new Config();
+        this.configPath = configPath != null ? configPath.toAbsolutePath().normalize() : ConfigLoader.getConfigPath();
+        this.workspace = workspace != null ? workspace.toAbsolutePath().normalize() : this.config.getWorkspacePath();
     }
 
     public AgentLoop getAgentLoop() {
@@ -54,6 +76,26 @@ public class RicbotApiAppContext {
 
     public long getRequestTimeoutMillis() {
         return requestTimeoutMillis;
+    }
+
+    public String getBindHost() {
+        return bindHost;
+    }
+
+    public Config getConfig() {
+        return config;
+    }
+
+    public Path getConfigPath() {
+        return configPath;
+    }
+
+    public Path getWorkspace() {
+        return workspace;
+    }
+
+    public boolean isConsoleExposedBeyondLoopback() {
+        return !isLoopbackHost(bindHost);
     }
 
     public boolean isAuthorized(HttpExchange exchange) {
@@ -109,7 +151,7 @@ public class RicbotApiAppContext {
         }
     }
 
-    static boolean isLoopbackHost(String host) {
+    public static boolean isLoopbackHost(String host) {
         if (host == null || host.isBlank()) {
             return false;
         }

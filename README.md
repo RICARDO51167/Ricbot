@@ -712,6 +712,7 @@ java -jar target/Ricbot-1.0-SNAPSHOT.jar serve \
 - 启动 AgentLoop
 - 启动已启用渠道
 - 启动 OpenAI 兼容 API
+- 同时启动本地只读 Web Console：`http://127.0.0.1:<port>/console`
 
 #### 场景：非流式调用
 
@@ -757,7 +758,43 @@ curl -N -X POST http://127.0.0.1:8000/v1/chat/completions \
 - 请求体里的 `model` 必须与服务当前启动模型一致，否则会返回 400
 - 当前 `serve` 实际监听端口优先使用 `api.port`；未配置 `api.port` 或值不大于 0 时回退到 `gateway.port`
 
-### 7.3 WebSocket / Channel 模式
+### 7.3 Web Console
+
+#### 场景：查看本地只读运行概览
+
+启动 `serve` 后打开：
+
+```text
+http://127.0.0.1:8000/console
+```
+
+Console 提供只读页面和 JSON API：
+
+- `GET /console`
+- `GET /console/api/health`
+- `GET /console/api/config-doctor`
+- `GET /console/api/traces`
+- `GET /console/api/team-reports`
+- `GET /console/api/workspaces`
+- `GET /console/api/experiences`
+
+页面展示：
+
+- Config Doctor 状态与 Provider 推断摘要
+- Latest trace / run timeline
+- Team task reports
+- Workspace sessions
+- Experience candidates / verified items
+
+安全说明：
+
+- 本轮 Console 不提供 discard、verify、promote 等写操作
+- Console API 不输出真实 API key，也不允许任意路径读取
+- 默认 API 监听是 `127.0.0.1`；不要把 Console 暴露到公网
+- 如果你把 `api.host` 配成 `0.0.0.0`，`serve` 会要求 `api.bearer_token`，启动日志也会提示 Console 随 API 暴露的风险
+- 本轮没有 WebSocket 实时推送，页面通过 HTTP 拉取数据
+
+### 7.4 WebSocket / Channel 模式
 
 #### 场景：把 Ricbot 当作 WebSocket 服务端
 
@@ -805,7 +842,7 @@ ws://127.0.0.1:8765/ws?client_id=demo-client&token=<issued-token>
 - 连接建立后，每个 `client_id` 对应一个独立会话
 - 出站消息可按 `message` / `delta` 两种类型推送
 
-### 7.4 Tools 怎么启用
+### 7.5 Tools 怎么启用
 
 #### 场景：只启用文件与命令工具
 
@@ -848,7 +885,7 @@ java -jar target/Ricbot-1.0-SNAPSHOT.jar tools \
 - 这个子命令当前不是 `AgentLoop` 的完整运行时工具快照
 - 运行时额外注册的 `notebook_edit`、`cron`、`spawn`、`web_*` 不一定都会在这里显示
 
-### 7.5 `web` / `exec` / `mcp_servers` 怎么配置
+### 7.6 `web` / `exec` / `mcp_servers` 怎么配置
 
 #### Web 工具
 
@@ -955,7 +992,7 @@ java -jar target/Ricbot-1.0-SNAPSHOT.jar tools \
 }
 ```
 
-### 7.6 Config Doctor 启动前诊断
+### 7.7 Config Doctor 启动前诊断
 
 #### 场景：检查配置是否真的生效
 
@@ -996,7 +1033,7 @@ java -jar target/Ricbot-1.0-SNAPSHOT.jar config doctor \
 
 Provider capability 只是静态元数据与启发式结果，不参与 Provider 主调用链；无法确认时会以 `UNKNOWN` 或 `-1` 降级。
 
-### 7.7 MCP 工具怎么接入
+### 7.8 MCP 工具怎么接入
 
 #### 场景：接入一个本地 stdio MCP
 
@@ -1011,7 +1048,7 @@ Provider capability 只是静态元数据与启发式结果，不参与 Provider
 - 工具会被包装成 Ricbot 内部 Tool
 - 资源与 Prompt 也会被包装成只读 `mcp_*` 工具
 
-### 7.8 QQ / 微信 / WebSocket 等渠道接入
+### 7.9 QQ / 微信 / WebSocket 等渠道接入
 
 #### QQ 渠道
 
@@ -1061,7 +1098,7 @@ Provider capability 只是静态元数据与启发式结果，不参与 Provider
 - DingTalk：当前更适合作为出站机器人渠道
 - WeCom：当前发送链路较清晰，接收入站仍需额外代理配合
 
-### 7.9 Session / Memory / Dream / Cron / Heartbeat 怎么工作
+### 7.10 Session / Memory / Dream / Cron / Heartbeat 怎么工作
 
 #### Session
 
@@ -1094,13 +1131,14 @@ Provider capability 只是静态元数据与启发式结果，不参与 Provider
 - `serve` 模式下根据 `gateway.heartbeat.enabled` 启动
 - 当前更偏后台执行/通知能力
 
-### 7.10 常见命令
+### 7.11 常见命令
 
 #### CLI 命令
 
 ```bash
 java -jar target/Ricbot-1.0-SNAPSHOT.jar --version
 java -jar target/Ricbot-1.0-SNAPSHOT.jar status
+java -jar target/Ricbot-1.0-SNAPSHOT.jar serve --config config/ricbot.config.json
 java -jar target/Ricbot-1.0-SNAPSHOT.jar config doctor --config config/ricbot.config.json
 java -jar target/Ricbot-1.0-SNAPSHOT.jar tools --config config/ricbot.config.json
 java -jar target/Ricbot-1.0-SNAPSHOT.jar skills --config config/ricbot.config.json
@@ -1119,7 +1157,7 @@ java -jar target/Ricbot-1.0-SNAPSHOT.jar provider login openai
 /dream-restore <commit_sha>
 ```
 
-### 7.11 如何排查 MCP 是否连接成功
+### 7.12 如何排查 MCP 是否连接成功
 
 ```bash
 java -jar target/Ricbot-1.0-SNAPSHOT.jar tools --config config/ricbot.config.json
@@ -1133,7 +1171,7 @@ java -jar target/Ricbot-1.0-SNAPSHOT.jar tools --config config/ricbot.config.jso
 4. 对 `sse` 检查 URL 是否真的以 SSE 端点提供服务
 5. 对 `streamableHttp` 检查服务端是否支持同步 JSON-RPC 风格调用
 
-### 7.12 如何查看日志
+### 7.13 如何查看日志
 
 常见日志位置：
 

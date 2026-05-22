@@ -14,9 +14,7 @@ import ricbot.domain.message.MessageBus;
 import ricbot.domain.message.OutboundMessage;
 import ricbot.domain.session.SessionManager;
 import ricbot.infra.config.Config;
-import ricbot.integration.api.RicbotApiAppContext;
-import ricbot.integration.api.RicbotApiServer;
-import ricbot.integration.api.RicbotWebUiHandler;
+import ricbot.integration.api.console.ConsoleController;
 import ricbot.integration.llm.api.LLMProvider;
 import ricbot.integration.llm.api.LLMResponse;
 
@@ -27,6 +25,7 @@ import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.List;
@@ -345,9 +344,89 @@ public class RicbotApiServerTest {
         }
     }
 
+    @Test
+    void consoleEndpoints_returnReadOnlyDashboardDataAndKeepApiRoutesWorking(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildLoop(workspace);
+        Config config = new Config();
+        config.getAgents().getDefaults().setWorkspace(workspace.toString());
+        config.getAgents().getDefaults().setModel("gpt-4o-mini");
+        config.getProviders().getOpenai().setApiKey("super-secret-key");
+        Path configPath = workspace.resolve("ricbot.config.json");
+        Files.writeString(configPath, """
+                {
+                  "agents": {"defaults": {"workspace": "%s", "model": "gpt-4o-mini"}},
+                  "providers": {"openai": {"api_key": "super-secret-key"}},
+                  "tools": {"restrictToWorkspace": true, "web": {"enable": false}, "exec": {"enable": false}}
+                }
+                """.formatted(workspace.toString().replace("\\", "\\\\")));
+
+        try {
+            var app = new RicbotApiAppContext(
+                    loop,
+                    "gpt-4o-mini",
+                    20_000,
+                    "",
+                    "",
+                    config,
+                    configPath,
+                    workspace
+            );
+
+            TestExchange consoleExchange = getExchange("/console");
+            ConsoleController.pageHandler(app).handle(consoleExchange);
+            assertEquals(200, consoleExchange.getResponseCode(), consoleExchange.responseText());
+            String console = consoleExchange.responseText();
+            assertTrue(console.contains("<title>Ricbot Console</title>"), console);
+            assertTrue(console.contains("/console/api/config-doctor"), console);
+
+            String health = handleGet(ConsoleController.healthHandler(app), "/console/api/health");
+            assertTrue(health.contains("\"status\":\"ok\""), health);
+            assertTrue(health.contains("\"readonly\":true"), health);
+
+            String doctor = handleGet(ConsoleController.configDoctorHandler(app), "/console/api/config-doctor");
+            assertTrue(doctor.contains("\"apiKeyPresent\":true"), doctor);
+            assertFalse(doctor.contains("super-secret-key"), doctor);
+
+            String traces = handleGet(ConsoleController.tracesHandler(app), "/console/api/traces");
+            assertTrue(traces.contains("\"latest\""), traces);
+
+            String workspaces = handleGet(ConsoleController.workspacesHandler(app), "/console/api/workspaces");
+            assertTrue(workspaces.contains("\"items\""), workspaces);
+
+            String experiences = handleGet(ConsoleController.experiencesHandler(app), "/console/api/experiences");
+            assertTrue(experiences.contains("\"candidates\""), experiences);
+            assertTrue(experiences.contains("\"verified\""), experiences);
+
+            String models = handleGet(new RicbotApiServer.ModelsHandler(app), "/v1/models");
+            assertTrue(models.contains("\"id\":\"gpt-4o-mini\""), models);
+
+            String apiHealth = handleGet(new RicbotApiServer.HealthHandler(app), "/health");
+            assertTrue(apiHealth.contains("\"status\":\"ok\""), apiHealth);
+
+            TestExchange chatExchange = postExchange("/v1/chat/completions", Map.of(
+                    "model", "gpt-4o-mini",
+                    "messages", List.of(Map.of("role", "user", "content", "ping"))
+            ));
+            new RicbotApiServer.ChatCompletionsHandler(app).handle(chatExchange);
+            assertEquals(200, chatExchange.getResponseCode(), chatExchange.responseText());
+            String chat = chatExchange.responseText();
+            assertTrue(chat.contains("\"object\":\"chat.completion\""), chat);
+            assertTrue(chat.contains("\"content\":\"pong\""), chat);
+        } finally {
+            loop.stop();
+        }
+    }
+
     private static TestExchange postExchange(String path, Map<String, Object> body) throws Exception {
         String json = MAPPER.writeValueAsString(body);
         return new TestExchange("POST", URI.create("http://localhost" + path), json);
+    }
+
+    private static String handleGet(com.sun.net.httpserver.HttpHandler handler, String path) throws Exception {
+        TestExchange exchange = getExchange(path);
+        handler.handle(exchange);
+        assertEquals(200, exchange.getResponseCode(), exchange.responseText());
+        return exchange.responseText();
     }
 
     private static TestExchange postExchangeRaw(String path, String body) {

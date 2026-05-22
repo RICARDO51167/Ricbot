@@ -30,6 +30,7 @@ import ricbot.infra.config.ConfigLoader; // 导入配置加载器
 import ricbot.infra.config.RuntimePaths; // 导入运行时路径工具类
 import ricbot.domain.skill.SkillsLoader;
 import ricbot.infra.heartbeat.HeartbeatService;
+import ricbot.integration.api.RicbotApiAppContext;
 import ricbot.integration.api.RicbotApiServer;
 import ricbot.integration.mcp.MCPLoader;
 import ricbot.integration.llm.provider.ProviderRegistry; // 导入提供商注册表类
@@ -779,9 +780,15 @@ public final class CliCommands {
                 agentLoop, // Agent 循环实例，用于处理请求
                 resolvedConfig.getAgents().getDefaults().getModel(), // 默认使用的模型名称
                 apiTimeoutMillis, // 超时时间（毫秒）
-                apiConfig.getBearerToken() // 可选的 Bearer token
+                apiConfig.getBearerToken(), // 可选的 Bearer token
+                resolvedConfig,
+                configPath != null && !configPath.isBlank() ? Path.of(configPath).toAbsolutePath().normalize() : ConfigLoader.getConfigPath()
         );
         System.out.println("OpenAI 兼容 API 服务已启动，监听：" + apiHost + ":" + apiPort);
+        System.out.println("Web Console 已启动：http://" + consoleDisplayHost(apiHost) + ":" + apiPort + "/console");
+        if (!RicbotApiAppContext.isLoopbackHost(apiHost)) {
+            System.out.println("警告：API 当前绑定非本地地址，Console 也会随同暴露；请确保已配置 api.bearer_token 且不要暴露到公网。");
+        }
 
         System.out.println("Ricbot 正在运行，按 Ctrl+C 停止。");
 
@@ -1160,6 +1167,13 @@ public final class CliCommands {
 
     private static String value(Object value) {
         return value != null ? String.valueOf(value) : "";
+    }
+
+    private static String consoleDisplayHost(String apiHost) {
+        if (apiHost == null || apiHost.isBlank() || "0.0.0.0".equals(apiHost) || "::".equals(apiHost)) {
+            return "127.0.0.1";
+        }
+        return apiHost;
     }
 
     // =========================================================

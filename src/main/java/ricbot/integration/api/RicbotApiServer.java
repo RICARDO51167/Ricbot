@@ -13,12 +13,15 @@ import ricbot.domain.hook.AgentHook;
 import ricbot.domain.hook.AgentHookContext;
 import ricbot.domain.message.OutboundMessage;
 import ricbot.domain.session.Session;
+import ricbot.infra.config.Config;
+import ricbot.integration.api.console.ConsoleController;
 
 import java.io.IOException;
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.io.Writer;
 import java.net.InetSocketAddress;
+import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.*;
@@ -72,12 +75,35 @@ public class RicbotApiServer {
             long requestTimeoutMillis,
             String bearerToken
     ) throws IOException {
+        return createAndStart(host, port, agentLoop, modelName, requestTimeoutMillis, bearerToken, null, null);
+    }
+
+    public static HttpServer createAndStart(
+            String host,
+            int port,
+            AgentLoop agentLoop,
+            String modelName,
+            long requestTimeoutMillis,
+            String bearerToken,
+            Config config,
+            Path configPath
+    ) throws IOException {
         String bindHost = host != null && !host.isBlank() ? host : "127.0.0.1";
         String token = bearerToken != null ? bearerToken.trim() : "";
         if (!RicbotApiAppContext.isLoopbackHost(bindHost) && token.isBlank()) {
             throw new IllegalArgumentException("API 监听非本地地址时必须配置 api.bearer_token");
         }
-        RicbotApiAppContext appContext = new RicbotApiAppContext(agentLoop, modelName, requestTimeoutMillis, bindHost, token);
+        Path workspace = config != null ? config.getWorkspacePath() : null;
+        RicbotApiAppContext appContext = new RicbotApiAppContext(
+                agentLoop,
+                modelName,
+                requestTimeoutMillis,
+                bindHost,
+                token,
+                config,
+                configPath,
+                workspace
+        );
 
         HttpServer server = HttpServer.create(new InetSocketAddress(bindHost, port), 0);
         server.createContext("/v1/chat/completions", new ChatCompletionsHandler(appContext));
@@ -86,6 +112,7 @@ public class RicbotApiServer {
         server.createContext("/v1/mcp", new McpHandler(appContext));
         server.createContext("/v1/memory", new MemoryHandler(appContext));
         server.createContext("/health", new HealthHandler(appContext));
+        ConsoleController.register(server, appContext);
         server.createContext("/", new RicbotWebUiHandler());
         server.setExecutor(RicbotApiSupport.newApiExecutor());
         server.start();

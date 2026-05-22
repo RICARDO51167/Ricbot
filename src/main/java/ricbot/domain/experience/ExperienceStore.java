@@ -65,6 +65,17 @@ public class ExperienceStore {
         return out;
     }
 
+    public List<ExperienceEntry> listVerified() {
+        List<ExperienceEntry> out = new ArrayList<>();
+        for (ExperienceEntry entry : readAll(verifiedFile)) {
+            if (entry.status() == ExperienceStatus.VERIFIED) {
+                out.add(entry);
+            }
+        }
+        out.sort(Comparator.comparing(ExperienceEntry::updatedAt, Comparator.nullsLast(String::compareTo)).reversed());
+        return out;
+    }
+
     public ExperienceEntry find(String id) {
         if (id == null || id.isBlank()) {
             return null;
