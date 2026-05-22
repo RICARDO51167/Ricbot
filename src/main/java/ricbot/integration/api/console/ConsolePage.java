@@ -503,7 +503,11 @@ final class ConsolePage {
                     function renderEvals(data) {
                       const items = data.items || [];
                       document.getElementById("eval-card").innerHTML = `
-                        <h2>Eval Runs</h2>
+                        <div class="row">
+                          <h2>Eval Runs</h2>
+                          <button type="button" id="run-smoke-eval">Run Smoke Eval</button>
+                        </div>
+                        <div id="eval-action-state"></div>
                         ${items.length === 0 ? empty("No eval runs") : `
                           <div class="list">${items.slice(0, 12).map(run => {
                             const failures = run.failuresByKind || {};
@@ -534,6 +538,24 @@ final class ConsolePage {
                       document.querySelectorAll("[data-run-id]").forEach(button => {
                         button.addEventListener("click", () => loadEvalDetail(button.getAttribute("data-run-id")));
                       });
+                      const runButton = document.getElementById("run-smoke-eval");
+                      if (runButton) {
+                        runButton.addEventListener("click", runSmokeEval);
+                      }
+                    }
+
+                    async function runSmokeEval() {
+                      if (!confirm("Run fixed golden smoke eval?")) return;
+                      const state = document.getElementById("eval-action-state");
+                      if (state) state.innerHTML = empty("Running smoke eval");
+                      try {
+                        const result = await postJson("/console/api/evals/smoke");
+                        if (state) state.innerHTML = `<div class="sub">completed: ${esc(result?.data?.runId || result?.id || "")}</div>`;
+                        renderEvals(await getJson("evals"));
+                        renderActions(await getJson("actions"));
+                      } catch (error) {
+                        if (state) state.innerHTML = `<div class="errbox">${esc(error.message || error)}</div>`;
+                      }
                     }
 
                     async function loadEvalDetail(runId) {

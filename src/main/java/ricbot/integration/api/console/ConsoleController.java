@@ -9,6 +9,7 @@ import ricbot.domain.change.ChangeSetService;
 import ricbot.domain.change.GitChangeSet;
 import ricbot.domain.config.ConfigDoctorReport;
 import ricbot.domain.config.ConfigDoctorService;
+import ricbot.domain.eval.ConsoleEvalSmokeService;
 import ricbot.domain.eval.EvalRunDetail;
 import ricbot.domain.eval.EvalRunSummary;
 import ricbot.domain.eval.EvalRunsViewerService;
@@ -282,6 +283,27 @@ public final class ConsoleController {
         return detail.toMap();
     }
 
+    private static Map<String, Object> runSmokeEval(RicbotApiAppContext appContext, HttpExchange exchange) throws IOException {
+        List<String> warnings = evalSmokeBodyWarnings(exchange);
+        try {
+            EvalRunSummary summary = new ConsoleEvalSmokeService(appContext.getWorkspace()).runSmoke();
+            Map<String, Object> data = new LinkedHashMap<>();
+            data.put("runId", summary.getRunId());
+            data.put("status", summary.getFailed() > 0 ? "FAILED" : "COMPLETED");
+            data.put("summaryPath", ".ricbot/evals/" + summary.getRunId() + "/summary.json");
+            data.put("reportPath", ".ricbot/evals/" + summary.getRunId() + "/report.md");
+            data.put("artifactDir", summary.getArtifactDir());
+            data.put("providerMode", "smoke");
+            data.put("model", "smoke-model");
+            data.put("summary", summary.toMap());
+            return actionResult("eval.smoke", "smoke", String.valueOf(data.get("status")),
+                    "eval smoke completed: runId=" + summary.getRunId(),
+                    data, warnings);
+        } catch (Exception e) {
+            throw new IllegalStateException(e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName(), e);
+        }
+    }
+
     private static Map<String, Object> actions(RicbotApiAppContext appContext) {
         List<Map<String, Object>> items = new ConsoleActionAuditService(appContext.getWorkspace()).recent(30).stream()
                 .map(ConsoleActionAuditRecord::toMap)
@@ -381,6 +403,18 @@ public final class ConsoleController {
 
     private static Map<String, Object> approvalMap(ApprovalRequest request) {
         return sanitizeMap(request.toMap());
+    }
+
+    private static List<String> evalSmokeBodyWarnings(HttpExchange exchange) throws IOException {
+        byte[] bytes = exchange.getRequestBody().readAllBytes();
+        if (bytes.length == 0) {
+            return List.of();
+        }
+        String body = new String(bytes, StandardCharsets.UTF_8).trim();
+        if (body.isBlank() || "{}".equals(body)) {
+            return List.of();
+        }
+        return List.of("request body ignored; Console smoke eval always uses evals/golden.jsonl, target/eval-console-smoke-workspace, and smoke provider");
     }
 
     private static boolean confirmTrue(HttpExchange exchange) throws IOException {
@@ -821,7 +855,14 @@ public final class ConsoleController {
     private record EvalRunsHandler(RicbotApiAppContext appContext) implements HttpHandler {
         @Override
         public void handle(HttpExchange exchange) throws IOException {
-            if (!"GET".equalsIgnoreCase(exchange.getRequestMethod())) {
+            String method = exchange.getRequestMethod();
+            String path = exchange.getRequestURI() != null ? exchange.getRequestURI().getRawPath() : "";
+            if ("POST".equalsIgnoreCase(method) && "/console/api/evals/smoke".equals(path)) {
+                executeConsolePostAction(exchange, appContext, "eval.smoke", "EVAL", "smoke",
+                        () -> runSmokeEval(appContext, exchange));
+                return;
+            }
+            if (!"GET".equalsIgnoreCase(method)) {
                 RicbotApiServer.writeErrorJson(exchange, 405, "不支持的 HTTP 方法", "invalid_request_error");
                 return;
             }
@@ -829,7 +870,6 @@ public final class ConsoleController {
                 RicbotApiServer.writeErrorJson(exchange, 401, "缺少或无效的 Bearer token", "authentication_error");
                 return;
             }
-            String path = exchange.getRequestURI() != null ? exchange.getRequestURI().getRawPath() : "";
             try {
                 if ("/console/api/evals".equals(path) || "/console/api/evals/".equals(path)) {
                     RicbotApiServer.writeJson(exchange, 200, evalRuns(appContext));

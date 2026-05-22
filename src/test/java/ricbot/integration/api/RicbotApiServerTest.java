@@ -466,6 +466,77 @@ public class RicbotApiServerTest {
     }
 
     @Test
+    void consoleEvalSmokeAction_runsFixedGoldenSmokeAndAppearsInViewer(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildLoopNoStart(workspace);
+        Config config = new Config();
+        config.getAgents().getDefaults().setWorkspace(workspace.toString());
+        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", config, null, workspace);
+
+        try {
+            TestExchange smoke = postExchangeRaw("/console/api/evals/smoke", """
+                    {"scenarios":"evil.jsonl","workspace":"/tmp/evil-workspace","provider":"real-model"}
+                    """);
+            ConsoleController.evalsHandler(app).handle(smoke);
+            assertEquals(200, smoke.getResponseCode(), smoke.responseText());
+            assertTrue(smoke.responseText().contains("\"action\":\"eval.smoke\""), smoke.responseText());
+            assertTrue(smoke.responseText().contains("\"runId\""), smoke.responseText());
+            assertTrue(smoke.responseText().contains("\"status\""), smoke.responseText());
+            assertTrue(smoke.responseText().contains("request body ignored"), smoke.responseText());
+
+            Map<String, Object> response = MAPPER.readValue(smoke.responseText(), new TypeReference<>() {});
+            Map<?, ?> data = (Map<?, ?>) response.get("data");
+            String runId = String.valueOf(data.get("runId"));
+            assertFalse(runId.isBlank());
+
+            String evals = handleGet(ConsoleController.evalsHandler(app), "/console/api/evals");
+            assertTrue(evals.contains("\"runId\":\"" + runId + "\""), evals);
+            assertTrue(evals.contains("\"providerMode\":\"smoke\""), evals);
+            assertTrue(evals.contains("\"model\":\"smoke-model\""), evals);
+
+            String detail = handleGet(ConsoleController.evalsHandler(app), "/console/api/evals/" + runId);
+            assertTrue(detail.contains("\"provider_mode\":\"smoke\""), detail);
+            assertTrue(detail.contains("\"model\":\"smoke-model\""), detail);
+            assertTrue(detail.contains("evals/golden.jsonl") || detail.contains("evals\\\\golden.jsonl"), detail);
+            assertFalse(detail.contains("evil.jsonl"), detail);
+            assertFalse(detail.contains("/tmp/evil-workspace"), detail);
+            assertFalse(detail.contains("real-model"), detail);
+
+            String actions = handleGet(ConsoleController.actionsHandler(app), "/console/api/actions");
+            assertTrue(actions.contains("\"action\":\"eval.smoke\""), actions);
+            assertTrue(actions.contains("\"targetType\":\"EVAL\""), actions);
+            assertTrue(actions.contains("\"result\":\"SUCCESS\""), actions);
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void consoleEvalSmokeAction_reusesAuthAndOriginProtection(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildLoopNoStart(workspace);
+        Config config = new Config();
+        config.getAgents().getDefaults().setWorkspace(workspace.toString());
+        try {
+            var tokenApp = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "console-token", config, null, workspace);
+            TestExchange unauthorized = postExchangeRaw("/console/api/evals/smoke", "");
+            ConsoleController.evalsHandler(tokenApp).handle(unauthorized);
+            assertEquals(401, unauthorized.getResponseCode(), unauthorized.responseText());
+
+            var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", config, null, workspace);
+            TestExchange invalidOrigin = postExchangeRaw("/console/api/evals/smoke", "");
+            invalidOrigin.getRequestHeaders().set("Origin", "https://evil.example");
+            ConsoleController.evalsHandler(app).handle(invalidOrigin);
+            assertEquals(403, invalidOrigin.getResponseCode(), invalidOrigin.responseText());
+            assertFalse(Files.isDirectory(workspace.resolve(".ricbot").resolve("evals")));
+
+            String actions = handleGet(ConsoleController.actionsHandler(app), "/console/api/actions");
+            assertTrue(actions.contains("\"action\":\"eval.smoke\""), actions);
+            assertTrue(actions.contains("\"result\":\"UNAUTHORIZED\""), actions);
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
     void consoleExperienceActions_updateCandidatesAndPromoteVerifiedSkill(@TempDir Path workspace) throws Exception {
         AgentLoop loop = buildLoop(workspace);
         Config config = new Config();

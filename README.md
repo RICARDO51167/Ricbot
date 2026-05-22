@@ -506,6 +506,15 @@ java -jar target/Ricbot-1.0-SNAPSHOT.jar eval replay \
   --fail-fast
 ```
 
+Console 也提供一个固定参数的 smoke 启动按钮：
+
+- `POST /console/api/evals/smoke`
+- 固定读取 `evals/golden.jsonl`
+- 固定使用 `target/eval-console-smoke-workspace`
+- 固定使用确定性 smoke provider，不访问真实模型或外网
+- artifact 写入当前 Console workspace 的 `.ricbot/evals/<run-id>`
+- 不接受自定义 scenario path、workspace path、provider、learn/compare/replay 参数
+
 离线回放已有 artifact，不访问真实模型：
 
 ```bash
@@ -788,6 +797,7 @@ Console 提供本地页面和 JSON API：
 - `GET /console/api/actions`
 - `GET /console/api/evals`
 - `GET /console/api/evals/<run-id>`
+- `POST /console/api/evals/smoke`
 
 页面展示：
 
@@ -801,18 +811,19 @@ Console 提供本地页面和 JSON API：
 - Pending approvals：展示待审批请求，可人工 `Approve` / `Reject`
 - Recent Console Actions：展示最近 Console 写操作审计记录
 - Eval runs：读取 `workspace/.ricbot/evals` 下最近的 run，展示 passed/failed/skipped、`provider_mode`、model、`failures_by_kind`，展开后查看失败 case 和转义后的 `report.md`
+- Eval action：`Run Smoke Eval` 只触发固定 golden smoke，不提供自定义参数输入
 
 安全说明：
 
-- 当前 Console 写操作只开放三类人工确认动作：experience candidate/skill promotion、approval approve/reject、以及 workspace 后处理 `change-create` / `discard`
+- 当前 Console 写操作只开放四类人工确认动作：experience candidate/skill promotion、approval approve/reject、workspace 后处理 `change-create` / `discard`、固定 eval smoke
 - Workspace `change-create` 只会从 Ricbot 管理的 worktree 创建 ChangeSet，不会自动 commit、merge 或执行 shell
 - Workspace `discard` 只允许 Ricbot 管理的 active `GIT_WORKTREE`，id 会通过 workspace metadata 解析，不能作为路径使用；API body 必须包含 `confirm=true`
+- Console eval smoke 只运行固定 `evals/golden.jsonl`，只使用 `target/eval-console-smoke-workspace` 和确定性 smoke provider；请求体中的 scenario/workspace/provider 字段会被忽略
 - 页面上的写操作都使用 `POST`，会弹出浏览器确认框；如果配置了 `api.bearer_token`，Console POST 同样要求 Bearer 鉴权
 - Console 写操作会追加审计到 `workspace/.ricbot/console-actions.jsonl`，记录 action、target、结果、来源地址、时间和 message；审计写入失败不会阻断主操作，但会返回 warning
 - Console POST 会做 CSRF-lite 检查：如果请求带 `Origin` 或 `Referer`，必须来自本机 Console origin；缺失时允许 CLI/curl 场景并记录 warning
 - Console POST 有轻量内存限流：同一 remote address + action 在 10 秒内最多 20 次，超限返回 429
-- Console 不支持执行 shell、启动 team run、启动 eval、git merge 或 git commit
-- Console 不支持从页面启动 eval，只读读取已有 artifact
+- Console 不支持执行 shell、启动 team run、真实模型 eval、eval learn、eval compare、eval replay、git merge 或 git commit
 - Console API 不输出真实 API key，也不允许任意路径读取
 - Approval 列表、action result 和 audit record 会对 api_key/token/secret/password/authorization/bearer/cookie/set-cookie 等字段脱敏；不要把生产密钥放入 approval args
 - Eval viewer 只读取当前 workspace 内的 `.ricbot/evals`，`run-id` 会做路径穿越校验；manifest 中疑似 key/token/secret/password 的字段会降级为 `[REDACTED]`
