@@ -1,8 +1,12 @@
 package ricbot.integration.api.console;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
+import ricbot.domain.change.ChangeSetService;
+import ricbot.domain.change.GitChangeSet;
 import ricbot.domain.config.ConfigDoctorReport;
 import ricbot.domain.config.ConfigDoctorService;
 import ricbot.domain.eval.EvalRunDetail;
@@ -19,7 +23,10 @@ import ricbot.domain.team.TeamSession;
 import ricbot.domain.team.TeamTask;
 import ricbot.domain.trace.TraceTimeline;
 import ricbot.domain.trace.TraceViewerService;
+import ricbot.domain.workspace.WorkspaceBackendType;
+import ricbot.domain.workspace.WorkspaceLifecycleService;
 import ricbot.domain.workspace.WorkspaceSession;
+import ricbot.domain.workspace.WorkspaceSessionStatus;
 import ricbot.domain.workspace.WorkspaceSessionStore;
 import ricbot.integration.api.RicbotApiAppContext;
 import ricbot.integration.api.RicbotApiServer;
@@ -44,6 +51,9 @@ import java.util.function.LongSupplier;
 import java.util.regex.Pattern;
 
 public final class ConsoleController {
+    private static final ObjectMapper MAPPER = new ObjectMapper().findAndRegisterModules();
+    private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {
+    };
     private static final Pattern SAFE_ID = Pattern.compile("[A-Za-z0-9._-]+");
     private static final ConsolePostRateLimiter RATE_LIMITER = new ConsolePostRateLimiter(20, 10_000L, System::currentTimeMillis);
 
@@ -55,6 +65,7 @@ public final class ConsoleController {
         server.createContext("/console/api/config-doctor", configDoctorHandler(appContext));
         server.createContext("/console/api/traces", tracesHandler(appContext));
         server.createContext("/console/api/team-reports", teamReportsHandler(appContext));
+        server.createContext("/console/api/workspaces/", workspaceActionsHandler(appContext));
         server.createContext("/console/api/workspaces", workspacesHandler(appContext));
         server.createContext("/console/api/experiences/", experienceActionsHandler(appContext));
         server.createContext("/console/api/experiences", experiencesHandler(appContext));
@@ -86,6 +97,10 @@ public final class ConsoleController {
 
     public static HttpHandler workspacesHandler(RicbotApiAppContext appContext) {
         return new ApiHandler(appContext, ConsoleController::workspaces);
+    }
+
+    public static HttpHandler workspaceActionsHandler(RicbotApiAppContext appContext) {
+        return new WorkspaceActionHandler(appContext);
     }
 
     public static HttpHandler experiencesHandler(RicbotApiAppContext appContext) {
@@ -166,6 +181,64 @@ public final class ConsoleController {
                 .limit(50)
                 .toList();
         return Map.of("items", sessions);
+    }
+
+    private static Map<String, Object> createWorkspaceChangeSet(RicbotApiAppContext appContext, String id) {
+        WorkspaceSession session = requireActiveManagedWorktree(appContext, id);
+        String taskId = String.valueOf(session.metadata().getOrDefault("taskId", "")).trim();
+        String teamSessionId = String.valueOf(session.metadata().getOrDefault("teamSessionId", "")).trim();
+        try {
+            GitChangeSet changeSet = new ChangeSetService(appContext.getWorkspace())
+                    .createFromWorkspace(session.id(), Path.of(session.workspacePath()), "console", teamSessionId, taskId);
+            Map<String, Object> data = new LinkedHashMap<>();
+            data.put("workspaceId", session.id());
+            data.put("taskId", taskId);
+            data.put("changeSet", changeSet.toMap());
+            data.put("changedFiles", changeSet.changedFiles());
+            data.put("changeSetPath", ".changesets/" + changeSet.id() + "/changeset.json");
+            return actionResult("workspace.change_create", id, changeSet.status().name(),
+                    "workspace changeset created: workspaceId=" + session.id() + ", taskId=" + taskId,
+                    data, List.of());
+        } catch (IllegalStateException e) {
+            String message = e.getMessage() != null ? e.getMessage() : "";
+            if (message.contains("no changes")) {
+                throw new ConsoleConflictException("workspace has no changes to create a ChangeSet: " + session.id());
+            }
+            throw e;
+        }
+    }
+
+    private static Map<String, Object> discardWorkspace(RicbotApiAppContext appContext, String id, HttpExchange exchange) throws IOException {
+        if (!confirmTrue(exchange)) {
+            throw new ConsoleConflictException("discard requires confirm=true");
+        }
+        WorkspaceSession before = requireActiveManagedWorktree(appContext, id);
+        WorkspaceSession discarded = new WorkspaceLifecycleService(appContext.getWorkspace()).discard(before.id(), true);
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("workspaceId", discarded.id());
+        data.put("taskId", String.valueOf(discarded.metadata().getOrDefault("taskId", "")));
+        data.put("workspace", discarded.toMap());
+        return actionResult("workspace.discard", id, discarded.status().name(),
+                "workspace discarded: workspaceId=" + discarded.id() + ", taskId=" + data.get("taskId"),
+                data, List.of());
+    }
+
+    private static WorkspaceSession requireActiveManagedWorktree(RicbotApiAppContext appContext, String rawId) {
+        String id = requireSafeId(rawId, "workspace id");
+        try {
+            WorkspaceSession session = new WorkspaceLifecycleService(appContext.getWorkspace()).resolveManagedWorktree(id);
+            if (session.type() != WorkspaceBackendType.GIT_WORKTREE) {
+                throw new ConsoleConflictException("workspace is not a managed git worktree: " + id);
+            }
+            if (session.status() != WorkspaceSessionStatus.ACTIVE) {
+                throw new ConsoleConflictException("workspace action requires ACTIVE status: " + session.id() + " status=" + session.status());
+            }
+            return session;
+        } catch (IllegalStateException e) {
+            throw new ConsoleConflictException(e.getMessage());
+        } catch (IllegalArgumentException e) {
+            throw new ConsoleNotFoundException(e.getMessage());
+        }
     }
 
     private static Map<String, Object> experiences(RicbotApiAppContext appContext) {
@@ -310,6 +383,25 @@ public final class ConsoleController {
         return sanitizeMap(request.toMap());
     }
 
+    private static boolean confirmTrue(HttpExchange exchange) throws IOException {
+        Map<String, Object> body = readJsonObject(exchange);
+        Object confirm = body.get("confirm");
+        return confirm instanceof Boolean b ? b : "true".equalsIgnoreCase(String.valueOf(confirm));
+    }
+
+    private static Map<String, Object> readJsonObject(HttpExchange exchange) throws IOException {
+        byte[] bytes = exchange.getRequestBody().readAllBytes();
+        if (bytes.length == 0) {
+            return Map.of();
+        }
+        try {
+            Map<String, Object> raw = MAPPER.readValue(bytes, MAP_TYPE);
+            return raw != null ? raw : Map.of();
+        } catch (Exception e) {
+            throw new IllegalArgumentException("invalid JSON request body");
+        }
+    }
+
     private static Map<String, Object> actionResult(
             String action,
             String id,
@@ -447,6 +539,32 @@ public final class ConsoleController {
                 case "verify" -> verifyExperience(appContext, requireSafeId(id, "experience id"));
                 case "reject" -> rejectExperience(appContext, requireSafeId(id, "experience id"));
                 case "promote-skill" -> promoteExperienceSkill(appContext, requireSafeId(id, "experience id"));
+                default -> throw new ConsoleNotFoundException("资源不存在");
+            });
+        }
+    }
+
+    private record WorkspaceActionHandler(RicbotApiAppContext appContext) implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+                RicbotApiServer.writeErrorJson(exchange, 405, "不支持的 HTTP 方法", "invalid_request_error");
+                return;
+            }
+            String[] parts = actionParts(exchange, "/console/api/workspaces/");
+            if (parts.length != 2) {
+                RicbotApiServer.writeErrorJson(exchange, 404, "资源不存在", "not_found");
+                return;
+            }
+            String id = parts[0];
+            String action = switch (parts[1]) {
+                case "change-create" -> "workspace.change_create";
+                case "discard" -> "workspace.discard";
+                default -> "";
+            };
+            executeConsolePostAction(exchange, appContext, action, "WORKSPACE", id, () -> switch (parts[1]) {
+                case "change-create" -> createWorkspaceChangeSet(appContext, requireSafeId(id, "workspace id"));
+                case "discard" -> discardWorkspace(appContext, requireSafeId(id, "workspace id"), exchange);
                 default -> throw new ConsoleNotFoundException("资源不存在");
             });
         }

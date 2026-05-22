@@ -776,6 +776,8 @@ Console 提供本地页面和 JSON API：
 - `GET /console/api/traces`
 - `GET /console/api/team-reports`
 - `GET /console/api/workspaces`
+- `POST /console/api/workspaces/<id>/change-create`
+- `POST /console/api/workspaces/<id>/discard`
 - `GET /console/api/experiences`
 - `POST /console/api/experiences/<id>/verify`
 - `POST /console/api/experiences/<id>/reject`
@@ -793,6 +795,7 @@ Console 提供本地页面和 JSON API：
 - Latest trace / run timeline
 - Team task reports
 - Workspace sessions
+- Workspace actions：对 Ricbot 管理的 active `GIT_WORKTREE` 可人工 `Create ChangeSet` 或 `Discard`
 - Experience candidates / verified items
 - Experience actions：candidate 可人工 `Verify` / `Reject`；verified 可 `Promote Skill` 生成 `skills/generated/*.md`
 - Pending approvals：展示待审批请求，可人工 `Approve` / `Reject`
@@ -801,13 +804,14 @@ Console 提供本地页面和 JSON API：
 
 安全说明：
 
-- Console 不提供 workspace discard、change create、team run、eval run 等高风险写操作
-- 当前写操作只开放 experience candidate/skill promotion 和 approval approve/reject 两类人工确认动作
+- 当前 Console 写操作只开放三类人工确认动作：experience candidate/skill promotion、approval approve/reject、以及 workspace 后处理 `change-create` / `discard`
+- Workspace `change-create` 只会从 Ricbot 管理的 worktree 创建 ChangeSet，不会自动 commit、merge 或执行 shell
+- Workspace `discard` 只允许 Ricbot 管理的 active `GIT_WORKTREE`，id 会通过 workspace metadata 解析，不能作为路径使用；API body 必须包含 `confirm=true`
 - 页面上的写操作都使用 `POST`，会弹出浏览器确认框；如果配置了 `api.bearer_token`，Console POST 同样要求 Bearer 鉴权
 - Console 写操作会追加审计到 `workspace/.ricbot/console-actions.jsonl`，记录 action、target、结果、来源地址、时间和 message；审计写入失败不会阻断主操作，但会返回 warning
 - Console POST 会做 CSRF-lite 检查：如果请求带 `Origin` 或 `Referer`，必须来自本机 Console origin；缺失时允许 CLI/curl 场景并记录 warning
 - Console POST 有轻量内存限流：同一 remote address + action 在 10 秒内最多 20 次，超限返回 429
-- Console 不支持执行 shell、丢弃 worktree、创建 change、运行 team task 或启动 eval
+- Console 不支持执行 shell、启动 team run、启动 eval、git merge 或 git commit
 - Console 不支持从页面启动 eval，只读读取已有 artifact
 - Console API 不输出真实 API key，也不允许任意路径读取
 - Approval 列表、action result 和 audit record 会对 api_key/token/secret/password/authorization/bearer/cookie/set-cookie 等字段脱敏；不要把生产密钥放入 approval args

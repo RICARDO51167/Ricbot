@@ -242,8 +242,13 @@ final class ConsolePage {
                       return json;
                     }
 
-                    async function postJson(url) {
-                      const response = await fetch(url, { method: "POST", headers: { "Accept": "application/json" } });
+                    async function postJson(url, body) {
+                      const options = { method: "POST", headers: { "Accept": "application/json" } };
+                      if (body) {
+                        options.headers["Content-Type"] = "application/json";
+                        options.body = JSON.stringify(body);
+                      }
+                      const response = await fetch(url, options);
                       const json = await response.json();
                       if (!response.ok) {
                         throw new Error(json?.error?.message || response.statusText);
@@ -317,13 +322,49 @@ final class ConsolePage {
                           <div class="value">${esc(items.length)}</div>
                           <div class="list">${items.slice(0, 6).map(item => `
                             <div class="item">
-                              <div class="title">${esc(item.id)}</div>
-                              <div class="kv"><span>${esc(item.type)}</span><span>${esc(item.status)}</span></div>
-                              <div class="sub">${esc(item.goal || item.branchName || item.workspacePath)}</div>
+                              <div class="row">
+                                <div>
+                                  <div class="title">${esc(item.id)}</div>
+                                  <div class="kv"><span>${esc(item.type)}</span><span>${esc(item.status)}</span></div>
+                                  <div class="sub">${esc(item.goal || item.branchName || item.workspacePath)}</div>
+                                </div>
+                                ${workspaceActionButtons(item)}
+                              </div>
                             </div>
                           `).join("")}</div>
                         `}
                       `;
+                      document.querySelectorAll("[data-workspace-action]").forEach(button => {
+                        button.addEventListener("click", () => runWorkspaceAction(
+                          button.getAttribute("data-workspace-id"),
+                          button.getAttribute("data-workspace-action")
+                        ));
+                      });
+                    }
+
+                    function workspaceActionButtons(item) {
+                      const metadata = item.metadata || {};
+                      const activeManagedWorktree = item.type === "GIT_WORKTREE" && item.status === "ACTIVE" && String(metadata.managedBy || "").toLowerCase() === "ricbot";
+                      if (!activeManagedWorktree) return "";
+                      return `
+                        <div>
+                          <button type="button" data-workspace-action="change-create" data-workspace-id="${esc(item.id)}">Create ChangeSet</button>
+                          <button type="button" data-workspace-action="discard" data-workspace-id="${esc(item.id)}">Discard</button>
+                        </div>
+                      `;
+                    }
+
+                    async function runWorkspaceAction(id, action) {
+                      if (action === "discard" && !confirm(`Discard managed workspace ${id}?`)) return;
+                      if (action === "change-create" && !confirm(`Create ChangeSet from workspace ${id}?`)) return;
+                      try {
+                        const body = action === "discard" ? { confirm: true } : null;
+                        await postJson(`/console/api/workspaces/${encodeURIComponent(id)}/${action}`, body);
+                        renderWorkspaces(await getJson("workspaces"));
+                        renderActions(await getJson("actions"));
+                      } catch (error) {
+                        document.getElementById("workspace-card").innerHTML = errorCard("workspace action", error);
+                      }
                     }
 
                     function renderTeams(data) {

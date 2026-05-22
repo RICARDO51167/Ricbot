@@ -21,6 +21,11 @@ import ricbot.domain.security.ApprovalRequest;
 import ricbot.domain.security.CommandRiskLevel;
 import ricbot.domain.security.RiskAssessment;
 import ricbot.domain.session.SessionManager;
+import ricbot.domain.workspace.GitWorktreeWorkspaceBackend;
+import ricbot.domain.workspace.WorkspaceBackendType;
+import ricbot.domain.workspace.WorkspaceSession;
+import ricbot.domain.workspace.WorkspaceSessionStatus;
+import ricbot.domain.workspace.WorkspaceSessionStore;
 import ricbot.infra.config.Config;
 import ricbot.integration.api.console.ConsoleActionAuditService;
 import ricbot.integration.api.console.ConsoleController;
@@ -675,6 +680,128 @@ public class RicbotApiServerTest {
     }
 
     @Test
+    void consoleWorkspaceActions_createChangeSetAndDiscardManagedWorktree(@TempDir Path workspace) throws Exception {
+        initGitRepo(workspace);
+        AgentLoop loop = buildLoop(workspace);
+        Config config = new Config();
+        config.getAgents().getDefaults().setWorkspace(workspace.toString());
+        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", config, null, workspace);
+        WorkspaceSessionStore store = new WorkspaceSessionStore(workspace);
+        WorkspaceSession session = createManagedWorktree(workspace, store, "workspace_console", "task_console");
+        Path worktree = Path.of(session.workspacePath());
+        Files.writeString(worktree.resolve("README.md"), "initial\nconsole change\n");
+
+        try {
+            TestExchange create = postExchangeRaw("/console/api/workspaces/task_console/change-create", "");
+            ConsoleController.workspaceActionsHandler(app).handle(create);
+            assertEquals(200, create.getResponseCode(), create.responseText());
+            assertTrue(create.responseText().contains("\"action\":\"workspace.change_create\""), create.responseText());
+            assertTrue(create.responseText().contains("\"changedFiles\""), create.responseText());
+            assertTrue(create.responseText().contains("README.md"), create.responseText());
+            assertTrue(Files.isDirectory(workspace.resolve(".changesets")));
+
+            TestExchange missingConfirm = postExchangeRaw("/console/api/workspaces/" + session.id() + "/discard", "");
+            ConsoleController.workspaceActionsHandler(app).handle(missingConfirm);
+            assertEquals(409, missingConfirm.getResponseCode(), missingConfirm.responseText());
+            assertTrue(missingConfirm.responseText().contains("confirm=true"), missingConfirm.responseText());
+            assertEquals(WorkspaceSessionStatus.ACTIVE, store.load(session.id()).status());
+
+            TestExchange discard = postExchangeRaw("/console/api/workspaces/" + session.id() + "/discard", "{\"confirm\":true}");
+            ConsoleController.workspaceActionsHandler(app).handle(discard);
+            assertEquals(200, discard.getResponseCode(), discard.responseText());
+            assertTrue(discard.responseText().contains("\"action\":\"workspace.discard\""), discard.responseText());
+            assertEquals(WorkspaceSessionStatus.DISCARDED, store.load(session.id()).status());
+
+            String actions = handleGet(ConsoleController.actionsHandler(app), "/console/api/actions");
+            assertTrue(actions.contains("\"action\":\"workspace.change_create\""), actions);
+            assertTrue(actions.contains("\"action\":\"workspace.discard\""), actions);
+            assertTrue(actions.contains("\"targetType\":\"WORKSPACE\""), actions);
+            assertTrue(actions.contains("workspaceId=" + session.id()), actions);
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void consoleWorkspaceActions_reportNoDiffAndRejectUnsafeTargets(@TempDir Path workspace) throws Exception {
+        initGitRepo(workspace);
+        AgentLoop loop = buildLoop(workspace);
+        Config config = new Config();
+        config.getAgents().getDefaults().setWorkspace(workspace.toString());
+        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", config, null, workspace);
+        WorkspaceSessionStore store = new WorkspaceSessionStore(workspace);
+        WorkspaceSession clean = createManagedWorktree(workspace, store, "workspace_clean", "task_clean");
+
+        try {
+            TestExchange noDiff = postExchangeRaw("/console/api/workspaces/" + clean.id() + "/change-create", "");
+            ConsoleController.workspaceActionsHandler(app).handle(noDiff);
+            assertEquals(409, noDiff.getResponseCode(), noDiff.responseText());
+            assertTrue(noDiff.responseText().contains("no changes"), noDiff.responseText());
+
+            Path unmanagedPath = workspace.resolve(".workspaces").resolve("workspace_unmanaged_console");
+            git(workspace, "worktree", "add", "-b", "ricbot/workspace_unmanaged_console", unmanagedPath.toString());
+            store.save(new WorkspaceSession(
+                    "workspace_unmanaged_console",
+                    WorkspaceBackendType.GIT_WORKTREE,
+                    workspace.toString(),
+                    unmanagedPath.toString(),
+                    "ricbot/workspace_unmanaged_console",
+                    "unmanaged",
+                    WorkspaceSessionStatus.ACTIVE,
+                    null,
+                    null,
+                    Map.of("taskId", "task_unmanaged_console")
+            ));
+            TestExchange unmanaged = postExchangeRaw("/console/api/workspaces/task_unmanaged_console/discard", "{\"confirm\":true}");
+            ConsoleController.workspaceActionsHandler(app).handle(unmanaged);
+            assertEquals(409, unmanaged.getResponseCode(), unmanaged.responseText());
+            assertTrue(unmanaged.responseText().contains("not managed"), unmanaged.responseText());
+
+            TestExchange traversal = postExchangeRaw("/console/api/workspaces/../discard", "{\"confirm\":true}");
+            ConsoleController.workspaceActionsHandler(app).handle(traversal);
+            assertEquals(404, traversal.getResponseCode(), traversal.responseText());
+
+            TestExchange getWrite = getExchange("/console/api/workspaces/" + clean.id() + "/discard");
+            ConsoleController.workspaceActionsHandler(app).handle(getWrite);
+            assertEquals(405, getWrite.getResponseCode(), getWrite.responseText());
+            assertEquals(WorkspaceSessionStatus.ACTIVE, store.load(clean.id()).status());
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void consoleWorkspaceActions_reuseAuthAndOriginProtection(@TempDir Path workspace) throws Exception {
+        initGitRepo(workspace);
+        AgentLoop loop = buildLoop(workspace);
+        Config config = new Config();
+        config.getAgents().getDefaults().setWorkspace(workspace.toString());
+        WorkspaceSessionStore store = new WorkspaceSessionStore(workspace);
+        WorkspaceSession session = createManagedWorktree(workspace, store, "workspace_auth", "task_auth");
+        Files.writeString(Path.of(session.workspacePath()).resolve("README.md"), "initial\nauth change\n");
+
+        try {
+            var tokenApp = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "console-token", config, null, workspace);
+            TestExchange unauthorized = postExchangeRaw("/console/api/workspaces/" + session.id() + "/change-create", "");
+            ConsoleController.workspaceActionsHandler(tokenApp).handle(unauthorized);
+            assertEquals(401, unauthorized.getResponseCode(), unauthorized.responseText());
+
+            var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", config, null, workspace);
+            TestExchange invalidOrigin = postExchangeRaw("/console/api/workspaces/" + session.id() + "/change-create", "");
+            invalidOrigin.getRequestHeaders().set("Origin", "https://evil.example");
+            ConsoleController.workspaceActionsHandler(app).handle(invalidOrigin);
+            assertEquals(403, invalidOrigin.getResponseCode(), invalidOrigin.responseText());
+            assertFalse(Files.isDirectory(workspace.resolve(".changesets")));
+
+            String actions = handleGet(ConsoleController.actionsHandler(app), "/console/api/actions");
+            assertTrue(actions.contains("\"action\":\"workspace.change_create\""), actions);
+            assertTrue(actions.contains("\"result\":\"UNAUTHORIZED\""), actions);
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
     void channelWebhooks_handleFeishuChallengeAndTextMessage(@TempDir Path workspace) throws Exception {
         AgentLoop loop = buildLoopNoStart(workspace);
         Config config = new Config();
@@ -857,6 +984,20 @@ public class RicbotApiServerTest {
         return Base64.getEncoder().encodeToString(mac.doFinal((timestamp + "\n" + secret).getBytes(StandardCharsets.UTF_8)));
     }
 
+    private static WorkspaceSession createManagedWorktree(
+            Path workspace,
+            WorkspaceSessionStore store,
+            String id,
+            String taskId
+    ) {
+        GitWorktreeWorkspaceBackend backend = new GitWorktreeWorkspaceBackend(workspace, store);
+        WorkspaceSession created = backend.createSession(workspace, "console workspace", id);
+        java.util.LinkedHashMap<String, Object> metadata = new java.util.LinkedHashMap<>(created.metadata());
+        metadata.put("taskId", taskId);
+        metadata.put("teamSessionId", "team_console");
+        return store.save(created.withMetadata(metadata));
+    }
+
     private static ExperienceEntry experience(String title) {
         return ExperienceEntry.candidate(
                 ExperienceType.PROJECT_CONVENTION,
@@ -946,6 +1087,29 @@ public class RicbotApiServerTest {
             loop.start();
         }
         return loop;
+    }
+
+    private static void initGitRepo(Path workspace) throws Exception {
+        git(workspace, "init");
+        git(workspace, "config", "user.name", "Test");
+        git(workspace, "config", "user.email", "test@example.com");
+        Files.writeString(workspace.resolve("README.md"), "initial\n");
+        git(workspace, "add", "README.md");
+        git(workspace, "commit", "-m", "init");
+    }
+
+    private static String git(Path workspace, String... args) throws Exception {
+        java.util.ArrayList<String> command = new java.util.ArrayList<>();
+        command.add("git");
+        command.addAll(List.of(args));
+        Process process = new ProcessBuilder(command).directory(workspace.toFile()).start();
+        String stdout = new String(process.getInputStream().readAllBytes());
+        String stderr = new String(process.getErrorStream().readAllBytes());
+        int code = process.waitFor();
+        if (code != 0) {
+            throw new AssertionError("git failed: " + String.join(" ", command) + "\n" + stderr + stdout);
+        }
+        return stdout;
     }
 
     private static AgentLoop buildSlowLoop(Path workspace, long sleepMs) {
