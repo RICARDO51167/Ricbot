@@ -66,6 +66,8 @@ public final class ConsoleController {
         server.createContext("/console/api/config-doctor", configDoctorHandler(appContext));
         server.createContext("/console/api/traces", tracesHandler(appContext));
         server.createContext("/console/api/team-reports", teamReportsHandler(appContext));
+        server.createContext("/console/api/tools", toolsHandler(appContext));
+        server.createContext("/console/api/mcp", mcpHandler(appContext));
         server.createContext("/console/api/workspaces/", workspaceActionsHandler(appContext));
         server.createContext("/console/api/workspaces", workspacesHandler(appContext));
         server.createContext("/console/api/experiences/", experienceActionsHandler(appContext));
@@ -94,6 +96,14 @@ public final class ConsoleController {
 
     public static HttpHandler teamReportsHandler(RicbotApiAppContext appContext) {
         return new ApiHandler(appContext, ConsoleController::teamReports);
+    }
+
+    public static HttpHandler toolsHandler(RicbotApiAppContext appContext) {
+        return new ApiHandler(appContext, ConsoleController::tools);
+    }
+
+    public static HttpHandler mcpHandler(RicbotApiAppContext appContext) {
+        return new ApiHandler(appContext, ConsoleController::mcp);
     }
 
     public static HttpHandler workspacesHandler(RicbotApiAppContext appContext) {
@@ -182,6 +192,28 @@ public final class ConsoleController {
                 .limit(50)
                 .toList();
         return Map.of("items", sessions);
+    }
+
+    private static Map<String, Object> tools(RicbotApiAppContext appContext) {
+        if (appContext.getAgentLoop() == null) {
+            return Map.of("total", 0, "builtinCount", 0, "mcpCount", 0, "generatedCount", 0, "items", List.of());
+        }
+        return new ToolRegistryViewerService(
+                appContext.getAgentLoop().getTools(),
+                appContext.getAgentLoop().getMcpLoader(),
+                appContext.getConfig()
+        ).tools();
+    }
+
+    private static Map<String, Object> mcp(RicbotApiAppContext appContext) {
+        if (appContext.getAgentLoop() == null) {
+            return Map.of("configuredCount", 0, "connectedCount", 0, "mcpToolCount", 0, "servers", List.of());
+        }
+        return new ToolRegistryViewerService(
+                appContext.getAgentLoop().getTools(),
+                appContext.getAgentLoop().getMcpLoader(),
+                appContext.getConfig()
+        ).mcp();
     }
 
     private static Map<String, Object> createWorkspaceChangeSet(RicbotApiAppContext appContext, String id) {

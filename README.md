@@ -784,6 +784,8 @@ Console 提供本地页面和 JSON API：
 - `GET /console/api/config-doctor`
 - `GET /console/api/traces`
 - `GET /console/api/team-reports`
+- `GET /console/api/tools`
+- `GET /console/api/mcp`
 - `GET /console/api/workspaces`
 - `POST /console/api/workspaces/<id>/change-create`
 - `POST /console/api/workspaces/<id>/discard`
@@ -804,6 +806,7 @@ Console 提供本地页面和 JSON API：
 - Config Doctor 状态与 Provider 推断摘要
 - Latest trace / run timeline
 - Team task reports
+- Tools / MCP：展示当前运行时 builtin/MCP/generated 工具计数、工具参数摘要、MCP server 状态和加载工具数
 - Workspace sessions
 - Workspace actions：对 Ricbot 管理的 active `GIT_WORKTREE` 可人工 `Create ChangeSet` 或 `Discard`
 - Experience candidates / verified items
@@ -825,6 +828,8 @@ Console 提供本地页面和 JSON API：
 - Console POST 有轻量内存限流：同一 remote address + action 在 10 秒内最多 20 次，超限返回 429
 - Console 不支持执行 shell、启动 team run、真实模型 eval、eval learn、eval compare、eval replay、git merge 或 git commit
 - Console API 不输出真实 API key，也不允许任意路径读取
+- Tools/MCP 看板只读展示 ToolRegistry 与 MCP loader 状态；不支持从 Console 调用 tool、reload/reconnect MCP server、启动/停止 MCP server 或修改 MCP 配置
+- MCP server 的 command args、env、URL query 等疑似 api_key/token/secret/password/authorization/bearer/cookie 字段会脱敏，不输出真实敏感值
 - Approval 列表、action result 和 audit record 会对 api_key/token/secret/password/authorization/bearer/cookie/set-cookie 等字段脱敏；不要把生产密钥放入 approval args
 - Eval viewer 只读取当前 workspace 内的 `.ricbot/evals`，`run-id` 会做路径穿越校验；manifest 中疑似 key/token/secret/password 的字段会降级为 `[REDACTED]`
 - `report.md` 在页面中按文本转义展示，不会作为 HTML 注入；但 eval artifact 仍可能包含模型输出和本地路径，分享前请自行确认敏感信息

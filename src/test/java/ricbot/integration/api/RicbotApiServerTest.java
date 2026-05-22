@@ -371,6 +371,15 @@ public class RicbotApiServerTest {
         config.getAgents().getDefaults().setWorkspace(workspace.toString());
         config.getAgents().getDefaults().setModel("gpt-4o-mini");
         config.getProviders().getOpenai().setApiKey("super-secret-key");
+        config.getTools().setMcpServers(Map.of(
+                "demo", Map.of(
+                        "type", "stdio",
+                        "command", "node",
+                        "args", List.of("--token", "secret-token-value"),
+                        "env", Map.of("API_TOKEN", "secret-env-token", "PLAIN_ENV", "visible-value"),
+                        "enabled_tools", List.of("echo")
+                )
+        ));
         Path configPath = workspace.resolve("ricbot.config.json");
         Files.writeString(configPath, """
                 {
@@ -412,6 +421,20 @@ public class RicbotApiServerTest {
 
             String workspaces = handleGet(ConsoleController.workspacesHandler(app), "/console/api/workspaces");
             assertTrue(workspaces.contains("\"items\""), workspaces);
+
+            String tools = handleGet(ConsoleController.toolsHandler(app), "/console/api/tools");
+            assertTrue(tools.contains("\"items\""), tools);
+            assertTrue(tools.contains("\"builtinCount\""), tools);
+            assertTrue(tools.contains("\"read_file\"") || tools.contains("\"list_dir\""), tools);
+
+            String mcp = handleGet(ConsoleController.mcpHandler(app), "/console/api/mcp");
+            assertTrue(mcp.contains("\"servers\""), mcp);
+            assertTrue(mcp.contains("\"name\":\"demo\""), mcp);
+            assertTrue(mcp.contains("\"transportType\":\"stdio\""), mcp);
+            assertTrue(mcp.contains("[REDACTED]"), mcp);
+            assertFalse(mcp.contains("secret-token-value"), mcp);
+            assertFalse(mcp.contains("secret-env-token"), mcp);
+            assertFalse(mcp.contains("visible-value"), mcp);
 
             String experiences = handleGet(ConsoleController.experiencesHandler(app), "/console/api/experiences");
             assertTrue(experiences.contains("\"candidates\""), experiences);

@@ -208,6 +208,8 @@ final class ConsolePage {
                     <section class="span-4" id="experience-card"></section>
                     <section class="span-8" id="trace-card"></section>
                     <section class="span-4" id="workspace-card"></section>
+                    <section class="span-4" id="tools-card"></section>
+                    <section class="span-4" id="mcp-card"></section>
                     <section class="span-6" id="team-card"></section>
                     <section class="span-6" id="experience-list-card"></section>
                     <section class="span-12" id="approval-card"></section>
@@ -220,6 +222,8 @@ final class ConsolePage {
                       config: "/console/api/config-doctor",
                       traces: "/console/api/traces",
                       teams: "/console/api/team-reports",
+                      tools: "/console/api/tools",
+                      mcp: "/console/api/mcp",
                       workspaces: "/console/api/workspaces",
                       experiences: "/console/api/experiences",
                       approvals: "/console/api/approvals",
@@ -383,6 +387,48 @@ final class ConsolePage {
                               </div>
                             `;
                           }).join("")}</div>
+                        `}
+                      `;
+                    }
+
+                    function renderTools(data) {
+                      const items = data.items || [];
+                      document.getElementById("tools-card").innerHTML = `
+                        <h2>Tools</h2>
+                        <div class="value">${esc(data.total || 0)}</div>
+                        <div class="sub">${esc(data.builtinCount || 0)} builtin · ${esc(data.mcpCount || 0)} MCP · ${esc(data.generatedCount || 0)} generated</div>
+                        ${items.length === 0 ? empty("No tools") : `
+                          <div class="list">${items.slice(0, 10).map(item => {
+                            const params = item.parameters || {};
+                            const names = (params.items || []).map(p => `${p.name}${p.required ? "*" : ""}`).join(", ");
+                            return `
+                              <div class="item">
+                                <div class="title">${esc(item.name)}</div>
+                                <div class="kv"><span>${esc(item.source)}</span><span>${esc(item.risk)}</span><span>${esc(item.enabled)}</span></div>
+                                <div class="sub">${esc(item.description)}</div>
+                                <div class="sub">${esc(names || "no parameters")}</div>
+                              </div>
+                            `;
+                          }).join("")}</div>
+                        `}
+                      `;
+                    }
+
+                    function renderMcp(data) {
+                      const servers = data.servers || [];
+                      document.getElementById("mcp-card").innerHTML = `
+                        <h2>MCP</h2>
+                        <div class="value">${esc(data.configuredCount || 0)} / ${esc(data.connectedCount || 0)}</div>
+                        <div class="sub">${esc(data.mcpToolCount || 0)} loaded MCP tools</div>
+                        ${servers.length === 0 ? empty("No MCP servers") : `
+                          <div class="list">${servers.slice(0, 8).map(server => `
+                            <div class="item">
+                              <div class="title">${esc(server.name)}</div>
+                              <div class="kv"><span>${pill(server.status)}</span><span>${esc(server.transportType)}</span><span>${esc(server.loadedToolCount || 0)} tools</span></div>
+                              <div class="sub">${esc((server.enabledTools || []).join(", ") || "all tools")}</div>
+                              ${server.lastError ? `<div class="sub">${esc(server.lastError)}</div>` : ""}
+                            </div>
+                          `).join("")}</div>
                         `}
                       `;
                     }
@@ -596,6 +642,8 @@ final class ConsolePage {
                         config: "config-card",
                         traces: "trace-card",
                         teams: "team-card",
+                        tools: "tools-card",
+                        mcp: "mcp-card",
                         workspaces: "workspace-card",
                         experiences: "experience-card",
                         approvals: "approval-card",
@@ -609,6 +657,8 @@ final class ConsolePage {
                         ["config", renderConfig],
                         ["traces", renderTrace],
                         ["workspaces", renderWorkspaces],
+                        ["tools", renderTools],
+                        ["mcp", renderMcp],
                         ["teams", renderTeams],
                         ["experiences", renderExperiences],
                         ["approvals", renderApprovals],
