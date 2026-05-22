@@ -1,6 +1,10 @@
 #!/usr/bin/env sh
 set -eu
 
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+PROJECT_ROOT="$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)"
+cd "$PROJECT_ROOT"
+
 echo "== Ricbot smoke: targeted tests =="
 sh ./mvnw -q -Dtest='ricbot.integration.api.*Test,ricbot.domain.eval.*Test,ricbot.domain.config.*Test' test
 

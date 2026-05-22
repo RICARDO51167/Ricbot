@@ -138,6 +138,7 @@ http://127.0.0.1:8000/console
 
 在 Console 中查看：
 
+- Header 右侧“中文 / English”可切换语言；默认中文，选择保存在 `localStorage` 的 `ricbot_console_lang`
 - Demo Flow：用 10 步把 CLI 闭环映射到页面卡片，适合先给面试官或评审建立全景
 - Config Doctor
 - Latest Trace
@@ -148,6 +149,8 @@ http://127.0.0.1:8000/console
 - Release Check
 - Tools / MCP
 - Recent Console Actions
+
+Console 仍然是静态 HTML + CSS + 原生 JS，由单 jar 输出，不需要 Vue/React/npm 构建。
 
 讲解建议：
 

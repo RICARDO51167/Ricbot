@@ -1,6 +1,10 @@
 #!/usr/bin/env sh
 set -u
 
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+PROJECT_ROOT="$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)"
+cd "$PROJECT_ROOT"
+
 BASE_URL="${RICBOT_BASE_URL:-http://127.0.0.1:8000}"
 FEISHU_TOKEN="${FEISHU_WEBHOOK_TOKEN:-ricbot-smoke-feishu-token}"
 DINGTALK_SECRET="${DINGTALK_WEBHOOK_SECRET:-ricbot-smoke-dingtalk-secret}"

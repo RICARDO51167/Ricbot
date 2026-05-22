@@ -405,8 +405,11 @@ public class RicbotApiServerTest {
             ConsoleController.pageHandler(app).handle(consoleExchange);
             assertEquals(200, consoleExchange.getResponseCode(), consoleExchange.responseText());
             String console = consoleExchange.responseText();
-            assertTrue(console.contains("<title>Ricbot Console</title>"), console);
-            assertTrue(console.contains("Demo Flow"), console);
+            assertTrue(console.contains("Ricbot 控制台"), console);
+            assertTrue(console.contains("中文"), console);
+            assertTrue(console.contains("English"), console);
+            assertTrue(console.contains("ricbot_console_lang"), console);
+            assertTrue(console.contains("演示流程"), console);
             assertTrue(console.contains("/console/api/config-doctor"), console);
             assertTrue(console.contains("/console/api/release-check"), console);
 

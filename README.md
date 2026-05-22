@@ -99,6 +99,8 @@ java -jar target/Ricbot-1.0-SNAPSHOT.jar serve \
 http://127.0.0.1:8000/console
 ```
 
+Console 默认使用中文 UI，Header 右侧可在“中文 / English”之间切换，选择会写入浏览器 `localStorage` 的 `ricbot_console_lang`。页面仍然是 ConsolePage.java 输出的静态 HTML + CSS + 原生 JS，没有引入 Vue/React/npm 构建，保持单 jar 可运行。
+
 演示时从顶部 Demo Flow 讲起：Config Doctor 对应启动前诊断，Team Reports / Workspaces / Trace 对应 team run 后处理，Experience 对应经验治理，Eval Runs 和 Release Check 对应确定性评测门禁，Tools / MCP 展示运行时工具面。没有真实 key 时 config doctor 可能是 `WARNING` 或 `ERROR`，但 fixed smoke eval 和 release-check 的本地 smoke 部分不会访问真实模型。
 
 最终推荐演示路径：`config doctor -> release-check -> Console Demo Flow -> team run --worktree --verify -> workspace diff/change create -> trace/eval/experience -> tools/MCP diagnostics`。完整讲稿见 [docs/demo/demo-script.md](docs/demo/demo-script.md)。

@@ -1,6 +1,10 @@
 #!/usr/bin/env sh
 set -u
 
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+PROJECT_ROOT="$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)"
+cd "$PROJECT_ROOT"
+
 REPORT_DIR="target"
 REPORT="$REPORT_DIR/release-check-report.md"
 SMOKE_OUT="target/release-check-eval-smoke"
