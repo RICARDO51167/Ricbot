@@ -21,6 +21,8 @@ import ricbot.domain.eval.EvalScenarioLinter;
 import ricbot.domain.eval.EvalSmokeProvider;
 import ricbot.domain.eval.EvalSmokeRuntime;
 import ricbot.domain.eval.EvalExperienceExtractor;
+import ricbot.domain.config.ConfigDoctorReport;
+import ricbot.domain.config.ConfigDoctorService;
 import ricbot.domain.experience.ExperienceEntry;
 import ricbot.domain.experience.ExperienceStore;
 import ricbot.infra.config.Config; // 导入配置类
@@ -92,6 +94,7 @@ public final class CliCommands {
             case "onboard" -> onboard(argv.subList(1, argv.size())); // onboarding 命令，传递剩余参数
             case "agent" -> agent(argv.subList(1, argv.size())); // agent 命令，传递剩余参数
             case "serve" -> serve(argv.subList(1, argv.size())); // serve 命令，启动多渠道服务
+            case "config" -> config(argv.subList(1, argv.size()));
             case "eval" -> eval(argv.subList(1, argv.size()));
             case "status" -> status(); // 状态命令
             case "provider" -> provider(argv.subList(1, argv.size())); // 提供商管理命令，传递剩余参数
@@ -102,6 +105,31 @@ public final class CliCommands {
                 printHelp(); // 打印帮助信息
             }
         }
+    }
+
+    private static void config(List<String> args) throws Exception {
+        if (args.isEmpty() || !"doctor".equals(args.get(0))) {
+            System.out.println("用法：ricbot config doctor [-c config/ricbot.config.json] [--workspace dir] [--json]");
+            return;
+        }
+
+        List<String> doctorArgs = args.subList(1, args.size());
+        String configPath = optionValue(doctorArgs, "--config", "-c");
+        String workspace = optionValue(doctorArgs, "--workspace", "-w");
+        boolean json = hasFlag(doctorArgs, "--json");
+
+        Config loaded = loadRuntimeConfig(configPath, workspace);
+        Path resolvedPath = configPath != null && !configPath.isBlank()
+                ? Path.of(configPath).toAbsolutePath().normalize()
+                : ConfigLoader.getConfigPath();
+        ConfigDoctorReport report = new ConfigDoctorService().diagnose(loaded, resolvedPath);
+
+        if (json) {
+            System.out.println(MAPPER.writeValueAsString(report.toMap()));
+            return;
+        }
+
+        System.out.print(renderConfigDoctorReport(report));
     }
 
     private static void eval(List<String> args) throws Exception {
@@ -1065,6 +1093,75 @@ public final class CliCommands {
         }
     }
 
+    private static String renderConfigDoctorReport(ConfigDoctorReport report) {
+        StringBuilder sb = new StringBuilder();
+        Map<String, Object> map = report.toMap();
+        Map<String, Object> ports = castMap(map.get("effectivePorts"));
+        Map<String, Object> tools = castMap(map.get("enabledTools"));
+        Map<String, Object> capability = castMap(map.get("providerCapability"));
+
+        sb.append("ricbot config doctor\n");
+        sb.append("status: ").append(report.status()).append("\n\n");
+        sb.append("effective config\n");
+        sb.append("  configPath: ").append(report.getConfigPath()).append("\n");
+        sb.append("  workspace: ").append(report.getWorkspace()).append("\n");
+        sb.append("  model: ").append(report.getModel()).append("\n");
+        sb.append("  inferredProvider: ").append(report.getInferredProvider()).append("\n");
+        sb.append("  apiBase: ").append(report.getApiBase()).append("\n");
+        sb.append("  apiKeyPresent: ").append(report.isApiKeyPresent()).append("\n");
+        sb.append("  tools.enable: ").append(value(tools.get("toolsEnable"))).append(" (implicit)\n");
+        sb.append("  web.enable: ").append(value(tools.get("web"))).append("\n");
+        sb.append("  exec.enable: ").append(value(tools.get("exec")))
+                .append(", sandbox=").append(value(tools.get("execSandbox"))).append("\n");
+        sb.append("  mcp.enable: ").append(value(tools.get("mcp"))).append("\n");
+        sb.append("  restrictToWorkspace: ").append(value(tools.get("restrictToWorkspace"))).append("\n");
+        sb.append("  gateway.port: ").append(value(ports.get("gatewayPort"))).append("\n");
+        sb.append("  api.port: ").append(value(ports.get("apiPort"))).append("\n");
+        sb.append("  actual.listen: ").append(value(ports.get("actualApiHost")))
+                .append(":").append(value(ports.get("actualApiPort"))).append("\n");
+        sb.append("  api.timeout.seconds: ").append(value(ports.get("apiTimeoutSeconds"))).append("\n\n");
+
+        sb.append("provider capability\n");
+        sb.append("  providerName: ").append(value(capability.get("providerName"))).append("\n");
+        sb.append("  model: ").append(value(capability.get("model"))).append("\n");
+        sb.append("  supportsToolCalling: ").append(value(capability.get("supportsToolCalling"))).append("\n");
+        sb.append("  supportsStreaming: ").append(value(capability.get("supportsStreaming"))).append("\n");
+        sb.append("  supportsVision: ").append(value(capability.get("supportsVision"))).append("\n");
+        sb.append("  supportsJsonMode: ").append(value(capability.get("supportsJsonMode"))).append("\n");
+        sb.append("  supportsReasoningEffort: ").append(value(capability.get("supportsReasoningEffort"))).append("\n");
+        sb.append("  contextWindowTokens: ").append(value(capability.get("contextWindowTokens"))).append("\n");
+        sb.append("  maxOutputTokens: ").append(value(capability.get("maxOutputTokens"))).append("\n");
+        sb.append("  apiMode: ").append(value(capability.get("apiMode"))).append("\n\n");
+
+        appendList(sb, "mcp servers", report.getMcpServers());
+        appendList(sb, "errors", report.getErrors());
+        appendList(sb, "warnings", report.getWarnings());
+        appendList(sb, "ignored / reserved / partially-supported fields", report.getIgnoredFields());
+        appendList(sb, "suggested fixes", report.getSuggestedFixes());
+        return sb.toString();
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> castMap(Object value) {
+        return value instanceof Map<?, ?> map ? (Map<String, Object>) map : Collections.emptyMap();
+    }
+
+    private static void appendList(StringBuilder sb, String title, List<?> rows) {
+        sb.append(title).append("\n");
+        if (rows == null || rows.isEmpty()) {
+            sb.append("  - none\n\n");
+            return;
+        }
+        for (Object row : rows) {
+            sb.append("  - ").append(value(row)).append("\n");
+        }
+        sb.append("\n");
+    }
+
+    private static String value(Object value) {
+        return value != null ? String.valueOf(value) : "";
+    }
+
     // =========================================================
     // Helper methods
     // =========================================================
@@ -1245,6 +1342,7 @@ public final class CliCommands {
         System.out.println("  onboard"); // 打印 onboard 命令
         System.out.println("  agent      交互模式运行 Agent，或处理单条消息");
         System.out.println("  serve      启动多渠道服务（飞书、钉钉、企微等）");
+        System.out.println("  config doctor  启动前诊断配置与 Provider capability");
         System.out.println("  eval       运行 JSONL 场景评测并生成 artifacts");
         System.out.println("  eval lint  静态检查 eval JSONL 场景");
         System.out.println("  eval smoke 使用内置确定性 provider 跑 eval smoke");

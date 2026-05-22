@@ -755,7 +755,7 @@ curl -N -X POST http://127.0.0.1:8000/v1/chat/completions \
 注意：
 
 - 请求体里的 `model` 必须与服务当前启动模型一致，否则会返回 400
-- 当前 `serve` 实际监听端口来自 `gateway.port`
+- 当前 `serve` 实际监听端口优先使用 `api.port`；未配置 `api.port` 或值不大于 0 时回退到 `gateway.port`
 
 ### 7.3 WebSocket / Channel 模式
 
@@ -955,7 +955,48 @@ java -jar target/Ricbot-1.0-SNAPSHOT.jar tools \
 }
 ```
 
-### 7.6 MCP 工具怎么接入
+### 7.6 Config Doctor 启动前诊断
+
+#### 场景：检查配置是否真的生效
+
+```bash
+java -jar target/Ricbot-1.0-SNAPSHOT.jar config doctor \
+  -c config/ricbot.config.json
+```
+
+也可以输出机器可读 JSON：
+
+```bash
+java -jar target/Ricbot-1.0-SNAPSHOT.jar config doctor \
+  -c config/ricbot.config.json \
+  --json
+```
+
+输出会包含：
+
+- 配置文件路径、工作区、默认模型、推断 Provider、`api_base`
+- API key 是否已解析；不会输出真实 key
+- `web` / `exec` / `mcp` 启用状态，以及 `restrictToWorkspace`
+- `gateway.port`、`api.port` 与实际 API 监听端口
+- Provider capability 的轻量静态推断
+- ignored / reserved / partially-supported 字段
+- warnings 与 suggested fixes
+
+当前诊断覆盖的典型问题：
+
+- `${ENV_NAME}` 引用的环境变量不存在
+- Provider API key 缺失或仍是未解析占位符
+- `api.port` 与 `gateway.port` 不一致
+- `tools.web.max_chars` 写入 JSON 但当前不会映射到运行时
+- `exec.sandbox=true` 但本机没有 `sandbox-exec` / `bwrap`
+- `tools.web.search.provider` 需要 key/base URL 但未配置
+- MCP server `type` 未知
+- `restrictToWorkspace=false` 的安全风险
+- Provider `api_base` 为空或模型/Provider 推断不明确
+
+Provider capability 只是静态元数据与启发式结果，不参与 Provider 主调用链；无法确认时会以 `UNKNOWN` 或 `-1` 降级。
+
+### 7.7 MCP 工具怎么接入
 
 #### 场景：接入一个本地 stdio MCP
 
@@ -970,7 +1011,7 @@ java -jar target/Ricbot-1.0-SNAPSHOT.jar tools \
 - 工具会被包装成 Ricbot 内部 Tool
 - 资源与 Prompt 也会被包装成只读 `mcp_*` 工具
 
-### 7.7 QQ / 微信 / WebSocket 等渠道接入
+### 7.8 QQ / 微信 / WebSocket 等渠道接入
 
 #### QQ 渠道
 
@@ -1020,7 +1061,7 @@ java -jar target/Ricbot-1.0-SNAPSHOT.jar tools \
 - DingTalk：当前更适合作为出站机器人渠道
 - WeCom：当前发送链路较清晰，接收入站仍需额外代理配合
 
-### 7.8 Session / Memory / Dream / Cron / Heartbeat 怎么工作
+### 7.9 Session / Memory / Dream / Cron / Heartbeat 怎么工作
 
 #### Session
 
@@ -1053,13 +1094,14 @@ java -jar target/Ricbot-1.0-SNAPSHOT.jar tools \
 - `serve` 模式下根据 `gateway.heartbeat.enabled` 启动
 - 当前更偏后台执行/通知能力
 
-### 7.9 常见命令
+### 7.10 常见命令
 
 #### CLI 命令
 
 ```bash
 java -jar target/Ricbot-1.0-SNAPSHOT.jar --version
 java -jar target/Ricbot-1.0-SNAPSHOT.jar status
+java -jar target/Ricbot-1.0-SNAPSHOT.jar config doctor --config config/ricbot.config.json
 java -jar target/Ricbot-1.0-SNAPSHOT.jar tools --config config/ricbot.config.json
 java -jar target/Ricbot-1.0-SNAPSHOT.jar skills --config config/ricbot.config.json
 java -jar target/Ricbot-1.0-SNAPSHOT.jar provider login openai
@@ -1077,7 +1119,7 @@ java -jar target/Ricbot-1.0-SNAPSHOT.jar provider login openai
 /dream-restore <commit_sha>
 ```
 
-### 7.10 如何排查 MCP 是否连接成功
+### 7.11 如何排查 MCP 是否连接成功
 
 ```bash
 java -jar target/Ricbot-1.0-SNAPSHOT.jar tools --config config/ricbot.config.json
@@ -1091,7 +1133,7 @@ java -jar target/Ricbot-1.0-SNAPSHOT.jar tools --config config/ricbot.config.jso
 4. 对 `sse` 检查 URL 是否真的以 SSE 端点提供服务
 5. 对 `streamableHttp` 检查服务端是否支持同步 JSON-RPC 风格调用
 
-### 7.11 如何查看日志
+### 7.12 如何查看日志
 
 常见日志位置：
 
@@ -1156,7 +1198,7 @@ java -jar target/Ricbot-1.0-SNAPSHOT.jar tools --config config/ricbot.config.jso
 | `disabled_skills` | 已生效 | SkillsLoader 会过滤 |
 | `session_ttl_minutes` | 已生效 | 触发 AutoCompact 扫描 |
 | `dream.enabled` | 已生效 | 控制 Dream 是否启动 |
-| `dream.cron` | 当前未完全生效 | 配置模型存在，但后台调度目前固定 15 分钟一次 |
+| `dream.cron` | 已生效 | 后台 Dream 调度通过 CronService 计算下一次运行时间 |
 
 ### 8.2 `providers`
 
@@ -1264,11 +1306,12 @@ java -jar target/Ricbot-1.0-SNAPSHOT.jar tools --config config/ricbot.config.jso
 
 | 字段 | 是否生效 | 说明 |
 | --- | --- | --- |
-| `gateway.port` | 已生效 | `serve` 启动 API 监听时实际使用 |
+| `gateway.port` | 已生效 | `api.port` 未配置或不大于 0 时作为 `serve` API 监听端口 |
 | `gateway.heartbeat.*` | 已生效 | `HeartbeatService` 使用 |
-| `api.host` | 当前未生效 | 配置模型存在，但启动代码未使用 |
-| `api.port` | 当前未生效 | 当前实际仍走 `gateway.port` |
-| `api.timeout` | 当前未生效 | `serve` 当前固定传入 `120_000ms` |
+| `api.host` | 已生效 | `serve` 启动 OpenAI-compatible API 时使用 |
+| `api.port` | 已生效 | 大于 0 时覆盖 `gateway.port` 作为 API 监听端口 |
+| `api.timeout` | 已生效 | 转换为毫秒后传给 API server |
+| `api.bearer_token` | 已生效 | 配置后用于保护 OpenAI-compatible API |
 
 ## 9. 功能模块详解
 
@@ -1282,8 +1325,8 @@ java -jar target/Ricbot-1.0-SNAPSHOT.jar tools --config config/ricbot.config.jso
   - 把结果封装成 `OutboundMessage`
 - 当前实现情况：
   - 已支持会话锁、并发门控、后台 Dream/Cron、slash 命令、checkpoint 恢复
-- 当前限制：
-  - Dream 调度未读取 `dream.cron`
+- 说明：
+  - Dream 调度会读取 `dream.cron`，无效或空 cron 会回退到默认间隔
 
 ### 9.2 `AgentRunner`
 
@@ -1615,7 +1658,7 @@ java -jar target/Ricbot-1.0-SNAPSHOT.jar tools --config config/ricbot.config.jso
 
 - 环境变量未设置，`${VAR}` 解析失败
 - API Key 缺失
-- `gateway.port` 被占用
+- `api.port` 或回退使用的 `gateway.port` 被占用
 - `mvnw` / 脚本没有执行权限
 - 目标 Provider 或外部服务不可达
 
@@ -1626,7 +1669,7 @@ java -jar target/Ricbot-1.0-SNAPSHOT.jar tools --config config/ricbot.config.jso
 1. 配置文件里是否确实写成 `${ENV_NAME}`
 2. 是否在同一个 shell 会话里 `export`
 3. 是否使用了 `--config` 指向正确配置
-4. 启动时 stderr 打印的 `api_key env replaced` 是否为 `true`
+4. 运行 `config doctor -c config/ricbot.config.json` 查看缺失的环境变量与 suggested fixes
 
 ### 11.8 IDEA / Git / Maven 构建异常如何排查？
 
@@ -1634,15 +1677,14 @@ java -jar target/Ricbot-1.0-SNAPSHOT.jar tools --config config/ricbot.config.jso
 - Maven 优先使用 `sh ./mvnw -q -DskipTests package`
 - 仓库当前可能存在未提交改动，避免误以为是构建产物导致
 
-### 11.9 为什么改了 `api.port` 但服务没在那个端口启动？
+### 11.9 `api.port` 和 `gateway.port` 谁决定监听端口？
 
-因为当前 `serve` 实际读取的是：
+当前 `serve` 的实际规则是：
 
-```json
-gateway.port
-```
+1. `api.port > 0` 时监听 `api.port`
+2. 否则回退监听 `gateway.port`
 
-`api.port` 目前只是配置模型中的预留字段，尚未真正接入启动路径。
+如果两者配置不同，`config doctor` 会在 effective config 里显示 `actual.listen`，并提示端口差异。
 
 ## 12. 当前限制与后续规划
 
