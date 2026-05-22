@@ -52,7 +52,12 @@ public class GitWorktreeWorkspaceBackend implements WorkspaceBackend {
                 WorkspaceSessionStatus.ACTIVE,
                 null,
                 null,
-                Map.of("mode", "worktree")
+                Map.of(
+                        "mode", "worktree",
+                        "managedBy", "ricbot",
+                        "baseBranch", currentBranch(base),
+                        "lifecycleStatus", "ACTIVE"
+                )
         );
         return store.save(session);
     }
@@ -95,6 +100,31 @@ public class GitWorktreeWorkspaceBackend implements WorkspaceBackend {
             }
         }
         return store.save(session.withStatus(WorkspaceSessionStatus.CLEANED));
+    }
+
+    public WorkspaceSession discard(String sessionId) {
+        WorkspaceSession session = require(sessionId);
+        if (!"ricbot".equalsIgnoreCase(String.valueOf(session.metadata().getOrDefault("managedBy", "")))) {
+            throw new IllegalStateException("workspace is not managed by ricbot: " + sessionId);
+        }
+        Path base = normalize(Path.of(session.baseWorkspace()));
+        ensureInsideConfiguredBase(base);
+        Path path = normalize(Path.of(session.workspacePath()));
+        ensureInsideWorkspaces(base, path);
+        if (Files.exists(path)) {
+            try {
+                git(base, "worktree", "remove", "--force", path.toString());
+            } catch (Exception e) {
+                try {
+                    store.save(session);
+                } catch (Exception ignored) {
+                }
+                throw new IllegalStateException("git worktree discard failed: " + cleanMessage(e), e);
+            }
+        }
+        java.util.LinkedHashMap<String, Object> metadata = new java.util.LinkedHashMap<>(session.metadata());
+        metadata.put("lifecycleStatus", "DISCARDED");
+        return store.save(session.withStatus(WorkspaceSessionStatus.DISCARDED).withMetadata(metadata));
     }
 
     @Override
@@ -205,6 +235,14 @@ public class GitWorktreeWorkspaceBackend implements WorkspaceBackend {
     private String cleanMessage(Exception e) {
         String message = e != null ? e.getMessage() : "";
         return message == null || message.isBlank() ? "unknown error" : message.trim();
+    }
+
+    private String currentBranch(Path base) {
+        try {
+            return git(base, "rev-parse", "--abbrev-ref", "HEAD").trim();
+        } catch (Exception e) {
+            return "";
+        }
     }
 
     private String safeSessionId(String value) {

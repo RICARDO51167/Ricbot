@@ -66,6 +66,7 @@ import ricbot.domain.workspace.GitWorktreeWorkspaceBackend;
 import ricbot.domain.workspace.LocalWorkspaceBackend;
 import ricbot.domain.workspace.WorkspaceBackend;
 import ricbot.domain.workspace.WorkspaceBackendType;
+import ricbot.domain.workspace.WorkspaceLifecycleService;
 import ricbot.domain.workspace.WorkspaceRenderer;
 import ricbot.domain.workspace.WorkspaceSession;
 import ricbot.domain.workspace.WorkspaceSessionStore;
@@ -452,12 +453,13 @@ final class AgentCommands {
         try {
             return switch (action) {
                 case "create" -> workspaceCreate(ctx, session, store, renderer);
-                case "status" -> completedReply(ctx, renderer.renderStatus(activeWorkspaceSession(session, store)));
-                case "list" -> completedReply(ctx, renderer.renderList(store.list()));
+                case "status" -> workspaceStatus(ctx, session, store, renderer, commandArgOrBlank(args, 1));
+                case "list" -> completedReply(ctx, renderer.renderList(new WorkspaceLifecycleService(workspace).activeWorktrees()));
                 case "use" -> workspaceUse(ctx, session, store, renderer, commandArg(args, 1));
-                case "diff" -> workspaceDiff(ctx, session, store, renderer, commandArg(args, 1));
+                case "diff" -> workspaceDiff(ctx, session, store, renderer, commandArgOrBlank(args, 1));
+                case "discard" -> workspaceDiscard(ctx, session, renderer, afterCommand(args));
                 case "cleanup" -> workspaceCleanup(ctx, session, store, renderer, commandArg(args, 1));
-                default -> completedReply(ctx, "用法：/workspace create --mode local|worktree <goal>|status|list|use <id>|diff <id>|cleanup <id>");
+                default -> completedReply(ctx, "用法：/workspace create --mode local|worktree <goal>|status [taskId|workspaceId]|list|use <id>|diff <taskId|workspaceId>|discard <taskId|workspaceId> --force|cleanup <id>");
             };
         } catch (IllegalArgumentException | IllegalStateException e) {
             return completedReply(ctx, "workspace error: " + e.getMessage());
@@ -509,6 +511,24 @@ final class AgentCommands {
         return completedReply(ctx, "workspace selected\n" + renderer.renderStatus(selected));
     }
 
+    private CompletableFuture<OutboundMessage> workspaceStatus(
+            CommandRouter.CommandContext ctx,
+            Session session,
+            WorkspaceSessionStore store,
+            WorkspaceRenderer renderer,
+            String target
+    ) {
+        if (target == null || target.isBlank()) {
+            return completedReply(ctx, renderer.renderStatus(activeWorkspaceSession(session, store)));
+        }
+        WorkspaceSession direct = store.load(target);
+        if (direct != null && direct.type() != WorkspaceBackendType.GIT_WORKTREE) {
+            return completedReply(ctx, renderer.renderStatus(direct));
+        }
+        WorkspaceLifecycleService lifecycle = new WorkspaceLifecycleService(workspace);
+        return completedReply(ctx, renderer.renderLifecycleStatus(lifecycle.status(target)));
+    }
+
     private CompletableFuture<OutboundMessage> workspaceDiff(
             CommandRouter.CommandContext ctx,
             Session session,
@@ -516,14 +536,53 @@ final class AgentCommands {
             WorkspaceRenderer renderer,
             String sessionId
     ) {
-        WorkspaceSession target = requireWorkspaceSession(store, sessionId);
-        String diff = backendFor(target, store).diff(target.id());
+        WorkspaceSession direct = !sessionId.isBlank() ? store.load(sessionId) : activeWorkspaceSession(session, store);
+        if (direct != null && direct.type() != WorkspaceBackendType.GIT_WORKTREE) {
+            String diff = backendFor(direct, store).diff(direct.id());
+            traceEvent(session, TraceEventType.WORKSPACE_DIFFED, "workspace", "workspace diff rendered", Map.of(
+                    "workspaceSessionId", direct.id(),
+                    "type", direct.type().name(),
+                    "diffChars", diff != null ? diff.length() : 0
+            ), "", "", "");
+            return completedReply(ctx, renderer.renderDiff(direct, diff, 4_000));
+        }
+        String token = sessionId.isBlank() && direct != null ? direct.id() : sessionId;
+        WorkspaceLifecycleService lifecycle = new WorkspaceLifecycleService(workspace);
+        WorkspaceLifecycleService.WorkspaceDiff lifecycleDiff = lifecycle.diff(token);
+        WorkspaceSession target = lifecycleDiff.session();
         traceEvent(session, TraceEventType.WORKSPACE_DIFFED, "workspace", "workspace diff rendered", Map.of(
                 "workspaceSessionId", target.id(),
                 "type", target.type().name(),
-                "diffChars", diff != null ? diff.length() : 0
+                "diffChars", lifecycleDiff.patch().length(),
+                "changedFiles", lifecycleDiff.changedFiles()
         ), "", "", "");
-        return completedReply(ctx, renderer.renderDiff(target, diff, 4_000));
+        return completedReply(ctx, renderer.renderLifecycleDiff(lifecycleDiff, 4_000));
+    }
+
+    private CompletableFuture<OutboundMessage> workspaceDiscard(
+            CommandRouter.CommandContext ctx,
+            Session session,
+            WorkspaceRenderer renderer,
+            String rawArgs
+    ) {
+        String args = trim(rawArgs);
+        boolean force = containsFlag(args, "--force");
+        String target = stripFlags(args, "--force");
+        WorkspaceLifecycleService lifecycle = new WorkspaceLifecycleService(workspace);
+        WorkspaceSession discarded = lifecycle.discard(target, force);
+        if (activeWorkspaceSessionId(session).equals(discarded.id())) {
+            session.getMetadata().remove(SessionRuntimeKeys.ACTIVE_WORKSPACE_SESSION_ID_KEY);
+            session.getMetadata().remove(SessionRuntimeKeys.WORKSPACE_SUMMARY_KEY);
+            session.getMetadata().remove(SessionRuntimeKeys.WORKSPACE_SOURCE_KEY);
+            sessionManager.save(session);
+        }
+        traceEvent(session, TraceEventType.WORKSPACE_CLEANED, "workspace", "workspace session discarded", Map.of(
+                "workspaceSessionId", discarded.id(),
+                "type", discarded.type().name(),
+                "workspacePath", discarded.workspacePath(),
+                "status", discarded.status().name()
+        ), "", "", "");
+        return completedReply(ctx, "workspace discarded\n" + renderer.renderStatus(discarded));
     }
 
     private CompletableFuture<OutboundMessage> workspaceCleanup(
@@ -608,7 +667,7 @@ final class AgentCommands {
         ChangeSetRenderer renderer = new ChangeSetRenderer();
         try {
             return switch (action) {
-                case "create" -> changeCreate(ctx, service, renderer);
+                case "create" -> changeCreate(ctx, service, renderer, afterCommand(args));
                 case "status" -> completedReply(ctx, renderer.renderStatus(latestChangeSet(ctx, service)));
                 case "diff" -> completedReply(ctx, renderer.renderDiff(latestChangeSet(ctx, service), 4_000));
                 case "commit-message" -> changeCommitMessage(ctx, service, renderer);
@@ -617,7 +676,7 @@ final class AgentCommands {
                 case "rollback" -> args.contains("--execute")
                         ? changeRollbackExecute(ctx, service)
                         : completedReply(ctx, renderer.renderRollback(latestChangeSet(ctx, service)));
-                default -> completedReply(ctx, "用法：/change create|status|diff|commit-message|approve|commit [--message \"...\"]|rollback [--execute]");
+                default -> completedReply(ctx, "用法：/change create [taskId|workspaceId] [--json]|status|diff|commit-message|approve|commit [--message \"...\"]|rollback [--execute]");
             };
         } catch (IllegalArgumentException | IllegalStateException e) {
             return completedReply(ctx, "change error: " + e.getMessage());
@@ -627,8 +686,12 @@ final class AgentCommands {
     private CompletableFuture<OutboundMessage> changeCreate(
             CommandRouter.CommandContext ctx,
             ChangeSetService service,
-            ChangeSetRenderer renderer
+            ChangeSetRenderer renderer,
+            String rawArgs
     ) {
+        String args = trim(rawArgs);
+        boolean json = containsFlag(args, "--json");
+        String targetToken = stripFlags(args, "--json");
         Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
         String teamSessionId = resolveActiveTeamSessionId(session);
         String taskId = latestTeamTaskId(teamSessionId);
@@ -640,7 +703,19 @@ final class AgentCommands {
         }
         WorkspaceSessionStore workspaceStore = new WorkspaceSessionStore(workspace);
         String activeWorkspaceId = activeWorkspaceSessionId(session);
-        WorkspaceSession activeWorkspace = !activeWorkspaceId.isBlank() ? workspaceStore.load(activeWorkspaceId) : null;
+        WorkspaceSession activeWorkspace = !targetToken.isBlank()
+                ? new WorkspaceLifecycleService(workspace).resolveManagedWorktree(targetToken)
+                : !activeWorkspaceId.isBlank() ? workspaceStore.load(activeWorkspaceId) : null;
+        if (activeWorkspace != null) {
+            Object workspaceTaskId = activeWorkspace.metadata().get("taskId");
+            if (workspaceTaskId != null && !String.valueOf(workspaceTaskId).trim().isBlank()) {
+                taskId = String.valueOf(workspaceTaskId).trim();
+            }
+            Object workspaceTeamId = activeWorkspace.metadata().get("teamSessionId");
+            if (workspaceTeamId != null && !String.valueOf(workspaceTeamId).trim().isBlank()) {
+                teamSessionId = String.valueOf(workspaceTeamId).trim();
+            }
+        }
         boolean fromWorkspace = activeWorkspace != null && activeWorkspace.status() == ricbot.domain.workspace.WorkspaceSessionStatus.ACTIVE;
         GitChangeSet changeSet = fromWorkspace
                 ? service.createFromWorkspace(activeWorkspace.id(), Path.of(activeWorkspace.workspacePath()), ctx.getKey(), teamSessionId, taskId)
@@ -663,6 +738,13 @@ final class AgentCommands {
                     "ChangeSet linked to implementation task.", "", "", "", changeSet.id(), "", "", null,
                     Map.of("changedFiles", changeSet.changedFiles(), "workspaceSessionId", changeSet.workspaceSessionId())));
             storeTeamContext(session, changeSet.teamSessionId());
+        }
+        if (json) {
+            try {
+                return completedReply(ctx, MAPPER.writeValueAsString(changeSet.toMap()));
+            } catch (Exception e) {
+                throw new IllegalStateException("changeset json render failed: " + e.getMessage(), e);
+            }
         }
         return completedReply(ctx, "changeset created\n"
                 + "id: " + changeSet.id() + "\n"

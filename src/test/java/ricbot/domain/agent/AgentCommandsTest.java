@@ -646,12 +646,32 @@ class AgentCommandsTest {
         assertTrue(result.contains("verifierStatus: PASS"), result);
         assertTrue(result.contains(".workspaces"), result);
         assertEquals("initial\n", Files.readString(workspace.resolve("README.md")));
+        String taskId = lineValue(result, "taskId:");
         String workspaceId = lineValue(result, "workspaceSessionId:");
+        String workspacePath = lineValue(result, "workspacePath:");
         assertFalse(workspaceId.equals("none"));
 
         String workspaceStatus = router.dispatch(context("/workspace status", sessionManager)).get().getContent();
         assertTrue(workspaceStatus.contains(workspaceId), workspaceStatus);
-        String report = router.dispatch(context("/team report " + lineValue(result, "taskId:"), sessionManager)).get().getContent();
+        String targetedStatus = router.dispatch(context("/workspace status " + taskId, sessionManager)).get().getContent();
+        assertTrue(targetedStatus.contains("workspace status " + workspaceId), targetedStatus);
+        Files.writeString(Path.of(workspacePath).resolve("README.md"), "initial\npost run change\n");
+        String diff = router.dispatch(context("/workspace diff " + taskId, sessionManager)).get().getContent();
+        assertTrue(diff.contains("post run change"), diff);
+        assertTrue(diff.contains("changedFiles: README.md"), diff);
+        String changeSet = router.dispatch(context("/change create " + taskId, sessionManager)).get().getContent();
+        assertTrue(changeSet.contains("workspaceSessionId: " + workspaceId), changeSet);
+        assertTrue(changeSet.contains("changedFiles: README.md"), changeSet);
+        String changeSetJson = router.dispatch(context("/change create " + taskId + " --json", sessionManager)).get().getContent();
+        assertTrue(changeSetJson.contains("\"workspaceSessionId\":\"" + workspaceId + "\""), changeSetJson);
+        String discardRejected = router.dispatch(context("/workspace discard " + taskId, sessionManager)).get().getContent();
+        assertTrue(discardRejected.contains("discard requires --force"), discardRejected);
+        String discarded = router.dispatch(context("/workspace discard " + taskId + " --force", sessionManager)).get().getContent();
+        assertTrue(discarded.contains("workspace discarded"), discarded);
+        assertTrue(discarded.contains("status: DISCARDED"), discarded);
+        assertFalse(Files.exists(Path.of(workspacePath).resolve("README.md")));
+        assertEquals("initial\n", Files.readString(workspace.resolve("README.md")));
+        String report = router.dispatch(context("/team report " + taskId, sessionManager)).get().getContent();
         assertTrue(report.contains("team task report"), report);
     }
 
