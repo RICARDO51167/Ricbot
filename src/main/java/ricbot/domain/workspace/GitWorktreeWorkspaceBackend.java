@@ -24,10 +24,14 @@ public class GitWorktreeWorkspaceBackend implements WorkspaceBackend {
 
     @Override
     public WorkspaceSession createSession(Path baseWorkspace, String goal) {
+        return createSession(baseWorkspace, goal, WorkspaceSession.newId());
+    }
+
+    public WorkspaceSession createSession(Path baseWorkspace, String goal, String preferredId) {
         Path base = normalize(baseWorkspace);
         ensureInsideConfiguredBase(base);
         ensureGitRepository(base);
-        String id = WorkspaceSession.newId();
+        String id = safeSessionId(preferredId);
         String branch = "ricbot/" + id;
         Path workspacesRoot = safeWorkspacesRoot(base);
         Path workspacePath = workspacesRoot.resolve(id).normalize();
@@ -201,5 +205,17 @@ public class GitWorktreeWorkspaceBackend implements WorkspaceBackend {
     private String cleanMessage(Exception e) {
         String message = e != null ? e.getMessage() : "";
         return message == null || message.isBlank() ? "unknown error" : message.trim();
+    }
+
+    private String safeSessionId(String value) {
+        String id = value != null ? value.trim().replaceAll("[^A-Za-z0-9._-]+", "-") : "";
+        while (id.contains("..")) {
+            id = id.replace("..", "-");
+        }
+        id = id.replaceAll("^-+|-+$", "");
+        if (id.isBlank() || id.startsWith(".")) {
+            return WorkspaceSession.newId();
+        }
+        return id.length() <= 96 ? id : id.substring(0, 96).replaceAll("-+$", "");
     }
 }

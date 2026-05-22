@@ -56,6 +56,15 @@ public class TeamTaskReportService {
 
     private TeamTaskStatus status(StepAuditSummary summary, int completed, int failed, int pending) {
         if (summary.totalSteps() == 0) {
+            if (verifierFailed(summary.latestVerificationStatus())) {
+                return TeamTaskStatus.FAILED;
+            }
+            if ("PASS".equalsIgnoreCase(clean(summary.latestVerificationStatus()))) {
+                return TeamTaskStatus.COMPLETED;
+            }
+            if (!summary.latestEvent().isBlank() || summary.linkedAuditEventsCount() > 0) {
+                return TeamTaskStatus.RUNNING;
+            }
             return TeamTaskStatus.NOT_STARTED;
         }
         if (failed > 0) {
@@ -77,6 +86,9 @@ public class TeamTaskReportService {
         if (failed > 0 || verifierFailed(summary.latestVerificationStatus())) {
             return TeamTaskHealth.CRITICAL;
         }
+        if ("PASS".equalsIgnoreCase(clean(summary.latestVerificationStatus()))) {
+            return TeamTaskHealth.HEALTHY;
+        }
         if (summary.totalSteps() == 0) {
             return TeamTaskHealth.UNKNOWN;
         }
@@ -92,6 +104,10 @@ public class TeamTaskReportService {
     private List<String> suggestedNextActions(StepAuditSummary summary, int completed, int failed, int pending) {
         List<String> actions = new ArrayList<>();
         if (summary.totalSteps() == 0 || containsWarning(summary.warnings(), "no implementation steps found")) {
+            if (!summary.latestVerificationStatus().isBlank()) {
+                actions.add("Review /team audit " + summary.taskId() + " --compact and continue with /change create if workspace diff exists.");
+                return List.copyOf(actions);
+            }
             actions.add("Run /team plan-steps " + summary.taskId() + " to generate implementation steps.");
             return List.copyOf(actions);
         }

@@ -628,6 +628,34 @@ class AgentCommandsTest {
     }
 
     @Test
+    void teamRunWorktreeCreatesTaskWorkspaceAndVerifierUsesIt(@TempDir Path workspace) throws Exception {
+        initGitRepo(workspace);
+        Files.writeString(workspace.resolve("mvnw"), "#!/bin/sh\nprintf \"verified:%s\\n\" \"$PWD\"\n");
+        git(workspace, "add", "mvnw");
+        git(workspace, "commit", "-m", "add mvnw");
+        SessionManager sessionManager = new SessionManager(workspace);
+        MemoryStore memoryStore = new MemoryStore(workspace);
+        AgentCommands commands = commands(sessionManager, memoryStore, workspace);
+        CommandRouter router = new CommandRouter();
+        commands.register(router);
+
+        String result = router.dispatch(context("/team run Implement worktree execution --worktree --verify", sessionManager)).get().getContent();
+
+        assertTrue(result.contains("team execution"), result);
+        assertTrue(result.contains("workspaceSessionId: team-implement-worktree-execution"), result);
+        assertTrue(result.contains("verifierStatus: PASS"), result);
+        assertTrue(result.contains(".workspaces"), result);
+        assertEquals("initial\n", Files.readString(workspace.resolve("README.md")));
+        String workspaceId = lineValue(result, "workspaceSessionId:");
+        assertFalse(workspaceId.equals("none"));
+
+        String workspaceStatus = router.dispatch(context("/workspace status", sessionManager)).get().getContent();
+        assertTrue(workspaceStatus.contains(workspaceId), workspaceStatus);
+        String report = router.dispatch(context("/team report " + lineValue(result, "taskId:"), sessionManager)).get().getContent();
+        assertTrue(report.contains("team task report"), report);
+    }
+
+    @Test
     void workspaceCommandsCreateLocalAndExposeContextSource(@TempDir Path workspace) throws Exception {
         SessionManager sessionManager = new SessionManager(workspace);
         MemoryStore memoryStore = new MemoryStore(workspace);

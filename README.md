@@ -76,6 +76,7 @@ User / CLI / API / Channel
 | Diff Review | `DiffReviewService` / file tools | 文件变更后返回 changed files、风险提示、suspicious changes、suggested tests 和 rollback hint |
 | Task Notes | `TaskSummaryService` / `TaskNoteWriter` | `/summary` 可读摘要，`/summary --write-note` 显式写入 `notes/tasks` 并更新索引 |
 | Experience Governance | `ExperienceStore` / `/experience` | 经验先进入 candidate，经人工 verify 后才进入 verified；promote 必须人工触发 |
+| Worktree-backed Team Execution | `TeamExecutionService` / `/team run --worktree` | 为 team task 创建独立 git worktree，worker 和 verifier 绑定同一 workspace，失败时保留 worktree 供排查 |
 | Eval Harness | `eval smoke/replay/compare/learn` | golden case、replay artifact、回归对比和 eval-driven candidate learning 形成可重复反馈源 |
 
 污染防护规则：
@@ -85,6 +86,7 @@ User / CLI / API / Channel
 - 只有 `VERIFIED` experience 会作为 `verified_experience` 被 `/context` 和 prompt context 召回。
 - `promote` 不会自动发生，必须人工执行 `/experience promote <id>`。
 - `eval learn` 只生成 candidate，不自动 verify、不自动 promote。
+- `/team run <task> --worktree [--verify]` 会为 task 创建 `.workspaces/<safe-slug>` 隔离工作区；不会自动 merge、commit 或 cleanup，后续通过 `/workspace diff <id>`、`/change create`、`/team report <taskId>` 收口。
 
 完整演示脚本见 [docs/demo/self-improving-agent-loop.md](docs/demo/self-improving-agent-loop.md)。最小流程示例见 [examples/context_engineering_flow.md](examples/context_engineering_flow.md)、[examples/approval_and_diffreview.md](examples/approval_and_diffreview.md)、[examples/experience_learning_flow.md](examples/experience_learning_flow.md)、[examples/eval_learning_flow.md](examples/eval_learning_flow.md)。
 

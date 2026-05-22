@@ -41,6 +41,7 @@ import ricbot.domain.team.TeamArtifact;
 import ricbot.domain.team.TeamDecisionPolicy;
 import ricbot.domain.team.TeamEngine;
 import ricbot.domain.team.TeamEvent;
+import ricbot.domain.team.TeamExecutionService;
 import ricbot.domain.team.TeamRole;
 import ricbot.domain.team.TeamSession;
 import ricbot.domain.team.TeamTask;
@@ -1040,6 +1041,7 @@ final class AgentCommands {
                 case "archive" -> teamArchive(ctx, afterCommand(args));
                 case "suggest" -> teamSuggest(ctx, afterCommand(args));
                 case "suggest-current" -> teamSuggestCurrent(ctx);
+                case "run" -> teamRun(ctx, afterCommand(args));
                 case "run-worker" -> teamRunWorker(ctx, afterCommand(args));
                 case "run-verifier" -> teamRunVerifier(ctx, afterCommand(args));
                 case "worker-report" -> teamWorkerReport(ctx, afterCommand(args));
@@ -1061,7 +1063,7 @@ final class AgentCommands {
                 case "events" -> teamEvents(ctx);
                 case "whiteboard" -> teamWhiteboard(ctx);
                 case "abort" -> teamAbort(ctx, afterCommand(args));
-                default -> completedReply(ctx, "用法：/team start <goal>|status|list|resume <sessionId>|archive <sessionId>|suggest <goal>|suggest-current|task <role> <goal>|run-worker <taskId>|run-verifier <taskId>|worker-report <taskId>|report <taskId>|tool-call <taskId> <toolName> <jsonArgs>|plan-steps <taskId>|steps <taskId>|show-step <stepId>|next-step <taskId>|update-step <stepId> <jsonUpdate>|apply-step <stepId>|reject-step <stepId>|step-timeline <stepId>|task-timeline <taskId>|audit <taskId>|auto-verify <taskId>|verifier-report <taskId>|verify <taskId> pass|reject|needs-human <reason>|events|whiteboard|abort <taskId>");
+                default -> completedReply(ctx, "用法：/team start <goal>|status|list|resume <sessionId>|archive <sessionId>|suggest <goal>|suggest-current|run <task> [--worktree] [--verify]|task <role> <goal>|run-worker <taskId>|run-verifier <taskId>|worker-report <taskId>|report <taskId>|tool-call <taskId> <toolName> <jsonArgs>|plan-steps <taskId>|steps <taskId>|show-step <stepId>|next-step <taskId>|update-step <stepId> <jsonUpdate>|apply-step <stepId>|reject-step <stepId>|step-timeline <stepId>|task-timeline <taskId>|audit <taskId>|auto-verify <taskId>|verifier-report <taskId>|verify <taskId> pass|reject|needs-human <reason>|events|whiteboard|abort <taskId>");
             };
         } catch (IllegalArgumentException | IllegalStateException e) {
             return completedReply(ctx, "team error: " + e.getMessage());
@@ -1223,6 +1225,33 @@ final class AgentCommands {
                 + "changedFiles: " + (changedFiles.isEmpty() ? "none" : String.join(", ", changedFiles)) + "\n"
                 + "reasons: " + (reasons.isEmpty() ? "none" : String.join(", ", reasons)) + "\n"
                 + "suggestedRoles: " + (roles.isEmpty() ? "none" : String.join(", ", roles.stream().map(Enum::name).toList())));
+    }
+
+    private CompletableFuture<OutboundMessage> teamRun(CommandRouter.CommandContext ctx, String rawArgs) {
+        String args = trim(rawArgs);
+        boolean useWorktree = containsFlag(args, "--worktree");
+        boolean verify = containsFlag(args, "--verify");
+        String taskValue = stripFlags(args, "--worktree", "--verify");
+        if (taskValue.isBlank()) {
+            throw new IllegalArgumentException("missing team run task");
+        }
+        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
+        String activeTeamId = resolveActiveTeamSessionId(session);
+        TeamExecutionService service = new TeamExecutionService(workspace, teamEngine);
+        TeamExecutionService.TeamExecutionResult result;
+        if (taskValue.startsWith("teamtask_") && !taskValue.contains(" ")) {
+            result = service.runTask(taskValue, new TeamExecutionService.TeamExecutionOptions(useWorktree, verify));
+        } else {
+            result = service.runUserTask(activeTeamId, taskValue, new TeamExecutionService.TeamExecutionOptions(useWorktree, verify));
+        }
+        storeTeamContext(session, result.teamSessionId());
+        if (!result.workspaceSessionId().isBlank()) {
+            WorkspaceSession workspaceSession = new WorkspaceSessionStore(workspace).load(result.workspaceSessionId());
+            if (workspaceSession != null) {
+                storeWorkspaceContext(session, workspaceSession, new WorkspaceRenderer());
+            }
+        }
+        return completedReply(ctx, renderTeamExecutionResult(result));
     }
 
     private CompletableFuture<OutboundMessage> teamTask(CommandRouter.CommandContext ctx, String rawArgs) {
@@ -2031,6 +2060,30 @@ final class AgentCommands {
                 + "suggestedNextActions: " + renderListInline(report.suggestedNextActions());
     }
 
+    private String renderTeamExecutionResult(TeamExecutionService.TeamExecutionResult result) {
+        return "team execution\n"
+                + "taskId: " + result.taskId() + "\n"
+                + "teamSessionId: " + result.teamSessionId() + "\n"
+                + "workspaceSessionId: " + (result.workspaceSessionId().isBlank() ? "none" : result.workspaceSessionId()) + "\n"
+                + "workspacePath: " + result.workspacePath() + "\n"
+                + "workerStatus: " + (result.workerResult() != null ? result.workerResult().status() : "none") + "\n"
+                + "verifierStatus: " + (result.verificationResult() != null ? result.verificationResult().status() : "SKIPPED") + "\n"
+                + "reportStatus: " + (result.report() != null ? result.report().status() : "UNKNOWN") + "\n"
+                + "reportHealth: " + (result.report() != null ? result.report().health() : "UNKNOWN") + "\n"
+                + "diffSummary: " + diffSummary(result.diff()) + "\n"
+                + (!result.verifierOutput().isBlank() ? "verifierOutput: " + abbreviate(result.verifierOutput(), 500) + "\n" : "")
+                + "next: /team report " + result.taskId()
+                + (result.usedWorktree() ? " | /workspace diff " + result.workspaceSessionId() + " | /change create" : "");
+    }
+
+    private String diffSummary(String diff) {
+        if (diff == null || diff.isBlank()) {
+            return "none";
+        }
+        long lines = diff.lines().count();
+        return lines + " diff lines";
+    }
+
     private long countSteps(List<PendingImplementationStep> steps, ImplementationStepStatus status) {
         return steps.stream().filter(step -> step.status() == status).count();
     }
@@ -2767,6 +2820,35 @@ final class AgentCommands {
             }
         }
         return flags;
+    }
+
+    private static boolean containsFlag(String args, String flag) {
+        String expected = flag != null ? flag.trim() : "";
+        if (expected.isBlank()) {
+            return false;
+        }
+        for (String part : trim(args).split("\\s+")) {
+            if (expected.equalsIgnoreCase(part.trim())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static String stripFlags(String args, String... flags) {
+        java.util.Set<String> flagSet = new java.util.HashSet<>();
+        for (String flag : flags != null ? flags : new String[0]) {
+            if (flag != null && !flag.isBlank()) {
+                flagSet.add(flag.toLowerCase(java.util.Locale.ROOT));
+            }
+        }
+        List<String> parts = new ArrayList<>();
+        for (String part : trim(args).split("\\s+")) {
+            if (!part.isBlank() && !flagSet.contains(part.toLowerCase(java.util.Locale.ROOT))) {
+                parts.add(part);
+            }
+        }
+        return String.join(" ", parts).trim();
     }
 
     private static String commandArgOrBlank(String args, int index) {
