@@ -1,5 +1,12 @@
 # Changelog
 
+## V5.0 - Eval CI Gate + Release Quality Gate
+
+- 新增本地 `scripts/release-check.sh`，串联全量测试、打包、config doctor、fixed smoke eval 和可选 eval compare。
+- 生成 `target/release-check-report.md`，汇总 git 信息、各门禁结果、eval summary、warnings 和 final status。
+- 新增 `scripts/eval-baseline.sh`，用于生成本地 compare baseline。
+- 门禁不访问真实模型、不访问外网，也不要求真实 API key；config doctor 缺 key 只作为 warning。
+
 ## V4.30 - Console Tool/MCP Viewer
 
 - 新增 Console Tool/MCP 只读看板，展示 builtin、MCP、generated 工具概览。
