@@ -11,8 +11,22 @@ public record TeamWorkerResult(
         String errorMessage,
         long durationMillis,
         String rawAgentResultId,
-        String traceId
+        String traceId,
+        List<String> debugLines
 ) {
+    public TeamWorkerResult(
+            TeamWorkerStatus status,
+            List<String> changedFiles,
+            String summary,
+            List<String> implementationSteps,
+            String errorMessage,
+            long durationMillis,
+            String rawAgentResultId,
+            String traceId
+    ) {
+        this(status, changedFiles, summary, implementationSteps, errorMessage, durationMillis, rawAgentResultId, traceId, List.of());
+    }
+
     public TeamWorkerResult {
         status = status != null ? status : TeamWorkerStatus.NO_CHANGES;
         changedFiles = changedFiles != null ? List.copyOf(changedFiles) : List.of();
@@ -22,11 +36,16 @@ public record TeamWorkerResult(
         durationMillis = Math.max(0L, durationMillis);
         rawAgentResultId = rawAgentResultId != null ? rawAgentResultId.trim() : "";
         traceId = traceId != null ? traceId.trim() : "";
+        debugLines = debugLines != null ? List.copyOf(debugLines) : List.of();
     }
 
     public static TeamWorkerResult failed(String message, long durationMillis) {
+        return failed(message, durationMillis, List.of());
+    }
+
+    public static TeamWorkerResult failed(String message, long durationMillis, List<String> debugLines) {
         return new TeamWorkerResult(TeamWorkerStatus.FAILED, List.of(),
-                "Team worker failed.", List.of(), message, durationMillis, "", "");
+                "Team worker failed.", List.of(), message, durationMillis, "", "", debugLines);
     }
 
     public WorkerExecutionResult toWorkerExecutionResult(TeamTask task, String workspacePath, String whiteboardSummary) {
@@ -34,7 +53,7 @@ public record TeamWorkerResult(
                 ? task
                 : new TeamTask("", "", TeamRole.DEVELOPER, "", TeamTaskState.CREATED, "", List.of(), null, "", null, null);
         List<String> findings = changedFiles.isEmpty()
-                ? List.of(status == TeamWorkerStatus.FAILED ? "Worker failed: " + errorMessage : "No user changes produced.")
+                ? List.of(status == TeamWorkerStatus.FAILED ? "Worker failed: " + errorMessage : "No user changes produced" + reasonSuffix())
                 : List.of("Changed files: " + String.join(", ", changedFiles));
         List<String> risks = status == TeamWorkerStatus.FAILED
                 ? List.of(errorMessage.isBlank() ? "worker failed" : errorMessage)
@@ -54,8 +73,7 @@ public record TeamWorkerResult(
                 risks,
                 List.of(),
                 List.of(),
-                List.of("status=" + status.name(), "durationMillis=" + durationMillis,
-                        rawAgentResultId.isBlank() ? "rawAgentResultId=none" : "rawAgentResultId=" + rawAgentResultId),
+                policySummary(),
                 implementationSteps,
                 List.of(),
                 nextActions(safeTask),
@@ -64,6 +82,23 @@ public record TeamWorkerResult(
                 status.name(),
                 Instant.now().toString()
         );
+    }
+
+    private List<String> policySummary() {
+        List<String> out = new java.util.ArrayList<>();
+        out.add("status=" + status.name());
+        out.add("durationMillis=" + durationMillis);
+        out.add(rawAgentResultId.isBlank() ? "rawAgentResultId=none" : "rawAgentResultId=" + rawAgentResultId);
+        out.addAll(debugLines);
+        return List.copyOf(out);
+    }
+
+    private String reasonSuffix() {
+        return debugLines.stream()
+                .filter(line -> line.startsWith("reason:"))
+                .findFirst()
+                .map(line -> ": " + line.substring("reason:".length()))
+                .orElse(".");
     }
 
     private List<String> nextActions(TeamTask task) {

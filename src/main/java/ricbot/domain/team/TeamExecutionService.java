@@ -126,7 +126,10 @@ public class TeamExecutionService {
         recordAudit(task, workerResult.status() == TeamWorkerStatus.FAILED ? StepAuditEventType.STEP_FAILED : StepAuditEventType.STEP_TOOL_APPLIED,
                 "", teamEngine.findTask(task.id()).state().name(),
                 "Team worker completed in task workspace.", workspaceSession,
-                Map.of("workerStatus", worker.status(), "workspacePath", executionRoot.toString(), "changedFiles", workerResult.changedFiles()));
+                Map.of("workerStatus", worker.status(),
+                        "workspacePath", executionRoot.toString(),
+                        "changedFiles", workerResult.changedFiles(),
+                        "workerDebug", workerResult.debugLines()));
         return worker;
     }
 

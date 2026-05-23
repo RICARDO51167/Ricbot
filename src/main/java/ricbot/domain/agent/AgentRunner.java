@@ -129,6 +129,16 @@ public class AgentRunner implements AutoCloseable {
             finishRunResult(result, runId, runStartedAt, iterationsCompleted, runEvents);
             return result;
         }
+        if (runtimePolicy.noExposedToolsMessage() != null) {
+            result.setFinalContent(runtimePolicy.noExposedToolsMessage());
+            result.setMessages(messages);
+            result.setStopReason("no_exposed_tools");
+            result.setError(runtimePolicy.noExposedToolsMessage());
+            result.setToolsUsed(toolsUsed);
+            result.setToolEvents(toolEvents);
+            finishRunResult(result, runId, runStartedAt, iterationsCompleted, runEvents);
+            return result;
+        }
 
         // 开始主循环，最多执行 spec.getMaxIterations() 次
         for (int iteration = 1; iteration <= spec.getMaxIterations(); iteration++) {
@@ -398,12 +408,51 @@ public class AgentRunner implements AutoCloseable {
             List<Map<String, Object>> runEvents
     ) {
         List<Map<String, Object>> definitions = tools != null ? tools.getDefinitions() : List.of();
+        List<String> registeredTools = tools != null ? tools.toolNames() : List.of();
+        List<String> allowedTools = normalizeToolNames(spec.getAllowedTools());
+        List<String> exposedToolsBeforeCapability = new ArrayList<>();
+        List<String> missingAllowedTools = new ArrayList<>();
+        if (!allowedTools.isEmpty()) {
+            java.util.Set<String> registered = new java.util.LinkedHashSet<>(registeredTools);
+            missingAllowedTools = allowedTools.stream()
+                    .filter(name -> !registered.contains(name))
+                    .toList();
+            java.util.Set<String> allowed = new java.util.LinkedHashSet<>(allowedTools);
+            definitions = definitions.stream()
+                    .filter(schema -> allowed.contains(schemaName(schema)))
+                    .toList();
+        }
+        exposedToolsBeforeCapability = definitions.stream()
+                .map(AgentRunner::schemaName)
+                .filter(name -> !name.isBlank())
+                .toList();
+        runEvents.add(runEvent("tool_exposure", 0, Map.of(
+                "allowed_tools", allowedTools,
+                "registered_tools", registeredTools,
+                "exposed_tools", exposedToolsBeforeCapability,
+                "missing_allowed_tools", missingAllowedTools
+        )));
+        String noExposedToolsMessage = null;
+        if (!allowedTools.isEmpty() && definitions.isEmpty()) {
+            noExposedToolsMessage = "no tools exposed to worker";
+            runEvents.add(runEvent("tool_exposure_warning", 0, Map.of(
+                    "warning", noExposedToolsMessage,
+                    "allowed_tools", allowedTools,
+                    "registered_tools", registeredTools,
+                    "missing_allowed_tools", missingAllowedTools
+            )));
+        } else if (!missingAllowedTools.isEmpty()) {
+            runEvents.add(runEvent("tool_exposure_warning", 0, Map.of(
+                    "warning", "allowed tools missing from registry",
+                    "missing_allowed_tools", missingAllowedTools
+            )));
+        }
         boolean disableToolCalling = false;
         boolean disableStreaming = false;
         String unsupportedVisionMessage = null;
 
         if (capability == null || capability.modelCapability() == null) {
-            return new RuntimePolicy(definitions, false, false, null);
+            return new RuntimePolicy(definitions, false, false, null, noExposedToolsMessage);
         }
 
         ModelCapability modelCapability = capability.modelCapability();
@@ -414,6 +463,9 @@ public class AgentRunner implements AutoCloseable {
                         "模型 capability 标记为不支持 tool calling，本次请求不会向模型暴露 tools。");
             }
             definitions = List.of();
+            if (!allowedTools.isEmpty()) {
+                noExposedToolsMessage = "no tools exposed to worker: provider capability disables tool calling";
+            }
         } else if (isCapabilityUnknown(modelCapability.supportsToolCalling()) && !definitions.isEmpty()) {
             addCapabilityWarning(runEvents, 0, capability, "supportsToolCalling", "KEEP_EXISTING_BEHAVIOR",
                     "模型 tool calling capability 未知，保持现有工具调用行为。");
@@ -445,7 +497,33 @@ public class AgentRunner implements AutoCloseable {
             }
         }
 
-        return new RuntimePolicy(definitions, disableToolCalling, disableStreaming, unsupportedVisionMessage);
+        return new RuntimePolicy(definitions, disableToolCalling, disableStreaming, unsupportedVisionMessage, noExposedToolsMessage);
+    }
+
+    private List<String> normalizeToolNames(List<String> names) {
+        if (names == null) {
+            return List.of();
+        }
+        return names.stream()
+                .filter(name -> name != null && !name.isBlank())
+                .map(String::trim)
+                .distinct()
+                .toList();
+    }
+
+    private static String schemaName(Map<String, Object> schema) {
+        if (schema == null) {
+            return "";
+        }
+        Object fn = schema.get("function");
+        if (fn instanceof Map<?, ?> fnMap) {
+            Object name = fnMap.get("name");
+            if (name instanceof String s) {
+                return s;
+            }
+        }
+        Object name = schema.get("name");
+        return name instanceof String s ? s : "";
     }
 
     private void addCapabilityWarning(
@@ -868,7 +946,8 @@ public class AgentRunner implements AutoCloseable {
             List<Map<String, Object>> toolDefinitions,
             boolean disableToolCalling,
             boolean disableStreaming,
-            String unsupportedVisionMessage
+            String unsupportedVisionMessage,
+            String noExposedToolsMessage
     ) {}
 
     /**

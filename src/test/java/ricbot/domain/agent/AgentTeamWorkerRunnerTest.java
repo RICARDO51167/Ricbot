@@ -2,6 +2,8 @@ package ricbot.domain.agent;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import ricbot.domain.config.ModelCapability;
+import ricbot.domain.config.ProviderCapability;
 import ricbot.domain.team.TeamEngine;
 import ricbot.domain.team.TeamRole;
 import ricbot.domain.team.TeamTask;
@@ -18,6 +20,7 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -70,6 +73,112 @@ class AgentTeamWorkerRunnerTest {
     }
 
     @Test
+    void runUsesAgentRunnerToolCallsToEditWorktreeFile(@TempDir Path workspace) throws Exception {
+        initGitRepo(workspace);
+        TeamEngine engine = new TeamEngine(workspace);
+        TeamTask task = engine.createTask(engine.createSession("team worker").id(), TeamRole.DEVELOPER, "Update README.md");
+        WorkspaceSessionStore store = new WorkspaceSessionStore(workspace);
+        WorkspaceSession session = new GitWorktreeWorkspaceBackend(workspace, store)
+                .createSession(workspace, "team worker", "team-worker-edit-test");
+        Path worktree = Path.of(session.workspacePath());
+        AtomicInteger calls = new AtomicInteger();
+        LLMProvider provider = new LLMProvider("k", "http://localhost") {
+            @Override
+            public LLMResponse chat(List<Map<String, Object>> messages, List<Map<String, Object>> tools, String model,
+                                    Integer maxTokens, Double temperature, String reasoningEffort, Object toolChoice) {
+                int n = calls.incrementAndGet();
+                if (n == 1) {
+                    assertTrue(tools.stream().map(AgentTeamWorkerRunnerTest::schemaName).toList().contains("edit_file"));
+                    return new LLMResponse()
+                            .setContent("")
+                            .setToolCalls(List.of(new ricbot.integration.llm.api.ToolCallRequest("call_read", "read_file", Map.of(
+                                    "path", "README.md",
+                                    "offset", 1,
+                                    "limit", 20
+                            ))))
+                            .setFinishReason("tool_calls");
+                }
+                if (n == 2) {
+                    return new LLMResponse()
+                            .setContent("")
+                            .setToolCalls(List.of(new ricbot.integration.llm.api.ToolCallRequest("call_edit", "edit_file", Map.of(
+                                    "path", "README.md",
+                                    "old_text", "initial\n",
+                                    "new_text", "initial\nworker tool edit\n"
+                            ))))
+                            .setFinishReason("tool_calls");
+                }
+                return new LLMResponse().setContent("Updated README.md").setFinishReason("stop");
+            }
+        };
+        AgentTeamWorkerRunner runner = new AgentTeamWorkerRunner(workspace, new AgentRunner(provider), "model");
+
+        TeamWorkerResult result = runner.run(task, session, worktree);
+
+        assertEquals(TeamWorkerStatus.APPLIED, result.status());
+        assertEquals(List.of("README.md"), result.changedFiles());
+        assertTrue(Files.readString(worktree.resolve("README.md")).contains("worker tool edit"));
+        assertEquals("initial\n", Files.readString(workspace.resolve("README.md")));
+        assertTrue(result.debugLines().toString().contains("debug:modelToolCalls=read_file,edit_file"), result.debugLines().toString());
+        assertTrue(result.debugLines().toString().contains("debug:afterChangedFiles=README.md"), result.debugLines().toString());
+    }
+
+    @Test
+    void runReportsNoChangesReasonWhenModelMakesNoToolCalls(@TempDir Path workspace) throws Exception {
+        initGitRepo(workspace);
+        TeamEngine engine = new TeamEngine(workspace);
+        TeamTask task = engine.createTask(engine.createSession("team worker").id(), TeamRole.DEVELOPER, "Update README.md");
+        WorkspaceSessionStore store = new WorkspaceSessionStore(workspace);
+        WorkspaceSession session = new GitWorktreeWorkspaceBackend(workspace, store)
+                .createSession(workspace, "team worker", "team-worker-no-tools-test");
+        AgentRunner runner = new AgentRunner(new LLMProvider("k", "http://localhost") {
+            @Override
+            public LLMResponse chat(List<Map<String, Object>> messages, List<Map<String, Object>> tools, String model,
+                                    Integer maxTokens, Double temperature, String reasoningEffort, Object toolChoice) {
+                assertFalse(tools.isEmpty());
+                return new LLMResponse().setContent("I would update README.md.").setFinishReason("stop");
+            }
+        });
+        AgentTeamWorkerRunner worker = new AgentTeamWorkerRunner(workspace, runner, "model");
+
+        TeamWorkerResult result = worker.run(task, session, Path.of(session.workspacePath()));
+
+        assertEquals(TeamWorkerStatus.NO_CHANGES, result.status());
+        assertTrue(result.debugLines().contains("reason:no tool calls"), result.debugLines().toString());
+        assertTrue(result.debugLines().toString().contains("debug:exposedTools="), result.debugLines().toString());
+    }
+
+    @Test
+    void runFailsWhenProviderCapabilityExposesNoWorkerTools(@TempDir Path workspace) throws Exception {
+        initGitRepo(workspace);
+        TeamEngine engine = new TeamEngine(workspace);
+        TeamTask task = engine.createTask(engine.createSession("team worker").id(), TeamRole.DEVELOPER, "Update README.md");
+        WorkspaceSessionStore store = new WorkspaceSessionStore(workspace);
+        WorkspaceSession session = new GitWorktreeWorkspaceBackend(workspace, store)
+                .createSession(workspace, "team worker", "team-worker-no-exposed-tools-test");
+        AtomicInteger calls = new AtomicInteger();
+        AgentRunner runner = new AgentRunner(new LLMProvider("k", "http://localhost") {
+            @Override
+            public LLMResponse chat(List<Map<String, Object>> messages, List<Map<String, Object>> tools, String model,
+                                    Integer maxTokens, Double temperature, String reasoningEffort, Object toolChoice) {
+                calls.incrementAndGet();
+                return new LLMResponse().setContent("should not call").setFinishReason("stop");
+            }
+        });
+        ProviderCapability capability = new ProviderCapability("test",
+                new ModelCapability("model", "false", "true", "UNKNOWN", "UNKNOWN", "UNKNOWN", 64_000, 4096, "test"));
+        AgentTeamWorkerRunner worker = new AgentTeamWorkerRunner(workspace, runner, "model",
+                8, 10_000, "standard", 64_000, null, capability);
+
+        TeamWorkerResult result = worker.run(task, session, Path.of(session.workspacePath()));
+
+        assertEquals(TeamWorkerStatus.FAILED, result.status());
+        assertTrue(result.errorMessage().contains("no tools exposed"), result.errorMessage());
+        assertEquals(0, calls.get());
+        assertTrue(result.debugLines().toString().contains("reason:no tools exposed"), result.debugLines().toString());
+    }
+
+    @Test
     void runRejectsWorkspaceRootThatDoesNotMatchSession(@TempDir Path workspace) throws Exception {
         initGitRepo(workspace);
         TeamEngine engine = new TeamEngine(workspace);
@@ -118,5 +227,16 @@ class AgentTeamWorkerRunnerTest {
             throw new AssertionError("git failed: " + String.join(" ", command) + "\n" + stderr + stdout);
         }
         return stdout;
+    }
+
+    private static String schemaName(Map<String, Object> schema) {
+        Object fn = schema.get("function");
+        if (fn instanceof Map<?, ?> fnMap) {
+            Object name = fnMap.get("name");
+            if (name instanceof String s) {
+                return s;
+            }
+        }
+        return "";
     }
 }

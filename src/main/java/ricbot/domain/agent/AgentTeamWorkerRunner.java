@@ -89,25 +89,40 @@ public class AgentTeamWorkerRunner implements TeamWorkerRunner {
         }
         String sessionKey = "team-worker-" + task.id();
         try {
+            WorkspaceLifecycleService lifecycle = new WorkspaceLifecycleService(baseWorkspace);
+            WorkspaceLifecycleService.WorkspaceDiff beforeDiff = lifecycle.diff(workspaceSession.id());
             AgentRunResult result = runner.run(workerSpec(task, workspaceSession, root, sessionKey));
-            WorkspaceLifecycleService.WorkspaceDiff diff = new WorkspaceLifecycleService(baseWorkspace)
-                    .diff(workspaceSession.id());
+            WorkspaceLifecycleService.WorkspaceDiff diff = lifecycle.diff(workspaceSession.id());
             List<String> changedFiles = diff.changedFiles();
-            TeamWorkerStatus status = changedFiles.isEmpty() ? TeamWorkerStatus.NO_CHANGES : TeamWorkerStatus.APPLIED;
+            List<Map<String, Object>> toolEvents = result.getToolEvents() != null ? result.getToolEvents() : List.of();
+            List<String> toolCallNames = toolEvents.stream()
+                    .map(event -> clean(String.valueOf(event.getOrDefault("name", ""))))
+                    .filter(name -> !name.isBlank())
+                    .toList();
+            boolean hasToolErrors = toolEvents.stream().anyMatch(event -> "error".equalsIgnoreCase(clean(String.valueOf(event.get("status")))));
+            String noChangesReason = changedFiles.isEmpty()
+                    ? noChangesReason(result, toolCallNames, rawGitStatus(root))
+                    : "";
+            TeamWorkerStatus status = statusFor(result, changedFiles, hasToolErrors);
+            List<String> debugLines = debugLines(task, workspaceSession, root, sessionKey, result, beforeDiff, diff, rawGitStatus(root), noChangesReason);
             String summary = !clean(result.getFinalContent()).isBlank()
                     ? clean(result.getFinalContent())
                     : status == TeamWorkerStatus.APPLIED
                     ? "Team worker applied changes: " + String.join(", ", changedFiles)
                     : "Team worker completed but produced no user changes.";
+            String error = status == TeamWorkerStatus.FAILED && clean(result.getError()).isBlank()
+                    ? (!noChangesReason.isBlank() ? noChangesReason : "team worker failed")
+                    : clean(result.getError());
             return new TeamWorkerResult(
                     status,
                     changedFiles,
                     summary,
                     changedFiles.stream().map(path -> "APPLY_CHANGE " + path).toList(),
-                    clean(result.getError()),
+                    error,
                     Duration.between(started, Instant.now()).toMillis(),
                     clean(result.getRunId()),
-                    ""
+                    "",
+                    debugLines
             );
         } catch (Exception e) {
             return TeamWorkerResult.failed(e.getMessage(), Duration.between(started, Instant.now()).toMillis());
@@ -143,14 +158,15 @@ public class AgentTeamWorkerRunner implements TeamWorkerRunner {
     private List<Map<String, Object>> workerMessages(TeamTask task, Path root) {
         String system = """
                 You are Ricbot Team worker.
-                You run inside a managed git worktree and must make real file changes with tools when the task requires changes.
-                First read the necessary files, then make the smallest safe change.
-                If the task is documentation work, read the relevant document and edit/write it with tools.
+                You run inside a managed git worktree and must use the available file tools to make real file changes when the task requires changes.
+                Do not only output a plan. If you do not call a write tool, the task is not complete.
+                First read the necessary files with read_file or list_dir, then make the smallest safe change with edit_file or write_file.
+                If the task asks for a README/documentation change, you must read_file README.md, then edit_file or write_file README.md.
                 If the task is code work, locate the file first and make a minimal edit.
-                Do not only output a plan. Do not claim a file changed unless a tool changed it.
-                Do not call tools that are not provided.
+                After the write tool succeeds, stop and output a short summary plus changed files.
+                Do not claim a file changed unless a tool changed it.
+                Do not call tools that are not provided or invent tools.
                 Do not modify runtime artifacts such as .git, .ricbot, .team, .traces, .changesets, .workspaces, notes, session.json, target, or logs.
-                When finished, output a short summary and list changed files.
                 """;
         String user = "Current task: " + task.goal()
                 + "\nWorkspace root: " + root
@@ -192,6 +208,136 @@ public class AgentTeamWorkerRunner implements TeamWorkerRunner {
 
     private static String clean(String value) {
         return value != null ? value.trim() : "";
+    }
+
+    private TeamWorkerStatus statusFor(AgentRunResult result, List<String> changedFiles, boolean hasToolErrors) {
+        if ("no_exposed_tools".equalsIgnoreCase(clean(result.getStopReason()))) {
+            return TeamWorkerStatus.FAILED;
+        }
+        if (!changedFiles.isEmpty()) {
+            return TeamWorkerStatus.APPLIED;
+        }
+        return hasToolErrors ? TeamWorkerStatus.FAILED : TeamWorkerStatus.NO_CHANGES;
+    }
+
+    private String noChangesReason(AgentRunResult result, List<String> toolCallNames, String rawStatus) {
+        if ("no_exposed_tools".equalsIgnoreCase(clean(result.getStopReason()))) {
+            return !clean(result.getError()).isBlank() ? clean(result.getError()) : "no exposed tools";
+        }
+        if (toolCallNames.isEmpty()) {
+            return "no tool calls";
+        }
+        boolean wrote = toolCallNames.stream().anyMatch(name -> name.equals("write_file") || name.equals("edit_file"));
+        if (!wrote) {
+            return "only read/list tools called";
+        }
+        if (!clean(rawStatus).isBlank()) {
+            return "all changes filtered as runtime artifacts";
+        }
+        return "write tool called but no user diff";
+    }
+
+    private List<String> debugLines(
+            TeamTask task,
+            WorkspaceSession workspaceSession,
+            Path root,
+            String sessionKey,
+            AgentRunResult result,
+            WorkspaceLifecycleService.WorkspaceDiff beforeDiff,
+            WorkspaceLifecycleService.WorkspaceDiff afterDiff,
+            String rawStatus,
+            String noChangesReason
+    ) {
+        List<String> out = new ArrayList<>();
+        out.add("debug:workerSessionKey=" + sessionKey);
+        out.add("debug:workerWorkspaceRoot=" + root);
+        out.add("debug:workerTaskId=" + task.id());
+        out.add("debug:workerWorkspaceSessionId=" + workspaceSession.id());
+        out.add("debug:allowedTools=" + String.join(",", ALLOWED_TOOLS));
+        out.add("debug:registeredTools=" + String.join(",", valuesFromExposure(result, "registered_tools")));
+        out.add("debug:exposedTools=" + String.join(",", valuesFromExposure(result, "exposed_tools")));
+        List<String> missing = valuesFromExposure(result, "missing_allowed_tools");
+        if (!missing.isEmpty()) {
+            out.add("warning:missingAllowedTools=" + String.join(",", missing));
+        }
+        out.add("debug:modelToolCalls=" + String.join(",", requestedToolNames(result)));
+        out.add("debug:toolResults=" + toolResults(result));
+        out.add("debug:beforeChangedFiles=" + String.join(",", beforeDiff.changedFiles()));
+        out.add("debug:afterChangedFiles=" + String.join(",", afterDiff.changedFiles()));
+        out.add("debug:gitStatusShort=" + abbreviate(clean(rawStatus).replace('\n', '|'), 240));
+        out.add("debug:workerFinalText=" + abbreviate(clean(result.getFinalContent()).replace('\n', ' '), 240));
+        if (!clean(noChangesReason).isBlank()) {
+            out.add("reason:" + noChangesReason);
+        }
+        return out;
+    }
+
+    private List<String> valuesFromExposure(AgentRunResult result, String key) {
+        return runEvents(result).stream()
+                .filter(event -> "tool_exposure".equals(String.valueOf(event.get("type"))))
+                .findFirst()
+                .map(event -> stringList(event.get(key)))
+                .orElse(List.of());
+    }
+
+    private List<String> requestedToolNames(AgentRunResult result) {
+        List<String> out = new ArrayList<>();
+        for (Map<String, Object> event : runEvents(result)) {
+            if ("tool_batch".equals(String.valueOf(event.get("type")))) {
+                out.addAll(stringList(event.get("tools")));
+            }
+        }
+        return out.stream().distinct().toList();
+    }
+
+    private String toolResults(AgentRunResult result) {
+        List<String> out = new ArrayList<>();
+        for (Map<String, Object> event : result.getToolEvents() != null ? result.getToolEvents() : List.<Map<String, Object>>of()) {
+            String name = clean(String.valueOf(event.getOrDefault("name", "")));
+            String status = clean(String.valueOf(event.getOrDefault("status", "")));
+            if (!name.isBlank()) {
+                out.add(name + ":" + (!status.isBlank() ? status : "unknown"));
+            }
+        }
+        return out.isEmpty() ? "none" : String.join(",", out);
+    }
+
+    private List<Map<String, Object>> runEvents(AgentRunResult result) {
+        return result != null && result.getRunEvents() != null ? result.getRunEvents() : List.of();
+    }
+
+    private List<String> stringList(Object raw) {
+        List<String> out = new ArrayList<>();
+        if (raw instanceof List<?> list) {
+            for (Object item : list) {
+                if (item != null && !String.valueOf(item).isBlank()) {
+                    out.add(String.valueOf(item).trim());
+                }
+            }
+        }
+        return out;
+    }
+
+    private String rawGitStatus(Path root) {
+        try {
+            Process process = new ProcessBuilder("git", "status", "--porcelain", "-uall")
+                    .directory(root.toFile())
+                    .start();
+            String stdout = new String(process.getInputStream().readAllBytes());
+            String stderr = new String(process.getErrorStream().readAllBytes());
+            int code = process.waitFor();
+            return code == 0 ? stdout.trim() : stderr.trim();
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    private String abbreviate(String value, int max) {
+        String clean = value != null ? value.trim() : "";
+        if (clean.length() <= max) {
+            return clean;
+        }
+        return clean.substring(0, Math.max(0, max)) + "...";
     }
 
     private static final class GuardedTool extends Tool {
@@ -241,7 +387,39 @@ public class AgentTeamWorkerRunner implements TeamWorkerRunner {
             if (!denied.isBlank()) {
                 return "错误：" + denied;
             }
-            return delegate.execute(params);
+            Map<String, Object> safe = params != null ? params : Map.of();
+            if (delegate instanceof ListDirTool tool) {
+                return tool.execute((String) safe.get("path"));
+            }
+            if (delegate instanceof ReadFileTool tool) {
+                return tool.execute(
+                        (String) safe.get("path"),
+                        (Integer) safe.get("offset"),
+                        (Integer) safe.get("limit")
+                );
+            }
+            if (delegate instanceof WriteFileTool tool) {
+                return tool.execute(safe);
+            }
+            if (delegate instanceof EditFileTool tool) {
+                return tool.execute(safe);
+            }
+            if (delegate instanceof GrepTool tool) {
+                return tool.execute(
+                        (String) safe.get("pattern"),
+                        (String) safe.get("base_dir"),
+                        (String) safe.get("file_glob"),
+                        (Boolean) safe.get("ignore_case"),
+                        (Integer) safe.get("max_results")
+                );
+            }
+            if (delegate instanceof GlobTool tool) {
+                return tool.execute(
+                        (String) safe.get("pattern"),
+                        (String) safe.get("base_dir")
+                );
+            }
+            return delegate.execute(safe);
         }
 
         private String guard(Map<String, Object> params) {

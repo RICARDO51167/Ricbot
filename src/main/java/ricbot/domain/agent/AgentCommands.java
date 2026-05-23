@@ -2189,9 +2189,31 @@ final class AgentCommands {
                 + "reportStatus: " + (result.report() != null ? result.report().status() : "UNKNOWN") + "\n"
                 + "reportHealth: " + (result.report() != null ? result.report().health() : "UNKNOWN") + "\n"
                 + "diffSummary: " + diffSummary(result.diff()) + "\n"
+                + workerDebugSummary(result.workerResult())
                 + (!result.verifierOutput().isBlank() ? "verifierOutput: " + abbreviate(result.verifierOutput(), 500) + "\n" : "")
                 + "next: /team report " + result.taskId()
                 + (result.usedWorktree() ? " | /workspace diff " + result.workspaceSessionId() + " | /change create" : "");
+    }
+
+    private String workerDebugSummary(WorkerExecutionResult worker) {
+        if (worker == null || worker.policySummary().isEmpty()) {
+            return "";
+        }
+        List<String> interesting = worker.policySummary().stream()
+                .filter(line -> line.startsWith("debug:allowedTools=")
+                        || line.startsWith("debug:exposedTools=")
+                        || line.startsWith("debug:modelToolCalls=")
+                        || line.startsWith("debug:toolResults=")
+                        || line.startsWith("debug:afterChangedFiles=")
+                        || line.startsWith("warning:")
+                        || line.startsWith("reason:"))
+                .map(line -> abbreviate(line, 220))
+                .toList();
+        if (interesting.isEmpty()) {
+            return "";
+        }
+        return interesting.stream()
+                .collect(java.util.stream.Collectors.joining("\n", "workerDebug:\n", "\n"));
     }
 
     private String diffSummary(String diff) {

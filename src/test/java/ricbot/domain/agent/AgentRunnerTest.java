@@ -623,6 +623,79 @@ public class AgentRunnerTest {
     }
 
     @Test
+    void runner_filtersModelToolsByAllowedTools() throws Exception {
+        ToolRegistry tools = new ToolRegistry();
+        tools.register(echoTool());
+        tools.register(namedTool("write_file"));
+        AtomicInteger calls = new AtomicInteger(0);
+
+        LLMProvider provider = new LLMProvider("k", "http://localhost") {
+            @Override
+            public LLMResponse chat(
+                    List<Map<String, Object>> messages,
+                    List<Map<String, Object>> toolsDef,
+                    String model,
+                    Integer maxTokens,
+                    Double temperature,
+                    String reasoningEffort,
+                    Object toolChoice
+            ) {
+                calls.incrementAndGet();
+                assertEquals(List.of("write_file"), toolsDef.stream().map(AgentRunnerTest::schemaName).toList());
+                return new LLMResponse().setContent("filtered").setFinishReason("stop");
+            }
+        };
+
+        AgentRunResult result = new AgentRunner(provider).run(new AgentRunSpec()
+                .setInitialMessages(List.of(Map.of("role", "user", "content", "edit")))
+                .setTools(tools)
+                .setAllowedTools(List.of("write_file", "missing_tool"))
+                .setModel("model")
+                .setMaxIterations(2));
+
+        assertEquals("filtered", result.getFinalContent());
+        assertEquals(1, calls.get());
+        assertTrue(result.getRunEvents().stream().anyMatch(event ->
+                "tool_exposure".equals(event.get("type"))
+                        && event.toString().contains("write_file")
+                        && event.toString().contains("missing_tool")));
+    }
+
+    @Test
+    void runnerFailsBeforeModelWhenAllowedToolsExposeNothing() throws Exception {
+        ToolRegistry tools = new ToolRegistry();
+        tools.register(echoTool());
+        AtomicInteger calls = new AtomicInteger(0);
+
+        LLMProvider provider = new LLMProvider("k", "http://localhost") {
+            @Override
+            public LLMResponse chat(
+                    List<Map<String, Object>> messages,
+                    List<Map<String, Object>> toolsDef,
+                    String model,
+                    Integer maxTokens,
+                    Double temperature,
+                    String reasoningEffort,
+                    Object toolChoice
+            ) {
+                calls.incrementAndGet();
+                return new LLMResponse().setContent("should not call").setFinishReason("stop");
+            }
+        };
+
+        AgentRunResult result = new AgentRunner(provider).run(new AgentRunSpec()
+                .setInitialMessages(List.of(Map.of("role", "user", "content", "edit")))
+                .setTools(tools)
+                .setAllowedTools(List.of("write_file"))
+                .setModel("model")
+                .setMaxIterations(2));
+
+        assertEquals("no_exposed_tools", result.getStopReason());
+        assertTrue(result.getError().contains("no tools exposed"), result.getError());
+        assertEquals(0, calls.get());
+    }
+
+    @Test
     void runner_usesCapabilityOverrideToDisableStreaming() throws Exception {
         AtomicInteger chatCalls = new AtomicInteger(0);
         AtomicInteger streamCalls = new AtomicInteger(0);
@@ -720,5 +793,35 @@ public class AgentRunnerTest {
                 return params != null ? params.get("text") : "";
             }
         };
+    }
+
+    private static Tool namedTool(String name) {
+        return new Tool() {
+            @Override
+            public String getName() {
+                return name;
+            }
+
+            @Override
+            public String getDescription() {
+                return name;
+            }
+
+            @Override
+            public Object execute(Map<String, Object> params) {
+                return "ok";
+            }
+        };
+    }
+
+    private static String schemaName(Map<String, Object> schema) {
+        Object fn = schema.get("function");
+        if (fn instanceof Map<?, ?> fnMap) {
+            Object name = fnMap.get("name");
+            if (name instanceof String s) {
+                return s;
+            }
+        }
+        return "";
     }
 }
