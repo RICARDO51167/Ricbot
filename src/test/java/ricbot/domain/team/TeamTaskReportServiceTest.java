@@ -69,6 +69,21 @@ class TeamTaskReportServiceTest {
         assertEquals(TeamTaskHealth.WARNING, report.health());
     }
 
+    @Test
+    void noStepsWithVerifierButNoChangeSetProducesWarning() {
+        TeamTaskReport report = service.buildReport("team_1", new StepAuditSummary("task_1", "team_1", 0,
+                0, 0, 0, 0, 0, 0, 0,
+                0, 0, List.of(), "", "PASS", "STEP_VERIFIED",
+                "2026-05-21T00:00:00Z", "2026-05-21T00:00:01Z", 1000L, 1,
+                List.of(), List.of(), List.of(), "",
+                StepAuditHealth.NEEDS_REVIEW, List.of("no implementation steps found")), "goal");
+
+        assertEquals(TeamTaskStatus.COMPLETED, report.status());
+        assertEquals(TeamTaskHealth.WARNING, report.health());
+        assertTrue(report.warnings().contains("no user changes produced"), report.warnings().toString());
+        assertTrue(report.suggestedNextActions().toString().contains("produced no user changes"), report.suggestedNextActions().toString());
+    }
+
     private StepAuditSummary summary(int totalSteps, int applied, int failed, String verifier, List<String> warnings) {
         return new StepAuditSummary("task_1", "team_1", totalSteps,
                 totalSteps, 0, Math.max(0, totalSteps - applied - failed), 0, applied, 0, failed,

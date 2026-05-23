@@ -5,6 +5,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -26,6 +27,8 @@ class WorkspaceLifecycleServiceTest {
         created = store.save(created.withMetadata(metadata));
         String createdId = created.id();
         Path worktree = Path.of(created.workspacePath());
+        Files.createDirectories(worktree.resolve("notes"));
+        Files.writeString(worktree.resolve("notes/index.json"), "{}\n");
         Files.writeString(worktree.resolve("README.md"), "initial\nchanged\n");
 
         WorkspaceLifecycleService service = new WorkspaceLifecycleService(workspace);
@@ -36,7 +39,9 @@ class WorkspaceLifecycleServiceTest {
         assertTrue(status.statusShort().contains("README.md"), status.statusShort());
         WorkspaceLifecycleService.WorkspaceDiff diff = service.diff(createdId);
         assertTrue(diff.changedFiles().contains("README.md"), diff.changedFiles().toString());
+        assertFalse(diff.changedFiles().contains("notes/index.json"), diff.changedFiles().toString());
         assertTrue(diff.patch().contains("changed"), diff.patch());
+        assertFalse(diff.patch().contains("notes/index.json"), diff.patch());
 
         IllegalArgumentException noForce = assertThrows(IllegalArgumentException.class,
                 () -> service.discard("teamtask_lifecycle", false));
@@ -45,6 +50,32 @@ class WorkspaceLifecycleServiceTest {
         assertEquals(WorkspaceSessionStatus.DISCARDED, discarded.status());
         assertFalse(Files.exists(worktree.resolve("README.md")));
         assertEquals("initial\n", Files.readString(workspace.resolve("README.md")));
+    }
+
+    @Test
+    void diffIgnoresRuntimeArtifactsOnly(@TempDir Path workspace) throws Exception {
+        initGitRepo(workspace);
+        WorkspaceSessionStore store = new WorkspaceSessionStore(workspace);
+        GitWorktreeWorkspaceBackend backend = new GitWorktreeWorkspaceBackend(workspace, store);
+        WorkspaceSession created = backend.createSession(workspace, "runtime artifacts only", "team-runtime-artifacts");
+        java.util.LinkedHashMap<String, Object> metadata = new java.util.LinkedHashMap<>(created.metadata());
+        metadata.put("taskId", "teamtask_runtime");
+        metadata.put("managedBy", "ricbot");
+        created = store.save(created.withMetadata(metadata));
+        Path worktree = Path.of(created.workspacePath());
+        Files.createDirectories(worktree.resolve("notes"));
+        Files.writeString(worktree.resolve("notes/index.json"), "{}\n");
+        Files.createDirectories(worktree.resolve(".traces"));
+        Files.writeString(worktree.resolve(".traces/trace.jsonl"), "{}\n");
+
+        WorkspaceLifecycleService service = new WorkspaceLifecycleService(workspace);
+        WorkspaceLifecycleService.WorkspaceStatus status = service.status("teamtask_runtime");
+        WorkspaceLifecycleService.WorkspaceDiff diff = service.diff("teamtask_runtime");
+
+        assertFalse(status.dirty());
+        assertEquals(List.of(), diff.changedFiles());
+        assertEquals("", diff.patch());
+        assertEquals("", diff.stat());
     }
 
     @Test

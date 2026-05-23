@@ -847,12 +847,22 @@ public class AgentLoop {
                     : commandRouter.dispatch(ctx);
             
             // 阻塞等待命令执行完成并获取结果，如果 future 为 null 则返回 null
-            return future != null ? future.join() : null;
+            OutboundMessage result = future != null ? future.join() : null;
+            if (result != null) {
+                return result;
+            }
+            if (raw != null && raw.trim().startsWith("/")) {
+                return OutboundMessages.replyTo(msg, "command error: unknown command: " + raw.trim().split("\\s+", 2)[0]);
+            }
+            return null;
         } catch (Exception e) {
             // 捕获命令执行过程中的异常，记录警告日志
             log.warn("命令执行失败: {}", raw, e);
-            // 发生异常时返回 null，表示命令处理失败
-            return null;
+            Throwable cause = e instanceof CompletionException && e.getCause() != null ? e.getCause() : e;
+            String message = cause.getMessage() != null && !cause.getMessage().isBlank()
+                    ? cause.getMessage()
+                    : cause.getClass().getSimpleName();
+            return OutboundMessages.replyTo(msg, "command error: " + message);
         }
     }
 

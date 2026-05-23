@@ -3,6 +3,7 @@ package ricbot.domain.change;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ricbot.domain.team.VerificationResult;
+import ricbot.domain.workspace.RuntimeArtifactFilter;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -42,7 +43,7 @@ public class ChangeSetService {
         ensureGitRepository(gitWorkspace);
         List<StatusRow> statusRows = statusRows(gitWorkspace);
         if (statusRows.isEmpty()) {
-            throw new IllegalStateException("git working tree has no changes");
+            throw new IllegalStateException("no user changes found");
         }
         String baseCommit = git(gitWorkspace, "rev-parse", "HEAD").trim();
         List<String> changedFiles = statusRows.stream().map(StatusRow::path).distinct().toList();
@@ -282,8 +283,7 @@ public class ChangeSetService {
             if (rename >= 0) {
                 path = path.substring(rename + 4).trim();
             }
-            boolean ricbotWorkspaceSessionFile = !directory.equals(workspace) && "session.json".equals(path);
-            if (!path.isBlank() && !path.startsWith(".changesets/") && !path.startsWith(".workspaces/") && !ricbotWorkspaceSessionFile) {
+            if (!path.isBlank() && !RuntimeArtifactFilter.isRuntimeArtifact(path)) {
                 out.add(new StatusRow(code, path));
             }
         }
@@ -292,9 +292,20 @@ public class ChangeSetService {
 
     private String buildDiffPatch(Path directory, List<StatusRow> rows) {
         StringBuilder sb = new StringBuilder();
-        String trackedDiff = git(directory, "diff", "--");
-        if (!trackedDiff.isBlank()) {
-            sb.append(trackedDiff.stripTrailing()).append("\n");
+        List<String> trackedPaths = rows.stream()
+                .filter(row -> !row.untracked())
+                .map(StatusRow::path)
+                .distinct()
+                .toList();
+        if (!trackedPaths.isEmpty()) {
+            List<String> args = new ArrayList<>();
+            args.add("diff");
+            args.add("--");
+            args.addAll(trackedPaths);
+            String trackedDiff = git(directory, args.toArray(String[]::new));
+            if (!trackedDiff.isBlank()) {
+                sb.append(trackedDiff.stripTrailing()).append("\n");
+            }
         }
         for (StatusRow row : rows) {
             if (!row.untracked()) {

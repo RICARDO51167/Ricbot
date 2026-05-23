@@ -43,16 +43,17 @@ public class WorkspaceLifecycleService {
         WorkspaceSession session = resolveManagedWorktree(taskOrWorkspaceId);
         Path root = safeWorktreePath(session);
         String branch = git(root, "rev-parse", "--abbrev-ref", "HEAD").trim();
-        String statusShort = git(root, "status", "--short");
+        String statusShort = filteredStatusShort(root);
         return new WorkspaceStatus(session, branch, statusShort, !statusShort.isBlank());
     }
 
     public WorkspaceDiff diff(String taskOrWorkspaceId) {
         WorkspaceSession session = resolveManagedWorktree(taskOrWorkspaceId);
         Path root = safeWorktreePath(session);
-        String stat = git(root, "diff", "--stat", "--");
-        String patch = git(root, "diff", "--");
-        List<String> changedFiles = statusPaths(root);
+        List<StatusRow> rows = statusRows(root);
+        String stat = buildDiffStat(root, rows);
+        String patch = buildDiffPatch(root, rows);
+        List<String> changedFiles = rows.stream().map(StatusRow::path).distinct().toList();
         return new WorkspaceDiff(session, stat, changedFiles, patch);
     }
 
@@ -64,18 +65,111 @@ public class WorkspaceLifecycleService {
         return new GitWorktreeWorkspaceBackend(baseWorkspace, store).discard(session.id());
     }
 
-    private List<String> statusPaths(Path root) {
+    private String filteredStatusShort(Path root) {
         String output = git(root, "status", "--short");
-        List<String> files = new ArrayList<>();
+        List<String> lines = new ArrayList<>();
         for (String line : output.split("\\R")) {
             if (line.length() < 4) {
                 continue;
             }
             String path = line.substring(3).trim();
             int rename = path.indexOf(" -> ");
-            files.add(rename >= 0 ? path.substring(rename + 4).trim() : path);
+            path = rename >= 0 ? path.substring(rename + 4).trim() : path;
+            if (!RuntimeArtifactFilter.isRuntimeArtifact(path)) {
+                lines.add(line);
+            }
         }
-        return files.stream().filter(value -> !value.isBlank()).distinct().toList();
+        return String.join("\n", lines);
+    }
+
+    private List<StatusRow> statusRows(Path root) {
+        String output = git(root, "status", "--porcelain", "-uall");
+        List<StatusRow> rows = new ArrayList<>();
+        for (String line : output.split("\\R")) {
+            if (line == null || line.isBlank() || line.length() < 4) {
+                continue;
+            }
+            String code = line.substring(0, 2);
+            String path = line.substring(3).trim();
+            int rename = path.indexOf(" -> ");
+            path = rename >= 0 ? path.substring(rename + 4).trim() : path;
+            if (!path.isBlank() && !RuntimeArtifactFilter.isRuntimeArtifact(path)) {
+                rows.add(new StatusRow(code, path));
+            }
+        }
+        return rows;
+    }
+
+    private String buildDiffStat(Path root, List<StatusRow> rows) {
+        List<String> trackedPaths = rows.stream()
+                .filter(row -> !row.untracked())
+                .map(StatusRow::path)
+                .distinct()
+                .toList();
+        StringBuilder sb = new StringBuilder();
+        if (!trackedPaths.isEmpty()) {
+            List<String> args = new ArrayList<>();
+            args.add("diff");
+            args.add("--stat");
+            args.add("--");
+            args.addAll(trackedPaths);
+            String stat = git(root, args.toArray(String[]::new));
+            if (!stat.isBlank()) {
+                sb.append(stat.stripTrailing());
+            }
+        }
+        for (StatusRow row : rows) {
+            if (row.untracked()) {
+                if (sb.length() > 0) {
+                    sb.append("\n");
+                }
+                sb.append(" ").append(row.path()).append(" | new file");
+            }
+        }
+        return sb.toString();
+    }
+
+    private String buildDiffPatch(Path root, List<StatusRow> rows) {
+        StringBuilder sb = new StringBuilder();
+        List<String> trackedPaths = rows.stream()
+                .filter(row -> !row.untracked())
+                .map(StatusRow::path)
+                .distinct()
+                .toList();
+        if (!trackedPaths.isEmpty()) {
+            List<String> args = new ArrayList<>();
+            args.add("diff");
+            args.add("--");
+            args.addAll(trackedPaths);
+            String patch = git(root, args.toArray(String[]::new));
+            if (!patch.isBlank()) {
+                sb.append(patch.stripTrailing()).append("\n");
+            }
+        }
+        for (StatusRow row : rows) {
+            if (!row.untracked()) {
+                continue;
+            }
+            Path file = root.resolve(row.path()).normalize();
+            if (!file.startsWith(root)) {
+                sb.append("+[untracked file path escapes workspace]\n");
+                continue;
+            }
+            sb.append("\ndiff --git a/").append(row.path()).append(" b/").append(row.path()).append("\n");
+            sb.append("new file mode 100644\n--- /dev/null\n+++ b/").append(row.path()).append("\n");
+            try {
+                if (java.nio.file.Files.isRegularFile(file)) {
+                    for (String line : java.nio.file.Files.readAllLines(file, StandardCharsets.UTF_8).stream().limit(200).toList()) {
+                        sb.append("+").append(line).append("\n");
+                    }
+                } else {
+                    sb.append("+[untracked non-regular file]\n");
+                }
+            } catch (Exception e) {
+                sb.append("+[untracked file content omitted]\n");
+            }
+        }
+        return sb.toString();
     }
 
     private void requireManagedWorktree(WorkspaceSession session) {
@@ -150,6 +244,12 @@ public class WorkspaceLifecycleService {
             stat = stat != null ? stat : "";
             changedFiles = changedFiles != null ? List.copyOf(changedFiles) : List.of();
             patch = patch != null ? patch : "";
+        }
+    }
+
+    private record StatusRow(String code, String path) {
+        boolean untracked() {
+            return code.startsWith("??") || code.startsWith("A ") || code.startsWith(" A");
         }
     }
 }

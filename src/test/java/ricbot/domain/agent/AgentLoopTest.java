@@ -164,6 +164,14 @@ public class AgentLoopTest {
         assertTrue(dream.getContent().contains("未启用"));
         assertEquals(0, modelCalls.get());
 
+        OutboundMessage missingReport = loop.processDirect("/team report teamtask_missing", "cli:direct");
+        assertTrue(missingReport.getContent().contains("team error:"), missingReport.getContent());
+        assertEquals(0, modelCalls.get());
+
+        OutboundMessage unknownSlash = loop.processDirect("/definitely-unknown", "cli:direct");
+        assertTrue(unknownSlash.getContent().contains("command error: unknown command"), unknownSlash.getContent());
+        assertEquals(0, modelCalls.get());
+
         loop.processDirect("hello", "cli:direct");
         assertEquals(1, modelCalls.get());
         assertFalse(sessionManager.getOrCreate("cli:direct").getMessages().isEmpty());

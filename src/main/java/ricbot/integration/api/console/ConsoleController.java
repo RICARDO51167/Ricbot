@@ -266,8 +266,8 @@ public final class ConsoleController {
                     data, List.of());
         } catch (IllegalStateException e) {
             String message = e.getMessage() != null ? e.getMessage() : "";
-            if (message.contains("no changes")) {
-                throw new ConsoleConflictException("workspace has no changes to create a ChangeSet: " + session.id());
+            if (message.contains("no changes") || message.contains("no user changes")) {
+                throw new ConsoleConflictException("no user changes found; workspace has no changes to create a ChangeSet: " + session.id());
             }
             throw e;
         }

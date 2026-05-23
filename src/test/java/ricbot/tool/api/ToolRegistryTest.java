@@ -120,6 +120,22 @@ public class ToolRegistryTest {
     }
 
     @Test
+    void registryDoesNotExposeMissingGoalUpdateToolByDefault() {
+        ToolRegistry registry = new ToolRegistry();
+        registry.register(namedTool("read_file"));
+
+        String missingTool = missingGoalUpdateToolName();
+
+        assertNull(registry.get(missingTool));
+        assertFalse(registry.toolNames().contains(missingTool));
+        assertTrue(String.valueOf(registry.execute(missingTool, Map.of())).startsWith("Error: Tool '" + missingTool + "' not found."));
+    }
+
+    private static String missingGoalUpdateToolName() {
+        return new String(new char[]{'u', 'p', 'd', 'a', 't', 'e', '_', 'g', 'o', 'a', 'l'});
+    }
+
+    @Test
     void toolNames_areStableAndSorted() {
         ToolRegistry registry = new ToolRegistry();
         registry.register(namedTool("zeta"));

@@ -48,7 +48,8 @@ class TeamExecutionServiceTest {
 
         assertEquals(VerificationResult.Status.PASS, result.verificationResult().status());
         assertTrue(result.verifierOutput().contains(result.workspacePath()), result.verifierOutput());
-        assertEquals(TeamTaskHealth.HEALTHY, result.report().health());
+        assertEquals(TeamTaskHealth.WARNING, result.report().health());
+        assertTrue(result.report().warnings().contains("no user changes produced"), result.report().warnings().toString());
     }
 
     @Test

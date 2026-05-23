@@ -655,13 +655,24 @@ class AgentCommandsTest {
         assertTrue(workspaceStatus.contains(workspaceId), workspaceStatus);
         String targetedStatus = router.dispatch(context("/workspace status " + taskId, sessionManager)).get().getContent();
         assertTrue(targetedStatus.contains("workspace status " + workspaceId), targetedStatus);
+        Files.createDirectories(Path.of(workspacePath).resolve("notes"));
+        Files.writeString(Path.of(workspacePath).resolve("notes/index.json"), "{}\n");
+        String runtimeOnlyDiff = router.dispatch(context("/workspace diff " + taskId, sessionManager)).get().getContent();
+        assertTrue(runtimeOnlyDiff.contains("changedFiles: none"), runtimeOnlyDiff);
+        assertTrue(runtimeOnlyDiff.contains("No diff."), runtimeOnlyDiff);
+        assertFalse(runtimeOnlyDiff.contains("notes/index.json"), runtimeOnlyDiff);
+        String runtimeOnlyChangeSet = router.dispatch(context("/change create " + taskId, sessionManager)).get().getContent();
+        assertEquals("no user changes found", runtimeOnlyChangeSet);
+
         Files.writeString(Path.of(workspacePath).resolve("README.md"), "initial\npost run change\n");
         String diff = router.dispatch(context("/workspace diff " + taskId, sessionManager)).get().getContent();
         assertTrue(diff.contains("post run change"), diff);
         assertTrue(diff.contains("changedFiles: README.md"), diff);
+        assertFalse(diff.contains("notes/index.json"), diff);
         String changeSet = router.dispatch(context("/change create " + taskId, sessionManager)).get().getContent();
         assertTrue(changeSet.contains("workspaceSessionId: " + workspaceId), changeSet);
         assertTrue(changeSet.contains("changedFiles: README.md"), changeSet);
+        assertFalse(changeSet.contains("notes/index.json"), changeSet);
         String changeSetJson = router.dispatch(context("/change create " + taskId + " --json", sessionManager)).get().getContent();
         assertTrue(changeSetJson.contains("\"workspaceSessionId\":\"" + workspaceId + "\""), changeSetJson);
         String taskTrace = router.dispatch(context("/trace show " + taskId, sessionManager)).get().getContent();
@@ -680,6 +691,10 @@ class AgentCommandsTest {
         assertEquals("initial\n", Files.readString(workspace.resolve("README.md")));
         String report = router.dispatch(context("/team report " + taskId, sessionManager)).get().getContent();
         assertTrue(report.contains("team task report"), report);
+        String reportAgain = router.dispatch(context("/team report " + taskId, sessionManager)).get().getContent();
+        assertEquals(report, reportAgain);
+        assertFalse(reportAgain.contains("refusing to clean unsafe workspace"), reportAgain);
+        assertFalse(reportAgain.toLowerCase(java.util.Locale.ROOT).contains("eval report"), reportAgain);
     }
 
     @Test

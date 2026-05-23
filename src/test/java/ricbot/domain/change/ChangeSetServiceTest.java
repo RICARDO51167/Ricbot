@@ -68,6 +68,40 @@ class ChangeSetServiceTest {
     }
 
     @Test
+    void createFromWorkspaceIgnoresRuntimeArtifacts(@TempDir Path workspace) throws Exception {
+        initGitRepo(workspace);
+        Path worktree = workspace.resolve(".workspaces").resolve("workspace_runtime");
+        git(workspace, "worktree", "add", "-b", "ricbot/workspace_runtime", worktree.toString());
+        Files.createDirectories(worktree.resolve("notes"));
+        Files.writeString(worktree.resolve("notes/index.json"), "{}\n");
+        Files.writeString(worktree.resolve("session.json"), "{}\n");
+        ChangeSetService service = new ChangeSetService(workspace);
+
+        IllegalStateException error = assertThrows(IllegalStateException.class,
+                () -> service.createFromWorkspace("workspace_runtime", worktree, "cli:direct", "", ""));
+
+        assertEquals("no user changes found", error.getMessage());
+        assertFalse(Files.exists(workspace.resolve(".changesets")));
+    }
+
+    @Test
+    void createFromWorkspaceIncludesUserChangesWhenRuntimeArtifactsExist(@TempDir Path workspace) throws Exception {
+        initGitRepo(workspace);
+        Path worktree = workspace.resolve(".workspaces").resolve("workspace_mixed");
+        git(workspace, "worktree", "add", "-b", "ricbot/workspace_mixed", worktree.toString());
+        Files.createDirectories(worktree.resolve("notes"));
+        Files.writeString(worktree.resolve("notes/index.json"), "{}\n");
+        Files.writeString(worktree.resolve("README.md"), "initial\nuser change\n");
+        ChangeSetService service = new ChangeSetService(workspace);
+
+        GitChangeSet changeSet = service.createFromWorkspace("workspace_mixed", worktree, "cli:direct", "", "");
+
+        assertEquals(List.of("README.md"), changeSet.changedFiles());
+        assertTrue(changeSet.diffPatch().contains("user change"), changeSet.diffPatch());
+        assertFalse(changeSet.diffPatch().contains("notes/index.json"), changeSet.diffPatch());
+    }
+
+    @Test
     void attachVerifierAndApprovePersistStatus(@TempDir Path workspace) throws Exception {
         initGitRepo(workspace);
         Files.writeString(workspace.resolve("README.md"), "initial\nchanged\n");

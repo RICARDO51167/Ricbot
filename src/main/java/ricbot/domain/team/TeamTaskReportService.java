@@ -23,9 +23,11 @@ public class TeamTaskReportService {
         int completed = safe.appliedCount();
         int failed = safe.failedCount();
         int pending = Math.max(0, safe.totalSteps() - completed - failed);
-        TeamTaskStatus status = status(safe, completed, failed, pending);
-        TeamTaskHealth health = health(safe, completed, failed);
-        List<String> actions = suggestedNextActions(safe, completed, failed, pending);
+        List<String> reportWarnings = reportWarnings(safe);
+        StepAuditSummary reportSummary = reportWarnings.equals(safe.warnings()) ? safe : safe.withWarnings(reportWarnings);
+        TeamTaskStatus status = status(reportSummary, completed, failed, pending);
+        TeamTaskHealth health = health(reportSummary, completed, failed);
+        List<String> actions = suggestedNextActions(reportSummary, completed, failed, pending);
         return new TeamTaskReport(
                 resolvedSessionId,
                 safe.taskId(),
@@ -41,7 +43,7 @@ public class TeamTaskReportService {
                 safe.latestChangeSetId(),
                 safe.latestVerificationStatus(),
                 safe.durationMillis(),
-                safe.warnings(),
+                reportWarnings,
                 actions,
                 Map.of(
                         "auditHealth", safe.auditHealth().name(),
@@ -86,6 +88,9 @@ public class TeamTaskReportService {
         if (failed > 0 || verifierFailed(summary.latestVerificationStatus())) {
             return TeamTaskHealth.CRITICAL;
         }
+        if (noUserChangesProduced(summary)) {
+            return TeamTaskHealth.WARNING;
+        }
         if ("PASS".equalsIgnoreCase(clean(summary.latestVerificationStatus()))) {
             return TeamTaskHealth.HEALTHY;
         }
@@ -105,7 +110,12 @@ public class TeamTaskReportService {
         List<String> actions = new ArrayList<>();
         if (summary.totalSteps() == 0 || containsWarning(summary.warnings(), "no implementation steps found")) {
             if (!summary.latestVerificationStatus().isBlank()) {
-                actions.add("Review /team audit " + summary.taskId() + " --compact and continue with /change create if workspace diff exists.");
+                if (noUserChangesProduced(summary)) {
+                    actions.add("Current run only planned/verified and produced no user changes; review /team audit "
+                            + summary.taskId() + " --compact and rerun worker steps before /change create.");
+                } else {
+                    actions.add("Review /team audit " + summary.taskId() + " --compact and continue with /change create if workspace diff exists.");
+                }
                 return List.copyOf(actions);
             }
             actions.add("Run /team plan-steps " + summary.taskId() + " to generate implementation steps.");
@@ -133,6 +143,24 @@ public class TeamTaskReportService {
             actions.add("Review /team audit " + summary.taskId() + " --compact for the next step.");
         }
         return List.copyOf(actions);
+    }
+
+    private List<String> reportWarnings(StepAuditSummary summary) {
+        List<String> warnings = new ArrayList<>(summary.warnings());
+        if (noUserChangesProduced(summary) && !containsWarning(warnings, "no user changes produced")) {
+            warnings.add("no user changes produced");
+        }
+        return List.copyOf(warnings);
+    }
+
+    private boolean noUserChangesProduced(StepAuditSummary summary) {
+        return summary.totalSteps() == 0
+                && summary.latestChangeSetId().isBlank()
+                && summary.linkedChangeSetIds().isEmpty()
+                && containsWarning(summary.warnings(), "no implementation steps found")
+                && (!summary.latestVerificationStatus().isBlank()
+                || !summary.latestEvent().isBlank()
+                || summary.linkedAuditEventsCount() > 0);
     }
 
     private boolean hasBlockingWarning(List<String> warnings) {

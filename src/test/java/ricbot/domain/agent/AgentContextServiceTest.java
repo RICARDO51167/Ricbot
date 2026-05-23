@@ -14,6 +14,7 @@ import ricbot.tool.api.ToolRegistry;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -165,5 +166,40 @@ class AgentContextServiceTest {
 
         assertTrue(request.combinedContext().contains("## Loaded Skills"), request.combinedContext());
         assertTrue(request.combinedContext().contains("Demo skill body"), request.combinedContext());
+    }
+
+    @Test
+    void bundledRuntimePromptResourcesDoNotRequireMissingGoalUpdateTool() throws Exception {
+        Path root = Path.of("").toAbsolutePath().normalize();
+        List<Path> roots = List.of(
+                root.resolve("src/main/resources"),
+                root.resolve("docs")
+        );
+        String missingTool = missingGoalUpdateToolName();
+        List<String> hits = new ArrayList<>();
+
+        for (Path scanRoot : roots) {
+            if (!Files.isDirectory(scanRoot)) {
+                continue;
+            }
+            try (var stream = Files.walk(scanRoot)) {
+                for (Path file : stream.filter(Files::isRegularFile).toList()) {
+                    String name = file.getFileName().toString();
+                    if (!(name.endsWith(".md") || name.endsWith(".txt") || name.endsWith(".json") || name.endsWith(".html"))) {
+                        continue;
+                    }
+                    String content = Files.readString(file);
+                    if (content.contains(missingTool)) {
+                        hits.add(root.relativize(file) + " contains " + missingTool);
+                    }
+                }
+            }
+        }
+
+        assertTrue(hits.isEmpty(), String.join("\n", hits));
+    }
+
+    private static String missingGoalUpdateToolName() {
+        return new String(new char[]{'u', 'p', 'd', 'a', 't', 'e', '_', 'g', 'o', 'a', 'l'});
     }
 }

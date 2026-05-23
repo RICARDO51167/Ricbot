@@ -688,6 +688,9 @@ final class AgentCommands {
                 default -> completedReply(ctx, "用法：/change create [taskId|workspaceId] [--json]|status|diff|commit-message|approve|commit [--message \"...\"]|rollback [--execute]");
             };
         } catch (IllegalArgumentException | IllegalStateException e) {
+            if ("no user changes found".equalsIgnoreCase(trim(e.getMessage()))) {
+                return completedReply(ctx, "no user changes found");
+            }
             return completedReply(ctx, "change error: " + e.getMessage());
         }
     }
@@ -1951,6 +1954,9 @@ final class AgentCommands {
             ricbot.domain.workspace.WorkspaceSession workspaceSession = store.load(id);
             if (workspaceSession == null) {
                 return false;
+            }
+            if (workspaceSession.type() == WorkspaceBackendType.GIT_WORKTREE) {
+                return !new WorkspaceLifecycleService(workspace).diff(id).changedFiles().isEmpty();
             }
             String diff = backendFor(workspaceSession, store).diff(id);
             return diff != null && !diff.isBlank();
