@@ -2,6 +2,7 @@ package ricbot.domain.team;
 
 import ricbot.domain.security.CommandRiskLevel;
 import ricbot.domain.workspace.GitWorktreeWorkspaceBackend;
+import ricbot.domain.workspace.WorkspaceLifecycleService;
 import ricbot.domain.workspace.WorkspaceBackendType;
 import ricbot.domain.workspace.WorkspaceSession;
 import ricbot.domain.workspace.WorkspaceSessionStore;
@@ -21,11 +22,17 @@ public class TeamExecutionService {
     private final Path baseWorkspace;
     private final TeamEngine teamEngine;
     private final WorkspaceSessionStore workspaceStore;
+    private final TeamWorkerRunner workerRunner;
 
     public TeamExecutionService(Path baseWorkspace, TeamEngine teamEngine) {
+        this(baseWorkspace, teamEngine, null);
+    }
+
+    public TeamExecutionService(Path baseWorkspace, TeamEngine teamEngine, TeamWorkerRunner workerRunner) {
         this.baseWorkspace = baseWorkspace.toAbsolutePath().normalize();
         this.teamEngine = teamEngine;
         this.workspaceStore = new WorkspaceSessionStore(this.baseWorkspace);
+        this.workerRunner = workerRunner;
     }
 
     public TeamExecutionResult runUserTask(String teamSessionId, String taskGoal, TeamExecutionOptions options) {
@@ -71,15 +78,13 @@ public class TeamExecutionService {
                 0d,
                 ""
         );
-        WorkerExecutionResult worker = teamEngine.runWorker(task.id(), workerInput);
-        recordAudit(task, StepAuditEventType.STEP_TOOL_APPLIED, "", teamEngine.findTask(task.id()).state().name(),
-                "Worker executed in task workspace.", workspaceSession, Map.of("workerStatus", worker.status(), "workspacePath", executionRoot.toString()));
+        WorkerExecutionResult worker = runWorker(task, workerInput, workspaceSession, executionRoot);
 
-        VerificationRun verificationRun = safeOptions.verify()
+        VerificationRun verificationRun = safeOptions.verify() && worker != null && !"FAILED".equalsIgnoreCase(worker.status())
                 ? runVerifier(task, executionRoot, workspaceSession)
                 : VerificationRun.skipped();
         String diff = workspaceSession != null
-                ? new GitWorktreeWorkspaceBackend(baseWorkspace, workspaceStore).diff(workspaceSession.id())
+                ? new WorkspaceLifecycleService(baseWorkspace).diff(workspaceSession.id()).patch()
                 : git(executionRoot, "diff", "--");
         TeamTaskReport report = teamEngine.taskReport(task.id());
         return new TeamExecutionResult(
@@ -93,6 +98,36 @@ public class TeamExecutionService {
                 diff != null ? diff : "",
                 report
         );
+    }
+
+    private WorkerExecutionResult runWorker(
+            TeamTask task,
+            WorkerExecutionInput workerInput,
+            WorkspaceSession workspaceSession,
+            Path executionRoot
+    ) {
+        if (workspaceSession == null || workerRunner == null || task.role() != TeamRole.DEVELOPER) {
+            WorkerExecutionResult planned = teamEngine.runWorker(task.id(), workerInput);
+            recordAudit(task, StepAuditEventType.STEP_TOOL_APPLIED, "", teamEngine.findTask(task.id()).state().name(),
+                    "Worker executed in task workspace.", workspaceSession,
+                    Map.of("workerStatus", planned.status(), "workspacePath", executionRoot.toString()));
+            return planned;
+        }
+
+        teamEngine.startProducing(task.id());
+        TeamWorkerResult workerResult = workerRunner.run(task, workspaceSession, executionRoot);
+        WorkerExecutionResult worker = workerResult.toWorkerExecutionResult(task, executionRoot.toString(),
+                teamEngine.whiteboard(task.sessionId()).readSummary());
+        teamEngine.recordRoleToolCall(task.id(), worker);
+        teamEngine.submitWorkerResult(task.id(), worker.summary(), worker.artifacts());
+        if (workerResult.status() == TeamWorkerStatus.APPLIED) {
+            teamEngine.recordAppliedChanges(task.id(), workerResult.changedFiles());
+        }
+        recordAudit(task, workerResult.status() == TeamWorkerStatus.FAILED ? StepAuditEventType.STEP_FAILED : StepAuditEventType.STEP_TOOL_APPLIED,
+                "", teamEngine.findTask(task.id()).state().name(),
+                "Team worker completed in task workspace.", workspaceSession,
+                Map.of("workerStatus", worker.status(), "workspacePath", executionRoot.toString(), "changedFiles", workerResult.changedFiles()));
+        return worker;
     }
 
     private VerificationRun runVerifier(TeamTask task, Path executionRoot, WorkspaceSession workspaceSession) {

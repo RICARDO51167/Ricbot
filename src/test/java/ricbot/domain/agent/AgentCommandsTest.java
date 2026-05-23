@@ -19,6 +19,9 @@ import ricbot.domain.session.Session;
 import ricbot.domain.session.SessionManager;
 import ricbot.domain.team.TeamEngine;
 import ricbot.domain.team.TeamTask;
+import ricbot.domain.team.TeamWorkerResult;
+import ricbot.domain.team.TeamWorkerRunner;
+import ricbot.domain.team.TeamWorkerStatus;
 import ricbot.domain.team.VerificationResult;
 import ricbot.domain.trace.TraceEventType;
 import ricbot.domain.trace.TraceStore;
@@ -698,6 +701,44 @@ class AgentCommandsTest {
     }
 
     @Test
+    void teamRunWorktreeUsesWorkerRunnerToApplyUserDiff(@TempDir Path workspace) throws Exception {
+        initGitRepo(workspace);
+        Files.writeString(workspace.resolve("mvnw"), "#!/bin/sh\necho ok\n");
+        git(workspace, "add", "mvnw");
+        git(workspace, "commit", "-m", "add mvnw");
+        SessionManager sessionManager = new SessionManager(workspace);
+        MemoryStore memoryStore = new MemoryStore(workspace);
+        TeamWorkerRunner runner = (task, workspaceSession, root) -> {
+            try {
+                Files.writeString(root.resolve("README.md"), "initial\nteam worker applied\n");
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+            return new TeamWorkerResult(TeamWorkerStatus.APPLIED, List.of("README.md"),
+                    "Updated README.md", List.of("APPLY_CHANGE README.md"), "", 9, "run_fake", "");
+        };
+        AgentCommands commands = commands(sessionManager, memoryStore, workspace, runner);
+        CommandRouter router = new CommandRouter();
+        commands.register(router);
+
+        String result = router.dispatch(context("/team run 给 README 增加一个很小的说明性修正 --worktree --verify", sessionManager)).get().getContent();
+
+        assertTrue(result.contains("workerStatus: APPLIED"), result);
+        assertTrue(result.contains("reportHealth: HEALTHY"), result);
+        String taskId = lineValue(result, "taskId:");
+        String diff = router.dispatch(context("/workspace diff " + taskId, sessionManager)).get().getContent();
+        assertTrue(diff.contains("README.md"), diff);
+        assertTrue(diff.contains("team worker applied"), diff);
+        String report = router.dispatch(context("/team report " + taskId, sessionManager)).get().getContent();
+        assertFalse(report.contains("no user changes produced"), report);
+        String changeSet = router.dispatch(context("/change create " + taskId, sessionManager)).get().getContent();
+        assertTrue(changeSet.contains("changeset created"), changeSet);
+        assertTrue(changeSet.contains("changedFiles: README.md"), changeSet);
+        assertFalse(changeSet.contains("notes/index.json"), changeSet);
+        assertEquals("initial\n", Files.readString(workspace.resolve("README.md")));
+    }
+
+    @Test
     void workspaceCommandsCreateLocalAndExposeContextSource(@TempDir Path workspace) throws Exception {
         SessionManager sessionManager = new SessionManager(workspace);
         MemoryStore memoryStore = new MemoryStore(workspace);
@@ -1364,6 +1405,28 @@ class AgentCommandsTest {
                 msg -> "cli:direct",
                 key -> List.<Future<?>>of(),
                 (key, reason) -> {}
+        );
+    }
+
+    private static AgentCommands commands(
+            SessionManager sessionManager,
+            MemoryStore memoryStore,
+            Path workspace,
+            TeamWorkerRunner teamWorkerRunner
+    ) {
+        return new AgentCommands(
+                sessionManager,
+                memoryStore,
+                null,
+                new Config.DreamConfig(),
+                "model",
+                workspace,
+                msg -> "cli:direct",
+                key -> List.<Future<?>>of(),
+                (key, reason) -> {},
+                new ApprovalService(),
+                null,
+                teamWorkerRunner
         );
     }
 

@@ -3,6 +3,7 @@ package ricbot.domain.team;
 import ricbot.domain.agent.SessionRuntimeKeys;
 import ricbot.domain.policy.PolicyAwareToolExecutor;
 import ricbot.domain.policy.PolicyEngine;
+import ricbot.domain.security.CommandRiskLevel;
 import ricbot.domain.session.Session;
 import ricbot.domain.trace.TraceEvent;
 import ricbot.domain.trace.TraceEventType;
@@ -331,6 +332,55 @@ public class TeamEngine {
             appendEvent(TeamEvent.of(task.sessionId(), task.id(), task.role(), "IMPLEMENTATION_STEP_CREATED", step.id(), step.toMap()));
             traceImplementationStep(TraceEventType.IMPLEMENTATION_STEP_CREATED, step, "");
             recordStepAudit(StepAuditRecord.of(step, StepAuditEventType.STEP_CREATED, "", "Implementation step created."));
+        }
+        return created;
+    }
+
+    public List<PendingImplementationStep> recordAppliedChanges(String taskId, List<String> changedFiles) {
+        TeamTask task = requireTask(taskId);
+        List<String> files = changedFiles != null
+                ? changedFiles.stream().filter(file -> file != null && !file.isBlank()).map(String::trim).distinct().toList()
+                : List.of();
+        if (files.isEmpty()) {
+            return List.of();
+        }
+        List<PendingImplementationStep> existing = new ArrayList<>(store.loadImplementationSteps(task.sessionId()));
+        List<PendingImplementationStep> created = new ArrayList<>();
+        int orderBase = existing.size() + 1;
+        for (String file : files) {
+            boolean alreadyRecorded = existing.stream()
+                    .anyMatch(step -> task.id().equals(step.taskId())
+                            && file.equals(step.targetPath())
+                            && step.status() == ImplementationStepStatus.APPLIED);
+            if (alreadyRecorded) {
+                continue;
+            }
+            PendingImplementationStep step = new PendingImplementationStep(
+                    null,
+                    task.sessionId(),
+                    task.id(),
+                    TeamRole.DEVELOPER,
+                    ImplementationStepType.EDIT,
+                    file,
+                    "",
+                    "",
+                    "",
+                    "APPLY_CHANGE " + file,
+                    CommandRiskLevel.SAFE,
+                    false,
+                    Map.of("source", "team-worker", "changedFile", file),
+                    ImplementationStepStatus.APPLIED,
+                    null,
+                    null
+            ).withDependencies(orderBase + created.size(), List.of(), List.of(),
+                    "Team worker already applied this file change.", List.of());
+            created.add(step);
+            recordStepAudit(StepAuditRecord.of(step, StepAuditEventType.STEP_CREATED, "", "Applied change step created from worker diff."));
+            recordStepAudit(StepAuditRecord.of(step, StepAuditEventType.STEP_TOOL_APPLIED, "", "Worker applied file change."));
+        }
+        if (!created.isEmpty()) {
+            existing.addAll(created);
+            store.saveImplementationSteps(task.sessionId(), existing);
         }
         return created;
     }

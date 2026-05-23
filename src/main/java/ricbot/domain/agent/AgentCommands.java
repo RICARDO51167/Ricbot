@@ -46,6 +46,7 @@ import ricbot.domain.team.TeamRole;
 import ricbot.domain.team.TeamSession;
 import ricbot.domain.team.TeamTask;
 import ricbot.domain.team.TeamTaskReport;
+import ricbot.domain.team.TeamWorkerRunner;
 import ricbot.domain.team.ImplementationStepGate;
 import ricbot.domain.team.ImplementationStepStatus;
 import ricbot.domain.team.ImplementationStepType;
@@ -103,6 +104,7 @@ final class AgentCommands {
     private final BiConsumer<String, String> sessionInterruptMarker;
     private final ApprovalService approvalService;
     private final ToolRegistry toolRegistry;
+    private final TeamWorkerRunner teamWorkerRunner;
     private final TeamEngine teamEngine;
     private final TraceStore traceStore;
 
@@ -150,6 +152,24 @@ final class AgentCommands {
             ApprovalService approvalService,
             ToolRegistry toolRegistry
     ) {
+        this(sessionManager, memoryStore, dream, dreamConfig, model, workspace, sessionKeyResolver,
+                activeTaskRemover, sessionInterruptMarker, approvalService, toolRegistry, null);
+    }
+
+    AgentCommands(
+            SessionManager sessionManager,
+            MemoryStore memoryStore,
+            Dream dream,
+            Config.DreamConfig dreamConfig,
+            String model,
+            Path workspace,
+            Function<InboundMessage, String> sessionKeyResolver,
+            Function<String, List<Future<?>>> activeTaskRemover,
+            BiConsumer<String, String> sessionInterruptMarker,
+            ApprovalService approvalService,
+            ToolRegistry toolRegistry,
+            TeamWorkerRunner teamWorkerRunner
+    ) {
         this.sessionManager = sessionManager;
         this.memoryStore = memoryStore;
         this.dream = dream;
@@ -163,6 +183,7 @@ final class AgentCommands {
         this.approvalService = approvalService != null ? approvalService : new ApprovalService();
         this.approvalService.setTraceStore(this.traceStore);
         this.toolRegistry = toolRegistry;
+        this.teamWorkerRunner = teamWorkerRunner;
         this.teamEngine = new TeamEngine(this.workspace, this.traceStore);
     }
 
@@ -1331,7 +1352,7 @@ final class AgentCommands {
         }
         Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
         String activeTeamId = resolveActiveTeamSessionId(session);
-        TeamExecutionService service = new TeamExecutionService(workspace, teamEngine);
+        TeamExecutionService service = new TeamExecutionService(workspace, teamEngine, teamWorkerRunner);
         TeamExecutionService.TeamExecutionResult result;
         if (taskValue.startsWith("teamtask_") && !taskValue.contains(" ")) {
             result = service.runTask(taskValue, new TeamExecutionService.TeamExecutionOptions(useWorktree, verify));

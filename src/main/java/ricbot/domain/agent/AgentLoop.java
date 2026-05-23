@@ -340,7 +340,18 @@ public class AgentLoop {
                 activeTasks::remove,
                 this::markSessionInterrupted,
                 this.approvalService,
-                this.tools
+                this.tools,
+                new AgentTeamWorkerRunner(
+                        this.workspace,
+                        this.runner,
+                        this.model,
+                        Math.min(8, Math.max(1, this.maxIterations)),
+                        this.maxToolResultChars,
+                        this.providerRetryMode,
+                        this.contextWindowTokens,
+                        this.contextBlockLimit,
+                        this.providerCapability
+                )
         );
 
         // 初始化并发控制

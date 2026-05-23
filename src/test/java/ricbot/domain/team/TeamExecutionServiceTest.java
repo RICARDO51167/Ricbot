@@ -7,6 +7,7 @@ import ricbot.domain.workspace.WorkspaceSessionStore;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -50,6 +51,65 @@ class TeamExecutionServiceTest {
         assertTrue(result.verifierOutput().contains(result.workspacePath()), result.verifierOutput());
         assertEquals(TeamTaskHealth.WARNING, result.report().health());
         assertTrue(result.report().warnings().contains("no user changes produced"), result.report().warnings().toString());
+    }
+
+    @Test
+    void appliedWorkerProducesHealthyReportAndImplementationSteps(@TempDir Path workspace) throws Exception {
+        initGitRepo(workspace, "echo ok");
+        TeamEngine engine = new TeamEngine(workspace);
+        TeamExecutionService service = new TeamExecutionService(workspace, engine, (task, session, root) -> {
+            try {
+                Files.writeString(root.resolve("README.md"), "initial\nworker applied\n");
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+            return new TeamWorkerResult(TeamWorkerStatus.APPLIED, List.of("README.md"),
+                    "Updated README.md", List.of("APPLY_CHANGE README.md"), "", 12, "run_fake", "");
+        });
+
+        TeamExecutionService.TeamExecutionResult result = service.runUserTask("", "Update README.md",
+                new TeamExecutionService.TeamExecutionOptions(true, true));
+
+        assertEquals("APPLIED", result.workerResult().status());
+        assertEquals(VerificationResult.Status.PASS, result.verificationResult().status());
+        assertEquals(TeamTaskHealth.HEALTHY, result.report().health());
+        assertFalse(result.report().warnings().contains("no user changes produced"), result.report().warnings().toString());
+        assertTrue(result.report().totalSteps() > 0, result.report().toString());
+        assertTrue(result.report().suggestedNextActions().toString().contains("/change create"), result.report().suggestedNextActions().toString());
+        assertTrue(result.diff().contains("worker applied"), result.diff());
+        assertEquals("initial\n", Files.readString(workspace.resolve("README.md")));
+    }
+
+    @Test
+    void noChangesWorkerProducesWarningReport(@TempDir Path workspace) throws Exception {
+        initGitRepo(workspace, "echo ok");
+        TeamEngine engine = new TeamEngine(workspace);
+        TeamExecutionService service = new TeamExecutionService(workspace, engine,
+                (task, session, root) -> new TeamWorkerResult(TeamWorkerStatus.NO_CHANGES, List.of(),
+                        "No edits were needed.", List.of(), "", 10, "run_fake", ""));
+
+        TeamExecutionService.TeamExecutionResult result = service.runUserTask("", "No-op task",
+                new TeamExecutionService.TeamExecutionOptions(true, true));
+
+        assertEquals("NO_CHANGES", result.workerResult().status());
+        assertEquals(TeamTaskHealth.WARNING, result.report().health());
+        assertTrue(result.report().warnings().contains("no user changes produced"), result.report().warnings().toString());
+    }
+
+    @Test
+    void failedWorkerSkipsVerifierAndKeepsWarningOrCriticalReport(@TempDir Path workspace) throws Exception {
+        initGitRepo(workspace, "echo ok");
+        TeamEngine engine = new TeamEngine(workspace);
+        TeamExecutionService service = new TeamExecutionService(workspace, engine,
+                (task, session, root) -> TeamWorkerResult.failed("fake worker failure", 10));
+
+        TeamExecutionService.TeamExecutionResult result = service.runUserTask("", "Fail worker",
+                new TeamExecutionService.TeamExecutionOptions(true, true));
+
+        assertEquals("FAILED", result.workerResult().status());
+        assertEquals(null, result.verificationResult());
+        assertTrue(result.report().health() == TeamTaskHealth.WARNING || result.report().health() == TeamTaskHealth.CRITICAL,
+                result.report().toString());
     }
 
     @Test

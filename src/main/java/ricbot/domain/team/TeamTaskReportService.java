@@ -134,7 +134,11 @@ public class TeamTaskReportService {
             actions.add(next);
         }
         if (completed == summary.totalSteps() && "PASS".equalsIgnoreCase(summary.latestVerificationStatus())) {
-            actions.add("Generate /summary or prepare a commit message.");
+            if (summary.latestChangeSetId().isBlank() && summary.linkedChangeSetIds().isEmpty()) {
+                actions.add("Review /workspace diff " + summary.taskId() + " and run /change create " + summary.taskId() + ".");
+            } else {
+                actions.add("Generate /summary or prepare a commit message.");
+            }
         }
         if (!summary.warnings().isEmpty()) {
             actions.add("Resolve report warnings before treating the task as complete.");

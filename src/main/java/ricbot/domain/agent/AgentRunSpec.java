@@ -58,6 +58,10 @@ public class AgentRunSpec {
     private String providerRetryMode = "standard";
     // 静态/启发式 Provider capability，用于运行时保守降级。
     private ProviderCapability providerCapability;
+    // 运行模式元数据；普通 agent 模式可为空，team-worker 等适配层用于审计与测试。
+    private Map<String, Object> metadata = new LinkedHashMap<>();
+    // 适配层声明的允许工具名；实际限制由传入的 ToolRegistry 决定。
+    private List<String> allowedTools = new ArrayList<>();
 
     /**
      * checkpoint 回调，用于保存中间状态
