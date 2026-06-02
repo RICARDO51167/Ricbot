@@ -144,20 +144,25 @@ public class TeamExecutionService {
         String command = Files.exists(executionRoot.resolve("mvnw"))
                 ? "sh ./mvnw -q test"
                 : "git diff --name-only && git status --short";
+        long startedAt = System.nanoTime();
         Object raw = registry.execute("exec", Map.of(
                 "command", command,
                 "working_dir", executionRoot.toString(),
                 "timeout", 600
         ));
+        long durationMillis = Math.max(0L, (System.nanoTime() - startedAt) / 1_000_000L);
         String output = raw != null ? String.valueOf(raw) : "";
         boolean failed = output.startsWith("[退出码") || output.startsWith("错误") || output.contains("BUILD FAILURE");
         Integer exitCode = parseExitCode(output);
         if (failed && exitCode == null) {
             exitCode = 1;
+        } else if (!failed && exitCode == null) {
+            exitCode = 0;
         }
+        List<DiffEvidence> changedFiles = diffEvidence(executionRoot, workspaceSession);
         VerificationEvidence evidence = new VerificationEvidence(
-                List.of(new ExecutedTestEvidence(command, exitCode, !failed, outputSummary(output), null, Instant.now())),
-                diffEvidence(executionRoot, workspaceSession),
+                List.of(new ExecutedTestEvidence(command, exitCode, !failed, outputSummary(output), durationMillis, Instant.now())),
+                changedFiles,
                 List.of()
         );
         VerificationInput input = new VerificationInput(
@@ -175,12 +180,20 @@ public class TeamExecutionService {
         );
         VerificationResult result = verificationService.verify(input);
         TeamTask updated = teamEngine.submitVerification(task.id(), result);
+        Map<String, Object> verifierMetadata = new LinkedHashMap<>();
+        verifierMetadata.put("verificationStatus", result.status().name());
+        verifierMetadata.put("workspacePath", executionRoot.toString());
+        verifierMetadata.put("command", command);
+        verifierMetadata.put("verifierCommand", command);
+        verifierMetadata.put("exitCode", exitCode);
+        verifierMetadata.put("passed", !failed);
+        verifierMetadata.put("durationMillis", durationMillis);
+        verifierMetadata.put("changedFilesCount", changedFiles.size());
+        verifierMetadata.put("verificationDecision", result.status().name());
+        verifierMetadata.put("verifierReason", result.reason());
+        verifierMetadata.put("structuredEvidenceSource", "team-worktree-verifier");
         recordAudit(updated, StepAuditEventType.STEP_VERIFIED, "", updated.state().name(),
-                "Verifier executed in task workspace.", workspaceSession, Map.of(
-                        "verificationStatus", result.status().name(),
-                        "workspacePath", executionRoot.toString(),
-                        "command", command
-                ));
+                "Verifier executed in task workspace.", workspaceSession, verifierMetadata);
         return new VerificationRun(result, output);
     }
 
@@ -197,6 +210,9 @@ public class TeamExecutionService {
                 continue;
             }
             String normalized = path.trim();
+            if (RuntimeArtifactFilter.isRuntimeArtifact(normalized)) {
+                continue;
+            }
             out.add(new DiffEvidence(
                     normalized,
                     "EDIT",
@@ -205,7 +221,7 @@ public class TeamExecutionService {
                     false,
                     isConfigFile(normalized),
                     isSecuritySensitive(normalized),
-                    RuntimeArtifactFilter.isRuntimeArtifact(normalized)
+                    false
             ));
         }
         return out;

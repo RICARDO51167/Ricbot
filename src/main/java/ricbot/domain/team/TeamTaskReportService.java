@@ -1,6 +1,7 @@
 package ricbot.domain.team;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -23,11 +24,20 @@ public class TeamTaskReportService {
         int completed = safe.appliedCount();
         int failed = safe.failedCount();
         int pending = Math.max(0, safe.totalSteps() - completed - failed);
-        List<String> reportWarnings = reportWarnings(safe);
+        Map<String, Object> latestVerifierMetadata = latestVerifierMetadata(safe.taskId());
+        List<String> reportWarnings = reportWarnings(safe, latestVerifierMetadata);
         StepAuditSummary reportSummary = reportWarnings.equals(safe.warnings()) ? safe : safe.withWarnings(reportWarnings);
         TeamTaskStatus status = status(reportSummary, completed, failed, pending);
         TeamTaskHealth health = health(reportSummary, completed, failed);
         List<String> actions = suggestedNextActions(reportSummary, completed, failed, pending);
+        Map<String, Object> compactSummary = new LinkedHashMap<>();
+        compactSummary.put("auditHealth", safe.auditHealth().name());
+        compactSummary.put("createdCount", safe.createdCount());
+        compactSummary.put("updatedCount", safe.updatedCount());
+        compactSummary.put("approvalRequiredCount", safe.approvalRequiredCount());
+        compactSummary.put("toolAppliedCount", safe.toolAppliedCount());
+        compactSummary.put("nextSuggestedStepId", safe.nextSuggestedStepId());
+        compactSummary.putAll(latestVerifierMetadata);
         return new TeamTaskReport(
                 resolvedSessionId,
                 safe.taskId(),
@@ -45,14 +55,7 @@ public class TeamTaskReportService {
                 safe.durationMillis(),
                 reportWarnings,
                 actions,
-                Map.of(
-                        "auditHealth", safe.auditHealth().name(),
-                        "createdCount", safe.createdCount(),
-                        "updatedCount", safe.updatedCount(),
-                        "approvalRequiredCount", safe.approvalRequiredCount(),
-                        "toolAppliedCount", safe.toolAppliedCount(),
-                        "nextSuggestedStepId", safe.nextSuggestedStepId()
-                )
+                compactSummary
         );
     }
 
@@ -91,6 +94,9 @@ public class TeamTaskReportService {
         if (noUserChangesProduced(summary)) {
             return TeamTaskHealth.WARNING;
         }
+        if (verifierNeedsHuman(summary.latestVerificationStatus()) || verifierEvidenceMissing(summary)) {
+            return TeamTaskHealth.WARNING;
+        }
         if ("PASS".equalsIgnoreCase(clean(summary.latestVerificationStatus()))) {
             return TeamTaskHealth.HEALTHY;
         }
@@ -125,7 +131,13 @@ public class TeamTaskReportService {
             actions.add("Inspect failed implementation steps and latest verifier output.");
         }
         if (verifierFailed(summary.latestVerificationStatus())) {
-            actions.add("Review the latest ChangeSet or rerun the worker before verification.");
+            actions.add("Inspect verifier output and rerun the worker before verification.");
+        }
+        if (verifierNeedsHuman(summary.latestVerificationStatus())) {
+            actions.add("Review verifier reason and resolve human-gated evidence before continuing.");
+        }
+        if (verifierEvidenceMissing(summary)) {
+            actions.add("Run /team run-verifier " + summary.taskId() + " before treating the task as complete.");
         }
         if (pending > 0) {
             String next = !summary.nextSuggestedStepId().isBlank()
@@ -149,10 +161,17 @@ public class TeamTaskReportService {
         return List.copyOf(actions);
     }
 
-    private List<String> reportWarnings(StepAuditSummary summary) {
+    private List<String> reportWarnings(StepAuditSummary summary, Map<String, Object> verifierMetadata) {
         List<String> warnings = new ArrayList<>(summary.warnings());
         if (noUserChangesProduced(summary) && !containsWarning(warnings, "no user changes produced")) {
             warnings.add("no user changes produced");
+        }
+        if (verifierEvidenceMissing(summary) && !containsWarning(warnings, "verifier evidence missing")) {
+            warnings.add("verifier evidence missing");
+        }
+        if (verifierNeedsHuman(summary.latestVerificationStatus()) && !containsWarning(warnings, "verifier needs human")) {
+            String reason = stringValue(verifierMetadata.get("verifierReason"));
+            warnings.add("verifier needs human" + (!reason.isBlank() ? ": " + reason : ""));
         }
         return List.copyOf(warnings);
     }
@@ -171,6 +190,14 @@ public class TeamTaskReportService {
         return containsWarning(warnings, "blocked") || containsWarning(warnings, "approval") || containsWarning(warnings, "denied");
     }
 
+    private boolean verifierNeedsHuman(String latestVerifier) {
+        return "NEEDS_HUMAN".equalsIgnoreCase(clean(latestVerifier));
+    }
+
+    private boolean verifierEvidenceMissing(StepAuditSummary summary) {
+        return summary.totalSteps() > 0 && clean(summary.latestVerificationStatus()).isBlank();
+    }
+
     private boolean containsWarning(List<String> warnings, String needle) {
         String lowerNeedle = needle.toLowerCase(Locale.ROOT);
         return warnings != null && warnings.stream()
@@ -181,6 +208,22 @@ public class TeamTaskReportService {
     private boolean verifierFailed(String latestVerifier) {
         String value = clean(latestVerifier).toLowerCase(Locale.ROOT);
         return value.contains("failed") || value.contains("error") || value.contains("reject");
+    }
+
+    private Map<String, Object> latestVerifierMetadata(String taskId) {
+        if (stepAuditService == null || clean(taskId).isBlank()) {
+            return Map.of();
+        }
+        return stepAuditService.listByTask(taskId).stream()
+                .filter(record -> record.eventType() == StepAuditEventType.STEP_VERIFIED)
+                .filter(record -> !record.metadata().isEmpty())
+                .max(java.util.Comparator.comparing(StepAuditRecord::createdAt))
+                .map(StepAuditRecord::metadata)
+                .orElse(Map.of());
+    }
+
+    private String stringValue(Object value) {
+        return value != null ? String.valueOf(value).trim() : "";
     }
 
     private StepAuditSummary emptySummary(String taskId) {

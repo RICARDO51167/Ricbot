@@ -725,11 +725,16 @@ class AgentCommandsTest {
 
         assertTrue(result.contains("workerStatus: APPLIED"), result);
         assertTrue(result.contains("reportHealth: HEALTHY"), result);
+        assertTrue(result.contains("verifierReason: structured evidence passed"), result);
+        assertTrue(result.contains("structuredEvidence: team-worktree-verifier"), result);
+        assertTrue(result.contains("verifierCommand: sh ./mvnw -q test"), result);
         String taskId = lineValue(result, "taskId:");
         String diff = router.dispatch(context("/workspace diff " + taskId, sessionManager)).get().getContent();
         assertTrue(diff.contains("README.md"), diff);
         assertTrue(diff.contains("team worker applied"), diff);
         String report = router.dispatch(context("/team report " + taskId, sessionManager)).get().getContent();
+        assertTrue(report.contains("latestVerifier: PASS"), report);
+        assertTrue(report.contains("structured verifier decision: structured evidence passed"), report);
         assertFalse(report.contains("no user changes produced"), report);
         String changeSet = router.dispatch(context("/change create " + taskId, sessionManager)).get().getContent();
         assertTrue(changeSet.contains("changeset created"), changeSet);

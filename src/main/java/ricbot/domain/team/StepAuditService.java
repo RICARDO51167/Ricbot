@@ -295,6 +295,7 @@ public class StepAuditService {
             payload.put("eventType", record.eventType().name());
             payload.put("beforeStatus", record.beforeStatus());
             payload.put("afterStatus", record.afterStatus());
+            payload.putAll(record.metadata());
             return traceStore.append(new TraceEvent(
                     traceStore.traceIdForSession(record.teamSessionId()),
                     null,

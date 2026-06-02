@@ -2173,6 +2173,7 @@ final class AgentCommands {
                 + "latestEvent: " + (report.latestEvent().isBlank() ? "none" : report.latestEvent()) + "\n"
                 + "latestChangeSet: " + (report.latestChangeSet().isBlank() ? "none" : report.latestChangeSet()) + "\n"
                 + "latestVerifier: " + (report.latestVerifier().isBlank() ? "none" : report.latestVerifier()) + "\n"
+                + verifierReportDetails(report.compactSummary())
                 + "durationMillis: " + report.durationMillis() + "\n"
                 + "warnings: " + renderListInline(report.warnings()) + "\n"
                 + "suggestedNextActions: " + renderListInline(report.suggestedNextActions());
@@ -2186,6 +2187,8 @@ final class AgentCommands {
                 + "workspacePath: " + result.workspacePath() + "\n"
                 + "workerStatus: " + (result.workerResult() != null ? result.workerResult().status() : "none") + "\n"
                 + "verifierStatus: " + (result.verificationResult() != null ? result.verificationResult().status() : "SKIPPED") + "\n"
+                + (result.verificationResult() != null ? "verifierReason: " + result.verificationResult().reason() + "\n" : "")
+                + executionVerifierDetails(result.report())
                 + "reportStatus: " + (result.report() != null ? result.report().status() : "UNKNOWN") + "\n"
                 + "reportHealth: " + (result.report() != null ? result.report().health() : "UNKNOWN") + "\n"
                 + "diffSummary: " + diffSummary(result.diff()) + "\n"
@@ -2193,6 +2196,55 @@ final class AgentCommands {
                 + (!result.verifierOutput().isBlank() ? "verifierOutput: " + abbreviate(result.verifierOutput(), 500) + "\n" : "")
                 + "next: /team report " + result.taskId()
                 + (result.usedWorktree() ? " | /workspace diff " + result.workspaceSessionId() + " | /change create" : "");
+    }
+
+    private String executionVerifierDetails(TeamTaskReport report) {
+        if (report == null) {
+            return "";
+        }
+        Map<String, Object> compact = report.compactSummary();
+        String source = stringValue(compact.get("structuredEvidenceSource"));
+        String command = stringValue(compact.get("verifierCommand"));
+        String changedFilesCount = stringValue(compact.get("changedFilesCount"));
+        StringBuilder sb = new StringBuilder();
+        if (!source.isBlank()) {
+            sb.append("structuredEvidence: ").append(source).append("\n");
+        }
+        if (!command.isBlank()) {
+            sb.append("verifierCommand: ").append(command).append("\n");
+        }
+        if (!changedFilesCount.isBlank()) {
+            sb.append("changedFilesCount: ").append(changedFilesCount).append("\n");
+        }
+        return sb.toString();
+    }
+
+    private String verifierReportDetails(Map<String, Object> compactSummary) {
+        if (compactSummary == null || compactSummary.isEmpty()) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder();
+        String reason = stringValue(compactSummary.get("verifierReason"));
+        String source = stringValue(compactSummary.get("structuredEvidenceSource"));
+        String command = stringValue(compactSummary.get("verifierCommand"));
+        String exitCode = stringValue(compactSummary.get("exitCode"));
+        String changedFilesCount = stringValue(compactSummary.get("changedFilesCount"));
+        if (!reason.isBlank()) {
+            sb.append("structured verifier decision: ").append(reason).append("\n");
+        }
+        if (!source.isBlank()) {
+            sb.append("structuredEvidence: ").append(source).append("\n");
+        }
+        if (!command.isBlank()) {
+            sb.append("verifierCommand: ").append(command).append("\n");
+        }
+        if (!exitCode.isBlank()) {
+            sb.append("verifierExitCode: ").append(exitCode).append("\n");
+        }
+        if (!changedFilesCount.isBlank()) {
+            sb.append("changedFilesCount: ").append(changedFilesCount).append("\n");
+        }
+        return sb.toString();
     }
 
     private String workerDebugSummary(WorkerExecutionResult worker) {
@@ -2916,6 +2968,10 @@ final class AgentCommands {
     private static String abbreviate(String value, int maxChars) {
         String safe = value != null ? value.trim().replaceAll("\\s+", " ") : "";
         return safe.length() <= maxChars ? safe : safe.substring(0, Math.max(0, maxChars)) + "...";
+    }
+
+    private static String stringValue(Object value) {
+        return value != null ? String.valueOf(value).trim() : "";
     }
 
     private static String commandArg(String args, int index) {

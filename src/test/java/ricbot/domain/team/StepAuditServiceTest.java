@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import ricbot.domain.security.CommandRiskLevel;
+import ricbot.domain.trace.TraceEventType;
+import ricbot.domain.trace.TraceStore;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -84,6 +86,30 @@ class StepAuditServiceTest {
         assertEquals(0, summary.totalSteps());
         assertTrue(summary.warnings().contains("no implementation steps found"), summary.warnings().toString());
         assertTrue(new StepAuditService(workspace).renderCompactTaskAudit("missing_task").contains("no implementation steps found"));
+    }
+
+    @Test
+    void verifierStepAuditTraceIncludesStructuredEvidenceMetadata(@TempDir Path workspace) {
+        TraceStore traceStore = new TraceStore(workspace);
+        StepAuditService service = new StepAuditService(workspace, traceStore);
+        service.append(new StepAuditRecord(null, "", "task_1", "team_1",
+                StepAuditEventType.STEP_VERIFIED, "", "DONE",
+                "Verifier executed in task workspace.", "", "", "", "",
+                "PASS", "", null, Map.of(
+                "verifierCommand", "sh ./mvnw -q test",
+                "exitCode", 0,
+                "passed", true,
+                "changedFilesCount", 1,
+                "verificationDecision", "PASS",
+                "structuredEvidenceSource", "team-worktree-verifier"
+        )));
+
+        assertTrue(traceStore.loadEvents(traceStore.traceIdForSession("team_1")).stream()
+                .filter(event -> event.type() == TraceEventType.STEP_AUDIT_RECORDED)
+                .anyMatch(event -> event.payload().toString().contains("exitCode=0")
+                        && event.payload().toString().contains("verificationDecision=PASS")
+                        && event.payload().toString().contains("changedFilesCount=1")),
+                traceStore.loadEvents(traceStore.traceIdForSession("team_1")).toString());
     }
 
     private StepAuditRecord record(String stepId, String taskId, String teamSessionId, StepAuditEventType eventType, String before, String after) {

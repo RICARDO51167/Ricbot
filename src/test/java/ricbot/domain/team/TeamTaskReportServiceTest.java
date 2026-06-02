@@ -41,6 +41,15 @@ class TeamTaskReportServiceTest {
         TeamTaskReport report = service.buildReport("team_1", summary(2, 2, 0, "", List.of()), "goal");
 
         assertEquals(TeamTaskStatus.COMPLETED, report.status());
+        assertEquals(TeamTaskHealth.WARNING, report.health());
+        assertTrue(report.warnings().contains("verifier evidence missing"), report.warnings().toString());
+    }
+
+    @Test
+    void allCompletedWithVerifierPassIsHealthy() {
+        TeamTaskReport report = service.buildReport("team_1", summary(2, 2, 0, "PASS", List.of()), "goal");
+
+        assertEquals(TeamTaskStatus.COMPLETED, report.status());
         assertEquals(TeamTaskHealth.HEALTHY, report.health());
     }
 
@@ -49,7 +58,15 @@ class TeamTaskReportServiceTest {
         TeamTaskReport report = service.buildReport("team_1", summary(2, 2, 0, "REJECT", List.of()), "goal");
 
         assertEquals(TeamTaskHealth.CRITICAL, report.health());
-        assertTrue(report.suggestedNextActions().toString().contains("latest ChangeSet"));
+        assertTrue(report.suggestedNextActions().toString().contains("verifier output"));
+    }
+
+    @Test
+    void verifierNeedsHumanIsWarning() {
+        TeamTaskReport report = service.buildReport("team_1", summary(2, 2, 0, "NEEDS_HUMAN", List.of("high risk diff evidence")), "goal");
+
+        assertEquals(TeamTaskHealth.WARNING, report.health());
+        assertTrue(report.suggestedNextActions().toString().contains("Resolve report warnings"), report.suggestedNextActions().toString());
     }
 
     @Test

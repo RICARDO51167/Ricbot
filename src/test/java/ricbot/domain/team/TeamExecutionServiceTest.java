@@ -81,6 +81,30 @@ class TeamExecutionServiceTest {
     }
 
     @Test
+    void appliedWorkerWithHighRiskDiffNeedsHumanAndWarningReport(@TempDir Path workspace) throws Exception {
+        initGitRepo(workspace, "echo ok");
+        TeamEngine engine = new TeamEngine(workspace);
+        TeamExecutionService service = new TeamExecutionService(workspace, engine, (task, session, root) -> {
+            try {
+                Path target = root.resolve("src/main/java/ricbot/domain/policy/PolicyEngine.java");
+                Files.createDirectories(target.getParent());
+                Files.writeString(target, "package ricbot.domain.policy;\nclass PolicyEngine {}\n");
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+            return new TeamWorkerResult(TeamWorkerStatus.APPLIED, List.of("src/main/java/ricbot/domain/policy/PolicyEngine.java"),
+                    "Updated policy code", List.of("APPLY_CHANGE src/main/java/ricbot/domain/policy/PolicyEngine.java"), "", 12, "run_fake", "");
+        });
+
+        TeamExecutionService.TeamExecutionResult result = service.runUserTask("", "Update policy code",
+                new TeamExecutionService.TeamExecutionOptions(true, true));
+
+        assertEquals(VerificationResult.Status.NEEDS_HUMAN, result.verificationResult().status());
+        assertEquals(TeamTaskHealth.WARNING, result.report().health());
+        assertTrue(result.verificationResult().reason().contains("high risk diff evidence"), result.verificationResult().reason());
+    }
+
+    @Test
     void noChangesWorkerProducesWarningReport(@TempDir Path workspace) throws Exception {
         initGitRepo(workspace, "echo ok");
         TeamEngine engine = new TeamEngine(workspace);
@@ -94,6 +118,28 @@ class TeamExecutionServiceTest {
         assertEquals("NO_CHANGES", result.workerResult().status());
         assertEquals(TeamTaskHealth.WARNING, result.report().health());
         assertTrue(result.report().warnings().contains("no user changes produced"), result.report().warnings().toString());
+    }
+
+    @Test
+    void appliedWorkerWithoutVerifierEvidenceDoesNotProduceHealthyReport(@TempDir Path workspace) throws Exception {
+        initGitRepo(workspace, "echo ok");
+        TeamEngine engine = new TeamEngine(workspace);
+        TeamExecutionService service = new TeamExecutionService(workspace, engine, (task, session, root) -> {
+            try {
+                Files.writeString(root.resolve("README.md"), "initial\nworker applied\n");
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+            return new TeamWorkerResult(TeamWorkerStatus.APPLIED, List.of("README.md"),
+                    "Updated README.md", List.of("APPLY_CHANGE README.md"), "", 12, "run_fake", "");
+        });
+
+        TeamExecutionService.TeamExecutionResult result = service.runUserTask("", "Update README.md without verifier",
+                new TeamExecutionService.TeamExecutionOptions(true, false));
+
+        assertEquals(null, result.verificationResult());
+        assertEquals(TeamTaskHealth.WARNING, result.report().health());
+        assertTrue(result.report().warnings().contains("verifier evidence missing"), result.report().warnings().toString());
     }
 
     @Test
@@ -122,6 +168,7 @@ class TeamExecutionServiceTest {
                 new TeamExecutionService.TeamExecutionOptions(true, true));
 
         assertEquals(VerificationResult.Status.REJECT, result.verificationResult().status());
+        assertTrue(result.verificationResult().reason().contains("failed structured test evidence"), result.verificationResult().reason());
         assertTrue(Files.exists(Path.of(result.workspacePath()).resolve("verifier-output.txt")));
         assertFalse(Files.exists(workspace.resolve("verifier-output.txt")));
         assertTrue(Files.exists(Path.of(result.workspacePath())));
