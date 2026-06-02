@@ -10,6 +10,9 @@ public class VerificationService {
 
     public VerificationResult verify(VerificationInput input) {
         VerificationInput safe = input != null ? input : new VerificationInput("", "", "", List.of(), "", List.of(), List.of(), List.of(), List.of(), "");
+        if (safe.evidence() != null && !safe.evidence().isEmpty()) {
+            return verifyStructured(safe);
+        }
         List<String> reasons = new ArrayList<>();
         List<String> suspiciousChanges = suspiciousChanges(safe);
         List<String> missingTests = missingTests(safe.suggestedTests(), safe.executedTests());
@@ -79,6 +82,7 @@ public class VerificationService {
             riskLevel = CommandRiskLevel.LOW;
             reasons.add("suggested tests are covered and no high-risk blocker is present");
         }
+        reasons.add("fallback to text rules");
 
         String primaryReason = reasons.isEmpty() ? "verification completed" : reasons.get(0);
         String summary = switch (status) {
@@ -92,6 +96,139 @@ public class VerificationService {
                 primaryReason,
                 summary,
                 safe.suggestedTests(),
+                riskLevel,
+                reasons,
+                missingTests,
+                suspiciousChanges,
+                requiredActions,
+                experienceActions,
+                humanApprovalRequired,
+                confidence,
+                null
+        );
+    }
+
+    private VerificationResult verifyStructured(VerificationInput input) {
+        VerificationEvidence evidence = input.evidence();
+        List<String> reasons = new ArrayList<>();
+        List<String> missingTests = new ArrayList<>();
+        List<String> suspiciousChanges = new ArrayList<>();
+        List<String> requiredActions = new ArrayList<>();
+        List<String> experienceActions = new ArrayList<>();
+
+        for (ApprovalEvidence approval : evidence.approvals()) {
+            if (ApprovalEvidence.REJECTED.equalsIgnoreCase(approval.status())) {
+                reasons.add("rejected approval");
+                requiredActions.add("Resolve rejected approval before accepting the task.");
+                return structuredResult(VerificationResult.Status.REJECT, input, reasons, missingTests, suspiciousChanges,
+                        requiredActions, experienceActions, true, risk(approval.riskLevel()), 0.72d);
+            }
+        }
+        for (ApprovalEvidence approval : evidence.approvals()) {
+            if (ApprovalEvidence.PENDING.equalsIgnoreCase(approval.status())) {
+                reasons.add("pending approval");
+                requiredActions.add("Resolve pending approval before accepting the task.");
+                return structuredResult(VerificationResult.Status.NEEDS_HUMAN, input, reasons, missingTests, suspiciousChanges,
+                        requiredActions, experienceActions, true, risk(approval.riskLevel()), 0.66d);
+            }
+        }
+        for (ApprovalEvidence approval : evidence.approvals()) {
+            if (isHighRisk(approval.riskLevel()) && !ApprovalEvidence.APPROVED.equalsIgnoreCase(approval.status())) {
+                reasons.add("pending approval");
+                requiredActions.add("High-risk approval must be approved before accepting the task.");
+                return structuredResult(VerificationResult.Status.NEEDS_HUMAN, input, reasons, missingTests, suspiciousChanges,
+                        requiredActions, experienceActions, true, risk(approval.riskLevel()), 0.66d);
+            }
+        }
+
+        for (ExecutedTestEvidence test : evidence.executedTests()) {
+            if ((test.exitCode() != null && test.exitCode() != 0) || !test.passed()) {
+                reasons.add("failed structured test evidence");
+                if (textSaysPassed(input)) {
+                    reasons.add("text/evidence conflict");
+                }
+                requiredActions.add("Inspect failed structured test evidence and rerun verifier.");
+                if (!test.command().isBlank()) {
+                    missingTests.add(test.command());
+                }
+                return structuredResult(VerificationResult.Status.REJECT, input, reasons, missingTests, suspiciousChanges,
+                        requiredActions, experienceActions, false, CommandRiskLevel.MEDIUM, 0.74d);
+            }
+        }
+
+        for (String suggested : input.suggestedTests()) {
+            if (!coveredByPassingEvidence(suggested, evidence.executedTests())) {
+                reasons.add("missing passing evidence for suggested test");
+                missingTests.add(suggested);
+            }
+        }
+        if (!missingTests.isEmpty()) {
+            requiredActions.add("Run missing suggested tests: " + String.join("; ", missingTests));
+            return structuredResult(VerificationResult.Status.NEEDS_HUMAN, input, reasons, missingTests, suspiciousChanges,
+                    requiredActions, experienceActions, true, CommandRiskLevel.MEDIUM, 0.66d);
+        }
+
+        for (DiffEvidence diff : evidence.changedFiles()) {
+            if (isHighRisk(diff.riskLevel())) {
+                reasons.add("high risk diff evidence");
+                suspiciousChanges.add(diff.path());
+                requiredActions.add("Request human review for high-risk changes.");
+                return structuredResult(VerificationResult.Status.NEEDS_HUMAN, input, reasons, missingTests, suspiciousChanges,
+                        requiredActions, experienceActions, true, CommandRiskLevel.HIGH, 0.66d);
+            }
+            if (diff.securitySensitive()) {
+                reasons.add("security sensitive diff");
+                suspiciousChanges.add(diff.path());
+                requiredActions.add("Request human review for security-sensitive changes.");
+                return structuredResult(VerificationResult.Status.NEEDS_HUMAN, input, reasons, missingTests, suspiciousChanges,
+                        requiredActions, experienceActions, true, CommandRiskLevel.HIGH, 0.66d);
+            }
+            if (diff.testDeleted()) {
+                reasons.add("test deletion detected");
+                suspiciousChanges.add(diff.path());
+                requiredActions.add("Confirm test deletion is intentional and covered by replacement tests.");
+                return structuredResult(VerificationResult.Status.NEEDS_HUMAN, input, reasons, missingTests, suspiciousChanges,
+                        requiredActions, experienceActions, true, CommandRiskLevel.HIGH, 0.66d);
+            }
+        }
+        if (!evidence.changedFiles().isEmpty() && evidence.changedFiles().stream().allMatch(DiffEvidence::runtimeArtifact)) {
+            reasons.add("only runtime artifacts changed");
+            requiredActions.add("Provide non-runtime user change evidence before accepting the task.");
+            return structuredResult(VerificationResult.Status.NEEDS_HUMAN, input, reasons, missingTests, suspiciousChanges,
+                    requiredActions, experienceActions, true, CommandRiskLevel.LOW, 0.62d);
+        }
+
+        reasons.add("structured evidence passed");
+        if (textSaysFailed(input)) {
+            reasons.add("text/evidence conflict");
+        }
+        return structuredResult(VerificationResult.Status.PASS, input, reasons, missingTests, suspiciousChanges,
+                requiredActions, experienceActions, false, CommandRiskLevel.LOW, 0.82d);
+    }
+
+    private VerificationResult structuredResult(
+            VerificationResult.Status status,
+            VerificationInput input,
+            List<String> reasons,
+            List<String> missingTests,
+            List<String> suspiciousChanges,
+            List<String> requiredActions,
+            List<String> experienceActions,
+            boolean humanApprovalRequired,
+            CommandRiskLevel riskLevel,
+            double confidence
+    ) {
+        String primaryReason = reasons.isEmpty() ? "structured evidence passed" : reasons.get(0);
+        String summary = switch (status) {
+            case PASS -> "Verifier accepted the worker result from structured evidence.";
+            case REJECT -> "Verifier rejected the worker result from structured evidence.";
+            case NEEDS_HUMAN -> "Verifier requires human approval from structured evidence.";
+        };
+        return new VerificationResult(
+                status,
+                primaryReason,
+                summary,
+                input.suggestedTests(),
                 riskLevel,
                 reasons,
                 missingTests,
@@ -148,6 +285,24 @@ public class VerificationService {
         return false;
     }
 
+    private boolean coveredByPassingEvidence(String suggested, List<ExecutedTestEvidence> executedTests) {
+        String normalizedSuggested = normalize(suggested);
+        if (normalizedSuggested.isBlank()) {
+            return true;
+        }
+        for (ExecutedTestEvidence executed : executedTests != null ? executedTests : List.<ExecutedTestEvidence>of()) {
+            if (!executed.passed() || (executed.exitCode() != null && executed.exitCode() != 0)) {
+                continue;
+            }
+            String normalizedExecuted = normalize(executed.command());
+            if (!normalizedExecuted.isBlank()
+                    && (normalizedExecuted.contains(normalizedSuggested) || normalizedSuggested.contains(normalizedExecuted))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private String extractTestPattern(String command) {
         int index = command.indexOf("-dtest=");
         if (index < 0) {
@@ -160,6 +315,33 @@ public class VerificationService {
 
     private boolean highRiskDiff(List<String> values) {
         return containsAny(values, "risk=high", "risklevel: high", "high risk", "blocked");
+    }
+
+    private boolean isHighRisk(CommandRiskLevel riskLevel) {
+        return riskLevel == CommandRiskLevel.HIGH || riskLevel == CommandRiskLevel.BLOCKED;
+    }
+
+    private CommandRiskLevel risk(CommandRiskLevel riskLevel) {
+        return riskLevel != null ? riskLevel : CommandRiskLevel.LOW;
+    }
+
+    private boolean textSaysPassed(VerificationInput input) {
+        return textContains(input, "passed", "pass", "success", "succeeded", "通过", "成功");
+    }
+
+    private boolean textSaysFailed(VerificationInput input) {
+        return textContains(input, "failed", "failure", "reject", "rejected", "失败", "未通过");
+    }
+
+    private boolean textContains(VerificationInput input, String... needles) {
+        String text = String.join("\n",
+                input.workerSummary(),
+                input.taskSummary(),
+                input.teamWhiteboardSummary(),
+                String.join("\n", input.diffReviews()),
+                String.join("\n", input.approvalRecords())
+        ).toLowerCase(Locale.ROOT);
+        return contains(text, needles);
     }
 
     private boolean hasUnresolvedBlocker(String value) {

@@ -41,6 +41,7 @@ public class ChannelManager {
      * 发送失败重试延迟：1s, 2s, 4s
      */
     private static final int[] SEND_RETRY_DELAYS_MS = {1000, 2000, 4000};
+    private static final int STREAM_DELTA_COALESCE_WAIT_MS = 25;
 
     private final Config config;
     private final MessageBus bus;
@@ -326,7 +327,7 @@ public class ChannelManager {
         List<OutboundMessage> extraPending = new ArrayList<>();
 
         while (true) {
-            OutboundMessage next = bus.pollOutboundNow();
+            OutboundMessage next = bus.pollOutbound(STREAM_DELTA_COALESCE_WAIT_MS);
             if (next == null) {
                 break;
             }

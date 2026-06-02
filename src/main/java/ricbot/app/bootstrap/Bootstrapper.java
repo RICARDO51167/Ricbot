@@ -81,7 +81,6 @@ public class Bootstrapper {
     public ChannelManager createChannelManager(Config config, MessageBus bus) {
         return new ChannelManager(config, bus);
     }
-
     public HeartbeatService createHeartbeatService(
             Config config,
             LLMProvider provider,

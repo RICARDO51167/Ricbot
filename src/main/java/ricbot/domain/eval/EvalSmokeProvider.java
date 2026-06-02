@@ -26,6 +26,9 @@ public class EvalSmokeProvider extends LLMProvider {
             String reasoningEffort,
             Object toolChoice
     ) {
+        String user = lastUserMessage(messages);
+        String lower = user.toLowerCase(java.util.Locale.ROOT);
+
         if (lastToolResultContains(messages, "错误：")) {
             return response("tool failed as expected");
         }
@@ -38,6 +41,22 @@ public class EvalSmokeProvider extends LLMProvider {
             }
             return response("mcp echo returned deterministic mcp response");
         }
+        if (hasToolResult(messages, "write_file") && lower.contains("regression test file")
+                && lower.contains("parsertest.java")) {
+            return response("done: parser regression test added");
+        }
+        if (hasToolResult(messages, "write_file") && lower.contains("fix src/main/java/demo/calculator.java")) {
+            return response("done: calculator add fixed");
+        }
+        if (hasToolResult(messages, "read_file") && lower.contains("fix src/main/java/demo/calculator.java")) {
+            return toolCall("write_file", Map.of(
+                    "path", "src/main/java/demo/Calculator.java",
+                    "content", "package demo;\n\npublic class Calculator {\n    public int add(int a, int b) {\n        return a + b;\n    }\n}\n"
+            ));
+        }
+        if (hasToolResult(messages, "read_file") && lower.contains("inspect src/main/java/demo/calculator.java")) {
+            return response("The add method bug is that add currently subtracts b from a instead of returning the sum.");
+        }
         if (hasToolResult(messages, "read_file")) {
             return response("The key phrase is deterministic harness coverage.");
         }
@@ -48,12 +67,6 @@ public class EvalSmokeProvider extends LLMProvider {
             return response("fixture.txt is present.");
         }
 
-        String user = messages.stream()
-                .filter(msg -> "user".equals(String.valueOf(msg.get("role"))))
-                .map(msg -> String.valueOf(msg.get("content")))
-                .reduce((first, second) -> second)
-                .orElse("");
-        String lower = user.toLowerCase(java.util.Locale.ROOT);
         if (lower.contains("remember code alpha")) {
             return response("stored alpha");
         }
@@ -84,6 +97,19 @@ public class EvalSmokeProvider extends LLMProvider {
         if (lower.contains("mcp echo deterministic")) {
             return toolCall("mcp_demo_echo", Map.of("text", "deterministic mcp response"));
         }
+        if (lower.contains("inspect src/main/java/demo/calculator.java")) {
+            return toolCall("read_file", Map.of("path", "src/main/java/demo/Calculator.java"));
+        }
+        if (lower.contains("fix src/main/java/demo/calculator.java")) {
+            return toolCall("read_file", Map.of("path", "src/main/java/demo/Calculator.java"));
+        }
+        if (lower.contains("add a regression test file")
+                && lower.contains("src/test/java/demo/parsertest.java")) {
+            return toolCall("write_file", Map.of(
+                    "path", "src/test/java/demo/ParserTest.java",
+                    "content", "package demo;\n\nimport org.junit.jupiter.api.Test;\n\nimport static org.junit.jupiter.api.Assertions.assertTrue;\n\nclass ParserTest {\n    @Test\n    void blankInputReturnsEmptyList() {\n        Parser parser = new Parser();\n        assertTrue(parser.parse(\"   \").isEmpty());\n    }\n}\n"
+            ));
+        }
         if (lower.contains("read docs/input.txt")) {
             return toolCall("read_file", Map.of("path", "docs/input.txt"));
         }
@@ -100,6 +126,14 @@ public class EvalSmokeProvider extends LLMProvider {
                 ? "An eval harness checks agent behavior with repeatable scenarios."
                 : "Hello from the golden eval.";
         return response(content);
+    }
+
+    private String lastUserMessage(List<Map<String, Object>> messages) {
+        return messages.stream()
+                .filter(msg -> "user".equals(String.valueOf(msg.get("role"))))
+                .map(msg -> String.valueOf(msg.get("content")))
+                .reduce((first, second) -> second)
+                .orElse("");
     }
 
     private boolean hasToolResult(List<Map<String, Object>> messages, String toolName) {

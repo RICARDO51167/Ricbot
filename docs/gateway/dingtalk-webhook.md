@@ -1,16 +1,16 @@
-# DingTalk Webhook Ingress
+# DingTalk Webhook 入站
 
-Ricbot Gateway exposes DingTalk event ingress at:
+Ricbot Gateway 提供 DingTalk 事件入站接口：
 
 ```text
 POST /webhook/dingtalk
 ```
 
-The endpoint verifies DingTalk `timestamp + sign` when a webhook secret is configured, accepts text messages, normalizes them into the internal inbound message bus, and ignores duplicate events seen within 5 minutes.
+当配置了 webhook secret 时，该接口会校验 DingTalk 的 `timestamp + sign`；它接收文本消息，将其归一化到内部 inbound message bus，并忽略 5 分钟内见过的重复事件。
 
-## Configuration
+## 配置
 
-Configure DingTalk under `channels.dingtalk`:
+在 `channels.dingtalk` 下配置 DingTalk：
 
 ```json
 {
@@ -26,30 +26,30 @@ Configure DingTalk under `channels.dingtalk`:
 }
 ```
 
-- `webhookSecret`: inbound webhook signing secret. If blank, Ricbot falls back to `app_secret`. If both are blank, DingTalk signature verification is skipped.
-- `app_key` / `app_secret`: also used by the DingTalk outbound channel.
+- `webhookSecret`：入站 webhook 签名密钥。若为空，Ricbot 会回退使用 `app_secret`。若两者都为空，则跳过 DingTalk 签名校验。
+- `app_key` / `app_secret`：也供 DingTalk 出站渠道使用。
 
-Keep `api.host` bound to `127.0.0.1` for local testing. If binding to a non-loopback host, configure `api.bearer_token` and do not expose the Console publicly.
+本地测试时建议将 `api.host` 绑定到 `127.0.0.1`。如果绑定到非 loopback 地址，请配置 `api.bearer_token`，并且不要公网暴露 Console。
 
-## Signature Rule
+## 签名规则
 
-Ricbot expects the DingTalk signature in either query parameters or HTTP headers:
+Ricbot 会从 query parameter 或 HTTP header 中读取 DingTalk 签名：
 
 ```text
 timestamp=<milliseconds>
 sign=<base64 hmac>
 ```
 
-The string to sign is:
+待签名字符串为：
 
 ```text
 ${timestamp}
 ${secret}
 ```
 
-That is `timestamp + "\n" + secret`, signed with HMAC-SHA256 using the same secret, then Base64 encoded.
+也就是 `timestamp + "\n" + secret`，使用同一个 secret 做 HMAC-SHA256 签名，再进行 Base64 编码。
 
-Shell example:
+Shell 示例：
 
 ```bash
 timestamp="$(date +%s)000"
@@ -57,7 +57,7 @@ secret="${DINGTALK_WEBHOOK_SECRET:-ricbot-smoke-dingtalk-secret}"
 sign="$(printf "%s\n%s" "$timestamp" "$secret" | openssl dgst -sha256 -hmac "$secret" -binary | openssl base64)"
 ```
 
-## Text Message Example
+## 文本消息示例
 
 ```json
 {
@@ -72,9 +72,9 @@ sign="$(printf "%s\n%s" "$timestamp" "$secret" | openssl dgst -sha256 -hmac "$se
 }
 ```
 
-## Local Curl Simulation
+## 本地 Curl 模拟
 
-Start Ricbot API locally, then run:
+本地启动 Ricbot API 后运行：
 
 ```bash
 timestamp="$(date +%s)000"
@@ -95,25 +95,25 @@ curl -sS -X POST "http://127.0.0.1:8000/webhook/dingtalk" \
   }'
 ```
 
-For a repeatable local check across all supported platforms, use:
+如需跨所有已支持平台做可重复本地检查，使用：
 
 ```bash
 sh scripts/webhook-smoke.sh
 ```
 
-## Signature Troubleshooting
+## 签名排障
 
-- HTTP `401` with `missing dingtalk signature` means a secret is configured but `timestamp` or `sign` was not provided.
-- HTTP `403` with `invalid dingtalk signature` means the HMAC input, secret, Base64 output, or URL/header transport does not match.
-- Ensure the server was started with the same `DINGTALK_WEBHOOK_SECRET` used by the curl command.
-- If you put `sign` in the query string, URL-encode it. Passing `sign` as a header avoids query encoding issues.
+- HTTP `401` 且包含 `missing dingtalk signature` 表示已配置 secret，但请求未提供 `timestamp` 或 `sign`。
+- HTTP `403` 且包含 `invalid dingtalk signature` 表示 HMAC 输入、secret、Base64 输出或 URL/header 传递方式不匹配。
+- 确认服务启动时使用的 `DINGTALK_WEBHOOK_SECRET` 与 curl 命令使用的是同一个值。
+- 如果把 `sign` 放在 query string 中，需要进行 URL encode。用 header 传递 `sign` 可以避免 query 编码问题。
 
-## Duplicate Events
+## 重复事件
 
-`EventDeduplicator` keys duplicates by `platform + eventId` and keeps entries for 5 minutes in memory. DingTalk uses `msgId`, then `messageId`, then `eventId`. A duplicate returns `ok: true`, `delivered: false`, and `duplicate: true`.
+`EventDeduplicator` 使用 `platform + eventId` 作为去重 key，并在内存中保留 5 分钟。DingTalk 依次使用 `msgId`、`messageId`、`eventId`。重复事件会返回 `ok: true`、`delivered: false` 和 `duplicate: true`。
 
-## Current Limits
+## 当前限制
 
-- Current supported inbound message type is text.
-- Attachments, images, voice, and other non-text message types are reported as unsupported.
-- No DingTalk platform SDK deep integration is performed by the inbound smoke path.
+- 当前支持的入站消息类型是文本。
+- 附件、图片、语音和其它非文本消息类型会被报告为 unsupported。
+- 入站 smoke 路径未做 DingTalk 平台 SDK 深度集成。

@@ -12,7 +12,8 @@ public record VerificationInput(
         List<String> suggestedTests,
         List<String> executedTests,
         List<String> verifiedExperience,
-        String teamWhiteboardSummary
+        String teamWhiteboardSummary,
+        VerificationEvidence evidence
 ) {
     public VerificationInput {
         taskId = clean(taskId);
@@ -27,6 +28,22 @@ public record VerificationInput(
         teamWhiteboardSummary = clean(teamWhiteboardSummary);
     }
 
+    public VerificationInput(
+            String taskId,
+            String taskGoal,
+            String workerSummary,
+            List<String> diffReviews,
+            String taskSummary,
+            List<String> approvalRecords,
+            List<String> suggestedTests,
+            List<String> executedTests,
+            List<String> verifiedExperience,
+            String teamWhiteboardSummary
+    ) {
+        this(taskId, taskGoal, workerSummary, diffReviews, taskSummary, approvalRecords, suggestedTests, executedTests,
+                verifiedExperience, teamWhiteboardSummary, null);
+    }
+
     public static VerificationInput ofTask(TeamTask task) {
         return new VerificationInput(
                 task != null ? task.id() : "",
@@ -38,7 +55,8 @@ public record VerificationInput(
                 List.of(),
                 List.of(),
                 List.of(),
-                ""
+                "",
+                null
         );
     }
 

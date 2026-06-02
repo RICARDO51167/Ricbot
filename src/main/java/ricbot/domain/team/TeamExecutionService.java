@@ -2,6 +2,7 @@ package ricbot.domain.team;
 
 import ricbot.domain.security.CommandRiskLevel;
 import ricbot.domain.workspace.GitWorktreeWorkspaceBackend;
+import ricbot.domain.workspace.RuntimeArtifactFilter;
 import ricbot.domain.workspace.WorkspaceLifecycleService;
 import ricbot.domain.workspace.WorkspaceBackendType;
 import ricbot.domain.workspace.WorkspaceSession;
@@ -12,17 +13,22 @@ import ricbot.tool.api.ToolRegistry;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Instant;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class TeamExecutionService {
     private final Path baseWorkspace;
     private final TeamEngine teamEngine;
     private final WorkspaceSessionStore workspaceStore;
     private final TeamWorkerRunner workerRunner;
+    private final VerificationService verificationService = new VerificationService();
 
     public TeamExecutionService(Path baseWorkspace, TeamEngine teamEngine) {
         this(baseWorkspace, teamEngine, null);
@@ -145,37 +151,29 @@ public class TeamExecutionService {
         ));
         String output = raw != null ? String.valueOf(raw) : "";
         boolean failed = output.startsWith("[退出码") || output.startsWith("错误") || output.contains("BUILD FAILURE");
-        VerificationResult result = failed
-                ? new VerificationResult(
-                VerificationResult.Status.REJECT,
-                "worktree verifier command failed",
-                "Verifier rejected worktree execution result.",
-                List.of(command),
-                CommandRiskLevel.MEDIUM,
-                List.of("verifier command failed: " + command),
-                List.of(command),
-                List.of(),
-                List.of("Inspect worktree and rerun verifier."),
-                List.of(),
-                false,
-                0.62d,
-                null
-        )
-                : new VerificationResult(
-                VerificationResult.Status.PASS,
-                "worktree verifier command passed",
-                "Verifier accepted worktree execution result.",
-                List.of(command),
-                CommandRiskLevel.LOW,
-                List.of("verifier command passed: " + command),
-                List.of(),
-                List.of(),
-                List.of(),
-                List.of(),
-                false,
-                0.78d,
-                null
+        Integer exitCode = parseExitCode(output);
+        if (failed && exitCode == null) {
+            exitCode = 1;
+        }
+        VerificationEvidence evidence = new VerificationEvidence(
+                List.of(new ExecutedTestEvidence(command, exitCode, !failed, outputSummary(output), null, Instant.now())),
+                diffEvidence(executionRoot, workspaceSession),
+                List.of()
         );
+        VerificationInput input = new VerificationInput(
+                task.id(),
+                task.goal(),
+                failed ? "worktree verifier command failed" : "worktree verifier command passed",
+                List.of(),
+                "TaskSummary contains worktree verifier evidence.",
+                List.of(),
+                List.of(command),
+                List.of(command),
+                List.of(),
+                "",
+                evidence
+        );
+        VerificationResult result = verificationService.verify(input);
         TeamTask updated = teamEngine.submitVerification(task.id(), result);
         recordAudit(updated, StepAuditEventType.STEP_VERIFIED, "", updated.state().name(),
                 "Verifier executed in task workspace.", workspaceSession, Map.of(
@@ -184,6 +182,91 @@ public class TeamExecutionService {
                         "command", command
                 ));
         return new VerificationRun(result, output);
+    }
+
+    private List<DiffEvidence> diffEvidence(Path executionRoot, WorkspaceSession workspaceSession) {
+        List<String> changedFiles;
+        if (workspaceSession != null) {
+            changedFiles = new WorkspaceLifecycleService(baseWorkspace).diff(workspaceSession.id()).changedFiles();
+        } else {
+            changedFiles = lines(git(executionRoot, "diff", "--name-only", "--"));
+        }
+        List<DiffEvidence> out = new ArrayList<>();
+        for (String path : changedFiles) {
+            if (path == null || path.isBlank()) {
+                continue;
+            }
+            String normalized = path.trim();
+            out.add(new DiffEvidence(
+                    normalized,
+                    "EDIT",
+                    riskLevelFor(normalized),
+                    isTestFile(normalized),
+                    false,
+                    isConfigFile(normalized),
+                    isSecuritySensitive(normalized),
+                    RuntimeArtifactFilter.isRuntimeArtifact(normalized)
+            ));
+        }
+        return out;
+    }
+
+    private Integer parseExitCode(String output) {
+        Matcher matcher = Pattern.compile("^\\[退出码\\s+(\\d+)]").matcher(output != null ? output.trim() : "");
+        if (!matcher.find()) {
+            return null;
+        }
+        try {
+            return Integer.parseInt(matcher.group(1));
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private String outputSummary(String output) {
+        String value = clean(output).replaceAll("\\s+", " ");
+        return value.length() <= 500 ? value : value.substring(0, 500);
+    }
+
+    private List<String> lines(String output) {
+        List<String> out = new ArrayList<>();
+        for (String line : clean(output).split("\\R")) {
+            if (!line.isBlank()) {
+                out.add(line.trim());
+            }
+        }
+        return out;
+    }
+
+    private CommandRiskLevel riskLevelFor(String path) {
+        return isSecuritySensitive(path) ? CommandRiskLevel.HIGH : CommandRiskLevel.LOW;
+    }
+
+    private boolean isSecuritySensitive(String path) {
+        String lower = path.toLowerCase(Locale.ROOT);
+        return lower.contains("security")
+                || lower.contains("approval")
+                || lower.contains("policy")
+                || lower.contains("provider")
+                || lower.contains("agentloop")
+                || lower.contains("toolregistry")
+                || lower.startsWith(".github/workflows/");
+    }
+
+    private boolean isConfigFile(String path) {
+        String lower = path.toLowerCase(Locale.ROOT);
+        return lower.endsWith(".xml")
+                || lower.endsWith(".properties")
+                || lower.endsWith(".yml")
+                || lower.endsWith(".yaml")
+                || lower.endsWith(".toml")
+                || lower.endsWith(".json")
+                || lower.contains("/config/");
+    }
+
+    private boolean isTestFile(String path) {
+        String lower = path.toLowerCase(Locale.ROOT);
+        return lower.contains("/test/") || lower.endsWith("test.java");
     }
 
     private WorkspaceSession createTaskWorktree(TeamTask task) {

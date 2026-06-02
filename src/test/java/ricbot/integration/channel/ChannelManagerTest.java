@@ -116,6 +116,44 @@ class ChannelManagerTest {
     }
 
     @Test
+    void dispatchLoop_coalescesStreamDeltasThatArriveAfterFirstPoll() throws Exception {
+        Config config = new Config();
+        config.getChannels().getWebsocket().setEnabled(true);
+        config.getChannels().getWebsocket().setAllowFrom(List.of("*"));
+
+        Map<String, Class<? extends BaseChannel>> discovered = Map.of(
+                "websocket", RecordingWebSocketChannel.class
+        );
+
+        MessageBus bus = new MessageBus();
+        ChannelManager manager = new ChannelManager(config, bus, discovered);
+        RecordingWebSocketChannel channel = (RecordingWebSocketChannel) manager.getChannel("websocket");
+        assertNotNull(channel);
+        channel.expectDeltas(1);
+
+        manager.startAll();
+        Thread producer = new Thread(() -> {
+            bus.sendOutbound(outbound("websocket", "c1", "hel", Map.of("_stream_delta", true)));
+            sleepQuietly(10);
+            bus.sendOutbound(outbound("websocket", "c1", "lo ", Map.of("_stream_delta", true)));
+            bus.sendOutbound(outbound("websocket", "c1", "world", Map.of("_stream_delta", true, "_stream_end", true)));
+        });
+        try {
+            producer.start();
+
+            assertTrue(channel.awaitDelta(2), "merged delta should be delivered");
+            producer.join(1000);
+            sleepQuietly(100);
+            assertEquals(1, channel.deltaCount());
+            assertEquals("hello world", channel.lastDeltaContent());
+            assertTrue(Boolean.TRUE.equals(channel.lastDeltaMetadata().get("_stream_end")));
+        } finally {
+            manager.stopAll();
+            producer.join(1000);
+        }
+    }
+
+    @Test
     void baseChannel_rejectsInboundMessageWhenSenderIsNotAllowed() throws Exception {
         MessageBus bus = new MessageBus();
         RecordingWebSocketChannel channel = new RecordingWebSocketChannel(
@@ -164,6 +202,14 @@ class ChannelManagerTest {
         WebSocketChannel.WebSocketConfig config = new WebSocketChannel.WebSocketConfig();
         config.setAllowFrom(allowFrom);
         return config;
+    }
+
+    private static void sleepQuietly(long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     static class RecordingWebSocketChannel extends BaseChannel {

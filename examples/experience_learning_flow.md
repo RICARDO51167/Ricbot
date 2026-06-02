@@ -1,6 +1,6 @@
-# Experience Learning Flow
+# 经验学习流程
 
-Minimal sequence for turning one finished task into governed experience.
+将一次已完成任务转化为受治理经验的最小流程。
 
 ```text
 /summary
@@ -13,17 +13,17 @@ Minimal sequence for turning one finished task into governed experience.
 /experience promote exp_...
 ```
 
-Expected behavior:
+预期行为：
 
-- `/summary` renders the current task summary without writing notes.
-- `/summary --write-note` writes `notes/tasks/<timestamp>-<slug>.md` and updates `notes/index.json`.
-- `/experience extract` writes candidate entries to `experience/candidates.jsonl`.
-- Candidate entries do not enter `/context`.
-- `/experience verify <id>` writes the reviewed entry to `experience/verified.jsonl`.
-- Verified entries can appear under `verified_experience` in `/context`.
-- `/experience promote <id>` is explicit and writes a project playbook note through `NoteService`.
+- `/summary` 渲染当前任务摘要，但不写入 notes。
+- `/summary --write-note` 写入 `notes/tasks/<timestamp>-<slug>.md` 并更新 `notes/index.json`。
+- `/experience extract` 将候选条目写入 `experience/candidates.jsonl`。
+- 候选条目不会进入 `/context`。
+- `/experience verify <id>` 将审阅后的条目写入 `experience/verified.jsonl`。
+- 已验证条目可以出现在 `/context` 的 `verified_experience` 下。
+- `/experience promote <id>` 需要显式触发，并通过 `NoteService` 写入项目 playbook note。
 
-Useful verification snippets:
+有用的验证片段：
 
 ```text
 experience extracted:

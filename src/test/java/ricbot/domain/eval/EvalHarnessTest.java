@@ -198,7 +198,7 @@ class EvalHarnessTest {
         );
 
         assertEquals("pass", result.getStatus());
-        assertEquals(14, result.getTotalScenarios());
+        assertEquals(17, result.getTotalScenarios());
         assertEquals(0, result.getErrors());
         assertTrue(Files.exists(Path.of(result.getArtifactDir()).resolve("lint.json")));
         assertTrue(Files.readString(Path.of(result.getArtifactDir()).resolve("lint-report.md")).contains("No lint issues found."));

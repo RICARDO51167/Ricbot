@@ -1,16 +1,16 @@
-# WeCom Webhook Ingress
+# WeCom Webhook 入站
 
-Ricbot Gateway exposes WeCom event ingress at:
+Ricbot Gateway 提供 WeCom 事件入站接口：
 
 ```text
 POST /webhook/wecom
 ```
 
-The endpoint verifies the configured token when present, accepts text messages, normalizes them into the internal inbound message bus, and ignores duplicate events seen within 5 minutes.
+当配置了 token 时，该接口会进行校验；它接收文本消息，将其归一化到内部 inbound message bus，并忽略 5 分钟内见过的重复事件。
 
-## Configuration
+## 配置
 
-Configure WeCom under `channels.wecom`:
+在 `channels.wecom` 下配置 WeCom：
 
 ```json
 {
@@ -26,20 +26,20 @@ Configure WeCom under `channels.wecom`:
 }
 ```
 
-- `token`: inbound webhook token. If this value is configured, incoming query parameter `token` or JSON field `token` must match it.
-- `secret`: used by the WeCom outbound channel; it is not used for current plaintext webhook token verification.
+- `token`：入站 webhook token。配置后，入站 query parameter `token` 或 JSON 字段 `token` 必须与其一致。
+- `secret`：供 WeCom 出站渠道使用；当前明文 webhook token 校验不使用它。
 
-Keep `api.host` bound to `127.0.0.1` for local testing. If binding to a non-loopback host, configure `api.bearer_token` and do not expose the Console publicly.
+本地测试时建议将 `api.host` 绑定到 `127.0.0.1`。如果绑定到非 loopback 地址，请配置 `api.bearer_token`，并且不要公网暴露 Console。
 
-## Token Verification
+## Token 校验
 
-Ricbot checks token in this order:
+Ricbot 按以下顺序检查 token：
 
 ```text
 POST /webhook/wecom?token=<token>
 ```
 
-Then, if the query parameter is absent, it checks JSON field:
+如果 query parameter 不存在，再检查 JSON 字段：
 
 ```json
 {
@@ -47,9 +47,9 @@ Then, if the query parameter is absent, it checks JSON field:
 }
 ```
 
-If `channels.wecom.token` is blank, token verification is skipped.
+如果 `channels.wecom.token` 为空，则跳过 token 校验。
 
-## Text Message Example
+## 文本消息示例
 
 ```json
 {
@@ -61,9 +61,9 @@ If `channels.wecom.token` is blank, token verification is skipped.
 }
 ```
 
-## Local Curl Simulation
+## 本地 Curl 模拟
 
-Start Ricbot API locally, then run:
+本地启动 Ricbot API 后运行：
 
 ```bash
 curl -sS -X POST "http://127.0.0.1:8000/webhook/wecom?token=${WECOM_WEBHOOK_TOKEN:-ricbot-smoke-wecom-token}" \
@@ -77,22 +77,22 @@ curl -sS -X POST "http://127.0.0.1:8000/webhook/wecom?token=${WECOM_WEBHOOK_TOKE
   }'
 ```
 
-For a repeatable local check across all supported platforms, use:
+如需跨所有已支持平台做可重复本地检查，使用：
 
 ```bash
 sh scripts/webhook-smoke.sh
 ```
 
-## Encrypted Callback Reservation
+## 加密回调预留
 
-WeCom encrypted callbacks usually include `msg_signature`, `timestamp`, `nonce`, and encrypted payload content. Ricbot currently reserves the encrypted callback path but does not decrypt `msg_signature` callbacks. Use plaintext local simulation for current smoke testing.
+WeCom 加密回调通常包含 `msg_signature`、`timestamp`、`nonce` 和加密 payload 内容。Ricbot 当前预留了加密回调路径，但不会解密 `msg_signature` 回调。当前 smoke test 请使用明文本地模拟。
 
-## Duplicate Events
+## 重复事件
 
-`EventDeduplicator` keys duplicates by `platform + eventId` and keeps entries for 5 minutes in memory. WeCom uses `msgid`, then `message_id`, then `MsgId`. A duplicate returns `ok: true`, `delivered: false`, and `duplicate: true`.
+`EventDeduplicator` 使用 `platform + eventId` 作为去重 key，并在内存中保留 5 分钟。WeCom 依次使用 `msgid`、`message_id`、`MsgId`。重复事件会返回 `ok: true`、`delivered: false` 和 `duplicate: true`。
 
-## Current Limits
+## 当前限制
 
-- `msg_signature` encrypted callback decryption is not implemented.
-- Current supported inbound message type is text.
-- Attachments, images, voice, and other non-text message types are not normalized as inbound text messages.
+- 尚未实现 `msg_signature` 加密回调解密。
+- 当前支持的入站消息类型是文本。
+- 附件、图片、语音和其它非文本消息类型尚未归一化为入站文本消息。

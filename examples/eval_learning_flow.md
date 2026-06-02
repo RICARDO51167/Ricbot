@@ -1,8 +1,8 @@
-# Eval Learning Flow
+# Eval 学习流程
 
-Minimal sequence for converting eval failures into candidate experience.
+将 eval 失败转换为候选经验的最小流程。
 
-Run a deterministic smoke eval:
+运行 deterministic smoke eval：
 
 ```bash
 java -jar target/Ricbot-1.0-SNAPSHOT.jar eval smoke \
@@ -11,7 +11,7 @@ java -jar target/Ricbot-1.0-SNAPSHOT.jar eval smoke \
   --out target/eval-smoke-artifacts
 ```
 
-Learn from the run artifact:
+从运行 artifact 中学习：
 
 ```bash
 java -jar target/Ricbot-1.0-SNAPSHOT.jar eval learn \
@@ -20,7 +20,7 @@ java -jar target/Ricbot-1.0-SNAPSHOT.jar eval learn \
   --include-xfail
 ```
 
-Expected output:
+预期输出：
 
 ```text
 ricbot eval learn
@@ -31,7 +31,7 @@ skipped_duplicate:
 candidates_file: .../experience/candidates.jsonl
 ```
 
-Review flow:
+审阅流程：
 
 ```text
 /experience list
@@ -40,8 +40,8 @@ Review flow:
 /experience promote exp_...
 ```
 
-Safety rules:
+安全规则：
 
-- `eval learn` only writes candidate experience.
-- It does not verify, promote, or add entries to prompt context.
-- Re-running on the same `sourceRef + type + title` skips duplicates.
+- `eval learn` 只写入候选经验。
+- 它不会验证、promote，也不会把条目加入 prompt context。
+- 对相同 `sourceRef + type + title` 重复运行时会跳过重复项。
