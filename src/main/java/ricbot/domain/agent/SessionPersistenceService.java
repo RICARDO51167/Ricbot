@@ -2,6 +2,7 @@ package ricbot.domain.agent;
 
 import ricbot.domain.message.InboundMessage;
 import ricbot.domain.memory.MemoryEntry;
+import ricbot.domain.memory.MemoryWritePolicy;
 import ricbot.domain.memory.MemoryStore;
 import ricbot.domain.message.OutboundMessage;
 import ricbot.domain.message.OutboundMessages;
@@ -27,6 +28,7 @@ final class SessionPersistenceService {
     // 工具轨迹摘要器，用于生成工具调用的简要记录
     private final ToolTraceSummarizer toolTraceSummarizer = new ToolTraceSummarizer();
     private final MemoryStore memoryStore;
+    private final MemoryWritePolicy memoryWritePolicy;
 
     /**
      * 构造函数
@@ -39,9 +41,19 @@ final class SessionPersistenceService {
     }
 
     SessionPersistenceService(SessionManager sessionManager, int maxToolResultChars, MemoryStore memoryStore) {
+        this(sessionManager, maxToolResultChars, memoryStore, new MemoryWritePolicy());
+    }
+
+    SessionPersistenceService(
+            SessionManager sessionManager,
+            int maxToolResultChars,
+            MemoryStore memoryStore,
+            MemoryWritePolicy memoryWritePolicy
+    ) {
         this.sessionManager = sessionManager;
         this.maxToolResultChars = maxToolResultChars;
         this.memoryStore = memoryStore;
+        this.memoryWritePolicy = memoryWritePolicy != null ? memoryWritePolicy : new MemoryWritePolicy();
     }
 
     /**
@@ -280,72 +292,9 @@ final class SessionPersistenceService {
         if (memoryStore == null || message == null || message.getContent() == null) {
             return;
         }
-        List<MemoryEntry> candidates = extractMemoryCandidates(message.getContent());
+        List<MemoryEntry> candidates = memoryWritePolicy.createCandidates(message.getContent());
         if (!candidates.isEmpty()) {
             memoryStore.appendMemoryCandidates(candidates);
         }
-    }
-
-    private List<MemoryEntry> extractMemoryCandidates(String userText) {
-        String text = userText != null ? userText.trim() : "";
-        if (text.length() < 6 || text.length() > 500) {
-            return List.of();
-        }
-
-        List<MemoryEntry> out = new java.util.ArrayList<>();
-        String lower = text.toLowerCase(java.util.Locale.ROOT);
-        if (containsAny(text, "我喜欢", "我偏好", "我希望", "以后请", "记住")
-                || containsAny(lower, "i prefer", "remember that", "please remember")) {
-            out.add(new MemoryEntry()
-                    .setType(MemoryEntry.TYPE_PREFERENCE)
-                    .setScope(MemoryEntry.SCOPE_LONG_TERM)
-                    .setSummary(text)
-                    .setDetails("即时候选：来自用户明确偏好或记忆请求")
-                    .setImportance(0.75d)
-                    .setConfidence(0.75d)
-                    .setSource("candidate")
-                    .setTags(List.of("user")));
-            return out;
-        }
-
-        if (containsAny(text, "项目", "代码库", "仓库")
-                && containsAny(text, "使用", "基于", "采用", "需要", "约定", "规范")) {
-            out.add(new MemoryEntry()
-                    .setType(MemoryEntry.TYPE_PROJECT)
-                    .setScope(MemoryEntry.SCOPE_LONG_TERM)
-                    .setSummary(text)
-                    .setDetails("即时候选：来自用户描述的项目事实")
-                    .setImportance(0.70d)
-                    .setConfidence(0.70d)
-                    .setSource("candidate")
-                    .setTags(List.of("project")));
-            return out;
-        }
-
-        if (containsAny(text, "流程", "步骤", "规范", "约定")
-                || containsAny(lower, "workflow", "convention", "standard")) {
-            out.add(new MemoryEntry()
-                    .setType(MemoryEntry.TYPE_WORKFLOW)
-                    .setScope(MemoryEntry.SCOPE_LONG_TERM)
-                    .setSummary(text)
-                    .setDetails("即时候选：来自用户描述的流程或约定")
-                    .setImportance(0.68d)
-                    .setConfidence(0.68d)
-                    .setSource("candidate")
-                    .setTags(List.of("workflow")));
-        }
-        return out;
-    }
-
-    private boolean containsAny(String text, String... needles) {
-        if (text == null || needles == null) {
-            return false;
-        }
-        for (String needle : needles) {
-            if (needle != null && !needle.isBlank() && text.contains(needle)) {
-                return true;
-            }
-        }
-        return false;
     }
 }

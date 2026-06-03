@@ -1,6 +1,7 @@
 package ricbot.tool.process;
 
 import ricbot.tool.api.Tool;
+import ricbot.tool.api.Tool.ToolExecutionContext;
 import ricbot.tool.api.ToolParam;
 import ricbot.infra.config.RuntimePaths;
 import ricbot.infra.security.NetworkSecurity;
@@ -148,6 +149,11 @@ public class ExecTool extends Tool {
      */
     @Override
     public Object execute(Map<String, Object> kwargs) throws Exception {
+        return execute(kwargs, ToolExecutionContext.normal());
+    }
+
+    @Override
+    public Object execute(Map<String, Object> kwargs, ToolExecutionContext context) throws Exception {
         if (kwargs == null) {
             return "错误：缺少参数";
         }
@@ -168,7 +174,7 @@ public class ExecTool extends Tool {
             timeoutOverride = n.intValue();
         }
 
-        return execute(cmd, workingDirOverride, timeoutOverride, approvalBypass(kwargs));
+        return execute(cmd, workingDirOverride, timeoutOverride, context != null && context.approved());
     }
 
     /**
@@ -183,7 +189,7 @@ public class ExecTool extends Tool {
         return execute(command, workingDirOverride, timeoutOverride, false);
     }
 
-    private String execute(String command, String workingDirOverride, Integer timeoutOverride, boolean approvalBypass) {
+    private String execute(String command, String workingDirOverride, Integer timeoutOverride, boolean approved) {
         // 确定最终的工作目录：优先使用传入的覆盖值，其次是配置的工作目录，最后是系统用户目录
         String cwd = firstNonBlank(workingDirOverride, this.workingDir, System.getProperty("user.dir"));
 
@@ -201,7 +207,7 @@ public class ExecTool extends Tool {
             }
         }
 
-        String riskGate = approvalBypass ? null : riskGate(command, cwd, workingDirOverride, timeoutOverride);
+        String riskGate = approved ? null : riskGate(command, cwd, workingDirOverride, timeoutOverride);
         if (riskGate != null) {
             return riskGate;
         }
@@ -328,10 +334,6 @@ public class ExecTool extends Tool {
                     + "\n请使用 /approve " + requestId + " 或 /reject " + requestId + "。";
         }
         return null;
-    }
-
-    private boolean approvalBypass(Map<String, Object> kwargs) {
-        return kwargs != null && Boolean.TRUE.equals(kwargs.get("__approval_bypass"));
     }
 
     /**

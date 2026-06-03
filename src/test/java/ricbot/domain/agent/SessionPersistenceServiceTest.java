@@ -2,15 +2,19 @@ package ricbot.domain.agent;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import ricbot.domain.memory.MemoryEntry;
+import ricbot.domain.memory.MemoryWritePolicy;
 import ricbot.domain.memory.MemoryStore;
 import ricbot.domain.message.InboundMessage;
 import ricbot.domain.session.Session;
 import ricbot.domain.session.SessionManager;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -147,5 +151,101 @@ class SessionPersistenceServiceTest {
         service.persistInteractiveTurn(request, outcome);
 
         assertEquals(1, memoryStore.drainMemoryCandidates().size());
+    }
+
+    @Test
+    void appendMemoryCandidates_delegatesToPolicy(@TempDir Path workspace) {
+        SessionManager sessions = new SessionManager(workspace);
+        MemoryStore memoryStore = new MemoryStore(workspace);
+        AtomicInteger calls = new AtomicInteger(0);
+        MemoryWritePolicy policy = new MemoryWritePolicy() {
+            @Override
+            public List<MemoryEntry> createCandidates(String userText) {
+                calls.incrementAndGet();
+                assertEquals("普通消息也由 policy 决定", userText);
+                return List.of(new MemoryEntry()
+                        .setType(MemoryEntry.TYPE_PREFERENCE)
+                        .setScope(MemoryEntry.SCOPE_LONG_TERM)
+                        .setSummary("policy candidate")
+                        .setDetails("from test policy")
+                        .setImportance(0.75d)
+                        .setConfidence(0.75d)
+                        .setSource("candidate")
+                        .setTags(List.of("user")));
+            }
+        };
+        SessionPersistenceService service = new SessionPersistenceService(sessions, 100, memoryStore, policy);
+        Session session = new Session("cli:direct");
+
+        AgentRequestContext request = new AgentRequestContext(
+                new InboundMessage("cli", "user", "direct", "普通消息也由 policy 决定"),
+                "cli:direct",
+                session,
+                "",
+                new PromptContextBundle(),
+                List.of(),
+                List.of(),
+                null,
+                false
+        );
+        ExecutionOutcome outcome = new ExecutionOutcome(
+                new AgentRunResult()
+                        .setMessages(List.of(
+                                Map.of("role", "system", "content", "ignored"),
+                                Map.of("role", "user", "content", "普通消息也由 policy 决定"),
+                                Map.of("role", "assistant", "content", "ok")
+                        ))
+                        .setFinalContent("ok"),
+                "ok"
+        );
+
+        service.persistInteractiveTurn(request, outcome);
+
+        assertEquals(1, calls.get());
+        List<MemoryEntry> candidates = memoryStore.drainMemoryCandidates();
+        assertEquals(1, candidates.size());
+        assertEquals("policy candidate", candidates.get(0).getSummary());
+    }
+
+    @Test
+    void persistenceFormat_unchanged(@TempDir Path workspace) throws Exception {
+        SessionManager sessions = new SessionManager(workspace);
+        MemoryStore memoryStore = new MemoryStore(workspace);
+        SessionPersistenceService service = new SessionPersistenceService(sessions, 100, memoryStore);
+        Session session = new Session("cli:direct");
+
+        AgentRequestContext request = new AgentRequestContext(
+                new InboundMessage("cli", "user", "direct", "我偏好简短回答"),
+                "cli:direct",
+                session,
+                "",
+                new PromptContextBundle(),
+                List.of(),
+                List.of(),
+                null,
+                false
+        );
+        ExecutionOutcome outcome = new ExecutionOutcome(
+                new AgentRunResult()
+                        .setMessages(List.of(
+                                Map.of("role", "system", "content", "ignored"),
+                                Map.of("role", "user", "content", "我偏好简短回答"),
+                                Map.of("role", "assistant", "content", "记住了")
+                        ))
+                        .setFinalContent("记住了"),
+                "记住了"
+        );
+
+        service.persistInteractiveTurn(request, outcome);
+
+        Path candidatesFile = workspace.resolve("memory").resolve("candidates.jsonl");
+        assertTrue(Files.exists(candidatesFile));
+        String jsonl = Files.readString(candidatesFile);
+        assertTrue(jsonl.contains("\"type\":\"preference\""), jsonl);
+        assertTrue(jsonl.contains("\"memory_type\":\"semantic\""), jsonl);
+        assertTrue(jsonl.contains("\"scope\":\"long_term\""), jsonl);
+        assertTrue(jsonl.contains("\"summary\":\"我偏好简短回答\""), jsonl);
+        assertTrue(jsonl.contains("\"source\":\"candidate\""), jsonl);
+        assertTrue(jsonl.contains("\"tags\":[\"user\"]"), jsonl);
     }
 }

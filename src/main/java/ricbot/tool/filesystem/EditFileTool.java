@@ -6,6 +6,7 @@ import ricbot.domain.security.CommandRiskAnalyzer;
 import ricbot.domain.security.CommandRiskLevel;
 import ricbot.domain.security.RiskAssessment;
 import ricbot.tool.api.Tool;
+import ricbot.tool.api.Tool.ToolExecutionContext;
 import ricbot.tool.api.ToolParam;
 
 import java.nio.file.Files;
@@ -62,11 +63,11 @@ public class EditFileTool extends Tool {
         return execute(path, oldText, newText, replaceAll, false);
     }
 
-    private String execute(String path, String oldText, String newText, Boolean replaceAll, boolean approvalBypass) {
+    private String execute(String path, String oldText, String newText, Boolean replaceAll, boolean approved) {
         try {
             Path target = FileToolSupport.resolvePath(workspace, path);
             FileToolSupport.ensureAllowed(target, allowedDir, List.of());
-            String riskGate = approvalBypass ? null : riskGate(target, path, oldText, newText, replaceAll);
+            String riskGate = approved ? null : riskGate(target, path, oldText, newText, replaceAll);
             if (riskGate != null) {
                 return riskGate;
             }
@@ -119,12 +120,16 @@ public class EditFileTool extends Tool {
 
     @Override
     public Object execute(Map<String, Object> params) {
+        return execute(params, ToolExecutionContext.normal());
+    }
+
+    @Override
+    public Object execute(Map<String, Object> params, ToolExecutionContext context) {
         String path = params != null ? (String) params.get("path") : null;
         String oldText = params != null ? (String) params.get("old_text") : null;
         String newText = params != null ? (String) params.get("new_text") : null;
         Boolean replaceAll = params != null ? (Boolean) params.get("replace_all") : null;
-        boolean approvalBypass = params != null && Boolean.TRUE.equals(params.get("__approval_bypass"));
-        return execute(path, oldText, newText, replaceAll, approvalBypass);
+        return execute(path, oldText, newText, replaceAll, context != null && context.approved());
     }
 
     private String riskGate(Path target, String path, String oldText, String newText, Boolean replaceAll) {

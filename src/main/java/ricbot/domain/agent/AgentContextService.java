@@ -4,18 +4,11 @@ import ricbot.domain.hook.AgentHook;
 import ricbot.domain.memory.MemoryStore;
 import ricbot.domain.message.InboundMessage;
 import ricbot.domain.session.Session;
-import ricbot.domain.subagent.SubAgentOrchestrator;
-import ricbot.domain.team.TeamEngine;
-import ricbot.domain.team.TeamSession;
-import ricbot.domain.workspace.WorkspaceSession;
-import ricbot.domain.workspace.WorkspaceSessionStore;
 import ricbot.domain.skill.SkillRouter;
-import ricbot.domain.skill.SkillRoutingContext;
 import ricbot.domain.skill.SkillsLoader;
 import ricbot.tool.api.ToolRegistry;
 
 import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -57,78 +50,34 @@ record AgentContextService(Path workspace, ContextBuilder contextBuilder, Memory
         // 应用工具上下文，设置通道、聊天ID和消息ID
         toolContextApplier.apply(msg.getChannel(), msg.getChatId(), messageIdOf(msg));
 
-        SkillRoutingContext skillRoutingContext = new SkillRoutingContext(
+        ContextAssembler.AssembledContext assembled = new ContextAssembler(
                 workspace,
-                msg.getChannel(),
-                msg.getChatId(),
-                msg.getContent(),
-                tools.toolNames(),
-                msg.getMetadata(),
-                Map.of()
-        );
-        SkillRouter.SelectionResult selected = skillRouter.selectAndRenderProgressive(skillRoutingContext);
-
-        // 根据会话准备输入（如归档摘要、任务状态快照、最近工具追踪）、消息内容等选择上下文
-        ContextSelectionService.SelectionResult selection = contextSelectionService.select(
-                new ContextSelectionService.SessionPreparedInputs(
-                        prepared.sessionKey(),
-                        prepared.archivedSummary(),
-                        prepared.taskStateSnapshot(),
-                        recentToolTrace(prepared.session()),
-                        SubAgentOrchestrator.resultsFromSession(prepared.session()),
-                        teamContext(prepared.session()),
-                        workspaceContext(prepared.session())
-                ),
-                prepared.session().getMessages(),
-                msg.getContent(),
+                contextBuilder,
+                skillsLoader,
+                skillRouter,
+                tools,
+                contextSelectionService
+        ).buildInteractiveContext(
+                msg,
+                prepared,
                 historyWindowMessages
-        );
-
-        // 合并后的上下文用于诊断/测试；实际 system prompt 中结构化上下文和技能上下文分槽注入，避免重复。
-        String structuredContext = selection.bundle().render();
-        String skillContext = skillsContext(selected.renderedContext());
-        String combinedContext = combineContext(structuredContext, skillContext);
-
-        // 获取经过筛选的历史消息列表
-        List<Map<String, Object>> history = selection.history();
-        
-        // 构建初始消息列表，包含历史消息、当前消息内容、媒体信息、渠道信息及合并后的上下文
-        List<Map<String, Object>> initialMessages = contextBuilder.buildMessages(
-                history,
-                msg.getContent(),
-                msg.getMedia(),
-                msg.getChannel(),
-                msg.getChatId(),
-                "",
-                skillContext,
-                "user",
-                selection.bundle()
         );
 
         // 创建代理钩子，整合全局钩子和请求级钩子
         AgentHook hook = hookFactory.create(msg, globalHooks, requestHooks);
-        Map<String, Object> contextTrace = buildContextTrace(
-                prepared,
-                selection,
-                selected,
-                structuredContext,
-                skillContext,
-                combinedContext,
-                initialMessages
-        );
         
         // 返回构建好的代理请求上下文对象
         return new AgentRequestContext(
                 msg,
                 prepared.sessionKey(),
                 prepared.session(),
-                combinedContext,
-                selection.bundle(),
-                history,
-                initialMessages,
+                assembled.combinedContext(),
+                assembled.bundle(),
+                assembled.history(),
+                assembled.initialMessages(),
                 hook,
                 prepared.userPersistedEarly(),
-                contextTrace
+                assembled.contextTrace()
         );
     }
 
@@ -184,72 +133,6 @@ record AgentContextService(Path workspace, ContextBuilder contextBuilder, Memory
         );
     }
 
-    private Map<String, Object> buildContextTrace(
-            PreparedSessionContext prepared,
-            ContextSelectionService.SelectionResult selection,
-            SkillRouter.SelectionResult selectedSkills,
-            String structuredContext,
-            String skillContext,
-            String combinedContext,
-            List<Map<String, Object>> initialMessages
-    ) {
-        Map<String, Object> trace = new LinkedHashMap<>();
-        List<Map<String, Object>> sessionMessages = prepared.session() != null ? prepared.session().getMessages() : List.of();
-        trace.put("mode", "interactive");
-        trace.put("session_key", prepared.sessionKey());
-        trace.put("history_candidates", sessionMessages.size());
-        trace.put("history_selected", selection.history().size());
-        trace.put("initial_message_count", initialMessages != null ? initialMessages.size() : 0);
-        trace.put("structured_context_chars", lengthOf(structuredContext));
-        trace.put("skills_context_chars", lengthOf(skillContext));
-        trace.put("combined_context_chars", lengthOf(combinedContext));
-        trace.put("prompt_context_budget", selection.bundle().budgetTrace());
-        trace.put("context_quality", selection.bundle().qualityReport().toMap());
-        trace.put("skills", skillsTrace(selectedSkills, skillContext));
-        return trace;
-    }
-
-    private Map<String, Object> teamContext(Session session) {
-        Map<String, Object> existing = TeamEngine.contextFromSession(session);
-        if (existing != null && !existing.isEmpty()) {
-            return existing;
-        }
-        try {
-            TeamEngine engine = new TeamEngine(workspace);
-            TeamSession latest = engine.loadLatestActiveSession();
-            return latest != null ? engine.contextSnapshot(latest.id()) : Map.of();
-        } catch (Exception ignored) {
-            return Map.of();
-        }
-    }
-
-    private Map<String, Object> workspaceContext(Session session) {
-        if (session == null || session.getMetadata() == null) {
-            return Map.of();
-        }
-        Object rawId = session.getMetadata().get(SessionRuntimeKeys.ACTIVE_WORKSPACE_SESSION_ID_KEY);
-        String id = rawId != null ? String.valueOf(rawId).trim() : "";
-        if (id.isBlank()) {
-            return Map.of();
-        }
-        try {
-            WorkspaceSession workspaceSession = new WorkspaceSessionStore(workspace).load(id);
-            if (workspaceSession == null) {
-                return Map.of();
-            }
-            Map<String, Object> out = new LinkedHashMap<>();
-            out.put("id", workspaceSession.id());
-            out.put("type", workspaceSession.type().name());
-            out.put("status", workspaceSession.status().name());
-            out.put("goal", workspaceSession.goal());
-            out.put("path", workspaceSession.workspacePath());
-            out.put("source", ".workspaces/" + workspaceSession.id() + "/session.json");
-            return out;
-        } catch (Exception ignored) {
-            return Map.of();
-        }
-    }
-
     private Map<String, Object> buildSystemContextTrace(
             PreparedSessionContext prepared,
             List<Map<String, Object>> history,
@@ -267,84 +150,6 @@ record AgentContextService(Path workspace, ContextBuilder contextBuilder, Memory
         return trace;
     }
 
-    private Map<String, Object> skillsTrace(SkillRouter.SelectionResult selectedSkills, String skillContext) {
-        Map<String, Object> trace = new LinkedHashMap<>();
-        trace.put("context_chars", lengthOf(skillContext));
-        if (selectedSkills == null) {
-            trace.put("selected_count", 0);
-            trace.put("decisions", List.of());
-            return trace;
-        }
-        List<Map<String, Object>> decisions = new ArrayList<>();
-        int selected = 0;
-        for (SkillRouter.SkillDecision decision : selectedSkills.decisions()) {
-            Map<String, Object> item = new LinkedHashMap<>();
-            item.put("name", decision.name());
-            item.put("score", decision.score());
-            item.put("always", decision.always());
-            item.put("included", decision.included());
-            item.put("reasons", decision.reasons());
-            decisions.add(item);
-            if (decision.included()) {
-                selected++;
-            }
-        }
-        trace.put("selected_count", selected);
-        trace.put("decisions", decisions);
-        return trace;
-    }
-
-    private int lengthOf(String value) {
-        return value != null ? value.length() : 0;
-    }
-
-    /**
-     * 合并多个上下文字符串块
-     *
-     * @param blocks 待合并的字符串块
-     * @return 合并后的字符串
-     */
-    private String combineContext(String... blocks) {
-        StringBuilder sb = new StringBuilder();
-        for (String block : blocks) {
-            appendBlock(sb, block);
-        }
-        return sb.toString();
-    }
-
-    private String skillsContext(String loadedSkillsContext) {
-        String summary = skillsLoader.buildSkillsSummary();
-        StringBuilder sb = new StringBuilder();
-        if (summary != null && !summary.isBlank()) {
-            sb.append("## Skills Summary\n");
-            sb.append("Only summary metadata is loaded by default. Use the read_skill tool to load a skill's full SKILL.md before following it, unless the skill is already included below.\n");
-            sb.append(summary);
-        }
-        if (loadedSkillsContext != null && !loadedSkillsContext.isBlank()) {
-            if (!sb.isEmpty()) {
-                sb.append("\n\n");
-            }
-            sb.append("## Loaded Skills\n").append(loadedSkillsContext);
-        }
-        return sb.toString();
-    }
-
-    /**
-     * 向StringBuilder中追加非空文本块，并在需要时添加换行符分隔
-     *
-     * @param sb    目标StringBuilder
-     * @param value 待追加的值
-     */
-    private void appendBlock(StringBuilder sb, String value) {
-        if (value == null || value.isBlank()) {
-            return;
-        }
-        if (!sb.isEmpty()) {
-            sb.append("\n");
-        }
-        sb.append(value);
-    }
-
     /**
      * 从入站消息元数据中提取消息ID
      *
@@ -359,33 +164,4 @@ record AgentContextService(Path workspace, ContextBuilder contextBuilder, Memory
         return value != null ? String.valueOf(value) : null;
     }
 
-    /**
-     * 获取最近的工具调用追踪记录
-     *
-     * @param session 会话对象
-     * @return 工具追踪记录列表，每个元素为Map结构
-     */
-    private List<Map<String, Object>> recentToolTrace(Session session) {
-        if (session == null) {
-            return List.of();
-        }
-        // 从会话元数据中获取原始的工具追踪对象
-        Object raw = session.getMetadata().get(SessionRuntimeKeys.TOOL_TRACE_KEY);
-        // 检查是否为List类型
-        if (!(raw instanceof List<?> list)) {
-            return List.of();
-        }
-        List<Map<String, Object>> out = new ArrayList<>();
-        // 遍历列表，将每个Map元素转换为LinkedHashMap以保持顺序
-        for (Object item : list) {
-            if (item instanceof Map<?, ?> map) {
-                out.add(copyObjectMap(map));
-            }
-        }
-        return out;
-    }
-
-    private static Map<String, Object> copyObjectMap(Map<?, ?> raw) {
-        return ricbot.infra.common.JsonMapUtils.copyObjectMap(raw);
-    }
 }

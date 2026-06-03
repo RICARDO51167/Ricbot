@@ -8,6 +8,7 @@ import ricbot.domain.security.CommandRiskAnalyzer;
 import ricbot.domain.security.CommandRiskLevel;
 import ricbot.domain.security.RiskAssessment;
 import ricbot.tool.api.Tool;
+import ricbot.tool.api.Tool.ToolExecutionContext;
 import ricbot.tool.api.ToolParam;
 
 import java.nio.file.Files;
@@ -101,13 +102,13 @@ public class WriteFileTool extends Tool {
         return execute(path, content, false);
     }
 
-    private String execute(String path, String content, boolean approvalBypass) {
+    private String execute(String path, String content, boolean approved) {
         try {
             // 解析并规范化目标路径
             Path target = FileToolSupport.resolvePath(workspace, path);
             // 校验路径是否在允许范围内
             FileToolSupport.ensureAllowedForWrite(target, allowedDir, List.of());
-            String riskGate = approvalBypass ? null : riskGate(target, path, content);
+            String riskGate = approved ? null : riskGate(target, path, content);
             if (riskGate != null) {
                 return riskGate;
             }
@@ -136,10 +137,14 @@ public class WriteFileTool extends Tool {
 
     @Override
     public Object execute(Map<String, Object> params) {
+        return execute(params, ToolExecutionContext.normal());
+    }
+
+    @Override
+    public Object execute(Map<String, Object> params, ToolExecutionContext context) {
         String path = params != null ? (String) params.get("path") : null;
         String content = params != null ? (String) params.get("content") : null;
-        boolean approvalBypass = params != null && Boolean.TRUE.equals(params.get("__approval_bypass"));
-        return execute(path, content, approvalBypass);
+        return execute(path, content, context != null && context.approved());
     }
 
     private String riskGate(Path target, String path, String content) {

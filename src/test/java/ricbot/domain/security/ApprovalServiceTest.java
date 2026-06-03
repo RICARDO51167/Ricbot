@@ -3,12 +3,17 @@ package ricbot.domain.security;
 import org.junit.jupiter.api.Test;
 import ricbot.domain.change.PendingChangeAction;
 
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 class ApprovalServiceTest {
+    private static final Clock FIXED_CLOCK = Clock.fixed(Instant.parse("2026-06-03T00:00:00Z"), ZoneOffset.UTC);
 
     @Test
     void createApproveRejectAndFind() {
@@ -28,10 +33,71 @@ class ApprovalServiceTest {
 
         ApprovalRequest approved = service.approve(request.requestId());
         assertEquals(ApprovalRequest.ApprovalStatus.APPROVED, approved.status());
-
-        ApprovalRequest rejected = service.reject(request.requestId());
-        assertEquals(ApprovalRequest.ApprovalStatus.REJECTED, rejected.status());
         assertNull(service.find("missing"));
+    }
+
+    @Test
+    void pendingApproval_beforeExpired_canApprove() {
+        ApprovalService service = new ApprovalService(Duration.ofMinutes(30), FIXED_CLOCK);
+        ApprovalRequest request = service.createRequest(assessment());
+
+        assertEquals("2026-06-03T00:30:00Z", request.expiresAt());
+
+        ApprovalRequest approved = service.approve(request.requestId());
+
+        assertEquals(ApprovalRequest.ApprovalStatus.APPROVED, approved.status());
+    }
+
+    @Test
+    void expiredApproval_cannotApprove() {
+        ApprovalService service = new ApprovalService(Duration.ZERO, FIXED_CLOCK);
+        ApprovalRequest request = service.createRequest(assessment());
+
+        IllegalStateException error = assertThrows(IllegalStateException.class, () -> service.approve(request.requestId()));
+
+        assertTrue(error.getMessage().contains("审批请求已过期"), error.getMessage());
+    }
+
+    @Test
+    void expiredApproval_cannotConsume() {
+        ApprovalService service = new ApprovalService(Duration.ZERO, FIXED_CLOCK);
+        ApprovalRequest request = service.createRequest(
+                assessment(),
+                "exec",
+                Map.of("command", "echo hi"),
+                "session-1"
+        );
+
+        IllegalStateException error = assertThrows(IllegalStateException.class, () -> service.consumeApprovedToolCall(request.requestId()));
+
+        assertTrue(error.getMessage().contains("审批请求已过期"), error.getMessage());
+    }
+
+    @Test
+    void repeatedApproval_isRejected() {
+        ApprovalService service = new ApprovalService(Duration.ofMinutes(30), FIXED_CLOCK);
+        ApprovalRequest request = service.createRequest(assessment());
+        service.approve(request.requestId());
+
+        IllegalStateException error = assertThrows(IllegalStateException.class, () -> service.approve(request.requestId()));
+
+        assertTrue(error.getMessage().contains("审批请求已处理"), error.getMessage());
+    }
+
+    @Test
+    void rejectedApproval_cannotConsume() {
+        ApprovalService service = new ApprovalService(Duration.ofMinutes(30), FIXED_CLOCK);
+        ApprovalRequest request = service.createRequest(
+                assessment(),
+                "exec",
+                Map.of("command", "echo hi"),
+                "session-1"
+        );
+        service.reject(request.requestId());
+
+        IllegalStateException error = assertThrows(IllegalStateException.class, () -> service.consumeApprovedToolCall(request.requestId()));
+
+        assertTrue(error.getMessage().contains("审批请求尚未批准"), error.getMessage());
     }
 
     @Test
@@ -136,6 +202,16 @@ class ApprovalServiceTest {
 
         assertThrows(IllegalStateException.class, () -> service.consumeApprovedChangeAction(rejected.requestId()));
         assertThrows(IllegalArgumentException.class, () -> service.consumeApprovedChangeAction("missing"));
+    }
+
+    private RiskAssessment assessment() {
+        return RiskAssessment.of(
+                CommandRiskLevel.HIGH,
+                List.of("dangerous command"),
+                "rm file",
+                "exec",
+                List.of("file")
+        );
     }
 
     private record PathLike(String value) {

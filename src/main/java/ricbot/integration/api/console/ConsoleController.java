@@ -17,6 +17,7 @@ import ricbot.domain.experience.ExperienceEntry;
 import ricbot.domain.experience.ExperienceSkillPromoter;
 import ricbot.domain.experience.ExperienceStore;
 import ricbot.domain.experience.ExperienceStatus;
+import ricbot.domain.security.ApprovalApplicationService;
 import ricbot.domain.security.ApprovalRequest;
 import ricbot.domain.security.ApprovalService;
 import ricbot.domain.team.TeamEngine;
@@ -475,7 +476,7 @@ public final class ConsoleController {
     }
 
     private static Map<String, Object> listApprovals(RicbotApiAppContext appContext) {
-        ApprovalService service = approvalService(appContext);
+        ApprovalApplicationService service = approvalApplicationService(appContext);
         List<Map<String, Object>> items = service.listPending().stream()
                 .map(ConsoleController::approvalMap)
                 .toList();
@@ -483,23 +484,23 @@ public final class ConsoleController {
     }
 
     private static Map<String, Object> approveApproval(RicbotApiAppContext appContext, String id) {
-        ApprovalService service = approvalService(appContext);
-        ApprovalRequest existing = requireApproval(service, id);
-        if (existing.status() != ApprovalRequest.ApprovalStatus.PENDING) {
-            throw new ConsoleConflictException("approval request already handled: " + id + " status=" + existing.status());
-        }
-        ApprovalRequest updated = service.approve(id);
-        return actionResult("approval.approve", id, updated.status().name(), "approval approved", approvalMap(updated), List.of());
+        requireApproval(approvalService(appContext), id);
+        ApprovalApplicationService.ApprovalActionResult result = approvalApplicationService(appContext).approveOnly(id);
+        Map<String, Object> data = approvalMap(result.request());
+        data.put("executed", result.executed());
+        data.put("executionType", result.executionType());
+        data.put("message", result.message());
+        return actionResult("approval.approve", id, result.request().status().name(), result.message(), data, List.of());
     }
 
     private static Map<String, Object> rejectApproval(RicbotApiAppContext appContext, String id) {
-        ApprovalService service = approvalService(appContext);
-        ApprovalRequest existing = requireApproval(service, id);
-        if (existing.status() != ApprovalRequest.ApprovalStatus.PENDING) {
-            throw new ConsoleConflictException("approval request already handled: " + id + " status=" + existing.status());
-        }
-        ApprovalRequest updated = service.reject(id);
-        return actionResult("approval.reject", id, updated.status().name(), "approval rejected", approvalMap(updated), List.of());
+        requireApproval(approvalService(appContext), id);
+        ApprovalApplicationService.ApprovalActionResult result = approvalApplicationService(appContext).reject(id);
+        Map<String, Object> data = approvalMap(result.request());
+        data.put("executed", result.executed());
+        data.put("executionType", result.executionType());
+        data.put("message", result.message());
+        return actionResult("approval.reject", id, result.request().status().name(), result.message(), data, List.of());
     }
 
     private static ApprovalRequest requireApproval(ApprovalService service, String id) {
@@ -516,6 +517,14 @@ public final class ConsoleController {
             throw new IllegalStateException("approval service is unavailable");
         }
         return appContext.getAgentLoop().getApprovalService();
+    }
+
+    private static ApprovalApplicationService approvalApplicationService(RicbotApiAppContext appContext) {
+        return new ApprovalApplicationService(
+                approvalService(appContext),
+                appContext.getAgentLoop() != null ? appContext.getAgentLoop().getTools() : null,
+                appContext.getWorkspace()
+        );
     }
 
     private static Map<String, Object> approvalMap(ApprovalRequest request) {
@@ -760,6 +769,8 @@ public final class ConsoleController {
                 RicbotApiServer.writeErrorJson(exchange, 404, e.getMessage(), "not_found");
             } catch (ConsoleConflictException e) {
                 RicbotApiServer.writeErrorJson(exchange, 409, e.getMessage(), "conflict");
+            } catch (IllegalStateException e) {
+                RicbotApiServer.writeErrorJson(exchange, 409, e.getMessage(), "conflict");
             } catch (IllegalArgumentException e) {
                 RicbotApiServer.writeErrorJson(exchange, 404, e.getMessage(), "not_found");
             } catch (Exception e) {
@@ -835,6 +846,10 @@ public final class ConsoleController {
                     remoteAddress, userAgent, e.getMessage(), warnings, requestId);
             RicbotApiServer.writeJson(exchange, 404, errorBody(e.getMessage(), "not_found", combineWarnings(warnings, auditWarnings)));
         } catch (ConsoleConflictException e) {
+            List<String> auditWarnings = audit(appContext, safeAction, targetType, safeTargetId, "CONFLICT", operator(exchange, appContext),
+                    remoteAddress, userAgent, e.getMessage(), warnings, requestId);
+            RicbotApiServer.writeJson(exchange, 409, errorBody(e.getMessage(), "conflict", combineWarnings(warnings, auditWarnings)));
+        } catch (IllegalStateException e) {
             List<String> auditWarnings = audit(appContext, safeAction, targetType, safeTargetId, "CONFLICT", operator(exchange, appContext),
                     remoteAddress, userAgent, e.getMessage(), warnings, requestId);
             RicbotApiServer.writeJson(exchange, 409, errorBody(e.getMessage(), "conflict", combineWarnings(warnings, auditWarnings)));

@@ -21,6 +21,10 @@ import ricbot.tool.filesystem.ReadFileTool;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -29,6 +33,201 @@ import java.util.stream.Stream;
 import static org.junit.jupiter.api.Assertions.*;
 
 public class AgentRunnerTest {
+    private static final Clock FIXED_CLOCK = Clock.fixed(Instant.parse("2026-06-03T00:00:00Z"), ZoneOffset.UTC);
+
+    @Test
+    void runControllerTracksTurnsCancellationAndStopReason() {
+        AgentRunController controller = AgentRunController.withMaxTurns(2);
+
+        assertTrue(controller.canContinue());
+        controller.recordTurn();
+        assertTrue(controller.canContinue());
+        controller.recordTurn();
+
+        assertFalse(controller.canContinue());
+        assertEquals("max_turns", controller.stopReason().orElseThrow());
+
+        AgentRunController cancelled = AgentRunController.withMaxTurns(5);
+        cancelled.cancel("user stop");
+
+        assertFalse(cancelled.canContinue());
+        assertTrue(cancelled.cancelled());
+        assertEquals("cancelled: user stop", cancelled.stopReason().orElseThrow());
+    }
+
+    @Test
+    void runControllerChecksDeadlineAndTimeoutStopReason() {
+        AgentRunController beforeDeadline = AgentRunController.withMaxTurnsAndTimeout(
+                3,
+                Duration.ofSeconds(5),
+                FIXED_CLOCK
+        );
+
+        assertTrue(beforeDeadline.canContinue());
+        assertFalse(beforeDeadline.timedOut());
+        assertEquals(Instant.parse("2026-06-03T00:00:05Z"), beforeDeadline.deadline().orElseThrow());
+
+        AgentRunController timedOut = AgentRunController.withMaxTurnsAndTimeout(
+                3,
+                Duration.ZERO,
+                FIXED_CLOCK
+        );
+
+        assertTrue(timedOut.timedOut());
+        assertFalse(timedOut.canContinue());
+        assertEquals("timeout", timedOut.stopReason().orElseThrow());
+    }
+
+    @Test
+    void runner_maxIterationsBehaviorDoesNotRegress() throws Exception {
+        ToolRegistry tools = new ToolRegistry();
+        tools.register(echoTool());
+        AtomicInteger calls = new AtomicInteger(0);
+        LLMProvider provider = new LLMProvider("k", "http://localhost") {
+            @Override
+            public LLMResponse chat(
+                    List<Map<String, Object>> messages,
+                    List<Map<String, Object>> toolsDef,
+                    String model,
+                    Integer maxTokens,
+                    Double temperature,
+                    String reasoningEffort,
+                    Object toolChoice
+            ) {
+                calls.incrementAndGet();
+                return new LLMResponse()
+                        .setContent("")
+                        .setToolCalls(List.of(new ToolCallRequest("call_" + calls.get(), "echo", Map.of("value", "loop"))))
+                        .setFinishReason("tool_calls");
+            }
+        };
+
+        AgentRunResult result = new AgentRunner(provider).run(new AgentRunSpec()
+                .setInitialMessages(List.of(Map.of("role", "user", "content", "loop")))
+                .setTools(tools)
+                .setModel("gpt-4o-mini")
+                .setMaxIterations(2)
+                .setMaxIterationsMessage("max reached"));
+
+        assertEquals(2, calls.get());
+        assertEquals(2, result.getIterations());
+        assertEquals("empty_spin", result.getStopReason());
+        assertEquals("max reached", result.getFinalContent());
+        assertTrue(result.getRunEvents().stream().anyMatch(event ->
+                "run_stop".equals(event.get("type"))
+                        && "empty_spin".equals(event.get("stop_reason"))));
+    }
+
+    @Test
+    void runner_withoutTimeout_behaviorDoesNotRegress() throws Exception {
+        AtomicInteger calls = new AtomicInteger(0);
+        LLMProvider provider = new LLMProvider("k", "http://localhost") {
+            @Override
+            public LLMResponse chat(
+                    List<Map<String, Object>> messages,
+                    List<Map<String, Object>> toolsDef,
+                    String model,
+                    Integer maxTokens,
+                    Double temperature,
+                    String reasoningEffort,
+                    Object toolChoice
+            ) {
+                calls.incrementAndGet();
+                return new LLMResponse().setContent("done").setFinishReason("stop");
+            }
+        };
+
+        AgentRunResult result = new AgentRunner(provider).run(new AgentRunSpec()
+                .setInitialMessages(List.of(Map.of("role", "user", "content", "hello")))
+                .setModel("gpt-4o-mini")
+                .setMaxIterations(2));
+
+        assertEquals("done", result.getFinalContent());
+        assertEquals("stop", result.getStopReason());
+        assertEquals(1, result.getIterations());
+        assertEquals(1, calls.get());
+        assertEventOrder(result.getRunEvents(), "run_start", "model_request", "model_response", "run_stop", "run_finish");
+        assertTrue(result.getRunEvents().stream().anyMatch(event ->
+                "run_stop".equals(event.get("type"))
+                        && "stop".equals(event.get("stop_reason"))));
+    }
+
+    @Test
+    void runner_timeoutStopsBeforeNextTurn() throws Exception {
+        ToolRegistry tools = new ToolRegistry();
+        tools.register(echoTool());
+        AtomicInteger calls = new AtomicInteger(0);
+        LLMProvider provider = new LLMProvider("k", "http://localhost") {
+            @Override
+            public LLMResponse chat(
+                    List<Map<String, Object>> messages,
+                    List<Map<String, Object>> toolsDef,
+                    String model,
+                    Integer maxTokens,
+                    Double temperature,
+                    String reasoningEffort,
+                    Object toolChoice
+            ) {
+                calls.incrementAndGet();
+                return new LLMResponse()
+                        .setContent("")
+                        .setToolCalls(List.of(new ToolCallRequest("call_1", "echo", Map.of("value", "one"))))
+                        .setFinishReason("tool_calls");
+            }
+        };
+
+        AgentRunResult result = new AgentRunner(provider).run(new AgentRunSpec()
+                .setInitialMessages(List.of(Map.of("role", "user", "content", "timeout")))
+                .setTools(tools)
+                .setModel("gpt-4o-mini")
+                .setMaxIterations(5)
+                .setRunTimeout(Duration.ZERO));
+
+        assertEquals(0, calls.get());
+        assertEquals(0, result.getIterations());
+        assertEquals("timeout", result.getStopReason());
+        assertTrue(result.getFinalContent().contains("运行超时"), result.getFinalContent());
+        assertTrue(result.getRunEvents().stream().anyMatch(event -> "run_timeout".equals(event.get("type"))));
+        assertTrue(result.getRunEvents().stream().anyMatch(event ->
+                "run_stop".equals(event.get("type"))
+                        && "timeout".equals(event.get("stop_reason"))));
+    }
+
+    @Test
+    void runner_recordsRetryMetadataAsRunEvent() throws Exception {
+        AtomicInteger calls = new AtomicInteger(0);
+        LLMProvider provider = new LLMProvider("k", "http://localhost") {
+            @Override
+            public LLMResponse chat(
+                    List<Map<String, Object>> messages,
+                    List<Map<String, Object>> toolsDef,
+                    String model,
+                    Integer maxTokens,
+                    Double temperature,
+                    String reasoningEffort,
+                    Object toolChoice
+            ) {
+                calls.incrementAndGet();
+                return new LLMResponse().setContent("recovered").setFinishReason("stop");
+            }
+        };
+
+        AgentRunResult result = new AgentRunner(provider).run(new AgentRunSpec()
+                .setInitialMessages(List.of(Map.of("role", "assistant", "content", "")))
+                .setModel("gpt-4o-mini")
+                .setMaxIterations(2)
+                .setMetadata(Map.of(
+                        "retryReason", "tool_loop",
+                        "retryCount", 1
+                )));
+
+        assertEquals("recovered", result.getFinalContent());
+        assertEquals(1, calls.get());
+        assertTrue(result.getRunEvents().stream().anyMatch(event ->
+                "run_retry".equals(event.get("type"))
+                        && "tool_loop".equals(event.get("retry_reason"))
+                        && Integer.valueOf(1).equals(event.get("retry_count"))));
+    }
 
     @Test
     // 测试 AgentRunner 执行工具调用并追加工具结果的功能
@@ -823,5 +1022,20 @@ public class AgentRunnerTest {
             }
         }
         return "";
+    }
+
+    private static void assertEventOrder(List<Map<String, Object>> events, String... types) {
+        int last = -1;
+        for (String type : types) {
+            int index = -1;
+            for (int i = last + 1; i < events.size(); i++) {
+                if (type.equals(events.get(i).get("type"))) {
+                    index = i;
+                    break;
+                }
+            }
+            assertTrue(index > last, "missing event type in order: " + type + " events=" + events);
+            last = index;
+        }
     }
 }

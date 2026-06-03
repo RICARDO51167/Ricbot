@@ -5,6 +5,9 @@ import ricbot.domain.trace.TraceEvent;
 import ricbot.domain.trace.TraceEventType;
 import ricbot.domain.trace.TraceStore;
 
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -12,14 +15,29 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class ApprovalService {
+    private static final Duration DEFAULT_TTL = Duration.ofMinutes(30);
+
     private final Map<String, ApprovalRequest> requests = new ConcurrentHashMap<>();
+    private final Duration ttl;
+    private final Clock clock;
     private TraceStore traceStore;
 
     public ApprovalService() {
+        this(null, DEFAULT_TTL, Clock.systemUTC());
     }
 
     public ApprovalService(TraceStore traceStore) {
+        this(traceStore, DEFAULT_TTL, Clock.systemUTC());
+    }
+
+    public ApprovalService(Duration ttl, Clock clock) {
+        this(null, ttl, clock);
+    }
+
+    private ApprovalService(TraceStore traceStore, Duration ttl, Clock clock) {
         this.traceStore = traceStore;
+        this.ttl = ttl != null ? ttl : DEFAULT_TTL;
+        this.clock = clock != null ? clock : Clock.systemUTC();
     }
 
     public void setTraceStore(TraceStore traceStore) {
@@ -69,7 +87,8 @@ public class ApprovalService {
 
     private ApprovalRequest createBareRequest(RiskAssessment assessment) {
         String requestId = "approval_" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
-        ApprovalRequest request = ApprovalRequest.create(requestId, assessment);
+        Instant now = Instant.now(clock);
+        ApprovalRequest request = ApprovalRequest.create(requestId, assessment, now, now.plus(ttl));
         requests.put(requestId, request);
         return request;
     }
@@ -92,6 +111,7 @@ public class ApprovalService {
     public List<ApprovalRequest> listPending() {
         return requests.values().stream()
                 .filter(request -> request.status() == ApprovalRequest.ApprovalStatus.PENDING)
+                .filter(request -> !isExpired(request))
                 .sorted((left, right) -> right.createdAt().compareTo(left.createdAt()))
                 .toList();
     }
@@ -101,6 +121,7 @@ public class ApprovalService {
         if (existing == null) {
             throw new IllegalArgumentException("审批请求不存在或已过期：" + requestId);
         }
+        ensureNotExpired(existing);
         if (existing.status() != ApprovalRequest.ApprovalStatus.APPROVED) {
             throw new IllegalStateException("审批请求尚未批准，当前状态：" + existing.status());
         }
@@ -123,6 +144,7 @@ public class ApprovalService {
         if (existing == null) {
             throw new IllegalArgumentException("审批请求不存在或已过期：" + requestId);
         }
+        ensureNotExpired(existing);
         if (existing.status() != ApprovalRequest.ApprovalStatus.APPROVED) {
             throw new IllegalStateException("审批请求尚未批准，当前状态：" + existing.status());
         }
@@ -145,6 +167,25 @@ public class ApprovalService {
         if (existing == null) {
             return null;
         }
+        ensureNotExpired(existing);
+        if (existing.status() != ApprovalRequest.ApprovalStatus.PENDING) {
+            if (decision == ApprovalDecision.APPROVED
+                    && existing.status() == ApprovalRequest.ApprovalStatus.APPROVED
+                    && (existing.pendingToolCall() != null || existing.pendingChangeAction() != null)) {
+                return existing;
+            }
+            if (decision == ApprovalDecision.REJECTED
+                    && existing.status() == ApprovalRequest.ApprovalStatus.APPROVED
+                    && !existing.consumed()
+                    && existing.pendingToolCall() == null
+                    && existing.pendingChangeAction() == null) {
+                ApprovalRequest rejected = existing.withStatus(ApprovalRequest.ApprovalStatus.REJECTED);
+                requests.put(requestId, rejected);
+                traceApproval(rejected, TraceEventType.APPROVAL_REJECTED, "approval rejected");
+                return rejected;
+            }
+            throw new IllegalStateException("审批请求已处理，当前状态：" + existing.status());
+        }
         ApprovalRequest.ApprovalStatus status = decision == ApprovalDecision.APPROVED
                 ? ApprovalRequest.ApprovalStatus.APPROVED
                 : ApprovalRequest.ApprovalStatus.REJECTED;
@@ -160,6 +201,16 @@ public class ApprovalService {
                 status == ApprovalRequest.ApprovalStatus.APPROVED ? "approval approved" : "approval rejected"
         );
         return updated;
+    }
+
+    private void ensureNotExpired(ApprovalRequest request) {
+        if (isExpired(request)) {
+            throw new IllegalStateException("审批请求已过期：" + request.requestId() + "，expiresAt=" + request.expiresAt());
+        }
+    }
+
+    private boolean isExpired(ApprovalRequest request) {
+        return request != null && request.isExpired(Instant.now(clock));
     }
 
     private void traceApproval(ApprovalRequest request, TraceEventType type, String message) {

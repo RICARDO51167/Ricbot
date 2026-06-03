@@ -8,9 +8,12 @@ import ricbot.tool.api.ToolRegistry;
 import java.nio.file.Path;
 import java.util.Map;
 import java.util.function.Consumer;
+import java.util.logging.Logger;
 
 // 代理执行服务类，负责管理 Agent 的运行逻辑、配置及结果处理
 final class AgentExecutionService {
+
+    private static final Logger LOGGER = Logger.getLogger(AgentExecutionService.class.getName());
 
     // Agent 运行器实例，用于执行具体的 Agent 任务
     private final AgentRunner runner;
@@ -102,23 +105,29 @@ final class AgentExecutionService {
 
         // 获取钩子对象
         AgentHook hook = request.hook();
+        AgentRetryPolicy retryPolicy = AgentRetryPolicy.maxRetries(1);
         // 如果未启用流式输出或没有钩子，且停止原因为工具循环或工具错误循环
-        if (hook == null || !hook.wantsStreaming()) {
-            if ("tool_loop".equals(result.getStopReason()) || "tool_error_loop".equals(result.getStopReason())) {
-                // 计算新的最大迭代次数：取 maxIterations+6 和 maxIterations*2 中的较大值，且不超过 30
-                int bumped = Math.min(30, Math.max(maxIterations + 6, maxIterations * 2));
-                // 如果新的迭代次数大于当前设置，则重新运行 Agent
-                if (bumped > maxIterations) {
-                    result = runner.run(buildSpec(
-                            result.getMessages(),
-                            request.session().getKey(),
-                            hook,
-                            bumped,
-                            maxIterationsMessage(bumped),
-                            checkpointCallback,
-                            request.session()
-                    ));
-                }
+        if (shouldRetryAfter(hook, result) && retryPolicy.recordFailure(result.getStopReason())) {
+            // 计算新的最大迭代次数：取 maxIterations+6 和 maxIterations*2 中的较大值，且不超过 30
+            int bumped = Math.min(30, Math.max(maxIterations + 6, maxIterations * 2));
+            // 如果新的迭代次数大于当前设置，则重新运行 Agent
+            if (bumped > maxIterations) {
+                AgentRunSpec retrySpec = buildSpec(
+                        result.getMessages(),
+                        request.session().getKey(),
+                        hook,
+                        bumped,
+                        maxIterationsMessage(bumped),
+                        checkpointCallback,
+                        request.session()
+                );
+                retrySpec.getMetadata().put("retryReason", retryPolicy.lastRetryReason().orElse(null));
+                retrySpec.getMetadata().put("retryCount", retryPolicy.retryCount());
+                LOGGER.info(() -> "Agent retry requested: reason="
+                        + retryPolicy.lastRetryReason().orElse("unknown")
+                        + ", retryCount=" + retryPolicy.retryCount()
+                        + ", maxIterations=" + bumped);
+                result = runner.run(retrySpec);
             }
         }
 
@@ -226,5 +235,13 @@ final class AgentExecutionService {
     // @return 提示消息字符串
     private String maxIterationsMessage(int iterations) {
         return "我已达到最大迭代次数（agents.defaults.max_tool_iterations=" + iterations + "），但仍未完成任务。可尝试提高该值（例如 12 或 16）后重试。";
+    }
+
+    private boolean shouldRetryAfter(AgentHook hook, AgentRunResult result) {
+        if (hook != null && hook.wantsStreaming()) {
+            return false;
+        }
+        String stopReason = result.getStopReason();
+        return "tool_loop".equals(stopReason) || "tool_error_loop".equals(stopReason);
     }
 }

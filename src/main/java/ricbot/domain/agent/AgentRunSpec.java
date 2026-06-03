@@ -9,6 +9,7 @@ import ricbot.domain.hook.AgentHook;
 import ricbot.tool.api.ToolRegistry;
 
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.*;
 import java.util.function.Consumer;
 
@@ -33,6 +34,8 @@ public class AgentRunSpec {
     private String model;
     // 最大迭代次数，防止无限循环
     private int maxIterations = 20;
+    // 单次 run 的软超时；仅在每轮开始前检查，不中断正在执行的 Provider/Tool 调用。
+    private Duration runTimeout;
     // 工具结果的最大字符数限制
     private int maxToolResultChars = 16000;
     // Agent 钩子，用于拦截和处理 Agent 生命周期事件

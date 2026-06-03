@@ -28,6 +28,7 @@ import ricbot.domain.policy.PolicyEngine;
 import ricbot.domain.policy.PolicyRenderer;
 import ricbot.domain.session.Session;
 import ricbot.domain.session.SessionManager;
+import ricbot.domain.security.ApprovalApplicationService;
 import ricbot.domain.security.ApprovalRequest;
 import ricbot.domain.security.ApprovalService;
 import ricbot.domain.security.CommandRiskLevel;
@@ -2613,38 +2614,58 @@ final class AgentCommands {
 
     private CompletableFuture<OutboundMessage> approve(CommandRouter.CommandContext ctx) {
         String requestId = trim(ctx.getArgs()).split("\\s+")[0];
-        ApprovalRequest request = approvalService.approve(requestId);
-        if (request == null) {
+        ApprovalApplicationService.ApprovalActionResult approvalResult;
+        try {
+            approvalResult = new ApprovalApplicationService(approvalService, toolRegistry, workspace).approveAndExecute(requestId);
+        } catch (IllegalStateException | IllegalArgumentException e) {
+            return completedReply(ctx, "无法处理审批请求：" + requestId + "\n" + e.getMessage());
+        }
+        if (!approvalResult.found()) {
             return completedReply(ctx, "未找到审批请求：" + requestId);
         }
+        ApprovalRequest request = approvalResult.request();
         Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
         traceEvent(session, TraceEventType.APPROVAL_APPROVED, "approval", "approval approved", Map.of(
                 "status", request.status().name(),
                 "hasChangeAction", request.pendingChangeAction() != null,
                 "hasToolCall", request.pendingToolCall() != null
         ), "", request.pendingChangeAction() != null ? request.pendingChangeAction().changeSetId() : "", request.requestId());
-        if (request.pendingChangeAction() != null) {
-            return approveChangeAction(ctx, requestId, request);
+        if ("CHANGE_ACTION".equals(approvalResult.executionType())) {
+            PendingChangeAction action = approvalResult.pendingChangeAction();
+            GitChangeSet result = approvalResult.changeSet();
+            ChangeSetRenderer renderer = new ChangeSetRenderer();
+            storeChangeSetContext(session, result, renderer);
+            recordChangeSetTeamArtifact(result, action.actionType().name().toLowerCase(java.util.Locale.ROOT));
+            TraceEventType eventType = action.actionType() == PendingChangeAction.ActionType.COMMIT
+                    ? TraceEventType.CHANGESET_COMMITTED
+                    : TraceEventType.CHANGESET_ROLLED_BACK;
+            traceEvent(session, eventType, "change", "changeset action executed", Map.of(
+                    "action", action.actionType().name(),
+                    "status", result.status().name(),
+                    "commitHash", result.commitHash(),
+                    "rollbackStatus", result.rollbackStatus()
+            ), result.teamSessionId(), result.id(), request.requestId());
+            String actionResult = action.actionType() == PendingChangeAction.ActionType.COMMIT
+                    ? "commitHash: " + result.commitHash()
+                    : "rollbackStatus: " + result.rollbackStatus();
+            return completedReply(ctx, "已批准并执行变更动作：" + request.requestId()
+                    + "\naction: " + action.actionType()
+                    + "\nchangeSetId: " + result.id()
+                    + "\nstatus: " + result.status()
+                    + "\n" + actionResult);
         }
-        if (toolRegistry == null) {
-            return completedReply(ctx, "已批准审批请求：" + request.requestId()
-                    + "\nstatus: " + request.status()
-                    + "\n该请求没有接入 ToolRegistry，无法自动恢复执行。");
+        if ("TOOL_CALL".equals(approvalResult.executionType())) {
+            PendingToolCall pendingToolCall = approvalResult.pendingToolCall();
+            Object result = approvalResult.executionResult();
+            String developerHint = recordApprovedDeveloperToolCall(session, pendingToolCall, result, request.requestId());
+            return completedReply(ctx, "已批准并恢复执行：" + request.requestId()
+                    + "\ntool: " + pendingToolCall.toolName()
+                    + "\n\n" + String.valueOf(result)
+                    + developerHint);
         }
-        PendingToolCall pendingToolCall;
-        try {
-            pendingToolCall = approvalService.consumeApprovedToolCall(requestId);
-        } catch (IllegalStateException | IllegalArgumentException e) {
-            return completedReply(ctx, "已批准审批请求：" + request.requestId()
-                    + "\nstatus: " + request.status()
-                    + "\n无法恢复执行：" + e.getMessage());
-        }
-        Object result = toolRegistry.executeApproved(pendingToolCall.toolName(), pendingToolCall.arguments());
-        String developerHint = recordApprovedDeveloperToolCall(session, pendingToolCall, result, request.requestId());
-        return completedReply(ctx, "已批准并恢复执行：" + request.requestId()
-                + "\ntool: " + pendingToolCall.toolName()
-                + "\n\n" + String.valueOf(result)
-                + developerHint);
+        return completedReply(ctx, "已批准审批请求：" + request.requestId()
+                + "\nstatus: " + request.status()
+                + "\n" + approvalResult.message());
     }
 
     private String recordApprovedDeveloperToolCall(
@@ -2728,59 +2749,14 @@ final class AgentCommands {
         return "\n\nnext: /change create\nnext: /team run-verifier " + task.id() + "\nnext: /summary";
     }
 
-    private CompletableFuture<OutboundMessage> approveChangeAction(
-            CommandRouter.CommandContext ctx,
-            String requestId,
-            ApprovalRequest request
-    ) {
-        PendingChangeAction action;
-        try {
-            action = approvalService.consumeApprovedChangeAction(requestId);
-        } catch (IllegalStateException | IllegalArgumentException e) {
-            return completedReply(ctx, "已批准审批请求：" + request.requestId()
-                    + "\nstatus: " + request.status()
-                    + "\n无法恢复执行：" + e.getMessage());
-        }
-        ChangeSetService service = new ChangeSetService(workspace);
-        ChangeSetRenderer renderer = new ChangeSetRenderer();
-        try {
-            GitChangeSet result = switch (action.actionType()) {
-                case COMMIT -> service.commit(action.changeSetId(), action.commitMessage());
-                case ROLLBACK -> service.rollback(action.changeSetId());
-            };
-            Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
-            storeChangeSetContext(session, result, renderer);
-            recordChangeSetTeamArtifact(result, action.actionType().name().toLowerCase(java.util.Locale.ROOT));
-            TraceEventType eventType = action.actionType() == PendingChangeAction.ActionType.COMMIT
-                    ? TraceEventType.CHANGESET_COMMITTED
-                    : TraceEventType.CHANGESET_ROLLED_BACK;
-            traceEvent(session, eventType, "change", "changeset action executed", Map.of(
-                    "action", action.actionType().name(),
-                    "status", result.status().name(),
-                    "commitHash", result.commitHash(),
-                    "rollbackStatus", result.rollbackStatus()
-            ), result.teamSessionId(), result.id(), request.requestId());
-            String actionResult = action.actionType() == PendingChangeAction.ActionType.COMMIT
-                    ? "commitHash: " + result.commitHash()
-                    : "rollbackStatus: " + result.rollbackStatus();
-            return completedReply(ctx, "已批准并执行变更动作：" + request.requestId()
-                    + "\naction: " + action.actionType()
-                    + "\nchangeSetId: " + result.id()
-                    + "\nstatus: " + result.status()
-                    + "\n" + actionResult);
-        } catch (IllegalArgumentException | IllegalStateException e) {
-            return completedReply(ctx, "已批准审批请求：" + request.requestId()
-                    + "\nstatus: " + request.status()
-                    + "\n执行变更动作失败：" + e.getMessage());
-        }
-    }
-
     private CompletableFuture<OutboundMessage> reject(CommandRouter.CommandContext ctx) {
         String requestId = trim(ctx.getArgs()).split("\\s+")[0];
-        ApprovalRequest request = approvalService.reject(requestId);
-        if (request == null) {
+        ApprovalApplicationService.ApprovalActionResult result =
+                new ApprovalApplicationService(approvalService, toolRegistry, workspace).reject(requestId);
+        if (!result.found()) {
             return completedReply(ctx, "未找到审批请求：" + requestId);
         }
+        ApprovalRequest request = result.request();
         Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
         traceEvent(session, TraceEventType.APPROVAL_REJECTED, "approval", "approval rejected", Map.of(
                 "status", request.status().name()

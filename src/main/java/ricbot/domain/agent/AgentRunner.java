@@ -10,6 +10,7 @@ import ricbot.tool.api.ToolRegistry; // 工具注册表，用于管理和执行�
 import ricbot.integration.llm.api.LLMProvider; // LLM 提供者接口，用于与大语言模型交互
 import ricbot.integration.llm.api.LLMResponse; // LLM 响应对象，包含模型返回的内容和工具调用等
 import ricbot.integration.llm.api.ToolCallRequest; // 工具调用请求对象，包含工具名称和参数
+import ricbot.domain.trace.TraceRecorder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -94,6 +95,14 @@ public class AgentRunner implements AutoCloseable {
         // 记录工具执行事件列表
         List<Map<String, Object>> toolEvents = new ArrayList<>();
         List<Map<String, Object>> runEvents = new ArrayList<>();
+        TraceRecorder traceRecorder = TraceRecorder.forRunEvents(runEvents);
+        traceRecorder.recordRunEvent("run_start", Map.of(
+                "run_id", runId,
+                "session_key", spec.getSessionKey() != null ? spec.getSessionKey() : "",
+                "model", spec.getModel() != null ? spec.getModel() : "",
+                "max_iterations", spec.getMaxIterations()
+        ));
+        recordRetryIfPresent(traceRecorder, spec);
         // 标记是否有消息注入
         boolean hadInjections = false;
         // 最终内容
@@ -111,13 +120,16 @@ public class AgentRunner implements AutoCloseable {
         // 消息注入的轮数计数器
         int injectionRounds = 0;
         int iterationsCompleted = 0;
+        AgentRunController controller = spec.getRunTimeout() != null
+                ? AgentRunController.withMaxTurnsAndTimeout(spec.getMaxIterations(), spec.getRunTimeout(), java.time.Clock.systemUTC())
+                : AgentRunController.withMaxTurns(spec.getMaxIterations());
 
         // 获取钩子实现
         AgentHook hook = spec.getHook();
         // 获取工具注册表
         ToolRegistry tools = spec.getTools();
         ProviderCapability capability = spec.getProviderCapability();
-        RuntimePolicy runtimePolicy = resolveRuntimePolicy(spec, capability, tools, messages, runEvents);
+        RuntimePolicy runtimePolicy = resolveRuntimePolicy(spec, capability, tools, messages, traceRecorder);
         List<Map<String, Object>> toolDefinitions = runtimePolicy.toolDefinitions();
         if (runtimePolicy.unsupportedVisionMessage() != null) {
             result.setFinalContent(runtimePolicy.unsupportedVisionMessage());
@@ -126,7 +138,7 @@ public class AgentRunner implements AutoCloseable {
             result.setError(runtimePolicy.unsupportedVisionMessage());
             result.setToolsUsed(toolsUsed);
             result.setToolEvents(toolEvents);
-            finishRunResult(result, runId, runStartedAt, iterationsCompleted, runEvents);
+            finishRunResult(result, runId, runStartedAt, iterationsCompleted, runEvents, traceRecorder);
             return result;
         }
         if (runtimePolicy.noExposedToolsMessage() != null) {
@@ -136,12 +148,14 @@ public class AgentRunner implements AutoCloseable {
             result.setError(runtimePolicy.noExposedToolsMessage());
             result.setToolsUsed(toolsUsed);
             result.setToolEvents(toolEvents);
-            finishRunResult(result, runId, runStartedAt, iterationsCompleted, runEvents);
+            finishRunResult(result, runId, runStartedAt, iterationsCompleted, runEvents, traceRecorder);
             return result;
         }
 
         // 开始主循环，最多执行 spec.getMaxIterations() 次
-        for (int iteration = 1; iteration <= spec.getMaxIterations(); iteration++) {
+        while (controller.canContinue()) {
+            controller.recordTurn();
+            int iteration = controller.currentTurn();
             iterationsCompleted = iteration;
             // 创建钩子上下文，设置当前消息、迭代次数和会话 key
             AgentHookContext context = newHookContext(messages, iteration, spec.getSessionKey());
@@ -153,7 +167,7 @@ public class AgentRunner implements AutoCloseable {
 
             LLMResponse response; // 声明 LLM 响应变量
             Instant modelStartedAt = Instant.now();
-            runEvents.add(runEvent("model_request", iteration, Map.of(
+            traceRecorder.recordRunEvent("model_request", metadata(iteration, Map.of(
                     "message_count", messages.size(),
                     "tool_definition_count", toolDefinitions.size()
             )));
@@ -172,14 +186,14 @@ public class AgentRunner implements AutoCloseable {
                 result.setError(e.getMessage());
                 result.setToolsUsed(toolsUsed);
                 result.setToolEvents(toolEvents);
-                runEvents.add(runEvent("model_error", iteration, Map.of(
+                traceRecorder.recordRunEvent("model_error", metadata(iteration, Map.of(
                         "error", e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName(),
                         "duration_ms", Duration.between(modelStartedAt, Instant.now()).toMillis()
                 )));
-                finishRunResult(result, runId, runStartedAt, iterationsCompleted, runEvents);
+                finishRunResult(result, runId, runStartedAt, iterationsCompleted, runEvents, traceRecorder);
                 return result; // 直接返回错误结果
             }
-            runEvents.add(runEvent("model_response", iteration, Map.of(
+            traceRecorder.recordRunEvent("model_response", metadata(iteration, Map.of(
                     "finish_reason", response.getFinishReason() != null ? response.getFinishReason() : "",
                     "content_chars", response.getContent() != null ? response.getContent().length() : 0,
                     "tool_call_count", response.getToolCalls() != null ? response.getToolCalls().size() : 0,
@@ -223,7 +237,7 @@ public class AgentRunner implements AutoCloseable {
                 break; // 跳出循环
             }
             if (runtimePolicy.disableToolCalling()) {
-                addCapabilityWarning(runEvents, 0, capability, "supportsToolCalling", "IGNORED_MODEL_TOOL_CALLS",
+                addCapabilityWarning(traceRecorder, 0, capability, "supportsToolCalling", "IGNORED_MODEL_TOOL_CALLS",
                         "模型 capability 标记为不支持 tool calling，运行时不会进入工具调用循环。");
                 finalContent = response.getContent() != null && !response.getContent().isBlank()
                         ? finalizeContent(hook, context, response.getContent())
@@ -243,7 +257,7 @@ public class AgentRunner implements AutoCloseable {
             int toolEventStart = toolEvents.size();
             List<String> requestedToolNames = response.getToolCalls().stream().map(ToolCallRequest::getName).toList();
             boolean concurrent = spec.isConcurrentTools() && tools != null && tools.canRunConcurrently(requestedToolNames);
-            runEvents.add(runEvent("tool_batch", iteration, Map.of(
+            traceRecorder.recordRunEvent("tool_batch", metadata(iteration, Map.of(
                     "tool_call_count", requestedToolNames.size(),
                     "execution_mode", concurrent ? "concurrent" : "sequential",
                     "tools", requestedToolNames
@@ -251,10 +265,9 @@ public class AgentRunner implements AutoCloseable {
             List<Map<String, Object>> toolResults = concurrent
                     ? executeToolsConcurrent(tools, response.getToolCalls(), toolsUsed, toolEvents, spec, iteration)
                     : executeToolsSequential(tools, response.getToolCalls(), toolsUsed, toolEvents, spec, iteration);
-            final int eventIteration = iteration;
-            runEvents.addAll(toolEvents.subList(toolEventStart, toolEvents.size()).stream()
-                    .map(event -> runEvent("tool_call", eventIteration, event))
-                    .toList());
+            for (Map<String, Object> event : toolEvents.subList(toolEventStart, toolEvents.size())) {
+                traceRecorder.recordToolEvent(String.valueOf(event.getOrDefault("tool_call_id", "")), metadata(iteration, event));
+            }
 
             // 将工具执行结果加入消息历史
             messages.addAll(toolResults);
@@ -293,15 +306,25 @@ public class AgentRunner implements AutoCloseable {
 
         // 如果循环结束后 finalContent 仍为 null，说明达到了最大迭代次数
         if (finalContent == null) {
-            // 分类最大迭代次数的具体原因
-            stopReason = classifyMaxIterationReason(
-                    spec.getMaxIterations(),
-                    consecutiveToolTurns,
-                    blankAssistantTurns,
-                    toolErrorTurns,
-                    injectionRounds
-            );
-            finalContent = spec.getMaxIterationsMessage(); // 获取最大迭代提示消息
+            if ("timeout".equals(controller.stopReason().orElse(""))) {
+                stopReason = "timeout";
+                finalContent = "Agent 运行超时，已在下一轮开始前停止。";
+                traceRecorder.recordRunEvent("run_timeout", metadata(iterationsCompleted, Map.of(
+                        "deadline", controller.deadline().map(Instant::toString).orElse(""),
+                        "iterations", iterationsCompleted
+                )));
+            } else {
+                // 分类最大迭代次数的具体原因
+                stopReason = classifyMaxIterationReason(
+                        spec.getMaxIterations(),
+                        consecutiveToolTurns,
+                        blankAssistantTurns,
+                        toolErrorTurns,
+                        injectionRounds
+                );
+                controller.stop(stopReason);
+                finalContent = spec.getMaxIterationsMessage(); // 获取最大迭代提示消息
+            }
         }
 
         // 设置最终结果
@@ -318,7 +341,7 @@ public class AgentRunner implements AutoCloseable {
         result.setHadInjections(hadInjections);
         result.setToolsUsed(toolsUsed);
         result.setToolEvents(toolEvents);
-        finishRunResult(result, runId, runStartedAt, iterationsCompleted, runEvents);
+        finishRunResult(result, runId, runStartedAt, iterationsCompleted, runEvents, traceRecorder);
         return result; // 返回结果
     }
 
@@ -327,8 +350,20 @@ public class AgentRunner implements AutoCloseable {
             String runId,
             Instant startedAt,
             int iterations,
-            List<Map<String, Object>> runEvents
+            List<Map<String, Object>> runEvents,
+            TraceRecorder traceRecorder
     ) {
+        traceRecorder.recordRunEvent("run_stop", Map.of(
+                "stop_reason", result.getStopReason() != null ? result.getStopReason() : "",
+                "iterations", iterations,
+                "error", result.getError() != null ? result.getError() : ""
+        ));
+        traceRecorder.recordRunEvent("run_finish", Map.of(
+                "run_id", runId,
+                "stop_reason", result.getStopReason() != null ? result.getStopReason() : "",
+                "iterations", iterations,
+                "duration_ms", Duration.between(startedAt, Instant.now()).toMillis()
+        ));
         result.setRunId(runId);
         result.setStartedAt(startedAt.toString());
         result.setEndedAt(Instant.now().toString());
@@ -336,15 +371,24 @@ public class AgentRunner implements AutoCloseable {
         result.setRunEvents(runEvents);
     }
 
-    private Map<String, Object> runEvent(String type, int iteration, Map<String, Object> values) {
+    private Map<String, Object> metadata(int iteration, Map<String, Object> values) {
         Map<String, Object> event = new LinkedHashMap<>();
-        event.put("type", type);
         event.put("iteration", iteration);
-        event.put("at", Instant.now().toString());
         if (values != null) {
             event.putAll(values);
         }
         return event;
+    }
+
+    private void recordRetryIfPresent(TraceRecorder traceRecorder, AgentRunSpec spec) {
+        Map<String, Object> metadata = spec.getMetadata();
+        if (metadata == null || !metadata.containsKey("retryReason")) {
+            return;
+        }
+        traceRecorder.recordRunEvent("run_retry", Map.of(
+                "retry_reason", String.valueOf(metadata.getOrDefault("retryReason", "")),
+                "retry_count", metadata.getOrDefault("retryCount", 0)
+        ));
     }
 
     private AgentHookContext newHookContext(List<Map<String, Object>> messages, int iteration, String sessionKey) {
@@ -405,7 +449,7 @@ public class AgentRunner implements AutoCloseable {
             ProviderCapability capability,
             ToolRegistry tools,
             List<Map<String, Object>> messages,
-            List<Map<String, Object>> runEvents
+            TraceRecorder traceRecorder
     ) {
         List<Map<String, Object>> definitions = tools != null ? tools.getDefinitions() : List.of();
         List<String> registeredTools = tools != null ? tools.toolNames() : List.of();
@@ -426,7 +470,7 @@ public class AgentRunner implements AutoCloseable {
                 .map(AgentRunner::schemaName)
                 .filter(name -> !name.isBlank())
                 .toList();
-        runEvents.add(runEvent("tool_exposure", 0, Map.of(
+        traceRecorder.recordRunEvent("tool_exposure", metadata(0, Map.of(
                 "allowed_tools", allowedTools,
                 "registered_tools", registeredTools,
                 "exposed_tools", exposedToolsBeforeCapability,
@@ -435,14 +479,14 @@ public class AgentRunner implements AutoCloseable {
         String noExposedToolsMessage = null;
         if (!allowedTools.isEmpty() && definitions.isEmpty()) {
             noExposedToolsMessage = "no tools exposed to worker";
-            runEvents.add(runEvent("tool_exposure_warning", 0, Map.of(
+            traceRecorder.recordRunEvent("tool_exposure_warning", metadata(0, Map.of(
                     "warning", noExposedToolsMessage,
                     "allowed_tools", allowedTools,
                     "registered_tools", registeredTools,
                     "missing_allowed_tools", missingAllowedTools
             )));
         } else if (!missingAllowedTools.isEmpty()) {
-            runEvents.add(runEvent("tool_exposure_warning", 0, Map.of(
+            traceRecorder.recordRunEvent("tool_exposure_warning", metadata(0, Map.of(
                     "warning", "allowed tools missing from registry",
                     "missing_allowed_tools", missingAllowedTools
             )));
@@ -459,7 +503,7 @@ public class AgentRunner implements AutoCloseable {
         if (isCapabilityFalse(modelCapability.supportsToolCalling())) {
             disableToolCalling = true;
             if (!definitions.isEmpty()) {
-                addCapabilityWarning(runEvents, 0, capability, "supportsToolCalling", "TOOLS_NOT_EXPOSED",
+                addCapabilityWarning(traceRecorder, 0, capability, "supportsToolCalling", "TOOLS_NOT_EXPOSED",
                         "模型 capability 标记为不支持 tool calling，本次请求不会向模型暴露 tools。");
             }
             definitions = List.of();
@@ -467,24 +511,24 @@ public class AgentRunner implements AutoCloseable {
                 noExposedToolsMessage = "no tools exposed to worker: provider capability disables tool calling";
             }
         } else if (isCapabilityUnknown(modelCapability.supportsToolCalling()) && !definitions.isEmpty()) {
-            addCapabilityWarning(runEvents, 0, capability, "supportsToolCalling", "KEEP_EXISTING_BEHAVIOR",
+            addCapabilityWarning(traceRecorder, 0, capability, "supportsToolCalling", "KEEP_EXISTING_BEHAVIOR",
                     "模型 tool calling capability 未知，保持现有工具调用行为。");
         }
 
         if (spec.getHook() != null && spec.getHook().wantsStreaming()) {
             if (isCapabilityFalse(modelCapability.supportsStreaming())) {
                 disableStreaming = true;
-                addCapabilityWarning(runEvents, 0, capability, "supportsStreaming", "STREAMING_DISABLED_FALLBACK_TO_CHAT",
+                addCapabilityWarning(traceRecorder, 0, capability, "supportsStreaming", "STREAMING_DISABLED_FALLBACK_TO_CHAT",
                         "模型 capability 标记为不支持 streaming，已自动降级为非流式请求。");
             } else if (isCapabilityUnknown(modelCapability.supportsStreaming())) {
-                addCapabilityWarning(runEvents, 0, capability, "supportsStreaming", "KEEP_EXISTING_BEHAVIOR",
+                addCapabilityWarning(traceRecorder, 0, capability, "supportsStreaming", "KEEP_EXISTING_BEHAVIOR",
                         "模型 streaming capability 未知，保持现有流式请求行为。");
             }
         }
 
         if (isCapabilityFalse(modelCapability.supportsVision()) && containsImageContent(messages)) {
             unsupportedVisionMessage = "当前模型不支持图片输入，请换用支持 vision 的模型，或改用文本描述后重试。";
-            addCapabilityWarning(runEvents, 0, capability, "supportsVision", "REJECT_IMAGE_INPUT",
+            addCapabilityWarning(traceRecorder, 0, capability, "supportsVision", "REJECT_IMAGE_INPUT",
                     unsupportedVisionMessage);
         }
 
@@ -492,7 +536,7 @@ public class AgentRunner implements AutoCloseable {
         if (window > 0) {
             int estimate = estimateMessageTokens(messages);
             if (estimate > Math.max(1, (int) (window * 0.85))) {
-                addCapabilityWarning(runEvents, 0, capability, "contextWindowTokens", "CONTEXT_NEAR_LIMIT",
+                addCapabilityWarning(traceRecorder, 0, capability, "contextWindowTokens", "CONTEXT_NEAR_LIMIT",
                         "估算上下文接近模型窗口，后续应优先使用已有压缩/裁剪链路。");
             }
         }
@@ -527,7 +571,7 @@ public class AgentRunner implements AutoCloseable {
     }
 
     private void addCapabilityWarning(
-            List<Map<String, Object>> runEvents,
+            TraceRecorder traceRecorder,
             int iteration,
             ProviderCapability capability,
             String capabilityName,
@@ -541,7 +585,7 @@ public class AgentRunner implements AutoCloseable {
                 decision,
                 message
         );
-        runEvents.add(runEvent("capability_warning", iteration, warning.toMap()));
+        traceRecorder.recordRunEvent("capability_warning", metadata(iteration, warning.toMap()));
         log.warn("runtime capability warning: {}", warning.toMap());
     }
 

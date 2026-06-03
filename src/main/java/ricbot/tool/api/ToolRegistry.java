@@ -1,10 +1,8 @@
 package ricbot.tool.api;
 
 import lombok.RequiredArgsConstructor;
-import ricbot.tool.filesystem.EditFileTool;
 import ricbot.tool.filesystem.ListDirTool;
 import ricbot.tool.filesystem.ReadFileTool;
-import ricbot.tool.filesystem.WriteFileTool;
 import ricbot.tool.process.ExecTool;
 import ricbot.tool.process.SpawnTool;
 import ricbot.tool.search.GlobTool;
@@ -14,9 +12,9 @@ import ricbot.tool.web.WebSearchTool;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import ricbot.tool.api.Tool.ToolExecutionContext;
 
 public class ToolRegistry {
-
     private static final List<LegacyToolExecutor<? extends Tool>> LEGACY_EXECUTORS = List.of(
             new LegacyToolExecutor<>(
                     ReadFileTool.class,
@@ -45,22 +43,6 @@ public class ToolRegistry {
                             (String) params.get("file_glob"),
                             (Boolean) params.get("ignore_case"),
                             (Integer) params.get("max_results")
-                    )
-            ),
-            new LegacyToolExecutor<>(
-                    WriteFileTool.class,
-                    (tool, params) -> tool.execute(
-                            (String) params.get("path"),
-                            (String) params.get("content")
-                    )
-            ),
-            new LegacyToolExecutor<>(
-                    EditFileTool.class,
-                    (tool, params) -> tool.execute(
-                            (String) params.get("path"),
-                            (String) params.get("old_text"),
-                            (String) params.get("new_text"),
-                            (Boolean) params.get("replace_all")
                     )
             ),
             new LegacyToolExecutor<>(
@@ -220,7 +202,7 @@ public class ToolRegistry {
             );
         }
 
-        Map<String, Object> params = copyObjectMap((Map<?, ?>) rawParams);
+        Map<String, Object> params = sanitizeExecutionParams(copyObjectMap((Map<?, ?>) rawParams));
         Map<String, Object> castParams = tool.castParams(params);
         List<String> errors = tool.validateParams(castParams);
 
@@ -257,14 +239,18 @@ public class ToolRegistry {
      * @return 执行结果或错误信息
      */
     public Object execute(String name, java.util.Map<String, Object> params) {
-        return execute(name, params, false);
+        return execute(name, params, ToolExecutionContext.normal());
     }
 
     public Object executeApproved(String name, java.util.Map<String, Object> params) {
-        return execute(name, params, true);
+        return executeApproved(name, params, "");
     }
 
-    private Object execute(String name, java.util.Map<String, Object> params, boolean approvalBypass) {
+    public Object executeApproved(String name, java.util.Map<String, Object> params, String approvalId) {
+        return execute(name, params, ToolExecutionContext.approved(approvalId));
+    }
+
+    private Object execute(String name, java.util.Map<String, Object> params, ToolExecutionContext context) {
         // 再次获取工具实例以防万一
         Tool tool = get(name);
         if (tool == null) {
@@ -272,10 +258,7 @@ public class ToolRegistry {
         }
 
         // 参数转换和二次校验
-        params = params != null ? new LinkedHashMap<>(params) : new LinkedHashMap<>();
-        if (approvalBypass) {
-            params.put("__approval_bypass", true);
-        }
+        params = sanitizeExecutionParams(params);
         params = tool.castParams(params);
         java.util.List<String> errors = tool.validateParams(params);
         if (!errors.isEmpty()) {
@@ -283,10 +266,12 @@ public class ToolRegistry {
         }
 
         try {
-            Object result = executeTool(tool, params, approvalBypass);
-            // 如果结果是字符串且以错误或错误开头，直接返回
-            if (result instanceof String s && (s.startsWith("Error") || s.startsWith("错误"))) return s;
-            return result;
+            try (ToolExecutionContext.Scope ignored = ToolExecutionContext.activate(context)) {
+                Object result = executeTool(tool, params, context);
+                // 如果结果是字符串且以错误或错误开头，直接返回
+                if (result instanceof String s && (s.startsWith("Error") || s.startsWith("错误"))) return s;
+                return result;
+            }
         } catch (Exception e) {
             // 捕获执行过程中的异常并返回错误信息
             return executionFailedMessage(name, e);
@@ -307,12 +292,12 @@ public class ToolRegistry {
         return names;
     }
 
-    private Object executeTool(Tool tool, Map<String, Object> params, boolean approvalBypass) throws Exception {
-        LegacyToolExecutor<? extends Tool> legacyExecutor = approvalBypass ? null : findLegacyExecutor(tool);
+    private Object executeTool(Tool tool, Map<String, Object> params, ToolExecutionContext context) throws Exception {
+        LegacyToolExecutor<? extends Tool> legacyExecutor = findLegacyExecutor(tool);
         if (legacyExecutor != null) {
             return legacyExecutor.executeUnchecked(tool, params);
         }
-        return tool.execute(params);
+        return tool.execute(params, context);
     }
 
     private LegacyToolExecutor<? extends Tool> findLegacyExecutor(Tool tool) {
@@ -356,6 +341,12 @@ public class ToolRegistry {
 
     private static Map<String, Object> copyObjectMap(Map<?, ?> raw) {
         return ricbot.infra.common.JsonMapUtils.copyObjectMap(raw);
+    }
+
+    private static Map<String, Object> sanitizeExecutionParams(Map<String, Object> raw) {
+        Map<String, Object> out = raw != null ? new LinkedHashMap<>(raw) : new LinkedHashMap<>();
+        out.keySet().removeIf(key -> key != null && key.startsWith("__"));
+        return out;
     }
 
     @RequiredArgsConstructor

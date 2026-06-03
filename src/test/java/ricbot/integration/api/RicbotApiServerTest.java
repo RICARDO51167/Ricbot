@@ -17,7 +17,9 @@ import ricbot.domain.experience.ExperienceType;
 import ricbot.domain.hook.AgentHook;
 import ricbot.domain.message.MessageBus;
 import ricbot.domain.message.OutboundMessage;
+import ricbot.domain.security.ApprovalApplicationService;
 import ricbot.domain.security.ApprovalRequest;
+import ricbot.domain.security.ApprovalService;
 import ricbot.domain.security.CommandRiskLevel;
 import ricbot.domain.security.RiskAssessment;
 import ricbot.domain.session.SessionManager;
@@ -45,6 +47,10 @@ import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.Base64;
 import java.util.HashMap;
 import java.util.List;
@@ -719,6 +725,8 @@ public class RicbotApiServerTest {
             TestExchange approve = postExchangeRaw("/console/api/approvals/" + approveRequest.requestId() + "/approve", "");
             ConsoleController.approvalsHandler(app).handle(approve);
             assertEquals(200, approve.getResponseCode(), approve.responseText());
+            assertTrue(approve.responseText().contains("approved but not executed"), approve.responseText());
+            assertTrue(approve.responseText().contains("\"executed\":false"), approve.responseText());
             assertTrue(approve.responseText().contains("[REDACTED]"), approve.responseText());
             assertFalse(approve.responseText().contains("secret-token"), approve.responseText());
             assertFalse(approve.responseText().contains("secret-password"), approve.responseText());
@@ -752,6 +760,80 @@ public class RicbotApiServerTest {
         } finally {
             loop.stop();
         }
+    }
+
+    @Test
+    void approvalApplicationService_modesKeepCliAndConsoleApprovalSemanticsConsistent(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildLoopNoStart(workspace);
+        Config config = new Config();
+        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", config, null, workspace);
+
+        try {
+            ApprovalRequest consoleRequest = loop.getApprovalService().createRequest(
+                    RiskAssessment.of(CommandRiskLevel.MEDIUM, List.of("write requires approval"), "", "write_file", List.of("console.txt")),
+                    "write_file",
+                    Map.of("path", "console.txt", "content", "console\n"),
+                    "console-session"
+            );
+            TestExchange approve = postExchangeRaw("/console/api/approvals/" + consoleRequest.requestId() + "/approve", "");
+            ConsoleController.approvalsHandler(app).handle(approve);
+
+            assertEquals(200, approve.getResponseCode(), approve.responseText());
+            assertTrue(approve.responseText().contains("approved but not executed"), approve.responseText());
+            assertFalse(Files.exists(workspace.resolve("console.txt")));
+            assertFalse(loop.getApprovalService().find(consoleRequest.requestId()).consumed());
+
+            ApprovalRequest cliRequest = loop.getApprovalService().createRequest(
+                    RiskAssessment.of(CommandRiskLevel.MEDIUM, List.of("write requires approval"), "", "write_file", List.of("cli.txt")),
+                    "write_file",
+                    Map.of("path", "cli.txt", "content", "cli\n"),
+                    "cli-session"
+            );
+            OutboundMessage cliApproved = loop.processDirect("/approve " + cliRequest.requestId(), "cli:direct");
+
+            assertTrue(cliApproved.getContent().contains("已批准并恢复执行"), cliApproved.getContent());
+            assertEquals("cli\n", Files.readString(workspace.resolve("cli.txt")));
+            assertTrue(loop.getApprovalService().find(cliRequest.requestId()).consumed());
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void approvalApplicationServiceRejectsExpiredRepeatedAndRejectedConsume() {
+        Clock fixedClock = Clock.fixed(Instant.parse("2026-06-03T00:00:00Z"), ZoneOffset.UTC);
+        ApprovalService expiredService = new ApprovalService(Duration.ZERO, fixedClock);
+        ApprovalApplicationService expiredApp = new ApprovalApplicationService(expiredService, null, null);
+        ApprovalRequest expired = expiredService.createRequest(
+                RiskAssessment.of(CommandRiskLevel.MEDIUM, List.of("expired"), "", "write_file", List.of("expired.txt"))
+        );
+        ApprovalRequest expiredExecutable = expiredService.createRequest(
+                RiskAssessment.of(CommandRiskLevel.MEDIUM, List.of("expired executable"), "", "write_file", List.of("expired-exec.txt")),
+                "write_file",
+                Map.of("path", "expired-exec.txt", "content", "expired\n"),
+                "session-expired"
+        );
+
+        assertThrows(IllegalStateException.class, () -> expiredApp.approveOnly(expired.requestId()));
+        assertThrows(IllegalStateException.class, () -> expiredApp.approveAndExecute(expiredExecutable.requestId()));
+
+        ApprovalService service = new ApprovalService(Duration.ofMinutes(30), fixedClock);
+        ApprovalApplicationService app = new ApprovalApplicationService(service, null, null);
+        ApprovalRequest repeated = service.createRequest(
+                RiskAssessment.of(CommandRiskLevel.HIGH, List.of("danger"), "rm file", "exec", List.of("file"))
+        );
+        app.approveOnly(repeated.requestId());
+        assertThrows(IllegalStateException.class, () -> app.approveOnly(repeated.requestId()));
+
+        ApprovalRequest rejected = service.createRequest(
+                RiskAssessment.of(CommandRiskLevel.MEDIUM, List.of("write"), "", "write_file", List.of("rejected.txt")),
+                "write_file",
+                Map.of("path", "rejected.txt", "content", "no\n"),
+                "session-1"
+        );
+        app.reject(rejected.requestId());
+
+        assertThrows(IllegalStateException.class, () -> service.consumeApprovedToolCall(rejected.requestId()));
     }
 
     @Test

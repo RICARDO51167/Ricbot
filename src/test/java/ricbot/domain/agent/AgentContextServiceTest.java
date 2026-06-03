@@ -169,6 +169,68 @@ class AgentContextServiceTest {
     }
 
     @Test
+    void buildInteractiveRequest_delegatesToAssemblerAndKeepsOutputCompatible(@TempDir Path workspace) {
+        ContextBuilder contextBuilder = new ContextBuilder(workspace, "UTC", List.of());
+        MemoryStore memoryStore = new MemoryStore(workspace);
+        memoryStore.mergeMemoryEntries(List.of(new MemoryEntry()
+                .setType(MemoryEntry.TYPE_PREFERENCE)
+                .setScope(MemoryEntry.SCOPE_LONG_TERM)
+                .setSummary("用户偏好简短回答")
+                .setDetails("user profile")
+                .setImportance(0.9d)
+                .setConfidence(0.9d)
+                .setTags(List.of("user"))));
+        SkillsLoader skillsLoader = new SkillsLoader(workspace, null, Set.of());
+        SkillRouter skillRouter = new SkillRouter(skillsLoader, 3, 12_000);
+        ToolRegistry tools = new ToolRegistry();
+        ContextSelectionService selectionService = new ContextSelectionService(memoryStore, new ToolTraceSummarizer());
+        AgentContextService service = new AgentContextService(
+                workspace,
+                contextBuilder,
+                memoryStore,
+                skillsLoader,
+                skillRouter,
+                tools,
+                new AgentHookFactory(new MessageBus(), (channel, chatId, messageId) -> {}),
+                (channel, chatId, messageId) -> {},
+                new ArrayList<>(),
+                selectionService
+        );
+        ContextAssembler assembler = new ContextAssembler(
+                workspace,
+                contextBuilder,
+                skillsLoader,
+                skillRouter,
+                tools,
+                selectionService
+        );
+        Session session = new Session("cli:direct");
+        PreparedSessionContext prepared = new PreparedSessionContext(
+                "cli:direct",
+                session,
+                "summary block",
+                TaskState.fromSession(session),
+                null,
+                false
+        );
+        InboundMessage msg = new InboundMessage("cli", "user", "direct", "请按我的偏好回答");
+
+        AgentRequestContext request = service.buildInteractiveRequest(msg, prepared, List.of(), 20);
+        ContextAssembler.AssembledContext assembled = assembler.buildInteractiveContext(msg, prepared, 20);
+
+        assertEquals(assembled.combinedContext(), request.combinedContext());
+        assertEquals(assembled.bundle().render(), request.promptContext().render());
+        assertEquals(assembled.history(), request.history());
+        assertEquals(assembled.initialMessages().size(), request.initialMessages().size());
+        assertEquals(assembled.initialMessages().get(assembled.initialMessages().size() - 1), request.initialMessages().get(request.initialMessages().size() - 1));
+        assertTrue(String.valueOf(request.initialMessages().get(0).get("content")).contains("用户偏好简短回答"));
+        assertTrue(String.valueOf(request.initialMessages().get(0).get("content")).contains("summary block"));
+        assertEquals(assembled.contextTrace().get("combined_context_chars"), request.contextTrace().get("combined_context_chars"));
+        assertTrue(request.combinedContext().contains("用户偏好简短回答"));
+        assertTrue(request.combinedContext().contains("summary block"));
+    }
+
+    @Test
     void bundledRuntimePromptResourcesDoNotRequireMissingGoalUpdateTool() throws Exception {
         Path root = Path.of("").toAbsolutePath().normalize();
         List<Path> roots = List.of(
