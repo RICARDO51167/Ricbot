@@ -29,6 +29,26 @@ Ricbot 是一个 Java 17 Agent Runtime：把 CLI、OpenAI-compatible API、多�
 
 Demo / Interview 材料见 [docs/demo/demo-script.md](docs/demo/demo-script.md)、[docs/architecture/ricbot-architecture.md](docs/architecture/ricbot-architecture.md)、[docs/interview/project-pitch.md](docs/interview/project-pitch.md) 和 [docs/resume/ricbot-bullets.md](docs/resume/ricbot-bullets.md)。
 
+## Team Worktree Demo
+
+```text
+/team run 给 README 增加一个很小的说明性修正 --worktree --verify
+/team report <taskId>
+/workspace diff <taskId>
+/change create <taskId>
+/trace show <taskId>
+```
+
+预期关键信号：
+
+- workerStatus=APPLIED
+- verifierStatus=PASS
+- reportHealth=HEALTHY
+- changedFiles=README.md
+- trace 能看到 STEP_TOOL_APPLIED、STEP_VERIFIED、STEP_CHANGESET_LINKED，以及 verifier evidence 的 command/exitCode/changedFiles count
+
+这个 worker 是受限 AgentRun，不是新 Agent 框架；它复用 AgentRunner 和 ToolRegistry，只暴露文件类工具，在受管 git worktree 中改文件。变更通过 workspace diff 和 ChangeSet 审查收口，不会自动 merge 或 commit。
+
 ## Quickstart
 
 环境要求：

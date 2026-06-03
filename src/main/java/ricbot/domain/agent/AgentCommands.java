@@ -47,6 +47,7 @@ import ricbot.domain.team.TeamSession;
 import ricbot.domain.team.TeamTask;
 import ricbot.domain.team.TeamTaskReport;
 import ricbot.domain.team.TeamWorkerRunner;
+import ricbot.domain.team.VerifierOutputSanitizer;
 import ricbot.domain.team.ImplementationStepGate;
 import ricbot.domain.team.ImplementationStepStatus;
 import ricbot.domain.team.ImplementationStepType;
@@ -566,6 +567,7 @@ final class AgentCommands {
             WorkspaceRenderer renderer,
             String sessionId
     ) {
+        rejectTeamSessionIdArgument(sessionId, "/workspace diff 需要 taskId 或 workspaceId，例如 teamtask_xxx。");
         WorkspaceSession direct = !sessionId.isBlank() ? store.load(sessionId) : activeWorkspaceSession(session, store);
         if (direct != null && direct.type() != WorkspaceBackendType.GIT_WORKTREE) {
             String diff = backendFor(direct, store).diff(direct.id());
@@ -725,6 +727,7 @@ final class AgentCommands {
         String args = trim(rawArgs);
         boolean json = containsFlag(args, "--json");
         String targetToken = stripFlags(args, "--json");
+        rejectTeamSessionIdArgument(targetToken, "/change create 需要 taskId 或 workspaceId，例如 teamtask_xxx。");
         Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
         String teamSessionId = resolveActiveTeamSessionId(session);
         String taskId = latestTeamTaskId(teamSessionId);
@@ -1514,6 +1517,7 @@ final class AgentCommands {
         String taskId = commandArg(rawArgs, 0);
         TeamTask task = teamEngine.findTask(taskId);
         if (task == null) {
+            rejectTeamSessionIdArgument(taskId, "/team report 需要 taskId，例如 teamtask_xxx。");
             throw new IllegalArgumentException("team task not found: " + taskId);
         }
         Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
@@ -1527,6 +1531,15 @@ final class AgentCommands {
             }
         }
         return completedReply(ctx, renderTeamTaskReport(report));
+    }
+
+    private void rejectTeamSessionIdArgument(String value, String commandHint) {
+        String id = value != null ? value.trim() : "";
+        if (id.startsWith("team_") && !id.startsWith("teamtask_")) {
+            throw new IllegalArgumentException("你传入的是 teamSessionId：" + id + "。\n"
+                    + commandHint + "\n"
+                    + "请使用最近输出中的 taskId；也可以用 /trace show " + id + " 查看相关事件。");
+        }
     }
 
     private CompletableFuture<OutboundMessage> teamToolCall(CommandRouter.CommandContext ctx, String rawArgs) {
@@ -2193,9 +2206,20 @@ final class AgentCommands {
                 + "reportHealth: " + (result.report() != null ? result.report().health() : "UNKNOWN") + "\n"
                 + "diffSummary: " + diffSummary(result.diff()) + "\n"
                 + workerDebugSummary(result.workerResult())
-                + (!result.verifierOutput().isBlank() ? "verifierOutput: " + abbreviate(result.verifierOutput(), 500) + "\n" : "")
+                + verifierOutputSummary(result)
                 + "next: /team report " + result.taskId()
                 + (result.usedWorktree() ? " | /workspace diff " + result.workspaceSessionId() + " | /change create" : "");
+    }
+
+    private String verifierOutputSummary(TeamExecutionService.TeamExecutionResult result) {
+        if (result == null || result.verifierOutput().isBlank()) {
+            return "";
+        }
+        VerificationResult.Status status = result.verificationResult() != null
+                ? result.verificationResult().status()
+                : VerificationResult.Status.NEEDS_HUMAN;
+        String display = VerifierOutputSanitizer.display(result.verifierOutput(), status);
+        return display.isBlank() ? "" : "verifierOutput: " + abbreviate(display, 500) + "\n";
     }
 
     private String executionVerifierDetails(TeamTaskReport report) {
@@ -2251,21 +2275,32 @@ final class AgentCommands {
         if (worker == null || worker.policySummary().isEmpty()) {
             return "";
         }
-        List<String> interesting = worker.policySummary().stream()
-                .filter(line -> line.startsWith("debug:allowedTools=")
-                        || line.startsWith("debug:exposedTools=")
-                        || line.startsWith("debug:modelToolCalls=")
-                        || line.startsWith("debug:toolResults=")
-                        || line.startsWith("debug:afterChangedFiles=")
-                        || line.startsWith("warning:")
-                        || line.startsWith("reason:"))
+        String toolCalls = worker.policySummary().stream()
+                .filter(line -> line.startsWith("debug:modelToolCalls="))
+                .map(line -> line.substring("debug:modelToolCalls=".length()).trim())
+                .findFirst()
+                .orElse("");
+        String changedFiles = worker.policySummary().stream()
+                .filter(line -> line.startsWith("debug:afterChangedFiles="))
+                .map(line -> line.substring("debug:afterChangedFiles=".length()).trim())
+                .findFirst()
+                .orElse(String.join(", ", worker.relatedFiles()));
+        List<String> warnings = worker.policySummary().stream()
+                .filter(line -> line.startsWith("warning:") || line.startsWith("reason:"))
                 .map(line -> abbreviate(line, 220))
                 .toList();
-        if (interesting.isEmpty()) {
+        if (toolCalls.isBlank() && changedFiles.isBlank() && warnings.isEmpty()) {
             return "";
         }
-        return interesting.stream()
-                .collect(java.util.stream.Collectors.joining("\n", "workerDebug:\n", "\n"));
+        StringBuilder sb = new StringBuilder("workerSummary:\n");
+        sb.append("toolCalls: ").append(toolCalls.isBlank() ? "none recorded" : toolCalls).append("\n");
+        if (!changedFiles.isBlank()) {
+            sb.append("changedFiles: ").append(changedFiles).append("\n");
+        }
+        for (String warning : warnings) {
+            sb.append(warning).append("\n");
+        }
+        return sb.toString();
     }
 
     private String diffSummary(String diff) {

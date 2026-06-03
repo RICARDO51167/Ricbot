@@ -14,6 +14,7 @@ CONFIG_PATH="${RICBOT_CONFIG:-config/ricbot.config.json}"
 JAR="target/Ricbot-1.0-SNAPSHOT.jar"
 
 WARNINGS=""
+WARNING_REASONS=""
 FINAL_REASONS=""
 FINAL_STATUS="PASS"
 TEST_STATUS="NOT_RUN"
@@ -44,6 +45,11 @@ append_warning() {
   if [ "$FINAL_STATUS" = "PASS" ]; then
     FINAL_STATUS="WARNING"
   fi
+}
+
+append_warning_reason() {
+  WARNING_REASONS="${WARNING_REASONS}- $1
+"
 }
 
 append_compare_warning() {
@@ -81,6 +87,14 @@ write_report() {
     echo "- git_commit: $commit"
     echo "- git_dirty_files: $dirty"
     echo "- final_status: $FINAL_STATUS"
+    echo "- warning_reasons:"
+    if [ -n "$WARNING_REASONS" ]; then
+      printf "%s" "$WARNING_REASONS"
+    elif [ "$FINAL_STATUS" = "WARNING" ]; then
+      echo "- see warnings below"
+    else
+      echo "- none"
+    fi
     echo
     echo "## Steps"
     echo
@@ -198,6 +212,11 @@ if [ -z "$CONFIG_STATUS" ]; then
   append_warning "config doctor status was not found in output"
 elif [ "$CONFIG_STATUS" != "OK" ]; then
   append_warning "config doctor reported $CONFIG_STATUS; missing local API keys do not fail release-check"
+  if printf "%s\n" "$CONFIG_OUTPUT" | grep -qi "api key"; then
+    append_warning_reason "config doctor missing API key"
+  else
+    append_warning_reason "config doctor reported $CONFIG_STATUS"
+  fi
   append_final_reason "config doctor reported $CONFIG_STATUS, treated as warning"
 fi
 
@@ -267,6 +286,7 @@ if [ -d "$BASELINE_DIR" ] && [ -f "$BASELINE_DIR/summary.json" ] && [ -f "$BASEL
   fi
   if [ -n "$new_cases" ] && [ "$new_cases" != "0" ]; then
     append_compare_warning "eval compare reported $new_cases new case(s)"
+    append_warning_reason "eval compare has new cases: $new_cases"
   fi
   if [ -n "$baseline_total" ] && [ -n "$candidate_total" ] && [ "$baseline_total" != "$candidate_total" ]; then
     append_compare_warning "eval compare case count changed: baseline=$baseline_total candidate=$candidate_total"
@@ -275,6 +295,7 @@ else
   COMPARE_STATUS="SKIPPED"
   COMPARE_OUTPUT="baseline not found: $BASELINE_DIR"
   append_compare_warning "eval compare skipped because baseline was not found: $BASELINE_DIR"
+  append_warning_reason "baseline missing"
   append_final_reason "baseline missing, compare skipped"
 fi
 

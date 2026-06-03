@@ -56,6 +56,17 @@ java -jar target/Ricbot-1.0-SNAPSHOT.jar agent \
 /team report <taskId>
 ```
 
+预期 CLI 输出会保留演示所需信号，并折叠已知 JVM/Jansi warning：
+
+```text
+workerStatus=APPLIED
+verifierStatus=PASS
+reportHealth=HEALTHY
+changedFiles=README.md
+```
+
+worker 是受限 AgentRun，不是新 Agent 框架。它复用 AgentRunner 和 ToolRegistry，只暴露文件类工具，在受管 git worktree 中执行；后续通过 workspace diff 和 ChangeSet 审查，不自动 merge/commit。
+
 ## 5. Workspace Diff
 
 查看受管 worktree 的变更：
@@ -97,6 +108,8 @@ java -jar target/Ricbot-1.0-SNAPSHOT.jar agent \
 - model request/response
 - tool calls
 - workspace/change events
+- STEP_TOOL_APPLIED、STEP_VERIFIED、STEP_CHANGESET_LINKED
+- verifier evidence: command、exitCode、changedFiles count
 - warnings 或 error
 
 ## 8. Experience 治理

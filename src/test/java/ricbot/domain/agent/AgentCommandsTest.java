@@ -728,6 +728,11 @@ class AgentCommandsTest {
         assertTrue(result.contains("verifierReason: structured evidence passed"), result);
         assertTrue(result.contains("structuredEvidence: team-worktree-verifier"), result);
         assertTrue(result.contains("verifierCommand: sh ./mvnw -q test"), result);
+        assertTrue(result.contains("workerSummary:"), result);
+        assertTrue(result.contains("toolCalls:"), result);
+        assertTrue(result.contains("changedFiles: README.md"), result);
+        assertFalse(result.contains("debug:allowedTools="), result);
+        assertFalse(result.contains("debug:exposedTools="), result);
         String taskId = lineValue(result, "taskId:");
         String diff = router.dispatch(context("/workspace diff " + taskId, sessionManager)).get().getContent();
         assertTrue(diff.contains("README.md"), diff);
@@ -741,6 +746,30 @@ class AgentCommandsTest {
         assertTrue(changeSet.contains("changedFiles: README.md"), changeSet);
         assertFalse(changeSet.contains("notes/index.json"), changeSet);
         assertEquals("initial\n", Files.readString(workspace.resolve("README.md")));
+    }
+
+    @Test
+    void teamSessionIdArgumentsShowFriendlyTaskIdHint(@TempDir Path workspace) throws Exception {
+        initGitRepo(workspace);
+        SessionManager sessionManager = new SessionManager(workspace);
+        MemoryStore memoryStore = new MemoryStore(workspace);
+        AgentCommands commands = commands(sessionManager, memoryStore, workspace);
+        CommandRouter router = new CommandRouter();
+        commands.register(router);
+
+        String started = router.dispatch(context("/team start Friendly id hint", sessionManager)).get().getContent();
+        String teamId = lineValue(started, "id:");
+
+        String report = router.dispatch(context("/team report " + teamId, sessionManager)).get().getContent();
+        String workspaceDiff = router.dispatch(context("/workspace diff " + teamId, sessionManager)).get().getContent();
+        String changeCreate = router.dispatch(context("/change create " + teamId, sessionManager)).get().getContent();
+
+        assertTrue(report.contains("你传入的是 teamSessionId：" + teamId), report);
+        assertTrue(report.contains("/team report 需要 taskId，例如 teamtask_xxx"), report);
+        assertTrue(workspaceDiff.contains("你传入的是 teamSessionId：" + teamId), workspaceDiff);
+        assertTrue(workspaceDiff.contains("/workspace diff 需要 taskId 或 workspaceId"), workspaceDiff);
+        assertTrue(changeCreate.contains("你传入的是 teamSessionId：" + teamId), changeCreate);
+        assertTrue(changeCreate.contains("/change create 需要 taskId 或 workspaceId"), changeCreate);
     }
 
     @Test

@@ -24,6 +24,13 @@ class ScriptFilesTest {
         assertTrue(content.contains("## Baseline"));
         assertTrue(content.contains("## Eval Compare"));
         assertTrue(content.contains("## Final Decision"));
+        assertTrue(content.contains("warning_reasons"));
+        assertTrue(content.contains("config doctor missing API key"));
+        assertTrue(content.contains("eval compare has new cases"));
+        assertTrue(content.contains("baseline missing"));
+        Process process = new ProcessBuilder("sh", "-n", script.toString()).start();
+        String stderr = new String(process.getErrorStream().readAllBytes());
+        assertTrue(process.waitFor() == 0, stderr);
     }
 
     @Test
@@ -96,5 +103,25 @@ class ScriptFilesTest {
         assertFalse(content.contains("sk-"));
         assertFalse(content.contains("Bearer "));
         assertFalse(content.contains("api.openai.com"));
+    }
+
+    @Test
+    void teamDemoDocsDocumentWorktreeVerifierLoop() throws Exception {
+        List<Path> docs = List.of(
+                Path.of("README.md"),
+                Path.of("docs", "demo", "end-to-end-coding-agent.md")
+        );
+        for (Path doc : docs) {
+            String content = Files.readString(doc);
+            assertTrue(content.contains("/team run 给 README 增加一个很小的说明性修正 --worktree --verify"), doc.toString());
+            assertTrue(content.contains("workerStatus=APPLIED"), doc.toString());
+            assertTrue(content.contains("verifierStatus=PASS"), doc.toString());
+            assertTrue(content.contains("reportHealth=HEALTHY"), doc.toString());
+            assertTrue(content.contains("changedFiles=README.md"), doc.toString());
+            assertTrue(content.contains("受限 AgentRun"), doc.toString());
+            assertTrue(content.contains("AgentRunner"), doc.toString());
+            assertFalse(content.contains("sk-"), doc.toString());
+            assertFalse(content.contains("Bearer "), doc.toString());
+        }
     }
 }
