@@ -178,6 +178,19 @@ public class ToolRegistryTest {
     }
 
     @Test
+    void toolExecution_usesPolicyTimeoutAndPreservesResultFormat() {
+        ToolRegistry registry = new ToolRegistry();
+        registry.register(namedReadOnlyTool("read_like"));
+
+        ToolRegistry.ToolPolicy policy = registry.policyFor("read_like");
+        assertEquals(0, registry.executionPolicy().timeoutSecondsFor(policy));
+        assertTrue(registry.canRunConcurrently(List.of("read_like")));
+
+        Object out = registry.execute("read_like", Map.of("value", "ok"));
+        assertEquals("ok", out);
+    }
+
+    @Test
     void executionContextSeparatesApprovalFromBusinessParams() {
         ToolRegistry registry = new ToolRegistry();
         registry.register(new Tool() {
@@ -396,6 +409,30 @@ public class ToolRegistryTest {
             @Override
             public String getDescription() {
                 return "test";
+            }
+        };
+    }
+
+    private static Tool namedReadOnlyTool(String name) {
+        return new Tool() {
+            @Override
+            public String getName() {
+                return name;
+            }
+
+            @Override
+            public String getDescription() {
+                return name;
+            }
+
+            @Override
+            public boolean isReadOnly() {
+                return true;
+            }
+
+            @Override
+            public Object execute(Map<String, Object> params) {
+                return String.valueOf(params.get("value"));
             }
         };
     }

@@ -516,6 +516,8 @@ public class AgentRunnerTest {
         assertEquals("tool_error", result.getStopReason());
         assertEquals(1, calls.get());
         assertEquals("error", result.getToolEvents().get(0).get("status"));
+        assertEquals("boom", result.getError());
+        assertTrue(String.valueOf(result.getMessages().get(result.getMessages().size() - 1).get("content")).contains("\"type\":\"tool_result\""));
     }
 
     @Test
@@ -571,6 +573,7 @@ public class AgentRunnerTest {
 
         assertEquals("ok", result.getFinalContent());
         assertEquals(2, calls.get());
+        assertTrue(Boolean.TRUE.equals(result.getToolEvents().get(0).get("truncated")));
     }
 
     @Test

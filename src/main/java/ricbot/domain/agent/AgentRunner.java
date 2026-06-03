@@ -11,6 +11,7 @@ import ricbot.integration.llm.api.LLMProvider; // LLM 提供者接口，用于�
 import ricbot.integration.llm.api.LLMResponse; // LLM 响应对象，包含模型返回的内容和工具调用等
 import ricbot.integration.llm.api.ToolCallRequest; // 工具调用请求对象，包含工具名称和参数
 import ricbot.domain.trace.TraceRecorder;
+import ricbot.tool.api.ToolExecutionPolicy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -256,7 +257,12 @@ public class AgentRunner implements AutoCloseable {
             // 执行工具：根据配置选择并发或顺序执行
             int toolEventStart = toolEvents.size();
             List<String> requestedToolNames = response.getToolCalls().stream().map(ToolCallRequest::getName).toList();
-            boolean concurrent = spec.isConcurrentTools() && tools != null && tools.canRunConcurrently(requestedToolNames);
+            ToolExecutionPolicy toolExecutionPolicy = toolExecutionPolicy(tools);
+            boolean concurrent = tools != null && toolExecutionPolicy.shouldRunConcurrently(
+                    spec.isConcurrentTools(),
+                    requestedToolNames,
+                    tools::policyFor
+            );
             traceRecorder.recordRunEvent("tool_batch", metadata(iteration, Map.of(
                     "tool_call_count", requestedToolNames.size(),
                     "execution_mode", concurrent ? "concurrent" : "sequential",
@@ -282,13 +288,11 @@ public class AgentRunner implements AutoCloseable {
 
             // 如果配置了遇到工具错误即失败，检查是否有错误
             Map<String, Object> firstError = firstToolError(toolEvents, toolEventStart);
-            if (spec.isFailOnToolError()) {
-                if (firstError != null) {
-                    stopReason = "tool_error";
-                    stopDetail = String.valueOf(firstError.getOrDefault("detail", "tool_error"));
-                    finalContent = spec.getErrorMessage();
-                    break;
-                }
+            if (toolExecutionPolicy.shouldStopRunOnToolError(firstError, spec.isFailOnToolError())) {
+                stopReason = "tool_error";
+                stopDetail = String.valueOf(firstError.getOrDefault("detail", "tool_error"));
+                finalContent = spec.getErrorMessage();
+                break;
             }
             // 如果本轮有工具错误，增加错误轮数计数
             if (firstError != null) {
@@ -892,7 +896,7 @@ public class AgentRunner implements AutoCloseable {
         event.put("iteration", iteration);
         event.put("tool_call_id", toolCall.getId());
         if (tools != null) {
-            ToolRegistry.ToolPolicy policy = tools.policyFor(toolName);
+            ToolRegistry.ToolPolicy policy = toolExecutionPolicy(tools).policyFor(toolName, tools.get(toolName));
             event.put("read_only", policy.readOnly());
             event.put("exclusive", policy.exclusive());
             event.put("concurrent_safe", policy.concurrentSafe());
@@ -911,7 +915,7 @@ public class AgentRunner implements AutoCloseable {
                 result,
                 "error".equals(status) ? detail : null,
                 contentObj,
-                spec.getMaxToolResultChars()
+                toolExecutionPolicy(tools).maxToolResultChars(spec.getMaxToolResultChars())
         );
         Object content = toolMsg.get("content");
         if (content instanceof String s) {
@@ -922,6 +926,10 @@ public class AgentRunner implements AutoCloseable {
         }
 
         return new ToolExecution(toolName, toolMsg, event);
+    }
+
+    private ToolExecutionPolicy toolExecutionPolicy(ToolRegistry tools) {
+        return tools != null ? tools.executionPolicy() : ToolExecutionPolicy.defaultPolicy();
     }
 
     /**

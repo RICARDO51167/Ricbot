@@ -72,6 +72,15 @@ public class ToolRegistry {
 
     // 存储已注册的工具，键为工具名称，值为工具实例
     private final Map<String, Tool> tools = new ConcurrentHashMap<>();
+    private final ToolExecutionPolicy executionPolicy;
+
+    public ToolRegistry() {
+        this(ToolExecutionPolicy.defaultPolicy());
+    }
+
+    public ToolRegistry(ToolExecutionPolicy executionPolicy) {
+        this.executionPolicy = executionPolicy != null ? executionPolicy : ToolExecutionPolicy.defaultPolicy();
+    }
 
     /**
      * 注册一个工具到注册表中
@@ -99,31 +108,15 @@ public class ToolRegistry {
     }
 
     public ToolPolicy policyFor(String name) {
-        Tool tool = tools.get(name);
-        if (tool == null) {
-            return new ToolPolicy(name, false, false, true, "missing");
-        }
-        boolean readOnly = tool.isReadOnly();
-        boolean exclusive = tool.isExclusive();
-        return new ToolPolicy(
-                name,
-                readOnly,
-                exclusive,
-                !exclusive && readOnly,
-                readOnly ? "read_only" : "side_effect"
-        );
+        return executionPolicy.policyFor(name, tools.get(name));
     }
 
     public boolean canRunConcurrently(Collection<String> names) {
-        if (names == null || names.isEmpty()) {
-            return true;
-        }
-        for (String name : names) {
-            if (!policyFor(name).concurrentSafe()) {
-                return false;
-            }
-        }
-        return true;
+        return executionPolicy.canRunConcurrently(names, this::policyFor);
+    }
+
+    public ToolExecutionPolicy executionPolicy() {
+        return executionPolicy;
     }
 
     /**
