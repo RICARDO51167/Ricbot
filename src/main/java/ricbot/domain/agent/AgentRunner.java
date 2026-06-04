@@ -82,7 +82,10 @@ public class AgentRunner implements AutoCloseable {
      * @throws Exception 异常
      */
     public AgentRunResult run(AgentRunSpec spec) throws Exception {
-        String runId = UUID.randomUUID().toString();
+        String metadataRunId = spec != null && spec.getMetadata() != null
+                ? String.valueOf(spec.getMetadata().getOrDefault("consoleRunId", "")).trim()
+                : "";
+        String runId = !metadataRunId.isBlank() ? metadataRunId : UUID.randomUUID().toString();
         Instant runStartedAt = Instant.now();
         // 初始化消息列表，如果 spec 中有初始消息则使用，否则为空列表
         List<Map<String, Object>> messages = new ArrayList<>(
@@ -124,6 +127,10 @@ public class AgentRunner implements AutoCloseable {
         AgentRunController controller = spec.getRunTimeout() != null
                 ? AgentRunController.withMaxTurnsAndTimeout(spec.getMaxIterations(), spec.getRunTimeout(), java.time.Clock.systemUTC())
                 : AgentRunController.withMaxTurns(spec.getMaxIterations());
+        if (spec.getRunControllerConsumer() != null) {
+            spec.getRunControllerConsumer().accept(controller);
+        }
+        boolean cancelledRecorded = false;
 
         // 获取钩子实现
         AgentHook hook = spec.getHook();
@@ -158,6 +165,12 @@ public class AgentRunner implements AutoCloseable {
             controller.recordTurn();
             int iteration = controller.currentTurn();
             iterationsCompleted = iteration;
+            if (controller.cancelled()) {
+                stopReason = "cancelled";
+                finalContent = "Agent run cancelled.";
+                cancelledRecorded = recordCancelled(traceRecorder, controller, runId, iteration, cancelledRecorded);
+                break;
+            }
             // 创建钩子上下文，设置当前消息、迭代次数和会话 key
             AgentHookContext context = newHookContext(messages, iteration, spec.getSessionKey());
 
@@ -201,6 +214,12 @@ public class AgentRunner implements AutoCloseable {
                     "usage", response.getUsage() != null ? response.getUsage() : Map.of(),
                     "duration_ms", Duration.between(modelStartedAt, Instant.now()).toMillis()
             )));
+            if (controller.cancelled()) {
+                stopReason = "cancelled";
+                finalContent = "Agent run cancelled.";
+                cancelledRecorded = recordCancelled(traceRecorder, controller, runId, iteration, cancelledRecorded);
+                break;
+            }
 
             // 更新上下文中的响应、工具调用和使用量信息
             context.setResponse(response)
@@ -248,6 +267,12 @@ public class AgentRunner implements AutoCloseable {
             }
             // 增加连续工具调用轮数计数
             consecutiveToolTurns++;
+            if (controller.cancelled()) {
+                stopReason = "cancelled";
+                finalContent = "Agent run cancelled.";
+                cancelledRecorded = recordCancelled(traceRecorder, controller, runId, iteration, cancelledRecorded);
+                break;
+            }
 
             // 工具执行前钩子
             if (hook != null) {
@@ -273,6 +298,12 @@ public class AgentRunner implements AutoCloseable {
                     : executeToolsSequential(tools, response.getToolCalls(), toolsUsed, toolEvents, spec, iteration);
             for (Map<String, Object> event : toolEvents.subList(toolEventStart, toolEvents.size())) {
                 traceRecorder.recordToolEvent(String.valueOf(event.getOrDefault("tool_call_id", "")), metadata(iteration, event));
+            }
+            if (controller.cancelled()) {
+                stopReason = "cancelled";
+                finalContent = "Agent run cancelled.";
+                cancelledRecorded = recordCancelled(traceRecorder, controller, runId, iteration, cancelledRecorded);
+                break;
             }
 
             // 将工具执行结果加入消息历史
@@ -310,7 +341,11 @@ public class AgentRunner implements AutoCloseable {
 
         // 如果循环结束后 finalContent 仍为 null，说明达到了最大迭代次数
         if (finalContent == null) {
-            if ("timeout".equals(controller.stopReason().orElse(""))) {
+            if (controller.cancelled()) {
+                stopReason = "cancelled";
+                finalContent = "Agent run cancelled.";
+                cancelledRecorded = recordCancelled(traceRecorder, controller, runId, iterationsCompleted, cancelledRecorded);
+            } else if ("timeout".equals(controller.stopReason().orElse(""))) {
                 stopReason = "timeout";
                 finalContent = "Agent 运行超时，已在下一轮开始前停止。";
                 traceRecorder.recordRunEvent("run_timeout", metadata(iterationsCompleted, Map.of(
@@ -373,6 +408,25 @@ public class AgentRunner implements AutoCloseable {
         result.setEndedAt(Instant.now().toString());
         result.setIterations(iterations);
         result.setRunEvents(runEvents);
+    }
+
+    private boolean recordCancelled(
+            TraceRecorder traceRecorder,
+            AgentRunController controller,
+            String runId,
+            int iteration,
+            boolean alreadyRecorded
+    ) {
+        if (alreadyRecorded) {
+            return true;
+        }
+        traceRecorder.recordRunEvent("run_cancelled", metadata(iteration, Map.of(
+                "runId", runId,
+                "run_id", runId,
+                "reason", controller.stopReason().orElse("cancelled"),
+                "currentStatus", "cancelled"
+        )));
+        return true;
     }
 
     private Map<String, Object> metadata(int iteration, Map<String, Object> values) {

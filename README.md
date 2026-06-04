@@ -51,6 +51,8 @@ Demo / Interview 材料见 [docs/demo/demo-script.md](docs/demo/demo-script.md)�
 
 ## Quickstart
 
+前后端本地开发启动细节见 [docs/frontend-backend-startup.md](docs/frontend-backend-startup.md)。
+
 环境要求：
 
 - JDK 17+

@@ -100,7 +100,8 @@ final class AgentExecutionService {
                 maxIterations,
                 maxIterationsMessage(maxIterations),
                 checkpointCallback,
-                request.session()
+                request.session(),
+                request.message().getMetadata()
         ));
 
         // 获取钩子对象
@@ -119,7 +120,8 @@ final class AgentExecutionService {
                         bumped,
                         maxIterationsMessage(bumped),
                         checkpointCallback,
-                        request.session()
+                        request.session(),
+                        request.message().getMetadata()
                 );
                 retrySpec.getMetadata().put("retryReason", retryPolicy.lastRetryReason().orElse(null));
                 retrySpec.getMetadata().put("retryCount", retryPolicy.retryCount());
@@ -153,7 +155,8 @@ final class AgentExecutionService {
                 maxIterations,
                 maxIterationsMessage(maxIterations),
                 null,
-                request.session()
+                request.session(),
+                request.message().getMetadata()
         ));
 
         // 如果最终内容为空，使用默认完成消息，否则使用实际内容
@@ -180,10 +183,11 @@ final class AgentExecutionService {
             int iterations,
             String maxIterationMessage,
             Consumer<Map<String, Object>> checkpointCallback,
-            ricbot.domain.session.Session session
+            ricbot.domain.session.Session session,
+            Map<String, Object> requestMetadata
     ) {
         // 创建并配置 AgentRunSpec 对象
-        return new AgentRunSpec()
+        AgentRunSpec spec = new AgentRunSpec()
                 .setInitialMessages(initialMessages) // 设置初始消息
                 .setTools(tools) // 设置工具注册表
                 .setModel(model) // 设置模型
@@ -228,6 +232,24 @@ final class AgentExecutionService {
                         }
                     }
                 });
+        Object controllerConsumer = requestMetadata != null ? requestMetadata.get("consoleRunControllerConsumer") : null;
+        if (controllerConsumer instanceof Consumer<?> consumer) {
+            @SuppressWarnings("unchecked")
+            Consumer<AgentRunController> typed = (Consumer<AgentRunController>) consumer;
+            spec.setRunControllerConsumer(typed);
+        }
+        if (requestMetadata != null) {
+            for (Map.Entry<String, Object> entry : requestMetadata.entrySet()) {
+                if ("consoleRunControllerConsumer".equals(entry.getKey())) {
+                    continue;
+                }
+                Object value = entry.getValue();
+                if (value == null || value instanceof String || value instanceof Number || value instanceof Boolean) {
+                    spec.getMetadata().put(entry.getKey(), value);
+                }
+            }
+        }
+        return spec;
     }
 
     // 生成达到最大迭代次数时的提示消息

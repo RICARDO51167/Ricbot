@@ -9,6 +9,9 @@ import com.sun.net.httpserver.HttpPrincipal;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import ricbot.domain.agent.AgentLoop;
+import ricbot.domain.agent.SessionRuntimeKeys;
+import ricbot.domain.change.ChangeSetService;
+import ricbot.domain.change.GitChangeSet;
 import ricbot.domain.experience.ExperienceEntry;
 import ricbot.domain.experience.ExperienceSkillPromoter;
 import ricbot.domain.experience.ExperienceStatus;
@@ -23,6 +26,9 @@ import ricbot.domain.security.ApprovalService;
 import ricbot.domain.security.CommandRiskLevel;
 import ricbot.domain.security.RiskAssessment;
 import ricbot.domain.session.SessionManager;
+import ricbot.domain.trace.TraceEvent;
+import ricbot.domain.trace.TraceEventType;
+import ricbot.domain.trace.TraceStore;
 import ricbot.domain.workspace.GitWorktreeWorkspaceBackend;
 import ricbot.domain.workspace.WorkspaceBackendType;
 import ricbot.domain.workspace.WorkspaceSession;
@@ -30,7 +36,9 @@ import ricbot.domain.workspace.WorkspaceSessionStatus;
 import ricbot.domain.workspace.WorkspaceSessionStore;
 import ricbot.infra.config.Config;
 import ricbot.integration.api.console.ConsoleActionAuditService;
+import ricbot.integration.api.console.ConsoleEvent;
 import ricbot.integration.api.console.ConsoleController;
+import ricbot.integration.api.console.JsonlConsoleEventStore;
 import ricbot.integration.api.webhook.ChannelWebhookController;
 import ricbot.integration.llm.api.LLMProvider;
 import ricbot.integration.llm.api.LLMResponse;
@@ -423,6 +431,24 @@ public class RicbotApiServerTest {
             assertTrue(health.contains("\"status\":\"ok\""), health);
             assertTrue(health.contains("\"readonly\":true"), health);
 
+            String runtime = handleGet(ConsoleController.runtimeHandler(app), "/api/console/runtime");
+            assertTrue(runtime.contains("\"mode\":\"backend\""), runtime);
+            assertTrue(runtime.contains("\"modelConfigured\":true"), runtime);
+            assertTrue(runtime.contains("\"provider\":\"openai\""), runtime);
+            assertTrue(runtime.contains("\"model\":\"gpt-4o-mini\""), runtime);
+            assertFalse(runtime.contains("super-secret-key"), runtime);
+
+            String sessions = handleGet(ConsoleController.sessionsHandler(app), "/api/console/sessions");
+            assertTrue(sessions.contains("\"items\""), sessions);
+            assertTrue(sessions.contains("\"mode\":\"backend\""), sessions);
+
+            String pendingApprovals = handleGet(ConsoleController.approvalsPendingHandler(app), "/api/console/approvals/pending");
+            assertTrue(pendingApprovals.contains("\"items\""), pendingApprovals);
+
+            String recentChangeSets = handleGet(ConsoleController.recentChangeSetsHandler(app), "/api/console/changesets/recent");
+            assertTrue(recentChangeSets.contains("\"items\""), recentChangeSets);
+            assertTrue(recentChangeSets.contains("\"mode\":\"backend\""), recentChangeSets);
+
             String doctor = handleGet(ConsoleController.configDoctorHandler(app), "/console/api/config-doctor");
             assertTrue(doctor.contains("\"apiKeyPresent\":true"), doctor);
             assertFalse(doctor.contains("super-secret-key"), doctor);
@@ -505,6 +531,1252 @@ public class RicbotApiServerTest {
             String chat = chatExchange.responseText();
             assertTrue(chat.contains("\"object\":\"chat.completion\""), chat);
             assertTrue(chat.contains("\"content\":\"pong\""), chat);
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void consoleRuntime_reportsUnconfiguredModelWithoutLeakingDefaults(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildLoopNoStart(workspace);
+        Config config = new Config();
+        config.getAgents().getDefaults().setWorkspace(workspace.toString());
+        config.getAgents().getDefaults().setModel("qwen-plus");
+        var app = new RicbotApiAppContext(loop, "qwen-plus", 20_000, "127.0.0.1", "", config, null, workspace);
+
+        try {
+            String runtime = handleGet(ConsoleController.runtimeHandler(app), "/api/console/runtime");
+
+            assertTrue(runtime.contains("\"appName\":\"Ricbot\""), runtime);
+            assertTrue(runtime.contains("\"mode\":\"backend\""), runtime);
+            assertTrue(runtime.contains("\"modelConfigured\":false"), runtime);
+            assertTrue(runtime.contains("\"provider\":null"), runtime);
+            assertTrue(runtime.contains("\"model\":null"), runtime);
+            assertFalse(runtime.contains("\"model\":\"qwen-plus\""), runtime);
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void consoleSessionDetail_returnsReadOnlySessionTimelineForEncodedSessionIds(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildLoopNoStart(workspace);
+        Config config = new Config();
+        config.getAgents().getDefaults().setWorkspace(workspace.toString());
+        config.getAgents().getDefaults().setModel("gpt-4o-mini");
+        config.getProviders().getOpenai().setApiKey("super-secret-key");
+        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", config, null, workspace);
+
+        try {
+            String sessionId = "api:default";
+            var session = loop.getSessions().getOrCreate(sessionId);
+            session.addMessage("user", "Read package metadata");
+            session.addAssistantMessage("I will inspect the package file.", List.of(Map.of(
+                    "id", "call_read_package",
+                    "type", "function",
+                    "function", Map.of("name", "read_file", "arguments", "{\"path\":\"package.json\"}")
+            )));
+            session.addToolMessage("call_read_package", "read_file", Map.of("path", "package.json", "content", "tool output"));
+            loop.getSessions().save(session);
+
+            String encoded = URLEncoder.encode(sessionId, StandardCharsets.UTF_8);
+            String detailBody = handleGet(
+                    ConsoleController.sessionDetailHandler(app, "/api/console/sessions/"),
+                    "/api/console/sessions/" + encoded
+            );
+            Map<String, Object> detail = MAPPER.readValue(detailBody, new TypeReference<>() {});
+
+            assertEquals(sessionId, detail.get("sessionId"));
+            assertEquals("gpt-4o-mini", detail.get("model"));
+            assertEquals("openai", detail.get("provider"));
+            assertTrue(detailBody.contains("\"messages\""), detailBody);
+            assertTrue(detailBody.contains("\"toolCalls\""), detailBody);
+            assertTrue(detailBody.contains("\"traceEvents\""), detailBody);
+            assertTrue(detailBody.contains("\"approvalEvents\""), detailBody);
+            assertTrue(detailBody.contains("\"changeSets\""), detailBody);
+            assertFalse(detailBody.contains("super-secret-key"), detailBody);
+
+            List<Map<String, Object>> toolCalls = MAPPER.convertValue(detail.get("toolCalls"), new TypeReference<>() {});
+            assertEquals(1, toolCalls.size());
+            assertEquals("read_file", toolCalls.get(0).get("toolName"));
+            assertTrue(String.valueOf(toolCalls.get(0).get("result")).contains("tool output"));
+
+            String timelineBody = handleGet(
+                    ConsoleController.sessionDetailHandler(app, "/api/console/sessions/"),
+                    "/api/console/sessions/" + encoded + "/timeline"
+            );
+            List<Map<String, Object>> timeline = MAPPER.readValue(timelineBody, new TypeReference<>() {});
+            assertFalse(timeline.isEmpty(), timelineBody);
+            assertTrue(timeline.stream().anyMatch(event -> "user_message".equals(event.get("type"))), timelineBody);
+            assertTrue(timeline.stream().anyMatch(event -> "tool_call".equals(event.get("type"))), timelineBody);
+            assertTrue(timeline.stream().allMatch(event -> event.containsKey("payload")), timelineBody);
+            String cursor = String.valueOf(timeline.get(timeline.size() - 1).get("id"));
+
+            session.addMessage("user", "Follow-up after cursor");
+            loop.getSessions().save(session);
+
+            String eventsBody = handleGet(
+                    ConsoleController.sessionDetailHandler(app, "/api/console/sessions/"),
+                    "/api/console/sessions/" + encoded + "/events?after=" + URLEncoder.encode(cursor, StandardCharsets.UTF_8)
+            );
+            Map<String, Object> eventsResponse = MAPPER.readValue(eventsBody, new TypeReference<>() {});
+            assertEquals(sessionId, eventsResponse.get("sessionId"));
+            assertTrue(eventsResponse.containsKey("nextCursor"), eventsBody);
+            List<Map<String, Object>> incrementalEvents = MAPPER.convertValue(eventsResponse.get("events"), new TypeReference<>() {});
+            assertFalse(incrementalEvents.isEmpty(), eventsBody);
+            assertTrue(incrementalEvents.stream().anyMatch(event -> String.valueOf(event.get("summary")).contains("Follow-up after cursor")), eventsBody);
+            assertFalse(incrementalEvents.stream().anyMatch(event -> cursor.equals(event.get("id"))), eventsBody);
+
+            TestExchange post = postExchangeRaw("/api/console/sessions/" + encoded, "");
+            ConsoleController.sessionDetailHandler(app, "/api/console/sessions/").handle(post);
+            assertEquals(405, post.getResponseCode(), post.responseText());
+
+            TestExchange traversal = getExchange("/api/console/sessions/..%2Fsecret");
+            ConsoleController.sessionDetailHandler(app, "/api/console/sessions/").handle(traversal);
+            assertEquals(404, traversal.getResponseCode(), traversal.responseText());
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void sessionDetail_includesRunEventsWhenPresent(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildLoopNoStart(workspace);
+        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", new Config(), null, workspace);
+        try {
+            String sessionId = "api:run-events";
+            var session = loop.getSessions().getOrCreate(sessionId);
+            session.addMessage("user", "run event detail");
+            session.getMetadata().put(SessionRuntimeKeys.RUN_TRACE_KEY, runTrace(List.of(
+                    runEvent("run_start", "2026-06-04T00:00:00Z", Map.of("run_id", "run-1")),
+                    runEvent("capability_warning", "2026-06-04T00:00:01Z", Map.of("capability", "supportsToolCalling", "status", "WARN")),
+                    runEvent("run_finish", "2026-06-04T00:00:02Z", Map.of("run_id", "run-1", "duration_ms", 12))
+            )));
+            loop.getSessions().save(session);
+
+            String body = handleGet(
+                    ConsoleController.sessionDetailHandler(app, "/api/console/sessions/"),
+                    "/api/console/sessions/" + URLEncoder.encode(sessionId, StandardCharsets.UTF_8)
+            );
+            Map<String, Object> detail = MAPPER.readValue(body, new TypeReference<>() {});
+            List<Map<String, Object>> runEvents = MAPPER.convertValue(detail.get("runEvents"), new TypeReference<>() {});
+
+            assertEquals(3, runEvents.size(), body);
+            assertTrue(runEvents.stream().anyMatch(event -> "run_start".equals(event.get("type"))), body);
+            assertTrue(runEvents.stream().anyMatch(event -> "capability_warning".equals(event.get("type"))), body);
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void sessionTimeline_includesRunEvents(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildLoopNoStart(workspace);
+        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", new Config(), null, workspace);
+        try {
+            String sessionId = "api:timeline-run-events";
+            var session = loop.getSessions().getOrCreate(sessionId);
+            session.getMetadata().put(SessionRuntimeKeys.RUN_TRACE_KEY, runTrace(List.of(
+                    runEvent("run_start", "2026-06-04T00:01:00Z", Map.of("run_id", "run-2")),
+                    runEvent("model_error", "2026-06-04T00:01:01Z", Map.of("error", "model failed")),
+                    runEvent("run_stop", "2026-06-04T00:01:02Z", Map.of("stop_reason", "error"))
+            )));
+            loop.getSessions().save(session);
+
+            String body = handleGet(
+                    ConsoleController.sessionDetailHandler(app, "/api/console/sessions/"),
+                    "/api/console/sessions/" + URLEncoder.encode(sessionId, StandardCharsets.UTF_8) + "/timeline"
+            );
+            List<Map<String, Object>> timeline = MAPPER.readValue(body, new TypeReference<>() {});
+
+            assertTrue(timeline.stream().anyMatch(event ->
+                    "run_event".equals(event.get("type")) && String.valueOf(event.get("title")).contains("run_start")), body);
+            assertTrue(timeline.stream().anyMatch(event ->
+                    "run_event".equals(event.get("type")) && "ERROR".equals(event.get("status"))), body);
+            assertTrue(timeline.stream().allMatch(event -> event.containsKey("id") && event.containsKey("payload")), body);
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void sessionEventsPolling_returnsRunEventsAfterCursor(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildLoopNoStart(workspace);
+        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", new Config(), null, workspace);
+        try {
+            String sessionId = "api:poll-run-events";
+            var session = loop.getSessions().getOrCreate(sessionId);
+            session.getMetadata().put(SessionRuntimeKeys.RUN_TRACE_KEY, runTrace(List.of(
+                    runEvent("run_start", "2026-06-04T00:02:00Z", Map.of("run_id", "run-3")),
+                    runEvent("run_retry", "2026-06-04T00:02:01Z", Map.of("retry_reason", "tool_loop")),
+                    runEvent("run_finish", "2026-06-04T00:02:02Z", Map.of("run_id", "run-3"))
+            )));
+            loop.getSessions().save(session);
+            String encoded = URLEncoder.encode(sessionId, StandardCharsets.UTF_8);
+            List<Map<String, Object>> timeline = MAPPER.readValue(handleGet(
+                    ConsoleController.sessionDetailHandler(app, "/api/console/sessions/"),
+                    "/api/console/sessions/" + encoded + "/timeline"
+            ), new TypeReference<>() {});
+            String cursor = String.valueOf(timeline.stream()
+                    .filter(event -> String.valueOf(event.get("title")).contains("run_start"))
+                    .findFirst()
+                    .orElseThrow()
+                    .get("id"));
+
+            String body = handleGet(
+                    ConsoleController.sessionDetailHandler(app, "/api/console/sessions/"),
+                    "/api/console/sessions/" + encoded + "/events?after=" + URLEncoder.encode(cursor, StandardCharsets.UTF_8)
+            );
+            Map<String, Object> response = MAPPER.readValue(body, new TypeReference<>() {});
+            List<Map<String, Object>> events = MAPPER.convertValue(response.get("events"), new TypeReference<>() {});
+
+            assertTrue(events.stream().anyMatch(event -> String.valueOf(event.get("title")).contains("run_retry")), body);
+            assertTrue(events.stream().anyMatch(event -> String.valueOf(event.get("title")).contains("run_finish")), body);
+            assertFalse(events.stream().anyMatch(event -> cursor.equals(event.get("id"))), body);
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void missingRunEvents_keepsBackwardCompatible(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildLoopNoStart(workspace);
+        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", new Config(), null, workspace);
+        try {
+            String sessionId = "api:no-run-events";
+            loop.getSessions().getOrCreate(sessionId).addMessage("user", "legacy session");
+            loop.getSessions().save(loop.getSessions().getOrCreate(sessionId));
+
+            String body = handleGet(
+                    ConsoleController.sessionDetailHandler(app, "/api/console/sessions/"),
+                    "/api/console/sessions/" + URLEncoder.encode(sessionId, StandardCharsets.UTF_8)
+            );
+            Map<String, Object> detail = MAPPER.readValue(body, new TypeReference<>() {});
+            List<Map<String, Object>> runEvents = MAPPER.convertValue(detail.get("runEvents"), new TypeReference<>() {});
+
+            assertTrue(runEvents.isEmpty(), body);
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void duplicateTraceAndRunEvent_doesNotDuplicateTimeline(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildLoopNoStart(workspace);
+        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", new Config(), null, workspace);
+        try {
+            String sessionId = "api:dedupe-run-events";
+            String at = "2026-06-04T00:03:00Z";
+            var session = loop.getSessions().getOrCreate(sessionId);
+            session.getMetadata().put(SessionRuntimeKeys.RUN_TRACE_KEY, runTrace(List.of(
+                    runEvent("run_start", at, Map.of("run_id", "run-4"))
+            )));
+            loop.getSessions().save(session);
+            String traceId = new TraceStore(workspace).traceIdForSession(sessionId);
+            new TraceStore(workspace).append(new TraceEvent(
+                    traceId,
+                    "trace-run-start",
+                    "",
+                    sessionId,
+                    "",
+                    "",
+                    "",
+                    TraceEventType.TEAM_EVENT,
+                    "agent",
+                    "run_start",
+                    Map.of("type", "run_start", "run_id", "run-4"),
+                    at,
+                    null
+            ));
+
+            String body = handleGet(
+                    ConsoleController.sessionDetailHandler(app, "/api/console/sessions/"),
+                    "/api/console/sessions/" + URLEncoder.encode(sessionId, StandardCharsets.UTF_8) + "/timeline"
+            );
+            List<Map<String, Object>> timeline = MAPPER.readValue(body, new TypeReference<>() {});
+            long runStartCount = timeline.stream()
+                    .filter(event -> String.valueOf(event.get("title")).contains("run_start"))
+                    .count();
+
+            assertEquals(1, runStartCount, body);
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void eventsStream_endpointExists(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildLoopNoStart(workspace);
+        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", new Config(), null, workspace);
+        try {
+            String sessionId = "api:sse-endpoint";
+            loop.getSessions().getOrCreate(sessionId).addMessage("user", "stream endpoint");
+            loop.getSessions().save(loop.getSessions().getOrCreate(sessionId));
+
+            TestExchange exchange = getExchange("/api/console/sessions/"
+                    + URLEncoder.encode(sessionId, StandardCharsets.UTF_8)
+                    + "/events/stream?once=true");
+            ConsoleController.sessionDetailHandler(app, "/api/console/sessions/").handle(exchange);
+
+            assertEquals(200, exchange.getResponseCode(), exchange.responseText());
+            assertTrue(exchange.getResponseHeaders().getFirst("Content-Type").startsWith("text/event-stream"),
+                    exchange.getResponseHeaders().toString());
+            assertTrue(exchange.responseText().contains("event: "), exchange.responseText());
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void eventsStream_sendsHeartbeatOrTimelineEvent(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildLoopNoStart(workspace);
+        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", new Config(), null, workspace);
+        try {
+            String sessionId = "api:sse-heartbeat";
+            loop.getSessions().getOrCreate(sessionId);
+            loop.getSessions().save(loop.getSessions().getOrCreate(sessionId));
+
+            TestExchange exchange = getExchange("/console/api/sessions/"
+                    + URLEncoder.encode(sessionId, StandardCharsets.UTF_8)
+                    + "/events/stream?once=true");
+            ConsoleController.sessionDetailHandler(app, "/console/api/sessions/").handle(exchange);
+
+            assertEquals(200, exchange.getResponseCode(), exchange.responseText());
+            assertTrue(exchange.responseText().contains("event: heartbeat")
+                    || exchange.responseText().contains("event: timeline_batch"), exchange.responseText());
+            assertTrue(exchange.responseText().contains("\"sessionId\":\"" + sessionId + "\""), exchange.responseText());
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void eventsStream_doesNotTriggerAgentExecution(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildLoopNoStart(workspace);
+        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", new Config(), null, workspace);
+        try {
+            String sessionId = "api:sse-readonly";
+            var session = loop.getSessions().getOrCreate(sessionId);
+            session.addMessage("user", "existing message");
+            loop.getSessions().save(session);
+            int beforeMessages = loop.getSessions().find(sessionId).orElseThrow().getMessages().size();
+
+            TestExchange exchange = getExchange("/api/console/sessions/"
+                    + URLEncoder.encode(sessionId, StandardCharsets.UTF_8)
+                    + "/events/stream?once=true");
+            ConsoleController.sessionDetailHandler(app, "/api/console/sessions/").handle(exchange);
+
+            int afterMessages = loop.getSessions().find(sessionId).orElseThrow().getMessages().size();
+            assertEquals(200, exchange.getResponseCode(), exchange.responseText());
+            assertEquals(beforeMessages, afterMessages, exchange.responseText());
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void eventsStream_reusesTimelineCursorLogic(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildLoopNoStart(workspace);
+        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", new Config(), null, workspace);
+        try {
+            String sessionId = "api:sse-cursor";
+            var session = loop.getSessions().getOrCreate(sessionId);
+            session.getMetadata().put(SessionRuntimeKeys.RUN_TRACE_KEY, runTrace(List.of(
+                    runEvent("run_start", "2026-06-04T00:04:00Z", Map.of("run_id", "run-5")),
+                    runEvent("run_finish", "2026-06-04T00:04:01Z", Map.of("run_id", "run-5"))
+            )));
+            loop.getSessions().save(session);
+            String encoded = URLEncoder.encode(sessionId, StandardCharsets.UTF_8);
+            List<Map<String, Object>> timeline = MAPPER.readValue(handleGet(
+                    ConsoleController.sessionDetailHandler(app, "/api/console/sessions/"),
+                    "/api/console/sessions/" + encoded + "/timeline"
+            ), new TypeReference<>() {});
+            String cursor = String.valueOf(timeline.stream()
+                    .filter(event -> String.valueOf(event.get("title")).contains("run_start"))
+                    .findFirst()
+                    .orElseThrow()
+                    .get("id"));
+
+            TestExchange exchange = getExchange("/api/console/sessions/" + encoded
+                    + "/events/stream?once=true&after=" + URLEncoder.encode(cursor, StandardCharsets.UTF_8));
+            ConsoleController.sessionDetailHandler(app, "/api/console/sessions/").handle(exchange);
+
+            assertEquals(200, exchange.getResponseCode(), exchange.responseText());
+            assertTrue(exchange.responseText().contains("run_finish"), exchange.responseText());
+            assertFalse(exchange.responseText().contains("run_start"), exchange.responseText());
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void startRun_returnsModelNotConfiguredWhenProviderMissing(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildLoopNoStart(workspace);
+        Config config = new Config();
+        config.getAgents().getDefaults().setWorkspace(workspace.toString());
+        config.getAgents().getDefaults().setModel("qwen-plus");
+        var app = new RicbotApiAppContext(loop, "qwen-plus", 20_000, "127.0.0.1", "", config, null, workspace);
+        try {
+            TestExchange exchange = postExchange("/api/console/sessions/api%3Aconsole/runs", Map.of(
+                    "input", "请分析当前项目结构"
+            ));
+            ConsoleController.sessionDetailHandler(app, "/api/console/sessions/").handle(exchange);
+
+            assertEquals(200, exchange.getResponseCode(), exchange.responseText());
+            assertTrue(exchange.responseText().contains("\"status\":\"failed\""), exchange.responseText());
+            assertTrue(exchange.responseText().contains("\"code\":\"model_not_configured\""), exchange.responseText());
+            assertFalse(loop.getSessions().find("api:console").isPresent());
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void startRun_rejectsBlankInput(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildLoopNoStart(workspace);
+        Config config = configuredOpenAiConfig(workspace);
+        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", config, null, workspace);
+        try {
+            TestExchange exchange = postExchange("/api/console/sessions/api%3Aconsole/runs", Map.of(
+                    "input", "   "
+            ));
+            ConsoleController.sessionDetailHandler(app, "/api/console/sessions/").handle(exchange);
+
+            assertEquals(200, exchange.getResponseCode(), exchange.responseText());
+            assertTrue(exchange.responseText().contains("\"status\":\"failed\""), exchange.responseText());
+            assertTrue(exchange.responseText().contains("\"code\":\"blank_input\""), exchange.responseText());
+            assertFalse(loop.getSessions().find("api:console").isPresent());
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void startRun_returnsImmediatelyWithRunId(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildSlowLoop(workspace, 250);
+        Config config = configuredOpenAiConfig(workspace);
+        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", config, null, workspace);
+        try {
+            long startedAt = System.nanoTime();
+            TestExchange exchange = postExchange("/api/console/sessions/api%3Aasync-console/runs", Map.of(
+                    "input", "ping async"
+            ));
+            ConsoleController.sessionDetailHandler(app, "/api/console/sessions/").handle(exchange);
+            long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt);
+
+            assertEquals(200, exchange.getResponseCode(), exchange.responseText());
+            assertTrue(elapsedMillis < 200, "POST should not wait for slow model, elapsedMillis=" + elapsedMillis);
+            assertTrue(exchange.responseText().contains("\"runId\""), exchange.responseText());
+            waitForRunStatus(app, runIdFromStart(exchange.responseText()), "finished");
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void startRun_setsStatusQueuedOrRunning(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildLoopNoStart(workspace);
+        Config config = configuredOpenAiConfig(workspace);
+        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", config, null, workspace);
+        try {
+            TestExchange exchange = postExchange("/console/api/sessions/api%3Anew-console/runs", Map.of(
+                    "input", "ping from console"
+            ));
+            ConsoleController.sessionDetailHandler(app, "/console/api/sessions/").handle(exchange);
+
+            assertEquals(200, exchange.getResponseCode(), exchange.responseText());
+            assertTrue(exchange.responseText().contains("\"status\":\"queued\"")
+                    || exchange.responseText().contains("\"status\":\"running\""), exchange.responseText());
+            assertTrue(exchange.responseText().contains("\"runId\""), exchange.responseText());
+            waitForRunStatus(app, runIdFromStart(exchange.responseText()), "finished");
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void runStatus_returnsRunRecord(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildLoopNoStart(workspace);
+        Config config = configuredOpenAiConfig(workspace);
+        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", config, null, workspace);
+        try {
+            Map<String, Object> start = MAPPER.readValue(postRun(app, "/api/console/sessions/api%3Arun-status/runs", "ping"), new TypeReference<>() {});
+            String runId = String.valueOf(start.get("runId"));
+
+            String body = handleGet(ConsoleController.runStatusHandler(app, "/api/console/runs/"), "/api/console/runs/" + runId);
+
+            assertTrue(body.contains("\"runId\":\"" + runId + "\""), body);
+            assertTrue(body.contains("\"sessionId\":\"api:run-status\""), body);
+            assertTrue(body.contains("\"inputPreview\":\"ping\""), body);
+            waitForRunStatus(app, runId, "finished");
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void runStatus_transitionsToFinishedOnSuccess(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildLoopNoStart(workspace);
+        Config config = configuredOpenAiConfig(workspace);
+        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", config, null, workspace);
+        try {
+            Map<String, Object> start = MAPPER.readValue(postRun(app, "/api/console/sessions/api%3Arun-finish/runs", "ping"), new TypeReference<>() {});
+            String runId = String.valueOf(start.get("runId"));
+
+            String body = waitForRunStatus(app, runId, "finished");
+
+            assertTrue(body.contains("\"status\":\"finished\""), body);
+            assertTrue(body.contains("\"finishedAt\""), body);
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void runStatus_transitionsToFailedOnException(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildThrowingLoop(workspace);
+        Config config = configuredOpenAiConfig(workspace);
+        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", config, null, workspace);
+        try {
+            Map<String, Object> start = MAPPER.readValue(postRun(app, "/api/console/sessions/api%3Arun-fail/runs", "ping"), new TypeReference<>() {});
+            String runId = String.valueOf(start.get("runId"));
+
+            String body = waitForRunStatus(app, runId, "failed");
+
+            assertTrue(body.contains("\"status\":\"failed\""), body);
+            assertTrue(body.contains("forced console failure"), body);
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void startRun_doesNotChangeApprovalSemantics(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildLoopNoStart(workspace);
+        Config config = configuredOpenAiConfig(workspace);
+        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", config, null, workspace);
+        try {
+            ApprovalRequest request = loop.getApprovalService().createRequest(
+                    RiskAssessment.of(CommandRiskLevel.MEDIUM, List.of("approval remains pending"), "", "write_file", List.of("console.txt")),
+                    "write_file",
+                    Map.of("path", "console.txt", "content", "console\n"),
+                    "api:approval-run"
+            );
+
+            TestExchange exchange = postExchange("/api/console/sessions/api%3Aapproval-run/runs", Map.of(
+                    "input", "ping while approval exists"
+            ));
+            ConsoleController.sessionDetailHandler(app, "/api/console/sessions/").handle(exchange);
+
+            assertEquals(200, exchange.getResponseCode(), exchange.responseText());
+            waitForRunStatus(app, runIdFromStart(exchange.responseText()), "finished");
+            ApprovalRequest after = loop.getApprovalService().find(request.requestId());
+            assertEquals(ApprovalRequest.ApprovalStatus.PENDING, after.status());
+            assertFalse(after.consumed());
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void startRun_recordsRunStartWhenExecutionBegins(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildLoopNoStart(workspace);
+        Config config = configuredOpenAiConfig(workspace);
+        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", config, null, workspace);
+        try {
+            String sessionId = "api:run-start-console";
+            TestExchange exchange = postExchange("/api/console/sessions/"
+                    + URLEncoder.encode(sessionId, StandardCharsets.UTF_8)
+                    + "/runs", Map.of("input", "please run"));
+            ConsoleController.sessionDetailHandler(app, "/api/console/sessions/").handle(exchange);
+
+            assertEquals(200, exchange.getResponseCode(), exchange.responseText());
+            waitForRunStatus(app, runIdFromStart(exchange.responseText()), "finished");
+            String timeline = handleGet(
+                    ConsoleController.sessionDetailHandler(app, "/api/console/sessions/"),
+                    "/api/console/sessions/" + URLEncoder.encode(sessionId, StandardCharsets.UTF_8) + "/timeline"
+            );
+            assertTrue(timeline.contains("run_start"), timeline);
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void asyncRun_stillUsesAgentLoopProcessDirect(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildLoopNoStart(workspace);
+        Config config = configuredOpenAiConfig(workspace);
+        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", config, null, workspace);
+        try {
+            Map<String, Object> start = MAPPER.readValue(postRun(app, "/api/console/sessions/api%3Adirect-chain/runs", "direct chain"), new TypeReference<>() {});
+            waitForRunStatus(app, String.valueOf(start.get("runId")), "finished");
+
+            assertTrue(loop.getSessions().find("api:direct-chain").isPresent());
+            assertTrue(loop.getSessions().find("api:direct-chain").orElseThrow().getMessages().stream()
+                    .anyMatch(message -> String.valueOf(message.get("content")).contains("direct chain")));
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void cancelRun_returnsNotFoundForUnknownRun(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildLoopNoStart(workspace);
+        Config config = configuredOpenAiConfig(workspace);
+        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", config, null, workspace);
+        try {
+            TestExchange cancel = postExchangeRaw("/api/console/runs/missing-run/cancel", "");
+            ConsoleController.runStatusHandler(app, "/api/console/runs/").handle(cancel);
+
+            assertEquals(200, cancel.getResponseCode(), cancel.responseText());
+            assertTrue(cancel.responseText().contains("\"status\":\"failed\""), cancel.responseText());
+            assertTrue(cancel.responseText().contains("\"code\":\"run_not_found\""), cancel.responseText());
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void cancelRun_cancelsQueuedRun(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildSlowLoop(workspace, 500);
+        Config config = configuredOpenAiConfig(workspace);
+        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", config, null, workspace);
+        try {
+            String runId = runIdFromStart(postRun(app, "/api/console/sessions/api%3Acancel-queued/runs", "cancel queued"));
+
+            String body = cancelRun(app, runId);
+
+            assertTrue(body.contains("\"status\":\"cancelled\""), body);
+            assertTrue(body.contains("Run cancellation requested"), body);
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void cancelRun_cancelsRunningRun(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildSlowLoop(workspace, 1000);
+        Config config = configuredOpenAiConfig(workspace);
+        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", config, null, workspace);
+        try {
+            String runId = runIdFromStart(postRun(app, "/api/console/sessions/api%3Acancel-running/runs", "cancel running"));
+            waitForRunStatus(app, runId, "running");
+
+            String body = cancelRun(app, runId);
+
+            assertTrue(body.contains("\"status\":\"cancelled\""), body);
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void cancelRun_isIdempotentWhenAlreadyCancelled(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildSlowLoop(workspace, 1000);
+        Config config = configuredOpenAiConfig(workspace);
+        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", config, null, workspace);
+        try {
+            String runId = runIdFromStart(postRun(app, "/api/console/sessions/api%3Acancel-idempotent/runs", "cancel twice"));
+            cancelRun(app, runId);
+
+            String second = cancelRun(app, runId);
+
+            assertTrue(second.contains("\"status\":\"cancelled\""), second);
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void cancelRun_doesNotCancelFinishedRun(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildLoopNoStart(workspace);
+        Config config = configuredOpenAiConfig(workspace);
+        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", config, null, workspace);
+        try {
+            String runId = runIdFromStart(postRun(app, "/api/console/sessions/api%3Acancel-finished/runs", "finish first"));
+            waitForRunStatus(app, runId, "finished");
+
+            String body = cancelRun(app, runId);
+
+            assertTrue(body.contains("\"status\":\"finished\""), body);
+            assertTrue(body.contains("Run already finished"), body);
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void cancelledRun_isNotOverwrittenByFinishedState(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildSlowLoop(workspace, 300);
+        Config config = configuredOpenAiConfig(workspace);
+        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", config, null, workspace);
+        try {
+            String runId = runIdFromStart(postRun(app, "/api/console/sessions/api%3Acancel-not-overwritten/runs", "cancel stable"));
+            cancelRun(app, runId);
+            Thread.sleep(450L);
+
+            String body = handleGet(ConsoleController.runStatusHandler(app, "/api/console/runs/"), "/api/console/runs/" + runId);
+
+            assertTrue(body.contains("\"status\":\"cancelled\""), body);
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void cancelRun_doesNotChangeApprovalSemantics(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildSlowLoop(workspace, 1000);
+        Config config = configuredOpenAiConfig(workspace);
+        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", config, null, workspace);
+        try {
+            ApprovalRequest request = loop.getApprovalService().createRequest(
+                    RiskAssessment.of(CommandRiskLevel.MEDIUM, List.of("approval remains pending"), "", "write_file", List.of("cancel.txt")),
+                    "write_file",
+                    Map.of("path", "cancel.txt", "content", "cancel\n"),
+                    "api:cancel-approval"
+            );
+            String runId = runIdFromStart(postRun(app, "/api/console/sessions/api%3Acancel-approval/runs", "cancel approval run"));
+
+            cancelRun(app, runId);
+
+            ApprovalRequest after = loop.getApprovalService().find(request.requestId());
+            assertEquals(ApprovalRequest.ApprovalStatus.PENDING, after.status());
+            assertFalse(after.consumed());
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void cancelRun_recordsCancelledTimelineEvent(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildSlowLoop(workspace, 1000);
+        Config config = configuredOpenAiConfig(workspace);
+        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", config, null, workspace);
+        String sessionId = "api:cancel-timeline";
+        try {
+            String runId = runIdFromStart(postRun(app, "/api/console/sessions/" + URLEncoder.encode(sessionId, StandardCharsets.UTF_8) + "/runs", "cancel timeline"));
+
+            String cancelBody = cancelRun(app, runId);
+            String timeline = handleGet(ConsoleController.sessionDetailHandler(app, "/api/console/sessions/"),
+                    "/api/console/sessions/" + URLEncoder.encode(sessionId, StandardCharsets.UTF_8) + "/timeline");
+            String events = handleGet(ConsoleController.sessionDetailHandler(app, "/api/console/sessions/"),
+                    "/api/console/sessions/" + URLEncoder.encode(sessionId, StandardCharsets.UTF_8) + "/events");
+
+            assertTrue(cancelBody.contains("\"status\":\"cancelled\""), cancelBody);
+            assertTrue(timeline.contains("run_cancelled"), timeline);
+            assertTrue(timeline.contains(runId), timeline);
+            assertTrue(events.contains("run_cancelled"), events);
+            List<ConsoleEvent> stored = consoleEvents(workspace, sessionId);
+            assertTrue(stored.stream().anyMatch(event -> "run_cancel_requested".equals(event.name())), stored.toString());
+            assertTrue(stored.stream().anyMatch(event -> "run_cancelled".equals(event.name())), stored.toString());
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void cancelRun_callsAgentRunControllerCancelWhenAvailable(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildSlowLoop(workspace, 5000);
+        Config config = configuredOpenAiConfig(workspace);
+        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", config, null, workspace);
+        try {
+            String runId = runIdFromStart(postRun(app, "/api/console/sessions/api%3Acancel-controller/runs", "cancel controller"));
+            waitForRunStatus(app, runId, "running");
+            waitForRunStatusField(app, runId, "\"controllerAttached\":true");
+
+            String body = cancelRun(app, runId);
+
+            assertTrue(body.contains("\"controllerCancelled\":true"), body);
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void approvalApproveOnly_usesApplicationService(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildLoopNoStart(workspace);
+        Config config = configuredOpenAiConfig(workspace);
+        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", config, null, workspace);
+        try {
+            ApprovalRequest request = loop.getApprovalService().createRequest(
+                    RiskAssessment.of(CommandRiskLevel.MEDIUM, List.of("write requires approval"), "", "write_file", List.of("a.txt")),
+                    "write_file",
+                    Map.of("path", "a.txt", "content", "approved\n"),
+                    "api:approval-only"
+            );
+
+            TestExchange approve = postExchangeRaw("/api/console/approvals/" + request.requestId() + "/approve-only", "");
+            ConsoleController.approvalsHandler(app).handle(approve);
+
+            assertEquals(200, approve.getResponseCode(), approve.responseText());
+            assertTrue(approve.responseText().contains("\"executed\":false"), approve.responseText());
+            assertEquals(ApprovalRequest.ApprovalStatus.APPROVED, loop.getApprovalService().find(request.requestId()).status());
+            assertFalse(loop.getApprovalService().find(request.requestId()).consumed());
+            assertTrue(consoleEvents(workspace).stream()
+                    .anyMatch(event -> "approval_approve_only".equals(event.name())), approve.responseText());
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void approvalApproveExecute_usesApplicationService(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildLoopNoStart(workspace);
+        Config config = configuredOpenAiConfig(workspace);
+        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", config, null, workspace);
+        try {
+            ApprovalRequest request = loop.getApprovalService().createRequest(
+                    RiskAssessment.of(CommandRiskLevel.MEDIUM, List.of("write requires approval"), "", "write_file", List.of("approved.txt")),
+                    "write_file",
+                    Map.of("path", "approved.txt", "content", "approved\n"),
+                    "api:approval-execute"
+            );
+
+            TestExchange approve = postExchangeRaw("/api/console/approvals/" + request.requestId() + "/approve-execute", "");
+            ConsoleController.approvalsHandler(app).handle(approve);
+
+            assertEquals(200, approve.getResponseCode(), approve.responseText());
+            assertTrue(approve.responseText().contains("\"executed\":true"), approve.responseText());
+            assertTrue(Files.exists(workspace.resolve("approved.txt")));
+            assertTrue(loop.getApprovalService().find(request.requestId()).consumed());
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void approvalReject_usesApplicationService(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildLoopNoStart(workspace);
+        Config config = configuredOpenAiConfig(workspace);
+        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", config, null, workspace);
+        try {
+            ApprovalRequest request = loop.getApprovalService().createRequest(
+                    RiskAssessment.of(CommandRiskLevel.HIGH, List.of("reject"), "rm a.txt", "exec", List.of("a.txt")),
+                    "exec",
+                    Map.of("command", "rm a.txt"),
+                    "api:approval-reject"
+            );
+
+            TestExchange reject = postExchangeRaw("/api/console/approvals/" + request.requestId() + "/reject", "");
+            ConsoleController.approvalsHandler(app).handle(reject);
+
+            assertEquals(200, reject.getResponseCode(), reject.responseText());
+            assertEquals(ApprovalRequest.ApprovalStatus.REJECTED, loop.getApprovalService().find(request.requestId()).status());
+            assertTrue(consoleEvents(workspace).stream()
+                    .anyMatch(event -> "approval_reject".equals(event.name())), reject.responseText());
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void changeSetDetail_returnsRealDiffWhenAvailable(@TempDir Path workspace) throws Exception {
+        initGitRepo(workspace);
+        Files.writeString(workspace.resolve("README.md"), "before\n");
+        git(workspace, "add", "README.md");
+        git(workspace, "commit", "-m", "Initial");
+        Files.writeString(workspace.resolve("README.md"), "before\nafter\n");
+        GitChangeSet changeSet = new ChangeSetService(workspace).createFromWorkingTree("api:changeset-diff", "", "");
+        AgentLoop loop = buildLoopNoStart(workspace);
+        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", configuredOpenAiConfig(workspace), null, workspace);
+        try {
+            String body = handleGet(ConsoleController.changeSetHandler(app, "/api/console/changesets/"),
+                    "/api/console/changesets/" + changeSet.id() + "/files/" + URLEncoder.encode("README.md", StandardCharsets.UTF_8) + "/diff");
+
+            assertTrue(body.contains("\"changeSetId\":\"" + changeSet.id() + "\""), body);
+            assertTrue(body.contains("after"), body);
+            assertTrue(consoleEvents(workspace).stream()
+                    .anyMatch(event -> "changeset_file_diff_view".equals(event.name())), body);
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void changeSetDiff_missingReturnsEmptyOrClearMessage(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildLoopNoStart(workspace);
+        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", configuredOpenAiConfig(workspace), null, workspace);
+        try {
+            String body = handleGet(ConsoleController.changeSetHandler(app, "/api/console/changesets/"),
+                    "/api/console/changesets/missing/files/README.md/diff");
+
+            assertTrue(body.contains("\"diff\":\"\""), body);
+            assertTrue(body.contains("暂无真实 diff"), body);
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void timelineEvents_haveUnifiedFields(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildLoopNoStart(workspace);
+        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", configuredOpenAiConfig(workspace), null, workspace);
+        try {
+            String sessionId = "api:unified-fields";
+            String runId = runIdFromStart(postRun(app, "/api/console/sessions/" + URLEncoder.encode(sessionId, StandardCharsets.UTF_8) + "/runs", "unified fields"));
+            waitForRunStatusField(app, runId, "\"status\":\"finished\"");
+
+            String timeline = handleGet(ConsoleController.sessionDetailHandler(app, "/api/console/sessions/"),
+                    "/api/console/sessions/" + URLEncoder.encode(sessionId, StandardCharsets.UTF_8) + "/timeline");
+
+            assertTrue(timeline.contains("\"name\""), timeline);
+            assertTrue(timeline.contains("\"category\""), timeline);
+            assertTrue(timeline.contains("\"actor\""), timeline);
+            assertTrue(timeline.contains("\"source\""), timeline);
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void timelineCategoryFilter_returnsExpectedEvents(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildLoopNoStart(workspace);
+        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", configuredOpenAiConfig(workspace), null, workspace);
+        try {
+            String sessionId = "api:category-filter";
+            String runId = runIdFromStart(postRun(app, "/api/console/sessions/" + URLEncoder.encode(sessionId, StandardCharsets.UTF_8) + "/runs", "filter run"));
+            waitForRunStatusField(app, runId, "\"status\":\"finished\"");
+
+            String runTimeline = handleGet(ConsoleController.sessionDetailHandler(app, "/api/console/sessions/"),
+                    "/api/console/sessions/" + URLEncoder.encode(sessionId, StandardCharsets.UTF_8) + "/timeline?category=run");
+
+            assertTrue(runTimeline.contains("\"category\":\"run\""), runTimeline);
+            assertFalse(runTimeline.contains("\"category\":\"system\""), runTimeline);
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void timelineRunIdFilter_returnsExpectedEvents(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildLoopNoStart(workspace);
+        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", configuredOpenAiConfig(workspace), null, workspace);
+        try {
+            String sessionId = "api:run-filter";
+            loop.getSessions().save(loop.getSessions().getOrCreate(sessionId));
+            JsonlConsoleEventStore store = new JsonlConsoleEventStore(workspace);
+            store.append(consoleEvent("run-filter-1", sessionId, "run-a", "run", "run_submit", "INFO", "2026-06-04T00:00:00Z", Map.of("inputPreview", "alpha")));
+            store.append(consoleEvent("run-filter-2", sessionId, "run-b", "run", "run_submit", "INFO", "2026-06-04T00:00:01Z", Map.of("inputPreview", "beta")));
+
+            String byRun = handleGet(ConsoleController.sessionDetailHandler(app, "/api/console/sessions/"),
+                    "/api/console/sessions/" + URLEncoder.encode(sessionId, StandardCharsets.UTF_8) + "/timeline?category=run&runId=run-a");
+            String missingRun = handleGet(ConsoleController.sessionDetailHandler(app, "/api/console/sessions/"),
+                    "/api/console/sessions/" + URLEncoder.encode(sessionId, StandardCharsets.UTF_8) + "/events?runId=missing-run");
+
+            assertTrue(byRun.contains("\"runId\":\"run-a\""), byRun);
+            assertFalse(byRun.contains("\"runId\":\"run-b\""), byRun);
+            assertTrue(missingRun.contains("\"events\":[]"), missingRun);
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void eventsStream_usesUnifiedTimelineEventShape(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildLoopNoStart(workspace);
+        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", configuredOpenAiConfig(workspace), null, workspace);
+        try {
+            String sessionId = "api:stream-unified";
+            String runId = runIdFromStart(postRun(app, "/api/console/sessions/" + URLEncoder.encode(sessionId, StandardCharsets.UTF_8) + "/runs", "stream unified"));
+            waitForRunStatusField(app, runId, "\"status\":\"finished\"");
+
+            TestExchange stream = getExchange("/api/console/sessions/" + URLEncoder.encode(sessionId, StandardCharsets.UTF_8)
+                    + "/events/stream?once=true&maxTicks=1");
+            ConsoleController.sessionDetailHandler(app, "/api/console/sessions/").handle(stream);
+
+            assertEquals(200, stream.getResponseCode(), stream.responseText());
+            assertTrue(stream.responseText().contains("\"category\""), stream.responseText());
+            assertTrue(stream.responseText().contains("\"name\""), stream.responseText());
+            assertTrue(stream.responseText().contains("\"actor\""), stream.responseText());
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void sseStream_replaysStoredEventsAfterCursor(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildLoopNoStart(workspace);
+        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", configuredOpenAiConfig(workspace), null, workspace);
+        try {
+            String sessionId = "api:stored-replay";
+            loop.getSessions().save(loop.getSessions().getOrCreate(sessionId));
+            JsonlConsoleEventStore store = new JsonlConsoleEventStore(workspace);
+            store.append(consoleEvent("evt-replay-1", sessionId, "run", "run_submit"));
+            store.append(consoleEvent("evt-replay-2", sessionId, "approval", "approval_reject"));
+
+            TestExchange stream = getExchange("/api/console/sessions/" + URLEncoder.encode(sessionId, StandardCharsets.UTF_8)
+                    + "/events/stream?once=true&after=evt-replay-1");
+            ConsoleController.sessionDetailHandler(app, "/api/console/sessions/").handle(stream);
+
+            assertEquals(200, stream.getResponseCode(), stream.responseText());
+            assertFalse(stream.responseText().contains("evt-replay-1"), stream.responseText());
+            assertTrue(stream.responseText().contains("evt-replay-2"), stream.responseText());
+            assertTrue(stream.responseText().contains("\"source\":\"console_event_store\""), stream.responseText());
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void sseStream_receivesPublishedEventWithoutPolling(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildLoopNoStart(workspace);
+        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", configuredOpenAiConfig(workspace), null, workspace);
+        try {
+            String sessionId = "api:live-store-stream";
+            loop.getSessions().save(loop.getSessions().getOrCreate(sessionId));
+            TestExchange stream = getExchange("/api/console/sessions/" + URLEncoder.encode(sessionId, StandardCharsets.UTF_8)
+                    + "/events/stream?maxTicks=2");
+            Thread thread = new Thread(() -> {
+                try {
+                    ConsoleController.sessionDetailHandler(app, "/api/console/sessions/").handle(stream);
+                } catch (Exception e) {
+                    throw new RuntimeException(e);
+                }
+            });
+            thread.start();
+            Thread.sleep(150L);
+
+            String runId = runIdFromStart(postRun(app, "/api/console/sessions/"
+                    + URLEncoder.encode(sessionId, StandardCharsets.UTF_8) + "/runs", "live event"));
+            thread.join(4_000L);
+
+            assertEquals(200, stream.getResponseCode(), stream.responseText());
+            assertTrue(stream.responseText().contains("run_submit")
+                    || stream.responseText().contains("run_queued")
+                    || stream.responseText().contains(runId), stream.responseText());
+            assertTrue(stream.responseText().contains("timeline_batch"), stream.responseText());
+            waitForRunStatus(app, runId, "finished");
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void runSubmit_recordsConsoleEvent(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildLoopNoStart(workspace);
+        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", configuredOpenAiConfig(workspace), null, workspace);
+        try {
+            String sessionId = "api:run-events-store";
+            String runId = runIdFromStart(postRun(app, "/api/console/sessions/"
+                    + URLEncoder.encode(sessionId, StandardCharsets.UTF_8) + "/runs", "store run"));
+            waitForRunStatus(app, runId, "finished");
+
+            List<ConsoleEvent> events = consoleEvents(workspace, sessionId);
+            assertTrue(events.stream().anyMatch(event -> "run_submit".equals(event.name())), events.toString());
+            assertTrue(events.stream().anyMatch(event -> "run_queued".equals(event.name())), events.toString());
+            assertTrue(events.stream().anyMatch(event -> "run_started".equals(event.name())), events.toString());
+            assertTrue(events.stream().anyMatch(event -> "run_finished".equals(event.name())), events.toString());
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void timelineMergesConsoleEventStoreAndRunTraceWithoutDuplicates(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildLoopNoStart(workspace);
+        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", configuredOpenAiConfig(workspace), null, workspace);
+        try {
+            String sessionId = "api:merge-store-run-trace";
+            String runId = "run-dedupe";
+            var session = loop.getSessions().getOrCreate(sessionId);
+            session.getMetadata().put(SessionRuntimeKeys.RUN_TRACE_KEY, runTrace(List.of(
+                    runEvent("run_cancelled", "2026-06-04T00:01:00Z", Map.of("run_id", runId, "reason", "trace"))
+            )));
+            loop.getSessions().save(session);
+            new JsonlConsoleEventStore(workspace).append(new ConsoleEvent(
+                    "evt-store-cancelled",
+                    sessionId,
+                    runId,
+                    "run_event",
+                    "run_cancelled",
+                    "run",
+                    "CANCELLED",
+                    "2026-06-04T00:01:01Z",
+                    "run_cancelled",
+                    "store",
+                    "console",
+                    "console_event_store",
+                    Map.of("runId", runId)
+            ));
+
+            String timeline = handleGet(ConsoleController.sessionDetailHandler(app, "/api/console/sessions/"),
+                    "/api/console/sessions/" + URLEncoder.encode(sessionId, StandardCharsets.UTF_8) + "/timeline");
+
+            assertEquals(1, occurrences(timeline, "\"name\":\"run_cancelled\""), timeline);
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void runHistory_returnsEmptyWhenNoEvents(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildLoopNoStart(workspace);
+        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", configuredOpenAiConfig(workspace), null, workspace);
+        try {
+            String sessionId = "api:history-empty";
+            loop.getSessions().save(loop.getSessions().getOrCreate(sessionId));
+
+            String body = handleGet(ConsoleController.sessionDetailHandler(app, "/api/console/sessions/"),
+                    "/api/console/sessions/" + URLEncoder.encode(sessionId, StandardCharsets.UTF_8) + "/runs/history");
+
+            assertTrue(body.contains("\"sessionId\":\"" + sessionId + "\""), body);
+            assertTrue(body.contains("\"runs\":[]"), body);
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void runHistory_aggregatesRunLifecycle(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildLoopNoStart(workspace);
+        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", configuredOpenAiConfig(workspace), null, workspace);
+        try {
+            String sessionId = "api:history-lifecycle";
+            loop.getSessions().save(loop.getSessions().getOrCreate(sessionId));
+            JsonlConsoleEventStore store = new JsonlConsoleEventStore(workspace);
+            store.append(consoleEvent("hist-1", sessionId, "run-1", "run", "run_submit", "INFO", "2026-06-04T00:00:00Z", Map.of("inputPreview", "hello history")));
+            store.append(consoleEvent("hist-2", sessionId, "run-1", "run", "run_started", "INFO", "2026-06-04T00:00:01Z", Map.of()));
+            store.append(consoleEvent("hist-3", sessionId, "run-1", "run", "run_finished", "SUCCESS", "2026-06-04T00:00:06Z", Map.of("model", "qwen-plus")));
+
+            String body = handleGet(ConsoleController.sessionDetailHandler(app, "/api/console/sessions/"),
+                    "/api/console/sessions/" + URLEncoder.encode(sessionId, StandardCharsets.UTF_8) + "/runs/history");
+
+            assertTrue(body.contains("\"runId\":\"run-1\""), body);
+            assertTrue(body.contains("\"status\":\"finished\""), body);
+            assertTrue(body.contains("\"inputPreview\":\"hello history\""), body);
+            assertTrue(body.contains("\"durationMs\":5000"), body);
+            assertTrue(body.contains("\"lastEventName\":\"run_finished\""), body);
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void runHistory_countsToolApprovalChangeSetErrorEvents(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildLoopNoStart(workspace);
+        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", configuredOpenAiConfig(workspace), null, workspace);
+        try {
+            String sessionId = "api:history-counts";
+            loop.getSessions().save(loop.getSessions().getOrCreate(sessionId));
+            JsonlConsoleEventStore store = new JsonlConsoleEventStore(workspace);
+            store.append(consoleEvent("cnt-1", sessionId, "run-2", "run", "run_submit", "INFO", "2026-06-04T00:00:00Z", Map.of()));
+            store.append(consoleEvent("cnt-2", sessionId, "run-2", "tool", "tool_call", "INFO", "2026-06-04T00:00:01Z", Map.of()));
+            store.append(consoleEvent("cnt-3", sessionId, "run-2", "approval", "approval_reject", "SUCCESS", "2026-06-04T00:00:02Z", Map.of()));
+            store.append(consoleEvent("cnt-4", sessionId, "run-2", "changeset", "changeset_diff_view", "SUCCESS", "2026-06-04T00:00:03Z", Map.of()));
+            store.append(consoleEvent("cnt-5", sessionId, "run-2", "error", "model_error", "ERROR", "2026-06-04T00:00:04Z", Map.of()));
+
+            String body = handleGet(ConsoleController.sessionDetailHandler(app, "/api/console/sessions/"),
+                    "/api/console/sessions/" + URLEncoder.encode(sessionId, StandardCharsets.UTF_8) + "/runs/history");
+
+            assertTrue(body.contains("\"toolCallCount\":1"), body);
+            assertTrue(body.contains("\"approvalCount\":1"), body);
+            assertTrue(body.contains("\"changeSetCount\":1"), body);
+            assertTrue(body.contains("\"errorCount\":1"), body);
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void eventSearch_filtersAndPaginatesEvents(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildLoopNoStart(workspace);
+        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", configuredOpenAiConfig(workspace), null, workspace);
+        try {
+            JsonlConsoleEventStore store = new JsonlConsoleEventStore(workspace);
+            store.append(consoleEvent("search-1", "session-a", "run-a", "run", "run_submit", "INFO", "2026-06-04T00:00:00Z", Map.of("inputPreview", "alpha task")));
+            store.append(consoleEvent("search-2", "session-a", "run-a", "tool", "tool_call", "SUCCESS", "2026-06-04T00:00:01Z", Map.of("toolName", "ReadFile")));
+            store.append(consoleEvent("search-3", "session-b", "run-b", "error", "model_error", "ERROR", "2026-06-04T00:00:02Z", Map.of("error", "beta failure")));
+
+            String bySession = handleGet(ConsoleController.eventSearchHandler(app),
+                    "/api/console/events/search?sessionId=session-a");
+            String byRun = handleGet(ConsoleController.eventSearchHandler(app),
+                    "/api/console/events/search?runId=run-b");
+            String byCategoryStatusKeyword = handleGet(ConsoleController.eventSearchHandler(app),
+                    "/api/console/events/search?category=error&status=ERROR&keyword=beta");
+            String afterLimit = handleGet(ConsoleController.eventSearchHandler(app),
+                    "/api/console/events/search?limit=1&after=search-1");
+
+            assertTrue(bySession.contains("search-1"), bySession);
+            assertFalse(bySession.contains("search-3"), bySession);
+            assertTrue(byRun.contains("search-3"), byRun);
+            assertTrue(byCategoryStatusKeyword.contains("model_error"), byCategoryStatusKeyword);
+            assertFalse(byCategoryStatusKeyword.contains("tool_call"), byCategoryStatusKeyword);
+            assertFalse(afterLimit.contains("search-1"), afterLimit);
+            assertTrue(afterLimit.contains("\"nextCursor\":\"search-2\""), afterLimit);
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void metricsSummary_aggregatesConsoleEvents(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildLoopNoStart(workspace);
+        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", configuredOpenAiConfig(workspace), null, workspace);
+        try {
+            JsonlConsoleEventStore store = new JsonlConsoleEventStore(workspace);
+            store.append(consoleEvent("metric-1", "session-a", "run-a", "run", "run_submit", "INFO", "2026-06-04T00:00:00Z", Map.of("inputPreview", "alpha")));
+            store.append(consoleEvent("metric-2", "session-a", "run-a", "run", "run_started", "INFO", "2026-06-04T00:00:01Z", Map.of()));
+            store.append(consoleEvent("metric-3", "session-a", "run-a", "tool", "tool_call", "SUCCESS", "2026-06-04T00:00:02Z", Map.of("toolName", "read_file")));
+            store.append(consoleEvent("metric-4", "session-a", "run-a", "approval", "approve_execute", "SUCCESS", "2026-06-04T00:00:03Z", Map.of()));
+            store.append(consoleEvent("metric-5", "session-a", "run-a", "changeset", "file_diff_view", "SUCCESS", "2026-06-04T00:00:04Z", Map.of()));
+            store.append(consoleEvent("metric-6", "session-a", "run-a", "run", "run_finished", "SUCCESS", "2026-06-04T00:00:06Z", Map.of()));
+            store.append(consoleEvent("metric-7", "session-b", "run-b", "error", "tool_error", "ERROR", "2026-06-04T00:00:07Z", Map.of("toolName", "write_file")));
+
+            String all = handleGet(ConsoleController.metricsSummaryHandler(app),
+                    "/api/console/metrics/summary");
+            String scoped = handleGet(ConsoleController.metricsSummaryHandler(app),
+                    "/api/console/metrics/summary?sessionId=session-a&since=2026-06-04T00:00:00Z&until=2026-06-04T00:00:06Z");
+
+            assertTrue(all.contains("\"total\":2"), all);
+            assertTrue(all.contains("\"finished\":1"), all);
+            assertTrue(all.contains("\"failed\":1"), all);
+            assertTrue(all.contains("\"successRate\":0.5"), all);
+            assertTrue(all.contains("\"topTools\""), all);
+            assertTrue(all.contains("read_file"), all);
+            assertTrue(all.contains("\"approveExecute\":1"), all);
+            assertTrue(all.contains("\"fileDiffViews\":1"), all);
+            assertTrue(all.contains("\"recentErrors\""), all);
+            assertTrue(all.contains("tool_error"), all);
+            assertTrue(all.contains("\"activeSessions\""), all);
+            assertTrue(scoped.contains("\"sessionId\":\"session-a\""), scoped);
+            assertFalse(scoped.contains("tool_error"), scoped);
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void metricsSummary_returnsEmptyWhenNoConsoleEvents(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildLoopNoStart(workspace);
+        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", configuredOpenAiConfig(workspace), null, workspace);
+        try {
+            String body = handleGet(ConsoleController.metricsSummaryHandler(app),
+                    "/api/console/metrics/summary");
+
+            assertTrue(body.contains("\"runs\":{\"total\":0"), body);
+            assertTrue(body.contains("\"events\":{\"total\":0"), body);
+            assertTrue(body.contains("\"recentErrors\":[]"), body);
+            assertTrue(body.contains("\"activeSessions\":[]"), body);
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void eventSearch_ignoresMalformedJsonlLines(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildLoopNoStart(workspace);
+        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", configuredOpenAiConfig(workspace), null, workspace);
+        try {
+            Path file = workspace.resolve(".ricbot").resolve("console-events.jsonl");
+            Files.createDirectories(file.getParent());
+            Files.writeString(file, "{broken json\n", StandardCharsets.UTF_8);
+            new JsonlConsoleEventStore(workspace).append(consoleEvent("valid-after-bad", "session-a", "run-a", "run", "run_submit", "INFO", "2026-06-04T00:00:00Z", Map.of()));
+
+            String body = handleGet(ConsoleController.eventSearchHandler(app),
+                    "/api/console/events/search?sessionId=session-a");
+
+            assertTrue(body.contains("valid-after-bad"), body);
+            assertFalse(body.contains("broken json"), body);
         } finally {
             loop.stop();
         }
@@ -1265,6 +2537,135 @@ public class RicbotApiServerTest {
         return exchange.responseText();
     }
 
+    private static List<ConsoleEvent> consoleEvents(Path workspace) {
+        return new JsonlConsoleEventStore(workspace).listBySession("", "", "", 500);
+    }
+
+    private static List<ConsoleEvent> consoleEvents(Path workspace, String sessionId) {
+        return new JsonlConsoleEventStore(workspace).listBySession(sessionId, "", "", 500);
+    }
+
+    private static ConsoleEvent consoleEvent(String id, String sessionId, String category, String name) {
+        return consoleEvent(id, sessionId, "run-test", category, name, "INFO", "2026-06-04T00:00:00Z", Map.of("name", name));
+    }
+
+    private static ConsoleEvent consoleEvent(
+            String id,
+            String sessionId,
+            String runId,
+            String category,
+            String name,
+            String status,
+            String time,
+            Map<String, Object> payload
+    ) {
+        return new ConsoleEvent(
+                id,
+                sessionId,
+                runId,
+                category + "_event",
+                name,
+                category,
+                status,
+                time,
+                name,
+                name,
+                "console",
+                "console_event_store",
+                payload
+        );
+    }
+
+    private static int occurrences(String text, String needle) {
+        int count = 0;
+        int index = 0;
+        while (text != null && needle != null && !needle.isEmpty()) {
+            index = text.indexOf(needle, index);
+            if (index < 0) {
+                return count;
+            }
+            count++;
+            index += needle.length();
+        }
+        return count;
+    }
+
+    private static String postRun(RicbotApiAppContext app, String path, String input) throws Exception {
+        TestExchange exchange = postExchange(path, Map.of("input", input));
+        ConsoleController.sessionDetailHandler(app, path.startsWith("/console/api/") ? "/console/api/sessions/" : "/api/console/sessions/").handle(exchange);
+        assertEquals(200, exchange.getResponseCode(), exchange.responseText());
+        return exchange.responseText();
+    }
+
+    private static String cancelRun(RicbotApiAppContext app, String runId) throws Exception {
+        TestExchange exchange = postExchangeRaw("/api/console/runs/" + runId + "/cancel", "");
+        ConsoleController.runStatusHandler(app, "/api/console/runs/").handle(exchange);
+        assertEquals(200, exchange.getResponseCode(), exchange.responseText());
+        return exchange.responseText();
+    }
+
+    private static String waitForRunStatus(RicbotApiAppContext app, String runId, String expectedStatus) throws Exception {
+        String body = "";
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (System.nanoTime() < deadline) {
+            body = handleGet(ConsoleController.runStatusHandler(app, "/api/console/runs/"), "/api/console/runs/" + runId);
+            if (body.contains("\"status\":\"" + expectedStatus + "\"")) {
+                return body;
+            }
+            Thread.sleep(25L);
+        }
+        fail("run did not reach status " + expectedStatus + ": " + body);
+        return body;
+    }
+
+    private static String waitForRunStatusField(RicbotApiAppContext app, String runId, String expectedFragment) throws Exception {
+        String body = "";
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (System.nanoTime() < deadline) {
+            body = handleGet(ConsoleController.runStatusHandler(app, "/api/console/runs/"), "/api/console/runs/" + runId);
+            if (body.contains(expectedFragment)) {
+                return body;
+            }
+            Thread.sleep(25L);
+        }
+        fail("run status did not contain " + expectedFragment + ": " + body);
+        return body;
+    }
+
+    private static String runIdFromStart(String responseText) throws Exception {
+        Map<String, Object> start = MAPPER.readValue(responseText, new TypeReference<>() {});
+        return String.valueOf(start.get("runId"));
+    }
+
+    private static Map<String, Object> runTrace(List<Map<String, Object>> events) {
+        return Map.of(
+                "run_id", "test-run",
+                "started_at", "2026-06-04T00:00:00Z",
+                "ended_at", "2026-06-04T00:00:03Z",
+                "iterations", 1,
+                "stop_reason", "stop",
+                "events", events
+        );
+    }
+
+    private static Map<String, Object> runEvent(String type, String at, Map<String, Object> values) {
+        Map<String, Object> event = new java.util.LinkedHashMap<>();
+        event.put("type", type);
+        event.put("at", at);
+        if (values != null) {
+            event.putAll(values);
+        }
+        return event;
+    }
+
+    private static Config configuredOpenAiConfig(Path workspace) {
+        Config config = new Config();
+        config.getAgents().getDefaults().setWorkspace(workspace.toString());
+        config.getAgents().getDefaults().setModel("gpt-4o-mini");
+        config.getProviders().getOpenai().setApiKey("test-api-key");
+        return config;
+    }
+
     private static TestExchange postExchangeRaw(String path, String body) {
         return new TestExchange("POST", URI.create("http://localhost" + path), body);
     }
@@ -1479,6 +2880,55 @@ public class RicbotApiServerTest {
         };
         loop.start();
         return loop;
+    }
+
+    private static AgentLoop buildThrowingLoop(Path workspace) {
+        return new AgentLoop(
+                new MessageBus(),
+                new LLMProvider("k", "http://localhost") {
+                    @Override
+                    public LLMResponse chat(
+                            List<Map<String, Object>> messages,
+                            List<Map<String, Object>> tools,
+                            String model,
+                            Integer maxTokens,
+                            Double temperature,
+                            String reasoningEffort,
+                            Object toolChoice
+                    ) {
+                        return new LLMResponse().setContent("unused").setFinishReason("stop");
+                    }
+                },
+                workspace,
+                "gpt-4o-mini",
+                5,
+                2000,
+                50,
+                10_000,
+                "standard",
+                new Config.WebToolsConfig(),
+                new Config.ExecToolConfig(),
+                Map.of(),
+                true,
+                new SessionManager(workspace),
+                "UTC",
+                false,
+                List.of(),
+                0,
+                new Config.DreamConfig()
+        ) {
+            @Override
+            public OutboundMessage processDirect(
+                    String content,
+                    String sessionKey,
+                    String channel,
+                    String chatId,
+                    Map<String, Object> metadata,
+                    List<AgentHook> requestHooks
+            ) throws Exception {
+                throw new IllegalStateException("forced console failure");
+            }
+        };
     }
 
     private static final class TestExchange extends HttpExchange {
