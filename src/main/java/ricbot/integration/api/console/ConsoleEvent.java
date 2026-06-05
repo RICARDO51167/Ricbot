@@ -60,10 +60,11 @@ public record ConsoleEvent(
         if (raw == null) {
             return null;
         }
+        Map<String, Object> payload = map(raw.get("payload"));
         return new ConsoleEvent(
                 string(raw.get("id")),
-                firstNonBlank(raw.get("sessionId"), raw.get("session_id")),
-                firstNonBlank(raw.get("runId"), raw.get("run_id")),
+                firstNonBlank(raw.get("sessionId"), raw.get("session_id"), payload.get("sessionId"), payload.get("session_id")),
+                firstNonBlank(raw.get("runId"), raw.get("run_id"), payload.get("runId"), payload.get("run_id")),
                 string(raw.get("type")),
                 string(raw.get("name")),
                 string(raw.get("category")),
@@ -73,7 +74,7 @@ public record ConsoleEvent(
                 string(raw.get("summary")),
                 string(raw.get("actor")),
                 string(raw.get("source")),
-                map(raw.get("payload"))
+                payload
         );
     }
 

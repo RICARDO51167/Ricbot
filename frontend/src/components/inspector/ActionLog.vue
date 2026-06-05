@@ -49,7 +49,9 @@ const sessionStore = useSessionStore();
 const inspectorStore = useInspectorStore();
 const { actionLogEvents, timelineFilter, timelineRunFilter } = storeToRefs(sessionStore);
 const { selectedEventId } = storeToRefs(inspectorStore);
-const { t } = useLocaleStore();
+const localeStore = useLocaleStore();
+const { currentLocale } = storeToRefs(localeStore);
+const { t } = localeStore;
 
 const filters = computed(() => [
   { value: 'all' as const, label: t('timeline.filter.all') },
@@ -96,7 +98,7 @@ function formatTime(value: string) {
   if (Number.isNaN(date.getTime())) {
     return '--:--';
   }
-  return new Intl.DateTimeFormat('zh-CN', {
+  return new Intl.DateTimeFormat(currentLocale.value, {
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit',

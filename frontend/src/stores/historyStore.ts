@@ -23,6 +23,8 @@ export const useHistoryStore = defineStore('history', () => {
   const runHistoryError = ref('');
   const selectedHistoryRunId = ref('');
   const runStatusFilter = ref<HistoryStatusFilter>('all');
+  const runKeywordFilter = ref('');
+  const runSessionIdFilter = ref('');
 
   const eventSearchResults = ref<ConsoleTimelineEvent[]>([]);
   const eventSearchLoading = ref(false);
@@ -31,21 +33,50 @@ export const useHistoryStore = defineStore('history', () => {
   const eventSearchCategory = ref<EventCategory>('all');
   const eventSearchStatus = ref<SearchStatusFilter>('all');
   const eventSearchScope = ref<SearchScope>('current');
+  const eventSearchSessionId = ref('');
+  const eventSearchRunId = ref('');
+  const eventSearchSince = ref('');
+  const eventSearchUntil = ref('');
+  const selectedSearchEventId = ref('');
   const eventSearchHint = ref('');
 
   const filteredRunHistory = computed(() => {
-    if (runStatusFilter.value === 'all') {
-      return runHistory.value;
+    let runs = runHistory.value;
+    if (runStatusFilter.value !== 'all') {
+      runs = runs.filter((run) => run.status === runStatusFilter.value);
     }
-    return runHistory.value.filter((run) => run.status === runStatusFilter.value);
+    const keyword = runKeywordFilter.value.trim().toLowerCase();
+    if (keyword) {
+      runs = runs.filter((run) => {
+        const text = `${run.runId} ${run.inputPreview} ${run.lastEventName} ${run.lastEventSummary}`.toLowerCase();
+        return text.includes(keyword);
+      });
+    }
+    return runs;
   });
 
-  async function loadRunHistory(sessionId: string) {
+  async function loadRunHistory(sessionId: string, options: { status?: HistoryStatusFilter; keyword?: string; runId?: string } = {}) {
+    const effectiveSessionId = sessionId || runSessionIdFilter.value || useSessionStore().currentSessionId;
+    if (!effectiveSessionId) {
+      runHistory.value = [];
+      return;
+    }
+    if (options.status) {
+      runStatusFilter.value = options.status;
+    }
+    if (options.keyword !== undefined) {
+      runKeywordFilter.value = options.keyword;
+    }
+    if (options.runId !== undefined) {
+      selectedHistoryRunId.value = options.runId;
+    }
+    runSessionIdFilter.value = effectiveSessionId;
     runHistoryLoading.value = true;
     runHistoryError.value = '';
     try {
-      const response = await getRunHistory(sessionId, {
+      const response = await getRunHistory(effectiveSessionId, {
         status: runStatusFilter.value === 'all' ? undefined : runStatusFilter.value,
+        keyword: runKeywordFilter.value || undefined,
       });
       runHistory.value = response.runs ?? [];
     } catch (error) {
@@ -60,12 +91,38 @@ export const useHistoryStore = defineStore('history', () => {
     runStatusFilter.value = status;
   }
 
+  function setRunKeywordFilter(keyword: string) {
+    runKeywordFilter.value = keyword;
+  }
+
   async function selectHistoryRun(runId: string) {
     selectedHistoryRunId.value = runId;
     await useSessionStore().setTimelineRunFilter(runId);
   }
 
   async function searchEvents(extra: Partial<ConsoleEventSearchQuery> = {}) {
+    if (extra.sessionId !== undefined) {
+      eventSearchSessionId.value = extra.sessionId;
+      eventSearchScope.value = extra.sessionId ? 'current' : 'all';
+    }
+    if (extra.runId !== undefined) {
+      eventSearchRunId.value = extra.runId;
+    }
+    if (extra.keyword !== undefined) {
+      eventSearchKeyword.value = extra.keyword;
+    }
+    if (extra.category !== undefined) {
+      eventSearchCategory.value = (extra.category || 'all') as EventCategory;
+    }
+    if (extra.status !== undefined) {
+      eventSearchStatus.value = (extra.status || 'all') as SearchStatusFilter;
+    }
+    if (extra.since !== undefined) {
+      eventSearchSince.value = extra.since;
+    }
+    if (extra.until !== undefined) {
+      eventSearchUntil.value = extra.until;
+    }
     eventSearchLoading.value = true;
     eventSearchError.value = '';
     eventSearchHint.value = '';
@@ -75,7 +132,10 @@ export const useHistoryStore = defineStore('history', () => {
         keyword: eventSearchKeyword.value || undefined,
         category: eventSearchCategory.value === 'all' ? undefined : eventSearchCategory.value,
         status: eventSearchStatus.value === 'all' ? undefined : eventSearchStatus.value,
-        sessionId: eventSearchScope.value === 'current' ? sessionStore.currentSessionId : undefined,
+        sessionId: eventSearchScope.value === 'current' ? (eventSearchSessionId.value || sessionStore.currentSessionId) : undefined,
+        runId: eventSearchRunId.value || undefined,
+        since: eventSearchSince.value || undefined,
+        until: eventSearchUntil.value || undefined,
         limit: 50,
         ...extra,
       };
@@ -106,6 +166,7 @@ export const useHistoryStore = defineStore('history', () => {
     const inspectorStore = useInspectorStore();
     const eventId = String(event.id ?? '');
     const sessionId = String((event as Record<string, unknown>).sessionId ?? '');
+    selectedSearchEventId.value = eventId;
     if (sessionId && sessionId !== sessionStore.currentSessionId) {
       await sessionStore.selectSession(sessionId);
       await sessionStore.focusEventAfterSessionLoad(eventId);
@@ -127,6 +188,8 @@ export const useHistoryStore = defineStore('history', () => {
     runHistoryError,
     selectedHistoryRunId,
     runStatusFilter,
+    runKeywordFilter,
+    runSessionIdFilter,
     filteredRunHistory,
     eventSearchResults,
     eventSearchLoading,
@@ -135,9 +198,15 @@ export const useHistoryStore = defineStore('history', () => {
     eventSearchCategory,
     eventSearchStatus,
     eventSearchScope,
+    eventSearchSessionId,
+    eventSearchRunId,
+    eventSearchSince,
+    eventSearchUntil,
+    selectedSearchEventId,
     eventSearchHint,
     loadRunHistory,
     setRunStatusFilter,
+    setRunKeywordFilter,
     selectHistoryRun,
     searchEvents,
     setEventSearchCategory,

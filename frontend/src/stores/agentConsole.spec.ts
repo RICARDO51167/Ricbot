@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createPinia, setActivePinia } from 'pinia';
-import { flushPromises, mount } from '@vue/test-utils';
+import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils';
 import ElementPlus from 'element-plus';
 
 import ChangeSetPanel from '@/components/changes/ChangeSetPanel.vue';
@@ -9,27 +9,43 @@ import DashboardPanel from '@/components/inspector/DashboardPanel.vue';
 import EventSearch from '@/components/inspector/EventSearch.vue';
 import RunHistory from '@/components/inspector/RunHistory.vue';
 import TraceInspector from '@/components/inspector/TraceInspector.vue';
+import ConsoleLayout from '@/components/layout/ConsoleLayout.vue';
 import MainNavSidebar from '@/components/layout/MainNavSidebar.vue';
+import RuntimeHeader from '@/components/layout/RuntimeHeader.vue';
 import ChatTimeline from '@/components/timeline/ChatTimeline.vue';
 import ApprovalsPage from '@/pages/ApprovalsPage.vue';
 import ChangeSetsPage from '@/pages/ChangeSetsPage.vue';
 import ConsoleWorkbench from '@/pages/ConsoleWorkbench.vue';
+import DashboardPage from '@/pages/DashboardPage.vue';
 import EventsPage from '@/pages/EventsPage.vue';
 import RunsPage from '@/pages/RunsPage.vue';
 import SettingsPage from '@/pages/SettingsPage.vue';
-import { currentRoute, initRouter, navigate, replace } from '@/router';
+import WorkspacePage from '@/pages/WorkspacePage.vue';
+import { currentRoute, href, initRouter, navigate, replace } from '@/router';
 import { useChangeSetStore } from './changeSetStore';
 import { useHistoryStore } from './historyStore';
 import { useInspectorStore } from './inspectorStore';
+import { useLocaleStore } from './localeStore';
 import { useRuntimeStore } from './runtimeStore';
 import { useSessionStore } from './sessionStore';
+import { useWorkspaceStore } from './workspaceStore';
+
+enableAutoUnmount(afterEach);
 
 describe('agent console stores', () => {
   beforeEach(() => {
     vi.unstubAllGlobals();
+    window.localStorage.clear();
+    Object.defineProperty(window.navigator, 'language', {
+      configurable: true,
+      value: 'fr-FR',
+    });
+    document.documentElement.lang = '';
+    document.documentElement.dir = '';
     window.history.replaceState({}, '', '/console/workbench');
     replace('/console/workbench');
     setActivePinia(createPinia());
+    useLocaleStore().setLocale('zh-CN');
   });
 
   afterEach(() => {
@@ -59,6 +75,29 @@ describe('agent console stores', () => {
     expect(window.location.pathname).toBe('/console/workbench');
   });
 
+  it('router_serializesAndRestoresQueryState', () => {
+    navigate('/console/events', {
+      sessionId: 's-backend',
+      keyword: 'model error',
+      status: undefined,
+    });
+
+    expect(currentRoute.value.query).toEqual({
+      sessionId: 's-backend',
+      keyword: 'model error',
+    });
+    expect(window.location.search).toBe('?sessionId=s-backend&keyword=model+error');
+    expect(href('/console/workbench', { sessionId: 's-backend', runId: 'run-1' }))
+      .toBe('/console/workbench?sessionId=s-backend&runId=run-1');
+  });
+
+  it('router_recognizesWorkspaceRoute', () => {
+    navigate('/console/workspace', { file: 'src/main/java/App.java' });
+
+    expect(currentRoute.value.path).toBe('/console/workspace');
+    expect(currentRoute.value.query.file).toBe('src/main/java/App.java');
+  });
+
   it('mainNav_highlightsCurrentRoute', () => {
     navigate('/console/events');
 
@@ -66,7 +105,41 @@ describe('agent console stores', () => {
     const active = wrapper.find('.main-nav-links a.active');
 
     expect(active.exists()).toBe(true);
-    expect(active.text()).toBe('Events');
+    expect(active.text()).toBe('事件');
+  });
+
+  it('runtimeHeader_exposesQuickLanguageSelector', async () => {
+    const locale = useLocaleStore();
+    const wrapper = mount(RuntimeHeader, { global: { plugins: [ElementPlus] } });
+
+    const select = wrapper.find('[data-test="runtime-language-select"]');
+    expect(select.exists()).toBe(true);
+    expect(wrapper.text()).toContain('简体中文');
+
+    locale.setLocale('es-ES');
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.text()).toContain('Estado');
+    expect(wrapper.text()).toContain('Español');
+  });
+
+  it('consoleLayout_setsRtlDirectionForArabic', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')));
+    useLocaleStore().setLocale('ar-SA');
+
+    const wrapper = mount(ConsoleLayout, {
+      global: {
+        plugins: [ElementPlus],
+        stubs: {
+          RuntimeHeader: true,
+          MainNavSidebar: true,
+        },
+      },
+    });
+    await flushPromises();
+
+    expect(wrapper.attributes('dir')).toBe('rtl');
+    expect(wrapper.attributes('lang')).toBe('ar-SA');
   });
 
   it('routeSwitch_preservesSelectedSession', () => {
@@ -95,10 +168,23 @@ describe('agent console stores', () => {
 
     const wrapper = mount(SettingsPage, { global: { plugins: [ElementPlus] } });
 
-    expect(wrapper.text()).toContain('Settings');
+    expect(wrapper.text()).toContain('设置');
     expect(wrapper.text()).toContain('dashscope');
     expect(wrapper.text()).toContain('qwen-plus');
     expect(wrapper.text()).toContain('/tmp/ricbot');
+  });
+
+  it('settingsPage_rendersLanguageSettingsAndSwitchesLocale', async () => {
+    const wrapper = mount(SettingsPage, { global: { plugins: [ElementPlus] } });
+
+    expect(wrapper.text()).toContain('语言');
+    expect(wrapper.find('[data-test="settings-language-select"]').exists()).toBe(true);
+
+    useLocaleStore().setLocale('hi-IN');
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.text()).toContain('भाषा');
+    expect(wrapper.text()).toContain('हिन्दी');
   });
 
   it('approvalsPage_rendersApprovalCenter', () => {
@@ -109,7 +195,7 @@ describe('agent console stores', () => {
 
     const wrapper = mount(ApprovalsPage, { global: { plugins: [ElementPlus] } });
 
-    expect(wrapper.text()).toContain('Approvals');
+    expect(wrapper.text()).toContain('审批');
     expect(wrapper.text()).toContain('HIGH');
     expect(wrapper.find('[data-test="approval-approve-only"]').exists()).toBe(true);
   });
@@ -123,6 +209,65 @@ describe('agent console stores', () => {
     expect(wrapper.text()).toContain('ChangeSet');
     expect(wrapper.text()).toContain('README.md');
     expect(wrapper.text()).toContain('diff --git');
+  });
+
+  it('changesetPanel_linksSelectedFileToWorkspaceViewer', async () => {
+    const sessions = useSessionStore();
+    sessions.selectSession('team-worktree-run');
+
+    const wrapper = mount(ChangeSetPanel, { global: { plugins: [ElementPlus] } });
+    await wrapper.find('[data-test="open-workspace-file"]').trigger('click');
+
+    expect(currentRoute.value.path).toBe('/console/workspace');
+    expect(currentRoute.value.query.file).toBe('README.md');
+  });
+
+  it('workspacePage_loadsTreeAndOpensFileFromQuery', async () => {
+    vi.stubGlobal('fetch', backendFetchStub({
+      workspaceTreeResponse: {
+        workspace: '/tmp/ricbot',
+        root: '',
+        nodes: [
+          {
+            name: 'src',
+            path: 'src',
+            type: 'directory',
+            children: [
+              { name: 'App.java', path: 'src/App.java', type: 'file', size: 20, modifiedAt: '2026-06-04T08:00:00Z' },
+            ],
+          },
+        ],
+      },
+      workspaceFileResponse: {
+        path: 'src/App.java',
+        language: 'java',
+        size: 20,
+        modifiedAt: '2026-06-04T08:00:00Z',
+        binary: false,
+        truncated: false,
+        content: 'class App {}',
+      },
+    }));
+    navigate('/console/workspace', { file: 'src/App.java' });
+
+    const wrapper = mount(WorkspacePage, { global: { plugins: [ElementPlus] } });
+    await flushPromises();
+
+    expect(useWorkspaceStore().selectedPath).toBe('src/App.java');
+    expect(wrapper.text()).toContain('src/App.java');
+    expect(wrapper.text()).toContain('class App {}');
+    expect(wrapper.text()).toContain('java');
+  });
+
+  it('workspacePage_doesNotMockWhenBackendUnavailable', async () => {
+    vi.stubGlobal('fetch', backendFetchStub({ workspaceFileFails: true }));
+    navigate('/console/workspace');
+
+    const wrapper = mount(WorkspacePage, { global: { plugins: [ElementPlus] } });
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('Workspace unavailable');
+    expect(useWorkspaceStore().treeNodes).toEqual([]);
   });
 
   it('selecting a tool event drives the tool inspector payload', () => {
@@ -629,7 +774,7 @@ describe('agent console stores', () => {
     expect(fetch.mock.calls.some((call) => String(call[0]).includes('/timeline?runId=run-click'))).toBe(true);
   });
 
-  it('runsPage_clickRunNavigatesToWorkbenchWithRunId', async () => {
+  it('runsPage_clickRunSelectsRunAndButtonNavigatesToWorkbenchWithRunId', async () => {
     vi.stubGlobal('fetch', backendFetchStub({
       runHistoryResponse: {
         sessionId: 's-backend',
@@ -644,9 +789,39 @@ describe('agent console stores', () => {
     await flushPromises();
     await wrapper.find('.history-row').trigger('click');
 
+    expect(useHistoryStore().selectedHistoryRunId).toBe('run-route');
+    await wrapper.find('.run-summary .el-button').trigger('click');
+
     expect(currentRoute.value.path).toBe('/console/workbench');
     expect(currentRoute.value.query.sessionId).toBe('s-backend');
     expect(currentRoute.value.query.runId).toBe('run-route');
+  });
+
+  it('runsPage_readsFiltersFromQueryAndHighlightsRun', async () => {
+    const fetch = backendFetchStub({
+      runHistoryResponse: {
+        sessionId: 's-backend',
+        runs: [
+          runHistoryItem('run-visible', 'failed'),
+          runHistoryItem('run-hidden', 'finished'),
+        ],
+      },
+    });
+    vi.stubGlobal('fetch', fetch);
+    const sessions = useSessionStore();
+
+    await sessions.loadFromBackend();
+    navigate('/console/runs', { sessionId: 's-backend', status: 'failed', keyword: 'visible', runId: 'run-visible' });
+    const wrapper = mount(RunsPage, { global: { plugins: [ElementPlus] } });
+    await flushPromises();
+
+    expect(useHistoryStore().runStatusFilter).toBe('failed');
+    expect(useHistoryStore().runKeywordFilter).toBe('visible');
+    expect(useHistoryStore().selectedHistoryRunId).toBe('run-visible');
+    expect(wrapper.text()).toContain('run-visible');
+    expect(wrapper.text()).not.toContain('run-hidden');
+    expect(wrapper.find('.history-row.selected').exists()).toBe(true);
+    expect(fetch.mock.calls.some((call) => String(call[0]).includes('/runs/history?status=failed&keyword=visible'))).toBe(true);
   });
 
   it('runHistory_highlightsActiveRun', async () => {
@@ -706,7 +881,7 @@ describe('agent console stores', () => {
     expect(wrapper.text()).toContain('console_event_store');
   });
 
-  it('eventSearch_clickSelectsInspectorEvent', async () => {
+  it('eventSearch_clickSameSessionEvent_focusesTimelineEvent', async () => {
     vi.stubGlobal('fetch', backendFetchStub({
       timeline: [unifiedEvent('evt-search-select', 'run_event', 'run_submit', 'run', 'INFO', 'console_event_store')],
       eventSearchResponse: {
@@ -714,19 +889,25 @@ describe('agent console stores', () => {
         nextCursor: 'evt-search-select',
       },
     }));
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
     const sessions = useSessionStore();
     const inspector = useInspectorStore();
 
     await sessions.loadFromBackend();
-    const wrapper = mount(EventSearch, { global: { plugins: [ElementPlus] } });
-    await wrapper.find('button.el-button').trigger('click');
+    const timeline = mount(ChatTimeline, { attachTo: document.body, global: { plugins: [ElementPlus] } });
+    const search = mount(EventSearch, { global: { plugins: [ElementPlus] } });
+    await search.find('button.el-button').trigger('click');
     await flushPromises();
-    await wrapper.find('.history-row').trigger('click');
+    await search.find('.history-row').trigger('click');
+    await flushPromises();
 
     expect(inspector.selectedEventId).toBe('evt-search-select');
+    expect(timeline.find('#timeline-event-evt-search-select').classes()).toContain('focused');
+    expect(scrollIntoView).toHaveBeenCalled();
   });
 
-  it('eventsPage_clickEventNavigatesToWorkbenchWithEventId', async () => {
+  it('eventsPage_clickEventSelectsDetailAndButtonNavigatesToWorkbenchWithEventId', async () => {
     vi.stubGlobal('fetch', backendFetchStub({
       eventSearchResponse: {
         events: [{ ...unifiedEvent('evt-route-event', 'run_event', 'run_submit', 'run', 'INFO', 'console_event_store'), sessionId: 's-backend' }],
@@ -742,9 +923,49 @@ describe('agent console stores', () => {
     await flushPromises();
     await wrapper.find('.history-row').trigger('click');
 
+    expect(useHistoryStore().selectedSearchEventId).toBe('evt-route-event');
+    expect(wrapper.text()).toContain('事件详情');
+    await wrapper.find('.event-detail-head .el-button').trigger('click');
+
     expect(currentRoute.value.path).toBe('/console/workbench');
     expect(currentRoute.value.query.sessionId).toBe('s-backend');
     expect(currentRoute.value.query.eventId).toBe('evt-route-event');
+  });
+
+  it('eventsPage_readsQueryAndHighlightsEvent', async () => {
+    const fetch = backendFetchStub({
+      eventSearchResponse: {
+        events: [{ ...unifiedEvent('evt-query-event', 'run_event', 'model_error', 'error', 'ERROR', 'console_event_store'), sessionId: 's-backend' }],
+        nextCursor: 'evt-query-event',
+      },
+    });
+    vi.stubGlobal('fetch', fetch);
+
+    await useSessionStore().loadFromBackend();
+    navigate('/console/events', {
+      sessionId: 's-backend',
+      runId: 'run-test',
+      category: 'error',
+      status: 'ERROR',
+      keyword: 'model',
+      since: '2026-06-01T00:00:00Z',
+      until: '2026-06-04T00:00:00Z',
+      eventId: 'evt-query-event',
+    });
+    const wrapper = mount(EventsPage, { global: { plugins: [ElementPlus] } });
+    await flushPromises();
+
+    const history = useHistoryStore();
+    expect(history.eventSearchKeyword).toBe('model');
+    expect(history.eventSearchCategory).toBe('error');
+    expect(history.eventSearchStatus).toBe('ERROR');
+    expect(history.eventSearchRunId).toBe('run-test');
+    expect(history.selectedSearchEventId).toBe('evt-query-event');
+    expect(wrapper.find('.history-row.selected').exists()).toBe(true);
+    expect(fetch.mock.calls.some((call) => String(call[0]).includes('/events/search')
+      && String(call[0]).includes('sessionId=s-backend')
+      && String(call[0]).includes('runId=run-test')
+      && String(call[0]).includes('since=2026-06-01T00%3A00%3A00Z'))).toBe(true);
   });
 
   it('workbench_readsSessionIdRunIdFromQuery', async () => {
@@ -768,6 +989,87 @@ describe('agent console stores', () => {
     expect(fetch.mock.calls.some((call) => String(call[0]).includes('/api/console/sessions/s-other/timeline?runId=run-query'))).toBe(true);
   });
 
+  it('workbench_readsCategoryFromQueryAndWritesFilterChangesToUrl', async () => {
+    vi.stubGlobal('fetch', backendFetchStub({
+      timeline: [
+        unifiedEvent('evt-category-run', 'run_event', 'run_submit', 'run', 'INFO', 'console_event_store'),
+        unifiedEvent('evt-category-error', 'run_event', 'model_error', 'error', 'ERROR', 'console_event_store'),
+      ],
+    }));
+    const sessions = useSessionStore();
+
+    await sessions.loadFromBackend();
+    navigate('/console/workbench', { sessionId: 's-backend', category: 'error' });
+    mount(ConsoleWorkbench, { global: { plugins: [ElementPlus] } });
+    await flushPromises();
+
+    expect(sessions.timelineFilter).toBe('error');
+    expect(sessions.filteredTimeline.map((event) => event.id)).toEqual(['evt-category-error']);
+
+    sessions.setTimelineFilter('run');
+    await flushPromises();
+
+    expect(currentRoute.value.query.category).toBe('run');
+    expect(window.location.search).toContain('category=run');
+  });
+
+  it('sessionSelection_updatesWorkbenchUrlQuery', async () => {
+    vi.stubGlobal('fetch', backendFetchStub({
+      sessionIds: ['s-backend', 's-other'],
+      timelinesBySession: {
+        's-backend': [],
+        's-other': [],
+      },
+    }));
+    const sessions = useSessionStore();
+
+    await sessions.loadFromBackend();
+    navigate('/console/workbench', { sessionId: 's-backend' });
+    mount(ConsoleWorkbench, { global: { plugins: [ElementPlus] } });
+    await sessions.selectSession('s-other');
+    await flushPromises();
+
+    expect(currentRoute.value.query.sessionId).toBe('s-other');
+  });
+
+  it('dashboardPage_readsScopeAndRangeFromQuery', async () => {
+    const fetch = backendFetchStub({ metricsSummaryResponse: metricsSummary() });
+    vi.stubGlobal('fetch', fetch);
+
+    await useSessionStore().loadFromBackend();
+    navigate('/console/dashboard', {
+      scope: 'all',
+      since: '2026-06-01T00:00:00Z',
+      until: '2026-06-04T00:00:00Z',
+    });
+    mount(DashboardPage, { global: { plugins: [ElementPlus] } });
+    await flushPromises();
+
+    expect(fetch.mock.calls.some((call) => String(call[0]) === '/api/console/metrics/summary?since=2026-06-01T00%3A00%3A00Z&until=2026-06-04T00%3A00%3A00Z')).toBe(true);
+    expect(currentRoute.value.query.scope).toBe('all');
+  });
+
+  it('settingsPage_loadsRuntimeOnMount', async () => {
+    const fetch = vi.fn().mockResolvedValue(jsonResponse({
+      appName: 'Ricbot',
+      mode: 'backend',
+      modelConfigured: false,
+      provider: 'dashscope',
+      model: '',
+      workspace: '/tmp/runtime-query',
+      version: 'phase-29',
+    }));
+    vi.stubGlobal('fetch', fetch);
+
+    const wrapper = mount(SettingsPage, { global: { plugins: [ElementPlus] } });
+    await flushPromises();
+
+    expect(fetch).toHaveBeenCalledWith('/api/console/runtime', expect.objectContaining({ method: 'GET' }));
+    expect(wrapper.text()).toContain('/tmp/runtime-query');
+    expect(wrapper.text()).toContain('phase-29');
+    expect(wrapper.text()).toContain('模型未配置');
+  });
+
   it('workbench_readsSessionIdEventIdFromQuery', async () => {
     vi.stubGlobal('fetch', backendFetchStub({
       sessionIds: ['s-backend', 's-other'],
@@ -788,7 +1090,7 @@ describe('agent console stores', () => {
     expect(inspector.selectedEventId).toBe('evt-query-focus');
   });
 
-  it('eventSearch_switchesSessionAndFocusesEvent', async () => {
+  it('eventSearch_clickOtherSessionEvent_switchesSessionAndFocuses', async () => {
     vi.stubGlobal('fetch', backendFetchStub({
       sessionIds: ['s-backend', 's-other'],
       timelinesBySession: {
@@ -800,10 +1102,13 @@ describe('agent console stores', () => {
         nextCursor: 'evt-other-focus',
       },
     }));
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
     const sessions = useSessionStore();
     const inspector = useInspectorStore();
 
     await sessions.loadFromBackend();
+    mount(ChatTimeline, { attachTo: document.body, global: { plugins: [ElementPlus] } });
     const wrapper = mount(EventSearch, { global: { plugins: [ElementPlus] } });
     await wrapper.find('button.el-button').trigger('click');
     await flushPromises();
@@ -813,14 +1118,130 @@ describe('agent console stores', () => {
     expect(sessions.currentSessionId).toBe('s-other');
     expect(inspector.selectedEventId).toBe('evt-other-focus');
     expect(useHistoryStore().eventSearchResults).toHaveLength(1);
+    expect(scrollIntoView).toHaveBeenCalled();
+  });
+
+  it('focusedTimelineEvent_getsHighlight', async () => {
+    vi.stubGlobal('fetch', backendFetchStub({
+      timeline: [unifiedEvent('evt-focused-highlight', 'run_event', 'run_submit', 'run', 'INFO', 'console_event_store')],
+    }));
+    Element.prototype.scrollIntoView = vi.fn();
+    const sessions = useSessionStore();
+
+    await sessions.loadFromBackend();
+    const wrapper = mount(ChatTimeline, { attachTo: document.body, global: { plugins: [ElementPlus] } });
+    await sessions.focusEvent('evt-focused-highlight');
+    await flushPromises();
+
+    expect(wrapper.find('#timeline-event-evt-focused-highlight').classes()).toContain('focused');
+  });
+
+  it('replay_startUsesSelectedRunEvents', async () => {
+    vi.stubGlobal('fetch', backendFetchStub({
+      timeline: [
+        { ...unifiedEvent('evt-replay-run-a', 'run_event', 'run_submit', 'run', 'INFO', 'console_event_store'), runId: 'run-replay', payload: { type: 'run_submit', runId: 'run-replay' } },
+        { ...unifiedEvent('evt-replay-run-b', 'run_event', 'run_finish', 'run', 'SUCCESS', 'console_event_store'), runId: 'run-replay', payload: { type: 'run_finish', runId: 'run-replay' } },
+        { ...unifiedEvent('evt-replay-other', 'run_event', 'run_submit', 'run', 'INFO', 'console_event_store'), runId: 'run-other', payload: { type: 'run_submit', runId: 'run-other' } },
+      ],
+    }));
+    const sessions = useSessionStore();
+
+    await sessions.loadFromBackend();
+    sessions.startReplay('run-replay');
+
+    expect(sessions.replayMode).toBe(true);
+    expect(sessions.replayEvents.map((event) => event.id)).toEqual(['evt-replay-run-a', 'evt-replay-run-b']);
+    expect(sessions.replayTimeline).toEqual([]);
+  });
+
+  it('replay_stepShowsNextEvent', async () => {
+    vi.stubGlobal('fetch', backendFetchStub({
+      timeline: [
+        { ...unifiedEvent('evt-step-a', 'run_event', 'run_submit', 'run', 'INFO', 'console_event_store'), runId: 'run-step', payload: { type: 'run_submit', runId: 'run-step' } },
+        { ...unifiedEvent('evt-step-b', 'run_event', 'run_finish', 'run', 'SUCCESS', 'console_event_store'), runId: 'run-step', payload: { type: 'run_finish', runId: 'run-step' } },
+      ],
+    }));
+    const sessions = useSessionStore();
+    const inspector = useInspectorStore();
+
+    await sessions.loadFromBackend();
+    sessions.startReplay('run-step');
+    sessions.pauseReplay();
+    sessions.stepReplay();
+
+    expect(sessions.replayTimeline.map((event) => event.id)).toEqual(['evt-step-a']);
+    expect(inspector.selectedEventId).toBe('evt-step-a');
+  });
+
+  it('replay_pauseStopsAutoAdvance', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', backendFetchStub({
+      timeline: [
+        { ...unifiedEvent('evt-pause-a', 'run_event', 'run_submit', 'run', 'INFO', 'console_event_store'), runId: 'run-pause', payload: { type: 'run_submit', runId: 'run-pause' } },
+        { ...unifiedEvent('evt-pause-b', 'run_event', 'run_finish', 'run', 'SUCCESS', 'console_event_store'), runId: 'run-pause', payload: { type: 'run_finish', runId: 'run-pause' } },
+      ],
+    }));
+    const sessions = useSessionStore();
+
+    await sessions.loadFromBackend();
+    sessions.startReplay('run-pause');
+    sessions.pauseReplay();
+    vi.advanceTimersByTime(1200);
+
+    expect(sessions.replayPlaying).toBe(false);
+    expect(sessions.replayIndex).toBe(0);
+  });
+
+  it('replay_stopRestoresRealTimeline', async () => {
+    vi.stubGlobal('fetch', backendFetchStub({
+      timeline: [
+        { ...unifiedEvent('evt-stop-a', 'run_event', 'run_submit', 'run', 'INFO', 'console_event_store'), runId: 'run-stop', payload: { type: 'run_submit', runId: 'run-stop' } },
+        { ...unifiedEvent('evt-stop-b', 'run_event', 'run_finish', 'run', 'SUCCESS', 'console_event_store'), runId: 'run-stop', payload: { type: 'run_finish', runId: 'run-stop' } },
+      ],
+    }));
+    const sessions = useSessionStore();
+
+    await sessions.loadFromBackend();
+    const wrapper = mount(ChatTimeline, { global: { plugins: [ElementPlus] } });
+    sessions.startReplay('run-stop');
+    sessions.pauseReplay();
+    sessions.stepReplay();
+    await flushPromises();
+    expect(wrapper.findAll('.timeline-event')).toHaveLength(1);
+
+    sessions.stopReplay();
+    await flushPromises();
+
+    expect(sessions.replayMode).toBe(false);
+    expect(wrapper.findAll('.timeline-event')).toHaveLength(2);
+  });
+
+  it('sseEventDoesNotInterruptReplayMode', async () => {
+    vi.stubGlobal('fetch', backendFetchStub({
+      timeline: [
+        { ...unifiedEvent('evt-sse-replay-a', 'run_event', 'run_submit', 'run', 'INFO', 'console_event_store'), runId: 'run-sse', payload: { type: 'run_submit', runId: 'run-sse' } },
+      ],
+    }));
+    const sessions = useSessionStore();
+
+    await sessions.loadFromBackend();
+    sessions.startReplay('run-sse');
+    sessions.pauseReplay();
+    sessions.mergeTimelineEvents([
+      { ...unifiedEvent('evt-sse-live', 'run_event', 'run_finish', 'run', 'SUCCESS', 'console_event_store'), runId: 'run-sse', payload: { type: 'run_finish', runId: 'run-sse' } },
+    ]);
+
+    expect(sessions.replayMode).toBe(true);
+    expect(sessions.replayEvents.map((event) => event.id)).toEqual(['evt-sse-replay-a']);
+    expect(sessions.currentTimeline.map((event) => event.id)).toEqual(['evt-sse-replay-a', 'evt-sse-live']);
   });
 
   it('chatTimeline_assignsStableEventDomIdsAndReplaysTimeline', async () => {
     vi.useFakeTimers();
     vi.stubGlobal('fetch', backendFetchStub({
       timeline: [
-        unifiedEvent('evt-replay-a', 'run_event', 'run_submit', 'run', 'INFO', 'console_event_store'),
-        unifiedEvent('evt-replay-b', 'run_event', 'run_finish', 'run', 'SUCCESS', 'console_event_store'),
+        { ...unifiedEvent('evt-replay-a', 'run_event', 'run_submit', 'run', 'INFO', 'console_event_store'), runId: 'run-test', payload: { type: 'run_submit', runId: 'run-test' } },
+        { ...unifiedEvent('evt-replay-b', 'run_event', 'run_finish', 'run', 'SUCCESS', 'console_event_store'), runId: 'run-test', payload: { type: 'run_finish', runId: 'run-test' } },
       ],
     }));
     const sessions = useSessionStore();
@@ -830,14 +1251,14 @@ describe('agent console stores', () => {
     const wrapper = mount(ChatTimeline, { global: { plugins: [ElementPlus] } });
 
     expect(wrapper.find('#timeline-event-evt-replay-a').exists()).toBe(true);
-    sessions.startReplay();
+    sessions.startReplay('run-test');
     await flushPromises();
     expect(wrapper.findAll('.timeline-event')).toHaveLength(0);
-    vi.advanceTimersByTime(650);
+    vi.advanceTimersByTime(550);
     await flushPromises();
     expect(wrapper.findAll('.timeline-event')).toHaveLength(1);
     expect(inspector.selectedEventId).toBe('evt-replay-a');
-    vi.advanceTimersByTime(650);
+    vi.advanceTimersByTime(550);
     await flushPromises();
     expect(wrapper.findAll('.timeline-event')).toHaveLength(2);
   });
@@ -1558,15 +1979,49 @@ function backendFetchStub(options: {
   fileDiffResponse?: Record<string, unknown>;
   eventSearchResponse?: Record<string, unknown>;
   metricsSummaryResponse?: Record<string, unknown>;
+  workspaceTreeResponse?: Record<string, unknown>;
+  workspaceFileResponse?: Record<string, unknown>;
   runFails?: boolean;
   cancelFails?: boolean;
   approvalActionFails?: boolean;
   eventSearchFails?: boolean;
+  workspaceFileFails?: boolean;
 } = {}) {
   const sessionId = options.sessionId ?? options.sessionIds?.[0] ?? 's-backend';
   const eventResponses = [...(options.eventResponses ?? [])];
   return vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
+    if (url.includes('/api/console/workspace/tree')) {
+      if (options.workspaceFileFails) {
+        return {
+          ok: false,
+          status: 500,
+          headers: { get: () => 'application/json' },
+          json: async () => ({ error: { message: 'Workspace unavailable' } }),
+        };
+      }
+      return jsonResponse(options.workspaceTreeResponse ?? { workspace: '/tmp/ricbot', root: '', nodes: [] });
+    }
+    if (url.includes('/api/console/workspace/files/content')) {
+      if (options.workspaceFileFails) {
+        return {
+          ok: false,
+          status: 500,
+          headers: { get: () => 'application/json' },
+          json: async () => ({ error: { message: 'Workspace unavailable' } }),
+        };
+      }
+      const path = new URL(url, 'http://127.0.0.1').searchParams.get('path') ?? '';
+      return jsonResponse(options.workspaceFileResponse ?? {
+        path,
+        language: 'text',
+        size: 0,
+        modifiedAt: '2026-06-04T08:00:00Z',
+        binary: false,
+        truncated: false,
+        content: '',
+      });
+    }
     if (url === '/api/console/sessions') {
       return jsonResponse({
         mode: 'backend',

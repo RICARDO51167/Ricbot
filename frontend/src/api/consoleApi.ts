@@ -124,6 +124,31 @@ export interface ConsoleChangeSetFileDiffResponse {
   message?: string;
 }
 
+export interface ConsoleWorkspaceTreeNode {
+  name: string;
+  path: string;
+  type: 'directory' | 'file';
+  size?: number;
+  modifiedAt?: string;
+  children?: ConsoleWorkspaceTreeNode[];
+}
+
+export interface ConsoleWorkspaceTreeResponse {
+  workspace: string;
+  root: string;
+  nodes: ConsoleWorkspaceTreeNode[];
+}
+
+export interface ConsoleWorkspaceFileContentResponse {
+  path: string;
+  language: string;
+  size: number;
+  modifiedAt: string;
+  binary: boolean;
+  truncated: boolean;
+  content: string;
+}
+
 export interface ConsoleRunHistoryItem {
   runId: string;
   sessionId: string;
@@ -301,6 +326,16 @@ export function getRecentChangeSets() {
 export function getChangeSetFileDiff(changeSetId: string, path: string) {
   return getJson<ConsoleChangeSetFileDiffResponse>(
     `/api/console/changesets/${encodeURIComponent(changeSetId)}/files/${encodeURIComponent(path)}/diff`,
+  );
+}
+
+export function getWorkspaceTree(options: { root?: string; depth?: number; includeHidden?: boolean } = {}) {
+  return getJson<ConsoleWorkspaceTreeResponse>(`/api/console/workspace/tree${queryString(options)}`);
+}
+
+export function getWorkspaceFileContent(path: string) {
+  return getJson<ConsoleWorkspaceFileContentResponse>(
+    `/api/console/workspace/files/content${queryString({ path })}`,
   );
 }
 

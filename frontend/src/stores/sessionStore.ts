@@ -63,10 +63,16 @@ export const useSessionStore = defineStore('sessions', () => {
   const timelineRunFilter = ref('');
   const timelineFocusHint = ref('');
   const pendingFocusEventId = ref('');
-  const replayActive = ref(false);
+  const focusedTimelineEventId = ref('');
+  const replayMode = ref(false);
+  const replayActive = replayMode;
+  const replayEvents = ref<TimelineEvent[]>([]);
   const replayIndex = ref(0);
+  const replayPlaying = ref(false);
+  const replaySpeed = ref<1 | 2 | 4>(1);
   let pollingTimer: ReturnType<typeof setInterval> | null = null;
   let replayTimer: ReturnType<typeof setInterval> | null = null;
+  let focusTimer: ReturnType<typeof setTimeout> | null = null;
   let eventSource: EventSource | null = null;
 
   const currentSession = computed(() => sessions.value.find((session) => session.id === currentSessionId.value) ?? null);
@@ -82,10 +88,10 @@ export const useSessionStore = defineStore('sessions', () => {
     return events;
   });
   const replayTimeline = computed(() => {
-    if (!replayActive.value) {
+    if (!replayMode.value) {
       return filteredTimeline.value;
     }
-    return filteredTimeline.value.slice(0, replayIndex.value);
+    return replayEvents.value.slice(0, replayIndex.value);
   });
   const actionLogEvents = computed(() => filteredTimeline.value.slice(-30).reverse());
   const selectedDetailIsEmpty = computed(() => {
@@ -546,20 +552,22 @@ export const useSessionStore = defineStore('sessions', () => {
       return;
     }
     await nextTick();
+    await nextTick();
     const existsInResult = filteredTimeline.value.some((event) => event.id === eventId);
     if (!existsInResult) {
       timelineFocusHint.value = '事件不在当前 timeline 结果中，可尝试清除过滤条件';
       return;
     }
     useInspectorStore().selectEvent(eventId);
-    pendingFocusEventId.value = '';
     timelineFocusHint.value = '';
-    await scrollToTimelineEvent(eventId);
+    const scrolled = await scrollToTimelineEvent(eventId);
+    if (scrolled) {
+      pendingFocusEventId.value = '';
+    }
   }
 
   async function scrollToTimelineEvent(eventId: string) {
-    await nextTick();
-    const target = document.getElementById(timelineDomId(eventId));
+    const target = await findTimelineElement(eventId);
     if (!target) {
       timelineFocusHint.value = '事件不在当前 timeline 结果中，可尝试清除过滤条件';
       return false;
@@ -567,34 +575,111 @@ export const useSessionStore = defineStore('sessions', () => {
     if (typeof target.scrollIntoView === 'function') {
       target.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
+    markFocusedTimelineEvent(eventId);
+    await nextTick();
     return true;
   }
 
-  function startReplay() {
-    stopReplay();
-    if (filteredTimeline.value.length === 0) {
-      return;
+  async function findTimelineElement(eventId: string) {
+    for (let attempt = 0; attempt < 5; attempt++) {
+      await nextTick();
+      const target = document.getElementById(timelineDomId(eventId));
+      if (target) {
+        return target;
+      }
     }
-    replayActive.value = true;
-    replayIndex.value = 0;
-    replayTimer = setInterval(() => {
-      replayIndex.value += 1;
-      const event = filteredTimeline.value[replayIndex.value - 1];
-      if (event) {
-        useInspectorStore().selectEvent(event.id);
-      }
-      if (replayIndex.value >= filteredTimeline.value.length) {
-        stopReplay(false);
-      }
-    }, 600);
+    return null;
   }
 
-  function stopReplay(reset = true) {
+  function markFocusedTimelineEvent(eventId: string) {
+    focusedTimelineEventId.value = eventId;
+    document.getElementById(timelineDomId(eventId))?.classList.add('focused');
+    if (focusTimer !== null) {
+      clearTimeout(focusTimer);
+    }
+    focusTimer = setTimeout(() => {
+      if (focusedTimelineEventId.value === eventId) {
+        focusedTimelineEventId.value = '';
+      }
+      document.getElementById(timelineDomId(eventId))?.classList.remove('focused');
+      focusTimer = null;
+    }, 1800);
+  }
+
+  function startReplay(runId = timelineRunFilter.value) {
+    stopReplay();
+    const selectedRunId = runId?.trim() ?? '';
+    if (!selectedRunId) {
+      return false;
+    }
+    const snapshot = filteredTimeline.value.filter((event) => event.runId === selectedRunId);
+    if (snapshot.length === 0) {
+      return false;
+    }
+    replayEvents.value = snapshot.map((event) => ({ ...event }));
+    replayMode.value = true;
+    replayIndex.value = 0;
+    replayPlaying.value = true;
+    scheduleReplay();
+    return true;
+  }
+
+  function playReplay() {
+    if (!replayMode.value || replayPlaying.value) {
+      return;
+    }
+    replayPlaying.value = true;
+    scheduleReplay();
+  }
+
+  function pauseReplay() {
+    replayPlaying.value = false;
+    clearReplayTimer();
+  }
+
+  function stepReplay() {
+    if (!replayMode.value || replayIndex.value >= replayEvents.value.length) {
+      return;
+    }
+    replayIndex.value += 1;
+    const event = replayEvents.value[replayIndex.value - 1];
+    if (event) {
+      useInspectorStore().selectEvent(event.id);
+    }
+    if (replayIndex.value >= replayEvents.value.length) {
+      pauseReplay();
+    }
+  }
+
+  function setReplaySpeed(speed: 1 | 2 | 4) {
+    replaySpeed.value = speed;
+    if (replayPlaying.value) {
+      scheduleReplay();
+    }
+  }
+
+  function scheduleReplay() {
+    clearReplayTimer();
+    if (!replayMode.value || !replayPlaying.value) {
+      return;
+    }
+    replayTimer = setInterval(() => {
+      stepReplay();
+    }, Math.max(125, 500 / replaySpeed.value));
+  }
+
+  function clearReplayTimer() {
     if (replayTimer !== null) {
       clearInterval(replayTimer);
       replayTimer = null;
     }
-    replayActive.value = false;
+  }
+
+  function stopReplay(reset = true) {
+    clearReplayTimer();
+    replayMode.value = false;
+    replayPlaying.value = false;
+    replayEvents.value = [];
     if (reset) {
       replayIndex.value = 0;
     }
@@ -687,8 +772,13 @@ export const useSessionStore = defineStore('sessions', () => {
     timelineRunFilter,
     timelineFocusHint,
     pendingFocusEventId,
+    focusedTimelineEventId,
+    replayMode,
     replayActive,
+    replayEvents,
     replayIndex,
+    replayPlaying,
+    replaySpeed,
     selectedDetailIsEmpty,
     replayTimeline,
     selectSession,
@@ -711,6 +801,10 @@ export const useSessionStore = defineStore('sessions', () => {
     scrollToTimelineEvent,
     clearFocusHint,
     startReplay,
+    playReplay,
+    pauseReplay,
+    stepReplay,
+    setReplaySpeed,
     stopReplay,
     mergeTimelineEvents,
     fallbackToMock,

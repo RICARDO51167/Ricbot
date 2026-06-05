@@ -1448,7 +1448,7 @@ public class RicbotApiServerTest {
     }
 
     @Test
-    void timelineRunIdFilter_returnsExpectedEvents(@TempDir Path workspace) throws Exception {
+    void timeline_supportsRunIdFilter(@TempDir Path workspace) throws Exception {
         AgentLoop loop = buildLoopNoStart(workspace);
         var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", configuredOpenAiConfig(workspace), null, workspace);
         try {
@@ -1466,6 +1466,94 @@ public class RicbotApiServerTest {
             assertTrue(byRun.contains("\"runId\":\"run-a\""), byRun);
             assertFalse(byRun.contains("\"runId\":\"run-b\""), byRun);
             assertTrue(missingRun.contains("\"events\":[]"), missingRun);
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void timeline_supportsRunIdAndCategoryFilter(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildLoopNoStart(workspace);
+        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", configuredOpenAiConfig(workspace), null, workspace);
+        try {
+            String sessionId = "api:run-category-filter";
+            loop.getSessions().save(loop.getSessions().getOrCreate(sessionId));
+            JsonlConsoleEventStore store = new JsonlConsoleEventStore(workspace);
+            store.append(consoleEvent("run-category-1", sessionId, "run-a", "run", "run_submit", "INFO", "2026-06-04T00:00:00Z", Map.of()));
+            store.append(consoleEvent("run-category-2", sessionId, "run-a", "tool", "tool_call", "INFO", "2026-06-04T00:00:01Z", Map.of()));
+            store.append(consoleEvent("run-category-3", sessionId, "run-b", "run", "run_submit", "INFO", "2026-06-04T00:00:02Z", Map.of()));
+
+            String body = handleGet(ConsoleController.sessionDetailHandler(app, "/api/console/sessions/"),
+                    "/api/console/sessions/" + URLEncoder.encode(sessionId, StandardCharsets.UTF_8) + "/timeline?category=run&runId=run-a");
+
+            assertTrue(body.contains("run-category-1"), body);
+            assertFalse(body.contains("run-category-2"), body);
+            assertFalse(body.contains("run-category-3"), body);
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void events_supportsRunIdFilter(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildLoopNoStart(workspace);
+        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", configuredOpenAiConfig(workspace), null, workspace);
+        try {
+            String sessionId = "api:events-run-filter";
+            loop.getSessions().save(loop.getSessions().getOrCreate(sessionId));
+            JsonlConsoleEventStore store = new JsonlConsoleEventStore(workspace);
+            store.append(consoleEvent("events-run-1", sessionId, "run-a", "run", "run_submit", "INFO", "2026-06-04T00:00:00Z", Map.of()));
+            store.append(consoleEvent("events-run-2", sessionId, "run-b", "run", "run_submit", "INFO", "2026-06-04T00:00:01Z", Map.of()));
+
+            String body = handleGet(ConsoleController.sessionDetailHandler(app, "/api/console/sessions/"),
+                    "/api/console/sessions/" + URLEncoder.encode(sessionId, StandardCharsets.UTF_8) + "/events?runId=run-b");
+
+            assertFalse(body.contains("events-run-1"), body);
+            assertTrue(body.contains("events-run-2"), body);
+            assertTrue(body.contains("\"nextCursor\":\"events-run-2\""), body);
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void runIdFilter_returnsEmptyForUnknownRun(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildLoopNoStart(workspace);
+        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", configuredOpenAiConfig(workspace), null, workspace);
+        try {
+            String sessionId = "api:unknown-run-filter";
+            loop.getSessions().save(loop.getSessions().getOrCreate(sessionId));
+            new JsonlConsoleEventStore(workspace).append(consoleEvent("unknown-run-1", sessionId, "run-a", "run", "run_submit", "INFO", "2026-06-04T00:00:00Z", Map.of()));
+
+            String timeline = handleGet(ConsoleController.sessionDetailHandler(app, "/api/console/sessions/"),
+                    "/api/console/sessions/" + URLEncoder.encode(sessionId, StandardCharsets.UTF_8) + "/timeline?runId=missing-run");
+            String events = handleGet(ConsoleController.sessionDetailHandler(app, "/api/console/sessions/"),
+                    "/api/console/sessions/" + URLEncoder.encode(sessionId, StandardCharsets.UTF_8) + "/events?runId=missing-run");
+
+            assertEquals("[]", timeline);
+            assertTrue(events.contains("\"events\":[]"), events);
+        } finally {
+            loop.stop();
+        }
+    }
+
+    @Test
+    void runIdFilter_preservesLegacyEventsWithoutCrash(@TempDir Path workspace) throws Exception {
+        AgentLoop loop = buildLoopNoStart(workspace);
+        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", configuredOpenAiConfig(workspace), null, workspace);
+        try {
+            String sessionId = "api:legacy-run-filter";
+            loop.getSessions().save(loop.getSessions().getOrCreate(sessionId));
+            JsonlConsoleEventStore store = new JsonlConsoleEventStore(workspace);
+            store.append(consoleEvent("legacy-run-1", sessionId, "", "run", "run_submit", "INFO", "2026-06-04T00:00:00Z", Map.of("runId", "payload-run")));
+            store.append(consoleEvent("legacy-run-2", sessionId, "", "run", "run_submit", "INFO", "2026-06-04T00:00:01Z", Map.of("run_id", "payload-run-2")));
+
+            String body = handleGet(ConsoleController.sessionDetailHandler(app, "/api/console/sessions/"),
+                    "/api/console/sessions/" + URLEncoder.encode(sessionId, StandardCharsets.UTF_8) + "/timeline?runId=payload-run");
+
+            assertTrue(body.contains("legacy-run-1"), body);
+            assertTrue(body.contains("\"runId\":\"payload-run\""), body);
+            assertFalse(body.contains("legacy-run-2"), body);
         } finally {
             loop.stop();
         }

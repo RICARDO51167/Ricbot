@@ -1,7 +1,7 @@
 <template>
   <section class="history-panel">
     <div class="history-head">
-      <h3>Run History</h3>
+      <h3>{{ t('history.runTitle') }}</h3>
       <el-tag size="small">{{ filteredRunHistory.length }}</el-tag>
     </div>
     <div class="history-filters">
@@ -16,9 +16,19 @@
         {{ status.label }}
       </button>
     </div>
+    <div class="history-search-row">
+      <el-input
+        v-model="runKeywordFilter"
+        size="small"
+        :placeholder="t('common.keyword')"
+        clearable
+        @change="reload"
+        @keyup.enter="reload"
+      />
+    </div>
     <el-alert v-if="runHistoryError" type="error" :title="runHistoryError" :closable="false" />
     <div v-else-if="!runHistoryLoading && filteredRunHistory.length === 0" class="history-empty">
-      暂无历史 run
+      {{ t('history.emptyRuns') }}
     </div>
     <button
       v-for="run in filteredRunHistory"
@@ -52,6 +62,7 @@ import type { ConsoleRunStatus } from '@/api/consoleApi';
 import type { ConsoleRunHistoryItem } from '@/api/consoleApi';
 import { navigate } from '@/router';
 import { useHistoryStore } from '@/stores/historyStore';
+import { useLocaleStore } from '@/stores/localeStore';
 import { useSessionStore } from '@/stores/sessionStore';
 
 const props = withDefaults(defineProps<{
@@ -62,11 +73,12 @@ const props = withDefaults(defineProps<{
 
 const historyStore = useHistoryStore();
 const sessionStore = useSessionStore();
-const { filteredRunHistory, runHistoryLoading, runHistoryError, selectedHistoryRunId, runStatusFilter } = storeToRefs(historyStore);
+const { t } = useLocaleStore();
+const { filteredRunHistory, runHistoryLoading, runHistoryError, selectedHistoryRunId, runStatusFilter, runKeywordFilter } = storeToRefs(historyStore);
 const { currentSessionId, selectedSessionDataSource, activeRunId } = storeToRefs(sessionStore);
 
 const statuses = computed(() => [
-  { value: 'all' as const, label: 'All' },
+  { value: 'all' as const, label: t('timeline.filter.all') },
   { value: 'running' as const, label: 'Running' },
   { value: 'finished' as const, label: 'Finished' },
   { value: 'failed' as const, label: 'Failed' },
@@ -82,8 +94,16 @@ function load() {
   }
 }
 
+function reload() {
+  const sessionId = historyStore.runSessionIdFilter || currentSessionId.value;
+  if (selectedSessionDataSource.value === 'backend' && sessionId) {
+    void historyStore.loadRunHistory(sessionId);
+  }
+}
+
 function setStatus(status: 'all' | ConsoleRunStatus) {
   historyStore.setRunStatusFilter(status);
+  reload();
 }
 
 function selectRun(run: ConsoleRunHistoryItem) {

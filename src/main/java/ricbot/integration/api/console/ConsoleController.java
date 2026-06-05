@@ -97,6 +97,8 @@ public final class ConsoleController {
         server.createContext("/api/console/approvals/pending", approvalsPendingHandler(appContext));
         server.createContext("/api/console/changesets/", changeSetHandler(appContext, "/api/console/changesets/"));
         server.createContext("/api/console/changesets/recent", recentChangeSetsHandler(appContext));
+        server.createContext("/api/console/workspace/tree", workspaceTreeHandler(appContext));
+        server.createContext("/api/console/workspace/files/content", workspaceFileContentHandler(appContext));
         server.createContext("/console/api/runtime", runtimeHandler(appContext));
         server.createContext("/console/api/sessions/", sessionDetailHandler(appContext, "/console/api/sessions/"));
         server.createContext("/console/api/sessions", sessionsHandler(appContext));
@@ -107,6 +109,8 @@ public final class ConsoleController {
         server.createContext("/console/api/approvals/pending", approvalsPendingHandler(appContext));
         server.createContext("/console/api/changesets/", changeSetHandler(appContext, "/console/api/changesets/"));
         server.createContext("/console/api/changesets/recent", recentChangeSetsHandler(appContext));
+        server.createContext("/console/api/workspace/tree", workspaceTreeHandler(appContext));
+        server.createContext("/console/api/workspace/files/content", workspaceFileContentHandler(appContext));
         server.createContext("/console/api/health", healthHandler(appContext));
         server.createContext("/console/api/config-doctor", configDoctorHandler(appContext));
         server.createContext("/console/api/traces", tracesHandler(appContext));
@@ -167,6 +171,14 @@ public final class ConsoleController {
 
     public static HttpHandler changeSetHandler(RicbotApiAppContext appContext, String prefix) {
         return new ChangeSetHandler(appContext, prefix);
+    }
+
+    public static HttpHandler workspaceTreeHandler(RicbotApiAppContext appContext) {
+        return new WorkspaceTreeHandler(appContext);
+    }
+
+    public static HttpHandler workspaceFileContentHandler(RicbotApiAppContext appContext) {
+        return new WorkspaceFileContentHandler(appContext);
     }
 
     public static HttpHandler configDoctorHandler(RicbotApiAppContext appContext) {
@@ -1933,6 +1945,50 @@ public final class ConsoleController {
                 RicbotApiServer.writeJson(exchange, 200, body);
             } catch (IllegalArgumentException e) {
                 RicbotApiServer.writeErrorJson(exchange, 404, e.getMessage(), "not_found");
+            }
+        }
+    }
+
+    private record WorkspaceTreeHandler(RicbotApiAppContext appContext) implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!"GET".equalsIgnoreCase(exchange.getRequestMethod())) {
+                RicbotApiServer.writeErrorJson(exchange, 405, "不支持的 HTTP 方法", "invalid_request_error");
+                return;
+            }
+            if (!appContext.isAuthorized(exchange)) {
+                RicbotApiServer.writeErrorJson(exchange, 401, "缺少或无效的 Bearer token", "authentication_error");
+                return;
+            }
+            try {
+                int depth = parsePositiveInt(queryParam(exchange, "depth"), 3);
+                boolean includeHidden = "true".equalsIgnoreCase(queryParam(exchange, "includeHidden"));
+                WorkspaceTreeResponse body = new ConsoleWorkspaceService(appContext.getWorkspace())
+                        .tree(queryParam(exchange, "root"), depth, includeHidden);
+                RicbotApiServer.writeJson(exchange, 200, body);
+            } catch (ConsoleWorkspaceException e) {
+                RicbotApiServer.writeErrorJson(exchange, e.status(), e.getMessage(), e.code());
+            }
+        }
+    }
+
+    private record WorkspaceFileContentHandler(RicbotApiAppContext appContext) implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!"GET".equalsIgnoreCase(exchange.getRequestMethod())) {
+                RicbotApiServer.writeErrorJson(exchange, 405, "不支持的 HTTP 方法", "invalid_request_error");
+                return;
+            }
+            if (!appContext.isAuthorized(exchange)) {
+                RicbotApiServer.writeErrorJson(exchange, 401, "缺少或无效的 Bearer token", "authentication_error");
+                return;
+            }
+            try {
+                WorkspaceFileContent body = new ConsoleWorkspaceService(appContext.getWorkspace())
+                        .fileContent(queryParam(exchange, "path"));
+                RicbotApiServer.writeJson(exchange, 200, body);
+            } catch (ConsoleWorkspaceException e) {
+                RicbotApiServer.writeErrorJson(exchange, e.status(), e.getMessage(), e.code());
             }
         }
     }

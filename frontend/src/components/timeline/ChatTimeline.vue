@@ -6,7 +6,7 @@
         <p>{{ session?.summary }}</p>
         <div class="detail-source">
           <el-tag size="small" :type="selectedSessionDataSource === 'backend' ? 'success' : 'info'">
-            {{ t('timeline.detailSource') }}: {{ selectedSessionDataSource === 'backend' ? 'Backend' : 'Mock' }}
+            {{ t('timeline.detailSource') }}: {{ selectedSessionDataSource === 'backend' ? t('common.backend') : t('common.mock') }}
           </el-tag>
           <el-tag size="small" :type="pollingTagType">
             {{ liveStatusLabel }}
@@ -30,13 +30,33 @@
           <button type="button" class="filter-chip active" @click="sessionStore.clearTimelineRunFilter()">
             Clear run filter
           </button>
+          <button type="button" class="filter-chip" :disabled="replayMode" @click="sessionStore.startReplay(timelineRunFilter)">
+            Replay Run
+          </button>
+        </div>
+        <div v-if="replayMode" class="replay-banner">
+          <span>Replay Mode，不是真实运行中</span>
+          <el-button :icon="Play" size="small" :disabled="replayPlaying" @click="sessionStore.playReplay()">Play</el-button>
+          <el-button :icon="Pause" size="small" :disabled="!replayPlaying" @click="sessionStore.pauseReplay()">Pause</el-button>
+          <el-button :icon="StepForward" size="small" @click="sessionStore.stepReplay()">Step Next</el-button>
+          <el-button :icon="Square" size="small" @click="sessionStore.stopReplay()">Stop Replay</el-button>
+          <button
+            v-for="speed in replaySpeeds"
+            :key="speed"
+            type="button"
+            class="filter-chip"
+            :class="{ active: replaySpeed === speed }"
+            @click="sessionStore.setReplaySpeed(speed)"
+          >
+            {{ speed }}x
+          </button>
         </div>
         <el-alert v-if="timelineFocusHint" class="timeline-focus-hint" type="info" :title="timelineFocusHint" :closable="false" />
       </div>
       <div class="timeline-actions">
         <el-tag v-if="session" type="info">{{ session.runId }}</el-tag>
-        <el-button :icon="RefreshCw" size="small" @click="toggleReplay">
-          {{ replayActive ? 'Stop' : t('timeline.replay') }}
+        <el-button :icon="RefreshCw" size="small" :disabled="!timelineRunFilter" @click="toggleReplay">
+          {{ replayMode ? t('timeline.stop') : t('timeline.replay') }}
         </el-button>
       </div>
     </div>
@@ -49,8 +69,9 @@
         v-for="event in visibleEvents"
         :key="event.id"
         :id="timelineDomId(event.id)"
+        :data-event-id="event.id"
         class="timeline-event"
-        :class="{ selected: event.id === selectedEventId, clickable: isInspectable(event) }"
+        :class="{ selected: event.id === selectedEventId, focused: event.id === focusedTimelineEventId, clickable: isInspectable(event) }"
         @click="selectInspectable(event)"
       >
         <div class="event-rail">
@@ -141,9 +162,9 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, watch } from 'vue';
 import { storeToRefs } from 'pinia';
-import { Activity, Bot, CheckCircle2, MessageSquare, RefreshCw, ShieldAlert, TerminalSquare, Wrench } from 'lucide-vue-next';
+import { Activity, Bot, CheckCircle2, MessageSquare, Pause, Play, RefreshCw, ShieldAlert, Square, StepForward, TerminalSquare, Wrench } from 'lucide-vue-next';
 
 import { useInspectorStore } from '@/stores/inspectorStore';
 import { useLocaleStore } from '@/stores/localeStore';
@@ -177,10 +198,16 @@ const {
   timelineFilter,
   timelineRunFilter,
   timelineFocusHint,
-  replayActive,
+  pendingFocusEventId,
+  focusedTimelineEventId,
+  replayMode,
+  replayPlaying,
+  replaySpeed,
 } = storeToRefs(sessionStore);
 const { selectedEventId } = storeToRefs(inspectorStore);
-const { t } = useLocaleStore();
+const localeStore = useLocaleStore();
+const { currentLocale } = storeToRefs(localeStore);
+const { t } = localeStore;
 
 const iconMap = {
   message: MessageSquare,
@@ -201,6 +228,7 @@ const filters = computed(() => [
   { value: 'error' as const, label: t('timeline.filter.error') },
   { value: 'system' as const, label: t('timeline.filter.system') },
 ]);
+const replaySpeeds = [1, 2, 4] as const;
 
 const liveStatusLabel = computed(() => {
   if (backendUnavailable.value || pollingStatus.value === 'error') {
@@ -275,7 +303,17 @@ const canCancelRun = computed(() => {
   return !!activeRunId.value && (activeRunStatus.value === 'queued' || activeRunStatus.value === 'running') && !cancellingRun.value;
 });
 
-const visibleEvents = computed(() => replayActive.value ? replayTimeline.value : events.value);
+const visibleEvents = computed(() => replayMode.value ? replayTimeline.value : events.value);
+
+watch(
+  () => [pendingFocusEventId.value, visibleEvents.value.map((event) => event.id).join('|')],
+  ([eventId]) => {
+    if (eventId && visibleEvents.value.some((event) => event.id === eventId)) {
+      void sessionStore.focusEventAfterSessionLoad(String(eventId));
+    }
+  },
+  { flush: 'post' },
+);
 
 function iconFor(kind: TimelineEvent['kind']) {
   return iconMap[kind];
@@ -296,6 +334,7 @@ function isInspectable(event: TimelineEvent) {
 function selectInspectable(event: TimelineEvent) {
   if (isInspectable(event)) {
     inspectorStore.selectEvent(event.id);
+    void sessionStore.scrollToTimelineEvent(event.id);
   }
 }
 
@@ -312,10 +351,10 @@ function cancelRun() {
 }
 
 function toggleReplay() {
-  if (replayActive.value) {
+  if (replayMode.value) {
     sessionStore.stopReplay();
   } else {
-    sessionStore.startReplay();
+    sessionStore.startReplay(timelineRunFilter.value);
   }
 }
 
@@ -328,7 +367,7 @@ function formatTime(value: string) {
   if (Number.isNaN(date.getTime())) {
     return '--:--:--';
   }
-  return new Intl.DateTimeFormat('zh-CN', {
+  return new Intl.DateTimeFormat(currentLocale.value, {
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit',
