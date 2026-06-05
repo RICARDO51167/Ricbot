@@ -10,6 +10,7 @@ import java.nio.file.Path;
 import java.nio.file.attribute.FileTime;
 import java.time.Instant;
 import java.util.Comparator;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
@@ -97,6 +98,25 @@ public class ConsoleWorkspaceService {
         }
     }
 
+    public WorkspaceSearchResponse search(String keyword, int limit, boolean includeHidden) {
+        Path base = resolveWorkspaceRoot();
+        String cleanKeyword = keyword != null ? keyword.trim() : "";
+        if (cleanKeyword.isBlank()) {
+            return new WorkspaceSearchResponse(base.toString(), "", List.of());
+        }
+
+        int safeLimit = Math.max(1, Math.min(limit, 200));
+        List<WorkspaceSearchResult> matches = new ArrayList<>();
+        collectSearchResults(base, cleanKeyword, includeHidden, matches);
+        List<WorkspaceSearchResult> sorted = matches.stream()
+                .sorted(Comparator
+                        .comparingInt(WorkspaceSearchResult::score).reversed()
+                        .thenComparing(WorkspaceSearchResult::path))
+                .limit(safeLimit)
+                .toList();
+        return new WorkspaceSearchResponse(base.toString(), cleanKeyword, sorted);
+    }
+
     private List<WorkspaceTreeNode> children(Path directory, int depth, boolean includeHidden) {
         if (depth <= 0) {
             return List.of();
@@ -112,6 +132,63 @@ public class ConsoleWorkspaceService {
         } catch (IOException e) {
             throw new ConsoleWorkspaceException("tree_read_failed", "workspace tree read failed: " + relativePath(directory), 500);
         }
+    }
+
+    private void collectSearchResults(Path directory,
+                                      String keyword,
+                                      boolean includeHidden,
+                                      List<WorkspaceSearchResult> matches) {
+        try (Stream<Path> stream = Files.list(directory)) {
+            List<Path> paths = stream
+                    .filter(path -> !isBlocked(path, includeHidden))
+                    .sorted(Comparator
+                            .comparing((Path path) -> !Files.isDirectory(path))
+                            .thenComparing(path -> path.getFileName().toString().toLowerCase(Locale.ROOT)))
+                    .toList();
+            for (Path path : paths) {
+                if (Files.isDirectory(path)) {
+                    collectSearchResults(path, keyword, includeHidden, matches);
+                    continue;
+                }
+                if (!Files.isRegularFile(path)) {
+                    continue;
+                }
+                int score = searchScore(path, keyword);
+                if (score > 0) {
+                    matches.add(new WorkspaceSearchResult(
+                            path.getFileName().toString(),
+                            relativePath(path),
+                            WorkspaceNodeType.FILE,
+                            fileSize(path),
+                            modifiedAt(path),
+                            score
+                    ));
+                }
+            }
+        } catch (IOException e) {
+            throw new ConsoleWorkspaceException("workspace_search_failed", "workspace search failed: " + relativePath(directory), 500);
+        }
+    }
+
+    private int searchScore(Path path, String keyword) {
+        String needle = keyword.toLowerCase(Locale.ROOT);
+        String name = path.getFileName().toString();
+        String lowerName = name.toLowerCase(Locale.ROOT);
+        String lowerPath = relativePath(path).toLowerCase(Locale.ROOT);
+        if (lowerName.equals(needle)) {
+            return 100;
+        }
+        int dot = lowerName.lastIndexOf('.');
+        if (dot > 0 && lowerName.substring(0, dot).equals(needle)) {
+            return 100;
+        }
+        if (lowerName.contains(needle)) {
+            return 80;
+        }
+        if (lowerPath.contains(needle)) {
+            return 60;
+        }
+        return 0;
     }
 
     private WorkspaceTreeNode node(Path path, int childDepth, boolean includeHidden) {

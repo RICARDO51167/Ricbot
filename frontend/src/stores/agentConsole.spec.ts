@@ -13,6 +13,8 @@ import ConsoleLayout from '@/components/layout/ConsoleLayout.vue';
 import MainNavSidebar from '@/components/layout/MainNavSidebar.vue';
 import RuntimeHeader from '@/components/layout/RuntimeHeader.vue';
 import ChatTimeline from '@/components/timeline/ChatTimeline.vue';
+import FileViewer from '@/components/workspace/FileViewer.vue';
+import WorkspaceTree from '@/components/workspace/WorkspaceTree.vue';
 import ApprovalsPage from '@/pages/ApprovalsPage.vue';
 import ChangeSetsPage from '@/pages/ChangeSetsPage.vue';
 import ConsoleWorkbench from '@/pages/ConsoleWorkbench.vue';
@@ -29,6 +31,7 @@ import { useLocaleStore } from './localeStore';
 import { useRuntimeStore } from './runtimeStore';
 import { useSessionStore } from './sessionStore';
 import { useWorkspaceStore } from './workspaceStore';
+import { extractFilePathsFromPayload } from '@/utils/filePaths';
 
 enableAutoUnmount(afterEach);
 
@@ -422,6 +425,231 @@ describe('agent console stores', () => {
 
     expect(wrapper.text()).toContain('Workspace unavailable');
     expect(useWorkspaceStore().treeNodes).toEqual([]);
+  });
+
+  it('workspaceStore_searchFilesLoadsResults', async () => {
+    vi.stubGlobal('fetch', backendFetchStub({
+      workspaceSearchResponse: {
+        workspace: '/tmp/ricbot',
+        keyword: 'Agent',
+        results: [
+          {
+            name: 'AgentRunner.java',
+            path: 'src/main/java/AgentRunner.java',
+            type: 'file',
+            size: 120,
+            modifiedAt: '2026-06-04T08:00:00Z',
+            score: 100,
+          },
+        ],
+      },
+    }));
+    const workspace = useWorkspaceStore();
+
+    await workspace.searchFiles('Agent');
+
+    expect(workspace.searchKeyword).toBe('Agent');
+    expect(workspace.searchResults.map((result) => result.path)).toEqual(['src/main/java/AgentRunner.java']);
+  });
+
+  it('workspaceStore_searchBlankClearsResults', async () => {
+    vi.stubGlobal('fetch', backendFetchStub());
+    const workspace = useWorkspaceStore();
+    workspace.searchResults = [{ name: 'Agent.java', path: 'Agent.java', type: 'file', size: 1, modifiedAt: '', score: 80 }];
+
+    await workspace.searchFiles(' ');
+
+    expect(workspace.searchKeyword).toBe('');
+    expect(workspace.searchResults).toEqual([]);
+  });
+
+  it('workspaceSearch_clickResultLoadsFile', async () => {
+    vi.stubGlobal('fetch', backendFetchStub({
+      workspaceTreeResponse: { workspace: '/tmp/ricbot', root: '', nodes: [] },
+      workspaceSearchResponse: {
+        workspace: '/tmp/ricbot',
+        keyword: 'Agent',
+        results: [{ name: 'AgentRunner.java', path: 'src/AgentRunner.java', type: 'file', size: 12, modifiedAt: '2026-06-04T08:00:00Z', score: 100 }],
+      },
+      workspaceFileResponse: {
+        path: 'src/AgentRunner.java',
+        language: 'java',
+        size: 12,
+        modifiedAt: '2026-06-04T08:00:00Z',
+        binary: false,
+        truncated: false,
+        content: 'class AgentRunner {}',
+      },
+    }));
+    navigate('/console/workspace');
+
+    const wrapper = mount(WorkspacePage, { global: { plugins: [ElementPlus] } });
+    await flushPromises();
+    await useWorkspaceStore().searchFiles('Agent');
+    await wrapper.vm.$nextTick();
+    await wrapper.find('[data-test="workspace-search-result"]').trigger('click');
+    await flushPromises();
+
+    expect(currentRoute.value.query.file).toBe('src/AgentRunner.java');
+    expect(useWorkspaceStore().selectedPath).toBe('src/AgentRunner.java');
+    expect(wrapper.text()).toContain('class AgentRunner {}');
+  });
+
+  it('workspacePage_fileQueryExpandsParentPaths', async () => {
+    vi.stubGlobal('fetch', backendFetchStub({
+      workspaceTreeResponse: {
+        workspace: '/tmp/ricbot',
+        root: '',
+        nodes: [{ name: 'src', path: 'src', type: 'directory', children: [] }],
+      },
+      workspaceFileResponse: {
+        path: 'src/main/java/App.java',
+        language: 'java',
+        size: 12,
+        modifiedAt: '2026-06-04T08:00:00Z',
+        binary: false,
+        truncated: false,
+        content: 'class App {}',
+      },
+    }));
+    navigate('/console/workspace', { file: 'src/main/java/App.java' });
+
+    const wrapper = mount(WorkspacePage, { global: { plugins: [ElementPlus] } });
+    await flushPromises();
+    const workspace = useWorkspaceStore();
+
+    expect(workspace.expandedPaths.has('src')).toBe(true);
+    expect(workspace.expandedPaths.has('src/main')).toBe(true);
+    expect(wrapper.text()).toContain('文件已打开，但未出现在当前树深度中');
+  });
+
+  it('workspaceTree_highlightsSelectedFile', () => {
+    const wrapper = mount(WorkspaceTree, {
+      props: {
+        nodes: [{ name: 'README.md', path: 'README.md', type: 'file', size: 8, modifiedAt: '2026-06-04T08:00:00Z' }],
+        selectedPath: 'README.md',
+        changedPaths: new Set<string>(),
+        expandedPaths: new Set<string>(),
+      },
+    });
+
+    expect(wrapper.find('.workspace-node.selected').text()).toContain('README.md');
+  });
+
+  it('fileViewer_rendersLineNumbers', () => {
+    const wrapper = mount(FileViewer, {
+      global: { plugins: [ElementPlus] },
+      props: {
+        file: {
+          path: 'src/App.java',
+          language: 'java',
+          size: 24,
+          modifiedAt: '2026-06-04T08:00:00Z',
+          binary: false,
+          truncated: false,
+          content: 'line one\nline two\n',
+        },
+        selectedPath: 'src/App.java',
+        loading: false,
+        error: '',
+        changed: false,
+        selectedLine: null,
+      },
+    });
+
+    expect(wrapper.findAll('.file-line-number').map((line) => line.text())).toEqual(['1', '2']);
+  });
+
+  it('fileViewer_lineQueryHighlightsLine', async () => {
+    vi.stubGlobal('fetch', backendFetchStub({
+      workspaceTreeResponse: { workspace: '/tmp/ricbot', root: '', nodes: [] },
+      workspaceFileResponse: {
+        path: 'src/App.java',
+        language: 'java',
+        size: 24,
+        modifiedAt: '2026-06-04T08:00:00Z',
+        binary: false,
+        truncated: false,
+        content: 'line one\nline two\n',
+      },
+    }));
+    navigate('/console/workspace', { file: 'src/App.java', line: '2' });
+
+    const wrapper = mount(WorkspacePage, { global: { plugins: [ElementPlus] } });
+    await flushPromises();
+
+    expect(useWorkspaceStore().selectedLine).toBe(2);
+    expect(wrapper.find('[data-test="highlighted-file-line"]').text()).toContain('line two');
+  });
+
+  it('traceInspector_relatedFilesExtractsPayloadPaths', async () => {
+    expect(extractFilePathsFromPayload({
+      payload: {
+        filePath: './src/App.java',
+        changedFiles: [{ path: 'README.md' }],
+      },
+    })).toEqual(['src/App.java', 'README.md']);
+    vi.stubGlobal('fetch', backendFetchStub({
+      timeline: [
+        {
+          id: 'evt-related-files',
+          type: 'tool_call',
+          title: 'Tool: EditFileTool',
+          status: 'SUCCEEDED',
+          payload: {
+            arguments: { filePath: './src/App.java' },
+            result: { changedFiles: [{ path: 'README.md' }] },
+          },
+        },
+      ],
+    }));
+    const sessions = useSessionStore();
+    const inspector = useInspectorStore();
+
+    await sessions.loadFromBackend();
+    inspector.selectEvent('evt-related-files');
+    const wrapper = mount(TraceInspector, { global: { plugins: [ElementPlus] } });
+
+    expect(wrapper.text()).toContain('相关文件');
+    expect(wrapper.text()).toContain('src/App.java');
+    expect(wrapper.text()).toContain('README.md');
+  });
+
+  it('relatedFiles_clickNavigatesToWorkspace', async () => {
+    vi.stubGlobal('fetch', backendFetchStub({
+      timeline: [
+        {
+          id: 'evt-related-click',
+          type: 'tool_call',
+          title: 'Tool: EditFileTool',
+          status: 'SUCCEEDED',
+          payload: { arguments: { targetFile: 'src/Target.java' } },
+        },
+      ],
+    }));
+    const sessions = useSessionStore();
+    const inspector = useInspectorStore();
+
+    await sessions.loadFromBackend();
+    inspector.selectEvent('evt-related-click');
+    const wrapper = mount(TraceInspector, { global: { plugins: [ElementPlus] } });
+    await wrapper.find('[data-test="related-file-link"]').trigger('click');
+
+    expect(currentRoute.value.path).toBe('/console/workspace');
+    expect(currentRoute.value.query.file).toBe('src/Target.java');
+  });
+
+  it('workspaceSearchErrorShowsMessage', async () => {
+    vi.stubGlobal('fetch', backendFetchStub({ workspaceSearchFails: true }));
+    useLocaleStore().setLocale('en-US');
+    navigate('/console/workspace');
+
+    const wrapper = mount(WorkspacePage, { global: { plugins: [ElementPlus] } });
+    await flushPromises();
+    await useWorkspaceStore().searchFiles('Agent');
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.text()).toContain('Search unavailable');
   });
 
   it('selecting a tool event drives the tool inspector payload', () => {
@@ -2135,11 +2363,13 @@ function backendFetchStub(options: {
   metricsSummaryResponse?: Record<string, unknown>;
   workspaceTreeResponse?: Record<string, unknown>;
   workspaceFileResponse?: Record<string, unknown>;
+  workspaceSearchResponse?: Record<string, unknown>;
   runFails?: boolean;
   cancelFails?: boolean;
   approvalActionFails?: boolean;
   eventSearchFails?: boolean;
   workspaceFileFails?: boolean;
+  workspaceSearchFails?: boolean;
 } = {}) {
   const sessionId = options.sessionId ?? options.sessionIds?.[0] ?? 's-backend';
   const eventResponses = [...(options.eventResponses ?? [])];
@@ -2174,6 +2404,22 @@ function backendFetchStub(options: {
         binary: false,
         truncated: false,
         content: '',
+      });
+    }
+    if (url.includes('/api/console/workspace/search')) {
+      if (options.workspaceSearchFails) {
+        return {
+          ok: false,
+          status: 500,
+          headers: { get: () => 'application/json' },
+          json: async () => ({ error: { message: 'Search unavailable' } }),
+        };
+      }
+      const keyword = new URL(url, 'http://127.0.0.1').searchParams.get('keyword') ?? '';
+      return jsonResponse(options.workspaceSearchResponse ?? {
+        workspace: '/tmp/ricbot',
+        keyword,
+        results: [],
       });
     }
     if (url === '/api/console/sessions') {

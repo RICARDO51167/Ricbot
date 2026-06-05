@@ -5,6 +5,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -120,6 +121,96 @@ class ConsoleWorkspaceServiceTest {
         ConsoleWorkspaceService service = new ConsoleWorkspaceService(workspace);
         service.tree("", 2, false);
         service.fileContent("README.md");
+
+        assertEquals(before, Files.readString(file));
+    }
+
+    @Test
+    void workspaceSearch_returnsMatchesByFileName(@TempDir Path workspace) throws Exception {
+        Files.createDirectories(workspace.resolve("src/main/java/ricbot/domain/agent"));
+        Files.writeString(workspace.resolve("src/main/java/ricbot/domain/agent/AgentRunner.java"), "class AgentRunner {}\n");
+        Files.writeString(workspace.resolve("README.md"), "AgentRunner mentioned only in content\n");
+
+        WorkspaceSearchResponse response = new ConsoleWorkspaceService(workspace).search("AgentRunner", 50, false);
+
+        assertEquals("AgentRunner", response.keyword());
+        assertEquals(1, response.results().size());
+        assertEquals("src/main/java/ricbot/domain/agent/AgentRunner.java", response.results().get(0).path());
+        assertEquals(100, response.results().get(0).score());
+    }
+
+    @Test
+    void workspaceSearch_returnsMatchesByPath(@TempDir Path workspace) throws Exception {
+        Files.createDirectories(workspace.resolve("src/main/java/ricbot/domain/agent"));
+        Files.writeString(workspace.resolve("src/main/java/ricbot/domain/agent/Runner.java"), "class Runner {}\n");
+        Files.writeString(workspace.resolve("Runner.md"), "runner\n");
+
+        WorkspaceSearchResponse response = new ConsoleWorkspaceService(workspace).search("domain/agent", 50, false);
+
+        assertEquals(List.of("src/main/java/ricbot/domain/agent/Runner.java"),
+                response.results().stream().map(WorkspaceSearchResult::path).toList());
+    }
+
+    @Test
+    void workspaceSearch_returnsEmptyForBlankKeyword(@TempDir Path workspace) throws Exception {
+        Files.writeString(workspace.resolve("README.md"), "readme\n");
+
+        WorkspaceSearchResponse response = new ConsoleWorkspaceService(workspace).search(" ", 50, false);
+
+        assertTrue(response.results().isEmpty());
+    }
+
+    @Test
+    void workspaceSearch_respectsLimit(@TempDir Path workspace) throws Exception {
+        Files.writeString(workspace.resolve("OneAgent.java"), "class OneAgent {}\n");
+        Files.writeString(workspace.resolve("TwoAgent.java"), "class TwoAgent {}\n");
+        Files.writeString(workspace.resolve("ThreeAgent.java"), "class ThreeAgent {}\n");
+
+        WorkspaceSearchResponse response = new ConsoleWorkspaceService(workspace).search("Agent", 2, false);
+
+        assertEquals(2, response.results().size());
+    }
+
+    @Test
+    void workspaceSearch_skipsBlockedDirectories(@TempDir Path workspace) throws Exception {
+        Files.createDirectories(workspace.resolve("node_modules/pkg"));
+        Files.writeString(workspace.resolve("node_modules/pkg/AgentRunner.java"), "class AgentRunner {}\n");
+        Files.writeString(workspace.resolve("AgentRoot.java"), "class AgentRoot {}\n");
+
+        WorkspaceSearchResponse response = new ConsoleWorkspaceService(workspace).search("Agent", 50, false);
+
+        assertEquals(List.of("AgentRoot.java"), response.results().stream().map(WorkspaceSearchResult::path).toList());
+    }
+
+    @Test
+    void workspaceSearch_excludesHiddenByDefault(@TempDir Path workspace) throws Exception {
+        Files.createDirectories(workspace.resolve(".config"));
+        Files.writeString(workspace.resolve(".config/AgentHidden.java"), "class AgentHidden {}\n");
+        Files.writeString(workspace.resolve("AgentVisible.java"), "class AgentVisible {}\n");
+
+        WorkspaceSearchResponse hiddenOff = new ConsoleWorkspaceService(workspace).search("Agent", 50, false);
+        WorkspaceSearchResponse hiddenOn = new ConsoleWorkspaceService(workspace).search("Agent", 50, true);
+
+        assertEquals(List.of("AgentVisible.java"), hiddenOff.results().stream().map(WorkspaceSearchResult::path).toList());
+        assertTrue(hiddenOn.results().stream().anyMatch(result -> result.path().equals(".config/AgentHidden.java")));
+    }
+
+    @Test
+    void workspaceSearch_doesNotReadFileContent(@TempDir Path workspace) throws Exception {
+        Files.writeString(workspace.resolve("README.md"), "UniqueNeedleOnlyInContent\n");
+
+        WorkspaceSearchResponse response = new ConsoleWorkspaceService(workspace).search("UniqueNeedleOnlyInContent", 50, false);
+
+        assertTrue(response.results().isEmpty());
+    }
+
+    @Test
+    void workspaceSearch_doesNotModifyFiles(@TempDir Path workspace) throws Exception {
+        Path file = workspace.resolve("AgentRunner.java");
+        Files.writeString(file, "before\n");
+        String before = Files.readString(file);
+
+        new ConsoleWorkspaceService(workspace).search("AgentRunner", 50, false);
 
         assertEquals(before, Files.readString(file));
     }

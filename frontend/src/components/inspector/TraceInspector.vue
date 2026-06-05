@@ -19,9 +19,23 @@
     </div>
     <div v-if="workspacePath" class="inspector-actions">
       <el-button size="small" type="primary" plain data-test="open-inspector-workspace" @click="openWorkspacePath">
-        {{ t('changes.openWorkspace') }}
+        {{ t('workspace.openInWorkspace') }}
       </el-button>
     </div>
+    <section v-if="relatedFiles.length" class="related-files">
+      <h3>{{ t('workspace.relatedFiles') }}</h3>
+      <button
+        v-for="path in relatedFiles"
+        :key="path"
+        type="button"
+        class="related-file"
+        :class="{ selected: path === selectedWorkspacePath }"
+        data-test="related-file-link"
+        @click="openRelatedFile(path)"
+      >
+        {{ path }}
+      </button>
+    </section>
 
     <ApprovalPanel v-if="inspectorMode === 'approval' && selectedApproval" />
 
@@ -96,8 +110,12 @@ import { storeToRefs } from 'pinia';
 import { MessageSquare, TerminalSquare, Wrench } from 'lucide-vue-next';
 
 import { navigate } from '@/router';
+import { useChangeSetStore } from '@/stores/changeSetStore';
 import { useInspectorStore } from '@/stores/inspectorStore';
 import { useLocaleStore } from '@/stores/localeStore';
+import { useSessionStore } from '@/stores/sessionStore';
+import { useWorkspaceStore } from '@/stores/workspaceStore';
+import { extractWorkspaceFileRefsFromPayload } from '@/utils/filePaths';
 import ActionLog from './ActionLog.vue';
 import ApprovalPanel from './ApprovalPanel.vue';
 import DashboardPanel from './DashboardPanel.vue';
@@ -114,6 +132,9 @@ withDefaults(defineProps<{
 });
 
 const inspectorStore = useInspectorStore();
+const sessionStore = useSessionStore();
+const changeSetStore = useChangeSetStore();
+const workspaceStore = useWorkspaceStore();
 const {
   inspectorMode,
   selectedApproval,
@@ -121,6 +142,9 @@ const {
   selectedMessage,
   selectedToolCall,
 } = storeToRefs(inspectorStore);
+const { filteredTimeline } = storeToRefs(sessionStore);
+const { currentChangeSet } = storeToRefs(changeSetStore);
+const { selectedPath: selectedWorkspacePath } = storeToRefs(workspaceStore);
 const { t } = useLocaleStore();
 
 const subtitle = computed(() => {
@@ -139,39 +163,47 @@ const showGenericInspector = computed(() => {
 const genericEvent = computed(() => showGenericInspector.value ? selectedEvent.value : null);
 
 const workspacePath = computed(() => {
-  return firstWorkspacePath(selectedEvent.value);
+  return relatedFiles.value[0] ?? '';
+});
+
+const relatedFiles = computed(() => {
+  const refs = new Map<string, number | undefined>();
+  for (const ref of extractWorkspaceFileRefsFromPayload(selectedEvent.value)) {
+    refs.set(ref.path, ref.line);
+  }
+  for (const event of filteredTimeline.value) {
+    const payload = (event as { payload?: unknown }).payload ?? event;
+    for (const ref of extractWorkspaceFileRefsFromPayload(payload)) {
+      if (!refs.has(ref.path)) {
+        refs.set(ref.path, ref.line);
+      }
+    }
+  }
+  for (const file of currentChangeSet.value?.changedFiles ?? []) {
+    if (file.path && !refs.has(file.path)) {
+      refs.set(file.path, undefined);
+    }
+  }
+  return [...refs.keys()];
 });
 
 function openWorkspacePath() {
   if (workspacePath.value) {
-    navigate('/console/workspace', { file: workspacePath.value });
+    openRelatedFile(workspacePath.value);
   }
 }
 
-function firstWorkspacePath(event: unknown): string {
-  const keys = ['file', 'path', 'filePath', 'targetFile', 'changedFile', 'relativePath'];
-  const queue: unknown[] = [event];
-  const seen = new Set<unknown>();
-  while (queue.length > 0) {
-    const value = queue.shift();
-    if (!value || typeof value !== 'object' || seen.has(value)) {
-      continue;
-    }
-    seen.add(value);
-    const record = value as Record<string, unknown>;
-    for (const key of keys) {
-      const found = record[key];
-      if (typeof found === 'string' && found.trim()) {
-        return found.trim().replace(/^\.\/+/, '');
-      }
-    }
-    for (const nestedKey of ['payload', 'arguments', 'toolCall', 'result']) {
-      const nested = record[nestedKey];
-      if (nested && typeof nested === 'object') {
-        queue.push(nested);
-      }
+function openRelatedFile(path: string) {
+  const line = relatedLine(path);
+  navigate('/console/workspace', line ? { file: path, line: String(line) } : { file: path });
+}
+
+function relatedLine(path: string) {
+  for (const ref of extractWorkspaceFileRefsFromPayload(selectedEvent.value)) {
+    if (ref.path === path) {
+      return ref.line;
     }
   }
-  return '';
+  return undefined;
 }
 </script>

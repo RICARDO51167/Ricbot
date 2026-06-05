@@ -149,6 +149,21 @@ export interface ConsoleWorkspaceFileContentResponse {
   content: string;
 }
 
+export interface ConsoleWorkspaceSearchResult {
+  name: string;
+  path: string;
+  type: 'file';
+  size: number;
+  modifiedAt: string;
+  score: number;
+}
+
+export interface ConsoleWorkspaceSearchResponse {
+  workspace: string;
+  keyword: string;
+  results: ConsoleWorkspaceSearchResult[];
+}
+
 export interface ConsoleRunHistoryItem {
   runId: string;
   sessionId: string;
@@ -339,10 +354,16 @@ export function getWorkspaceFileContent(path: string) {
   );
 }
 
+export function searchWorkspaceFiles(options: { keyword?: string; limit?: number; includeHidden?: boolean } = {}) {
+  return getJson<ConsoleWorkspaceSearchResponse>(`/api/console/workspace/search${queryString(options)}`);
+}
+
 function queryString(values: object) {
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(values)) {
     if ((typeof value === 'string' || typeof value === 'number') && String(value).trim()) {
+      params.set(key, String(value));
+    } else if (typeof value === 'boolean') {
       params.set(key, String(value));
     }
   }
