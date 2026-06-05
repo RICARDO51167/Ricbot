@@ -17,6 +17,11 @@
       <span>actor={{ selectedEvent.actor || 'system' }}</span>
       <span>source={{ selectedEvent.eventSource || selectedEvent.source }}</span>
     </div>
+    <div v-if="workspacePath" class="inspector-actions">
+      <el-button size="small" type="primary" plain data-test="open-inspector-workspace" @click="openWorkspacePath">
+        {{ t('changes.openWorkspace') }}
+      </el-button>
+    </div>
 
     <ApprovalPanel v-if="inspectorMode === 'approval' && selectedApproval" />
 
@@ -90,6 +95,7 @@ import { computed } from 'vue';
 import { storeToRefs } from 'pinia';
 import { MessageSquare, TerminalSquare, Wrench } from 'lucide-vue-next';
 
+import { navigate } from '@/router';
 import { useInspectorStore } from '@/stores/inspectorStore';
 import { useLocaleStore } from '@/stores/localeStore';
 import ActionLog from './ActionLog.vue';
@@ -131,4 +137,41 @@ const showGenericInspector = computed(() => {
     && !(inspectorMode.value === 'message' && selectedMessage.value);
 });
 const genericEvent = computed(() => showGenericInspector.value ? selectedEvent.value : null);
+
+const workspacePath = computed(() => {
+  return firstWorkspacePath(selectedEvent.value);
+});
+
+function openWorkspacePath() {
+  if (workspacePath.value) {
+    navigate('/console/workspace', { file: workspacePath.value });
+  }
+}
+
+function firstWorkspacePath(event: unknown): string {
+  const keys = ['file', 'path', 'filePath', 'targetFile', 'changedFile', 'relativePath'];
+  const queue: unknown[] = [event];
+  const seen = new Set<unknown>();
+  while (queue.length > 0) {
+    const value = queue.shift();
+    if (!value || typeof value !== 'object' || seen.has(value)) {
+      continue;
+    }
+    seen.add(value);
+    const record = value as Record<string, unknown>;
+    for (const key of keys) {
+      const found = record[key];
+      if (typeof found === 'string' && found.trim()) {
+        return found.trim().replace(/^\.\/+/, '');
+      }
+    }
+    for (const nestedKey of ['payload', 'arguments', 'toolCall', 'result']) {
+      const nested = record[nestedKey];
+      if (nested && typeof nested === 'object') {
+        queue.push(nested);
+      }
+    }
+  }
+  return '';
+}
 </script>

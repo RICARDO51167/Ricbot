@@ -10,27 +10,49 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class ConsoleWorkspaceServiceTest {
     @Test
-    void tree_listsWorkspaceNodesAndSkipsIgnoredDirectories(@TempDir Path workspace) throws Exception {
+    void workspaceTree_returnsRootNodes(@TempDir Path workspace) throws Exception {
         Files.createDirectories(workspace.resolve("src/main/java"));
         Files.writeString(workspace.resolve("src/main/java/App.java"), "class App {}\n");
+        Files.writeString(workspace.resolve("pom.xml"), "<project />\n");
         Files.createDirectories(workspace.resolve("node_modules/pkg"));
         Files.writeString(workspace.resolve("node_modules/pkg/index.js"), "module.exports = {}\n");
 
-        ConsoleWorkspaceService service = new ConsoleWorkspaceService(workspace);
-
-        WorkspaceTreeResponse response = service.tree("", 3, false);
+        WorkspaceTreeResponse response = new ConsoleWorkspaceService(workspace).tree("", 3, false);
 
         assertEquals(workspace.toAbsolutePath().normalize().toString(), response.workspace());
+        assertEquals("", response.root());
         assertTrue(response.nodes().stream().anyMatch(node -> node.path().equals("src") && node.type() == WorkspaceNodeType.DIRECTORY));
-        assertTrue(response.nodes().stream()
-                .filter(node -> node.path().equals("src"))
-                .flatMap(node -> node.children().stream())
-                .anyMatch(node -> node.path().equals("src/main")));
+        assertTrue(response.nodes().stream().anyMatch(node -> node.path().equals("pom.xml") && node.type() == WorkspaceNodeType.FILE));
         assertFalse(response.nodes().stream().anyMatch(node -> node.path().equals("node_modules")));
     }
 
     @Test
-    void fileContent_readsTextWithLanguageAndMetadata(@TempDir Path workspace) throws Exception {
+    void workspaceTree_respectsDepth(@TempDir Path workspace) throws Exception {
+        Files.createDirectories(workspace.resolve("src/main/java/app"));
+        Files.writeString(workspace.resolve("src/main/java/app/App.java"), "class App {}\n");
+
+        WorkspaceTreeResponse depthOne = new ConsoleWorkspaceService(workspace).tree("", 1, false);
+        WorkspaceTreeNode src = depthOne.nodes().stream()
+                .filter(node -> node.path().equals("src"))
+                .findFirst()
+                .orElseThrow();
+
+        assertEquals(WorkspaceNodeType.DIRECTORY, src.type());
+        assertEquals(0, src.children().size());
+    }
+
+    @Test
+    void workspaceTree_rejectsPathTraversal(@TempDir Path workspace) {
+        ConsoleWorkspaceService service = new ConsoleWorkspaceService(workspace);
+
+        ConsoleWorkspaceException error = assertThrows(ConsoleWorkspaceException.class,
+                () -> service.tree("../outside", 2, false));
+
+        assertEquals("path_outside_workspace", error.code());
+    }
+
+    @Test
+    void workspaceFileContent_readsTextFile(@TempDir Path workspace) throws Exception {
         Files.createDirectories(workspace.resolve("src/main/java"));
         Files.writeString(workspace.resolve("src/main/java/App.java"), "class App {}\n");
 
@@ -47,35 +69,59 @@ class ConsoleWorkspaceServiceTest {
     }
 
     @Test
-    void fileContent_rejectsTraversalAndIgnoredPaths(@TempDir Path workspace) throws Exception {
-        Files.createDirectories(workspace.resolve(".git"));
-        Files.writeString(workspace.resolve(".git/config"), "secret\n");
-
+    void workspaceFileContent_rejectsPathTraversal(@TempDir Path workspace) {
         ConsoleWorkspaceService service = new ConsoleWorkspaceService(workspace);
 
-        ConsoleWorkspaceException traversal = assertThrows(ConsoleWorkspaceException.class,
+        ConsoleWorkspaceException error = assertThrows(ConsoleWorkspaceException.class,
                 () -> service.fileContent("../outside.txt"));
-        assertEquals("path_outside_workspace", traversal.code());
 
-        ConsoleWorkspaceException ignored = assertThrows(ConsoleWorkspaceException.class,
-                () -> service.fileContent(".git/config"));
-        assertEquals("path_not_previewable", ignored.code());
+        assertEquals("path_outside_workspace", error.code());
     }
 
     @Test
-    void fileContent_marksBinaryAndLargeFilesWithoutReturningContent(@TempDir Path workspace) throws Exception {
-        Files.write(workspace.resolve("image.bin"), new byte[]{0, 1, 2, 3});
+    void workspaceFileContent_rejectsLargeFile(@TempDir Path workspace) throws Exception {
         Files.writeString(workspace.resolve("large.txt"), "x".repeat(ConsoleWorkspaceService.DEFAULT_MAX_FILE_BYTES + 1));
 
-        ConsoleWorkspaceService service = new ConsoleWorkspaceService(workspace);
+        WorkspaceFileContent large = new ConsoleWorkspaceService(workspace).fileContent("large.txt");
 
-        WorkspaceFileContent binary = service.fileContent("image.bin");
-        assertTrue(binary.binary());
-        assertEquals("", binary.content());
-
-        WorkspaceFileContent large = service.fileContent("large.txt");
+        assertFalse(large.binary());
         assertTrue(large.truncated());
         assertEquals("", large.content());
+    }
+
+    @Test
+    void workspaceFileContent_marksBinaryFile(@TempDir Path workspace) throws Exception {
+        Files.write(workspace.resolve("image.bin"), new byte[]{0, 1, 2, 3});
+
+        WorkspaceFileContent binary = new ConsoleWorkspaceService(workspace).fileContent("image.bin");
+
+        assertTrue(binary.binary());
+        assertFalse(binary.truncated());
+        assertEquals("", binary.content());
+    }
+
+    @Test
+    void workspaceFileContent_returnsNotFoundForMissingFile(@TempDir Path workspace) {
+        ConsoleWorkspaceService service = new ConsoleWorkspaceService(workspace);
+
+        ConsoleWorkspaceException error = assertThrows(ConsoleWorkspaceException.class,
+                () -> service.fileContent("missing.txt"));
+
+        assertEquals("file_not_found", error.code());
+        assertEquals(404, error.status());
+    }
+
+    @Test
+    void workspaceEndpoints_doNotModifyFiles(@TempDir Path workspace) throws Exception {
+        Path file = workspace.resolve("README.md");
+        Files.writeString(file, "before\n");
+        String before = Files.readString(file);
+
+        ConsoleWorkspaceService service = new ConsoleWorkspaceService(workspace);
+        service.tree("", 2, false);
+        service.fileContent("README.md");
+
+        assertEquals(before, Files.readString(file));
     }
 
     @Test

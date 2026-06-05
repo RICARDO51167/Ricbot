@@ -44,7 +44,7 @@
             data-test="open-workspace-file"
             @click="openWorkspaceFile"
           >
-            {{ t('changes.openWorkspace') }}
+            {{ t('changes.openCurrentFile') }}
           </el-button>
         </div>
         <pre class="diff-view"><code>{{ currentDiff }}</code></pre>

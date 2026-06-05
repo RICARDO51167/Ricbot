@@ -14,6 +14,8 @@
           :nodes="store.treeNodes"
           :selected-path="store.selectedPath"
           :changed-paths="store.changedPaths"
+          :expanded-paths="store.expandedPaths"
+          @toggle-directory="store.toggleDirectory"
           @select-file="selectFile"
         />
       </aside>
@@ -55,7 +57,7 @@ watch(
 );
 
 async function refreshTree() {
-  await store.loadTree();
+  await store.refreshTree();
   await openQueryFile();
 }
 

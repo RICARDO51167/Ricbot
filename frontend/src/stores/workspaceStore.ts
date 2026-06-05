@@ -18,6 +18,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const fileLoading = ref(false);
   const treeError = ref('');
   const fileError = ref('');
+  const expandedPaths = ref(new Set<string>());
 
   const changedPaths = computed(() => new Set(
     useChangeSetStore().currentChangeSet?.changedFiles.map((item) => item.path) ?? [],
@@ -37,6 +38,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       workspaceRoot.value = response.workspace;
       treeRoot.value = response.root;
       treeNodes.value = response.nodes ?? [];
+      expandedPaths.value = collectDirectoryPaths(treeNodes.value, expandedPaths.value);
     } catch (error) {
       workspaceRoot.value = '';
       treeRoot.value = '';
@@ -45,6 +47,22 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     } finally {
       treeLoading.value = false;
     }
+  }
+
+  async function refreshTree() {
+    await loadTree({
+      root: treeRoot.value,
+    });
+  }
+
+  function toggleDirectory(path: string) {
+    const next = new Set(expandedPaths.value);
+    if (next.has(path)) {
+      next.delete(path);
+    } else {
+      next.add(path);
+    }
+    expandedPaths.value = next;
   }
 
   async function openFile(path: string) {
@@ -89,10 +107,24 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     fileLoading,
     treeError,
     fileError,
+    expandedPaths,
     changedPaths,
     selectedIsChanged,
     loadTree,
+    refreshTree,
     openFile,
+    toggleDirectory,
     clearSelection,
   };
 });
+
+function collectDirectoryPaths(nodes: WorkspaceNode[], existing: Set<string>) {
+  const next = new Set(existing);
+  for (const node of nodes) {
+    if (node.type === 'directory') {
+      next.add(node.path);
+      collectDirectoryPaths(node.children ?? [], next).forEach((path) => next.add(path));
+    }
+  }
+  return next;
+}

@@ -211,7 +211,7 @@ describe('agent console stores', () => {
     expect(wrapper.text()).toContain('diff --git');
   });
 
-  it('changesetPanel_linksSelectedFileToWorkspaceViewer', async () => {
+  it('changeSetPanel_openFileNavigatesToWorkspace', async () => {
     const sessions = useSessionStore();
     sessions.selectSession('team-worktree-run');
 
@@ -222,7 +222,84 @@ describe('agent console stores', () => {
     expect(currentRoute.value.query.file).toBe('README.md');
   });
 
-  it('workspacePage_loadsTreeAndOpensFileFromQuery', async () => {
+  it('workspaceStore_loadsTree', async () => {
+    vi.stubGlobal('fetch', backendFetchStub({
+      workspaceTreeResponse: {
+        workspace: '/tmp/ricbot',
+        root: '',
+        nodes: [{ name: 'src', path: 'src', type: 'directory', children: [] }],
+      },
+    }));
+    const workspace = useWorkspaceStore();
+
+    await workspace.loadTree();
+
+    expect(workspace.workspaceRoot).toBe('/tmp/ricbot');
+    expect(workspace.treeNodes.map((node) => node.path)).toEqual(['src']);
+  });
+
+  it('workspaceStore_loadsFileContent', async () => {
+    vi.stubGlobal('fetch', backendFetchStub({
+      workspaceFileResponse: {
+        path: 'README.md',
+        language: 'markdown',
+        size: 18,
+        modifiedAt: '2026-06-04T08:00:00Z',
+        binary: false,
+        truncated: false,
+        content: '# Ricbot\n',
+      },
+    }));
+    const workspace = useWorkspaceStore();
+
+    await workspace.openFile('README.md');
+
+    expect(workspace.selectedPath).toBe('README.md');
+    expect(workspace.file?.content).toBe('# Ricbot\n');
+    expect(workspace.file?.language).toBe('markdown');
+  });
+
+  it('workspaceStore_handlesBinaryFile', async () => {
+    vi.stubGlobal('fetch', backendFetchStub({
+      workspaceFileResponse: {
+        path: 'image.bin',
+        language: 'bin',
+        size: 4,
+        modifiedAt: '2026-06-04T08:00:00Z',
+        binary: true,
+        truncated: false,
+        content: '',
+      },
+    }));
+    const workspace = useWorkspaceStore();
+
+    await workspace.openFile('image.bin');
+
+    expect(workspace.file?.binary).toBe(true);
+    expect(workspace.file?.content).toBe('');
+  });
+
+  it('workspaceStore_handlesFileTooLarge', async () => {
+    vi.stubGlobal('fetch', backendFetchStub({
+      workspaceFileResponse: {
+        path: 'large.txt',
+        language: 'text',
+        size: 300000,
+        modifiedAt: '2026-06-04T08:00:00Z',
+        binary: false,
+        truncated: true,
+        content: '',
+      },
+    }));
+    const workspace = useWorkspaceStore();
+
+    await workspace.openFile('large.txt');
+
+    expect(workspace.file?.truncated).toBe(true);
+    expect(workspace.file?.content).toBe('');
+  });
+
+  it('workspacePage_loadsFileFromQuery', async () => {
     vi.stubGlobal('fetch', backendFetchStub({
       workspaceTreeResponse: {
         workspace: '/tmp/ricbot',
@@ -259,7 +336,84 @@ describe('agent console stores', () => {
     expect(wrapper.text()).toContain('java');
   });
 
-  it('workspacePage_doesNotMockWhenBackendUnavailable', async () => {
+  it('workspacePage_clickFileLoadsContent', async () => {
+    const fetch = backendFetchStub({
+      workspaceTreeResponse: {
+        workspace: '/tmp/ricbot',
+        root: '',
+        nodes: [
+          { name: 'README.md', path: 'README.md', type: 'file', size: 8, modifiedAt: '2026-06-04T08:00:00Z' },
+        ],
+      },
+      workspaceFileResponse: {
+        path: 'README.md',
+        language: 'markdown',
+        size: 8,
+        modifiedAt: '2026-06-04T08:00:00Z',
+        binary: false,
+        truncated: false,
+        content: '# Readme',
+      },
+    });
+    vi.stubGlobal('fetch', fetch);
+    navigate('/console/workspace');
+
+    const wrapper = mount(WorkspacePage, { global: { plugins: [ElementPlus] } });
+    await flushPromises();
+    await wrapper.find('.workspace-node').trigger('click');
+    await flushPromises();
+
+    expect(useWorkspaceStore().selectedPath).toBe('README.md');
+    expect(wrapper.text()).toContain('# Readme');
+    expect(fetch.mock.calls.some((call) => String(call[0]).includes('/api/console/workspace/files/content?path=README.md'))).toBe(true);
+  });
+
+  it('traceInspector_filePayloadShowsOpenInWorkspace', async () => {
+    vi.stubGlobal('fetch', backendFetchStub({
+      timeline: [
+        {
+          id: 'evt-file-payload',
+          type: 'tool_call',
+          title: 'Tool: EditFileTool',
+          status: 'SUCCEEDED',
+          payload: {
+            id: 'call-edit',
+            toolName: 'EditFileTool',
+            arguments: { path: 'src/main/java/App.java' },
+            result: {},
+            refs: {},
+          },
+        },
+      ],
+    }));
+    const sessions = useSessionStore();
+    const inspector = useInspectorStore();
+
+    await sessions.loadFromBackend();
+    inspector.selectEvent('evt-file-payload');
+    const wrapper = mount(TraceInspector, { global: { plugins: [ElementPlus] } });
+    await wrapper.find('[data-test="open-inspector-workspace"]').trigger('click');
+
+    expect(currentRoute.value.path).toBe('/console/workspace');
+    expect(currentRoute.value.query.file).toBe('src/main/java/App.java');
+  });
+
+  it('workspace_i18nLabelsRender', async () => {
+    vi.stubGlobal('fetch', backendFetchStub({
+      workspaceTreeResponse: { workspace: '/tmp/ricbot', root: '', nodes: [] },
+    }));
+    useLocaleStore().setLocale('en-US');
+    navigate('/console/workspace');
+
+    const wrapper = mount(WorkspacePage, { global: { plugins: [ElementPlus] } });
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('Workspace');
+    expect(wrapper.text()).toContain('Refresh');
+    expect(wrapper.text()).toContain('No file selected');
+  });
+
+  it('workspace_backendFailureShowsError', async () => {
     vi.stubGlobal('fetch', backendFetchStub({ workspaceFileFails: true }));
     navigate('/console/workspace');
 
