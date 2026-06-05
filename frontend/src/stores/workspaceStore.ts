@@ -78,8 +78,14 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   }
 
   async function openFile(path: string, line?: number | null) {
-    selectedPath.value = normalizePath(path);
-    selectedLine.value = normalizeLine(line);
+    const nextPath = normalizePath(path);
+    const nextLine = normalizeLine(line);
+    if (nextPath && nextPath === selectedPath.value && file.value && !fileLoading.value) {
+      selectedLine.value = nextLine;
+      return;
+    }
+    selectedPath.value = nextPath;
+    selectedLine.value = nextLine;
     file.value = null;
     fileError.value = '';
     treeVisibilityHint.value = '';
@@ -106,6 +112,10 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     fileError.value = '';
     fileLoading.value = false;
     treeVisibilityHint.value = '';
+  }
+
+  function focusLine(line?: number | null) {
+    selectedLine.value = normalizeLine(line);
   }
 
   async function searchFiles(keyword: string) {
@@ -190,6 +200,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     openFile,
     searchFiles,
     clearSearch,
+    focusLine,
     toggleDirectory,
     clearSelection,
     expandParentPaths,

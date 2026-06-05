@@ -32,6 +32,8 @@ import { useRuntimeStore } from './runtimeStore';
 import { useSessionStore } from './sessionStore';
 import { useWorkspaceStore } from './workspaceStore';
 import { extractFilePathsFromPayload } from '@/utils/filePaths';
+import { extractFileReferencesFromPayload, dedupeFileReferences } from '@/utils/fileReferences';
+import { parseDiffHunks } from '@/utils/diffHunks';
 
 enableAutoUnmount(afterEach);
 
@@ -650,6 +652,244 @@ describe('agent console stores', () => {
     await wrapper.vm.$nextTick();
 
     expect(wrapper.text()).toContain('Search unavailable');
+  });
+
+  it('fileReferences_extractsSimplePathFields', () => {
+    const refs = extractFileReferencesFromPayload(
+      { filePath: './src/main/java/App.java' },
+      { source: 'tool_call', eventId: 'evt-1', runId: 'run-1', toolName: 'EditFileTool' },
+    );
+
+    expect(refs).toEqual([
+      expect.objectContaining({
+        path: 'src/main/java/App.java',
+        normalizedPath: 'src/main/java/App.java',
+        source: 'tool_call',
+        eventId: 'evt-1',
+        runId: 'run-1',
+        toolName: 'EditFileTool',
+        confidence: 'high',
+      }),
+    ]);
+  });
+
+  it('fileReferences_extractsLineFields', () => {
+    const refs = extractFileReferencesFromPayload(
+      { targetFile: 'src/App.java', lineNumber: '42', endLine: 45, column: 3 },
+      { source: 'trace' },
+    );
+
+    expect(refs[0]).toMatchObject({
+      path: 'src/App.java',
+      line: 42,
+      startLine: 42,
+      endLine: 45,
+      column: 3,
+    });
+  });
+
+  it('fileReferences_extractsNestedFileArrays', () => {
+    const refs = extractFileReferencesFromPayload(
+      {
+        payload: {
+          changedFiles: [
+            { path: './README.md', range: { startLine: 5, endLine: 7 } },
+            'src/main/java/App.java',
+          ],
+        },
+      },
+      { source: 'timeline' },
+    );
+
+    expect(refs.map((ref) => `${ref.normalizedPath}:${ref.startLine ?? ''}`))
+      .toEqual(['README.md:5', 'src/main/java/App.java:']);
+  });
+
+  it('fileReferences_deduplicatesPathAndLine', () => {
+    const refs = dedupeFileReferences([
+      { path: 'src/App.java', normalizedPath: 'src/App.java', line: 12, source: 'trace', confidence: 'medium' },
+      { path: './src/App.java', normalizedPath: 'src/App.java', line: 12, source: 'timeline', confidence: 'low' },
+      { path: 'src/App.java', normalizedPath: 'src/App.java', line: 13, source: 'trace', confidence: 'medium' },
+    ]);
+
+    expect(refs.map((ref) => `${ref.normalizedPath}:${ref.line}`)).toEqual(['src/App.java:12', 'src/App.java:13']);
+  });
+
+  it('diffHunks_parsesUnifiedDiffHeader', () => {
+    const hunks = parseDiffHunks(`diff --git a/src/App.java b/src/App.java
+--- a/src/App.java
++++ b/src/App.java
+@@ -10,7 +10,9 @@ class App
+ line
++added
+`);
+
+    expect(hunks).toEqual([
+      expect.objectContaining({
+        filePath: 'src/App.java',
+        oldPath: 'src/App.java',
+        newPath: 'src/App.java',
+        oldStart: 10,
+        oldLines: 7,
+        newStart: 10,
+        newLines: 9,
+      }),
+    ]);
+  });
+
+  it('diffHunks_parsesMultipleFiles', () => {
+    const hunks = parseDiffHunks(`diff --git a/src/A.java b/src/A.java
+--- a/src/A.java
++++ b/src/A.java
+@@ -1 +1,2 @@
++a
+diff --git a/src/B.java b/src/B.java
+--- a/src/B.java
++++ /dev/null
+@@ -4,2 +0,0 @@
+-b
+`);
+
+    expect(hunks.map((hunk) => `${hunk.filePath}:${hunk.newStart}:${hunk.newLines}`))
+      .toEqual(['src/A.java:1:2', 'src/B.java:0:0']);
+    expect(hunks[1].deleted).toBe(true);
+  });
+
+  it('changeSetPanel_openFirstHunkNavigatesToWorkspaceLine', async () => {
+    const sessions = useSessionStore();
+    sessions.selectSession('team-worktree-run');
+    const changes = useChangeSetStore();
+    changes.currentChangeSet!.changedFiles[0].diff = `diff --git a/README.md b/README.md
+--- a/README.md
++++ b/README.md
+@@ -1,2 +8,3 @@
++new line
+`;
+
+    const wrapper = mount(ChangeSetPanel, { global: { plugins: [ElementPlus] } });
+    await wrapper.find('[data-test="open-first-hunk"]').trigger('click');
+
+    expect(currentRoute.value.path).toBe('/console/workspace');
+    expect(currentRoute.value.query.file).toBe('README.md');
+    expect(currentRoute.value.query.line).toBe('8');
+  });
+
+  it('changeSetPanel_deletedFileHunkDisablesOpen', async () => {
+    const sessions = useSessionStore();
+    sessions.selectSession('team-worktree-run');
+    const changes = useChangeSetStore();
+    changes.currentChangeSet!.changedFiles[0].changeType = 'deleted';
+    changes.currentChangeSet!.changedFiles[0].diff = `diff --git a/README.md b/README.md
+--- a/README.md
++++ /dev/null
+@@ -4,2 +0,0 @@
+-old line
+`;
+
+    const wrapper = mount(ChangeSetPanel, { global: { plugins: [ElementPlus] } });
+
+    expect(wrapper.find('[data-test="open-first-hunk"]').attributes('disabled')).toBeDefined();
+    expect(wrapper.text()).toContain('文件可能已删除');
+  });
+
+  it('traceInspector_relatedFilesShowsLineAndSource', async () => {
+    vi.stubGlobal('fetch', backendFetchStub({
+      timeline: [
+        {
+          id: 'evt-file-ref',
+          type: 'tool_call',
+          title: 'Tool: EditFileTool',
+          status: 'SUCCEEDED',
+          payload: { arguments: { filePath: 'src/App.java', startLine: 42 } },
+        },
+      ],
+    }));
+    const sessions = useSessionStore();
+    const inspector = useInspectorStore();
+
+    await sessions.loadFromBackend();
+    inspector.selectEvent('evt-file-ref');
+    const wrapper = mount(TraceInspector, { global: { plugins: [ElementPlus] } });
+
+    expect(wrapper.text()).toContain('src/App.java');
+    expect(wrapper.text()).toContain('tool_call');
+    expect(wrapper.text()).toContain('42');
+    expect(wrapper.text()).toContain('high');
+  });
+
+  it('traceInspector_openReferenceIncludesLineQuery', async () => {
+    vi.stubGlobal('fetch', backendFetchStub({
+      timeline: [
+        {
+          id: 'evt-file-ref-open',
+          type: 'tool_call',
+          title: 'Tool: EditFileTool',
+          status: 'SUCCEEDED',
+          payload: { arguments: { filePath: 'src/App.java', line: 24 } },
+        },
+      ],
+    }));
+    const sessions = useSessionStore();
+    const inspector = useInspectorStore();
+
+    await sessions.loadFromBackend();
+    inspector.selectEvent('evt-file-ref-open');
+    const wrapper = mount(TraceInspector, { global: { plugins: [ElementPlus] } });
+    await wrapper.find('[data-test="related-file-link"]').trigger('click');
+
+    expect(currentRoute.value.query.file).toBe('src/App.java');
+    expect(currentRoute.value.query.line).toBe('24');
+  });
+
+  it('workspacePage_lineQueryChangeRefocusesLine', async () => {
+    vi.stubGlobal('fetch', backendFetchStub({
+      workspaceTreeResponse: { workspace: '/tmp/ricbot', root: '', nodes: [] },
+      workspaceFileResponse: {
+        path: 'src/App.java',
+        language: 'java',
+        size: 32,
+        modifiedAt: '2026-06-04T08:00:00Z',
+        binary: false,
+        truncated: false,
+        content: 'one\ntwo\nthree\n',
+      },
+    }));
+    navigate('/console/workspace', { file: 'src/App.java', line: '1' });
+
+    const wrapper = mount(WorkspacePage, { global: { plugins: [ElementPlus] } });
+    await flushPromises();
+    replace('/console/workspace', { file: 'src/App.java', line: '3' });
+    await flushPromises();
+
+    expect(useWorkspaceStore().selectedLine).toBe(3);
+    expect(wrapper.find('[data-test="highlighted-file-line"]').text()).toContain('three');
+  });
+
+  it('fileViewer_highlightsLineFromDiffLink', async () => {
+    useLocaleStore().setLocale('en-US');
+    const wrapper = mount(FileViewer, {
+      global: { plugins: [ElementPlus] },
+      props: {
+        file: {
+          path: 'src/App.java',
+          language: 'java',
+          size: 24,
+          modifiedAt: '2026-06-04T08:00:00Z',
+          binary: false,
+          truncated: false,
+          content: 'one\ntwo\nthree\n',
+        },
+        selectedPath: 'src/App.java',
+        loading: false,
+        error: '',
+        changed: false,
+        selectedLine: 2,
+        sourceLabel: 'diff',
+      },
+    });
+
+    expect(wrapper.text()).toContain('Opened from diff');
+    expect(wrapper.find('[data-test="highlighted-file-line"]').text()).toContain('two');
   });
 
   it('selecting a tool event drives the tool inspector payload', () => {

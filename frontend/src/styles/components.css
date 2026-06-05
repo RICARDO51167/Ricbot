@@ -1018,6 +1018,10 @@
   border-right: 1px solid var(--line);
 }
 
+.file-row-wrap {
+  margin-bottom: 6px;
+}
+
 .file-row {
   display: flex;
   align-items: center;
@@ -1051,6 +1055,27 @@
   color: var(--muted);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 11px;
+}
+
+.file-row-actions {
+  padding: 3px 8px 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.link-button {
+  padding: 0;
+  color: var(--teal);
+  background: transparent;
+  border: 0;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.link-button:disabled {
+  color: var(--muted);
+  cursor: not-allowed;
 }
 
 .test-list {
@@ -1102,7 +1127,7 @@
   min-width: 0;
   min-height: 0;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
 }
 
 .diff-toolbar {
@@ -1110,6 +1135,41 @@
   justify-content: flex-end;
   padding: 10px 12px 0;
   background: #fbfcfd;
+}
+
+.diff-hunk-list {
+  padding: 10px 12px;
+  display: grid;
+  gap: 8px;
+  background: #fbfcfd;
+  border-bottom: 1px solid var(--line);
+}
+
+.diff-hunk-card {
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+}
+
+.diff-hunk-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.diff-hunk-head code {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diff-hunk-note {
+  margin: 6px 0 0;
+  color: #8a5a12;
+  font-size: 12px;
 }
 
 .workspace-toolbar {
@@ -1142,6 +1202,10 @@
   color: var(--muted);
   font-size: 13px;
   overflow-wrap: anywhere;
+}
+
+.file-source-note {
+  color: var(--teal);
 }
 
 .workspace-layout {
@@ -1385,6 +1449,8 @@
 .related-file {
   min-width: 0;
   padding: 6px 8px;
+  display: grid;
+  gap: 2px;
   color: var(--text);
   background: transparent;
   border: 0;
@@ -1398,6 +1464,15 @@
 .related-file.selected {
   background: var(--teal-soft);
   color: var(--teal);
+}
+
+.related-file-path {
+  font-weight: 700;
+}
+
+.related-file-meta {
+  color: var(--muted);
+  font-size: 11px;
 }
 
 .console-layout[dir="rtl"] .workspace-tree-pane {

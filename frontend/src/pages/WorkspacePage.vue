@@ -55,6 +55,7 @@
         :error="store.fileError"
         :changed="store.selectedIsChanged"
         :selected-line="store.selectedLine"
+        :source-label="sourceLabel"
       />
     </div>
   </section>
@@ -75,6 +76,7 @@ const { t } = useLocaleStore();
 const treeVisibilityHintText = computed(() => (
   store.treeVisibilityHint ? t(store.treeVisibilityHint as MessageKey) : ''
 ));
+const sourceLabel = computed(() => currentRoute.value.query.source === 'diff' ? 'diff' : '');
 let applyingQuery = false;
 
 onMounted(async () => {
@@ -117,7 +119,12 @@ async function openQueryFile() {
   }
   const file = currentRoute.value.query.file ?? '';
   if (file) {
-    await store.openFile(file, parseLine(currentRoute.value.query.line));
+    const line = parseLine(currentRoute.value.query.line);
+    if (store.selectedPath === file && store.file) {
+      store.focusLine(line);
+    } else {
+      await store.openFile(file, line);
+    }
   } else {
     store.clearSelection();
   }

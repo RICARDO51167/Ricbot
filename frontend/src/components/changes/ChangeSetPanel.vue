@@ -13,17 +13,35 @@
 
     <div v-if="changeSet" class="changes-layout">
       <div class="file-list">
-        <button
+        <div
           v-for="file in changeSet.changedFiles"
           :key="file.path"
-          type="button"
-          class="file-row"
-          :class="{ active: selectedFile?.path === file.path }"
-          @click="selectFile(file.path)"
+          class="file-row-wrap"
         >
-          <span class="file-path">{{ file.path }}</span>
-          <span class="file-stats">+{{ file.additions }} / -{{ file.deletions }}</span>
-        </button>
+          <button
+            type="button"
+            class="file-row"
+            :class="{ active: selectedFile?.path === file.path }"
+            @click="selectFile(file.path)"
+          >
+            <span class="file-path">{{ file.path }}</span>
+            <span class="file-stats">+{{ file.additions }} / -{{ file.deletions }}</span>
+          </button>
+          <div class="file-row-actions">
+            <button type="button" class="link-button" @click="openWorkspaceFile(file.path)">
+              {{ t('workspace.openFile') }}
+            </button>
+            <button
+              type="button"
+              class="link-button"
+              data-test="open-first-hunk"
+              :disabled="!firstHunkForFile(file.path) || isDeletedHunk(firstHunkForFile(file.path), file.changeType)"
+              @click="openFirstHunk(file.path)"
+            >
+              {{ t('workspace.openFirstHunk') }}
+            </button>
+          </div>
+        </div>
         <div v-if="changeSet.changedFiles.length === 0" class="empty-state small">
           {{ t('changes.noFiles') }}
         </div>
@@ -42,10 +60,29 @@
             type="primary"
             plain
             data-test="open-workspace-file"
-            @click="openWorkspaceFile"
+            @click="openWorkspaceFile()"
           >
             {{ t('changes.openCurrentFile') }}
           </el-button>
+        </div>
+        <div v-if="selectedFileHunks.length" class="diff-hunk-list">
+          <div v-for="hunk in selectedFileHunks" :key="`${hunk.filePath}:${hunk.newStart}:${hunk.oldStart}`" class="diff-hunk-card">
+            <div class="diff-hunk-head">
+              <code>{{ hunk.header }}</code>
+              <el-button
+                size="small"
+                plain
+                data-test="open-hunk-line"
+                :disabled="isDeletedHunk(hunk, selectedFile?.changeType)"
+                @click="openHunk(hunk)"
+              >
+                {{ t('workspace.openAtLine') }}
+              </el-button>
+            </div>
+            <p v-if="isDeletedHunk(hunk, selectedFile?.changeType)" class="diff-hunk-note">
+              {{ t('workspace.fileMayBeDeleted') }}
+            </p>
+          </div>
         </div>
         <pre class="diff-view"><code>{{ currentDiff }}</code></pre>
       </div>
@@ -55,20 +92,55 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue';
 import { storeToRefs } from 'pinia';
 
 import { navigate } from '@/router';
 import { useChangeSetStore } from '@/stores/changeSetStore';
 import { useLocaleStore } from '@/stores/localeStore';
+import type { FileChangeType } from '@/types/agent-console';
+import { parseDiffHunks, type DiffFileHunk } from '@/utils/diffHunks';
 
 const store = useChangeSetStore();
 const { currentChangeSet: changeSet, selectedFile, currentDiff, diffLoading, diffError, diffEmptyMessage } = storeToRefs(store);
 const { selectFile } = store;
 const { t } = useLocaleStore();
 
-function openWorkspaceFile() {
-  if (selectedFile.value?.path) {
-    navigate('/console/workspace', { file: selectedFile.value.path });
+const selectedFileHunks = computed(() => parseDiffHunks(currentDiff.value));
+
+function openWorkspaceFile(path = selectedFile.value?.path) {
+  if (path) {
+    navigate('/console/workspace', { file: path });
   }
+}
+
+function firstHunkForFile(path: string) {
+  const file = changeSet.value?.changedFiles.find((item) => item.path === path);
+  const diff = file?.path === selectedFile.value?.path ? currentDiff.value : file?.diff;
+  return parseDiffHunks(diff ?? '').find((hunk) => hunk.filePath === path);
+}
+
+function openFirstHunk(path: string) {
+  const hunk = firstHunkForFile(path);
+  const file = changeSet.value?.changedFiles.find((item) => item.path === path);
+  if (!hunk || isDeletedHunk(hunk, file?.changeType)) {
+    return;
+  }
+  openHunk(hunk);
+}
+
+function openHunk(hunk: DiffFileHunk) {
+  if (isDeletedHunk(hunk, selectedFile.value?.changeType)) {
+    return;
+  }
+  navigate('/console/workspace', {
+    file: hunk.filePath,
+    line: String(hunk.newStart),
+    source: 'diff',
+  });
+}
+
+function isDeletedHunk(hunk: DiffFileHunk | undefined, changeType?: FileChangeType) {
+  return !hunk || hunk.deleted || hunk.newLines === 0 || changeType === 'deleted';
 }
 </script>

@@ -22,18 +22,23 @@
         {{ t('workspace.openInWorkspace') }}
       </el-button>
     </div>
-    <section v-if="relatedFiles.length" class="related-files">
-      <h3>{{ t('workspace.relatedFiles') }}</h3>
+    <section v-if="relatedReferences.length" class="related-files">
+      <h3>{{ t('workspace.fileReferences') }} / {{ t('workspace.relatedFiles') }}</h3>
       <button
-        v-for="path in relatedFiles"
-        :key="path"
+        v-for="reference in relatedReferences"
+        :key="`${reference.normalizedPath}:${reference.line ?? reference.startLine ?? ''}`"
         type="button"
         class="related-file"
-        :class="{ selected: path === selectedWorkspacePath }"
+        :class="{ selected: reference.normalizedPath === selectedWorkspacePath }"
         data-test="related-file-link"
-        @click="openRelatedFile(path)"
+        @click="openRelatedFile(reference)"
       >
-        {{ path }}
+        <span class="related-file-path">{{ reference.normalizedPath }}</span>
+        <span class="related-file-meta">
+          {{ t('workspace.source') }}={{ reference.source }}
+          <template v-if="reference.line || reference.startLine"> / {{ t('workspace.line') }}={{ reference.line ?? reference.startLine }}</template>
+          / {{ t('workspace.confidence') }}={{ reference.confidence }}
+        </span>
       </button>
     </section>
 
@@ -115,7 +120,8 @@ import { useInspectorStore } from '@/stores/inspectorStore';
 import { useLocaleStore } from '@/stores/localeStore';
 import { useSessionStore } from '@/stores/sessionStore';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
-import { extractWorkspaceFileRefsFromPayload } from '@/utils/filePaths';
+import type { FileReference, FileReferenceSource } from '@/types/file-reference';
+import { dedupeFileReferences, extractFileReferencesFromPayload } from '@/utils/fileReferences';
 import ActionLog from './ActionLog.vue';
 import ApprovalPanel from './ApprovalPanel.vue';
 import DashboardPanel from './DashboardPanel.vue';
@@ -163,47 +169,69 @@ const showGenericInspector = computed(() => {
 const genericEvent = computed(() => showGenericInspector.value ? selectedEvent.value : null);
 
 const workspacePath = computed(() => {
-  return relatedFiles.value[0] ?? '';
+  return relatedReferences.value[0]?.normalizedPath ?? '';
 });
 
-const relatedFiles = computed(() => {
-  const refs = new Map<string, number | undefined>();
-  for (const ref of extractWorkspaceFileRefsFromPayload(selectedEvent.value)) {
-    refs.set(ref.path, ref.line);
-  }
+const relatedReferences = computed(() => {
+  const references: FileReference[] = [];
+  const selected = selectedEvent.value;
+  references.push(...extractFileReferencesFromPayload(selected, {
+    source: sourceForEvent(selected),
+    eventId: selected?.id,
+    runId: selected?.runId,
+    toolName: selectedToolCall.value?.toolName,
+  }));
   for (const event of filteredTimeline.value) {
     const payload = (event as { payload?: unknown }).payload ?? event;
-    for (const ref of extractWorkspaceFileRefsFromPayload(payload)) {
-      if (!refs.has(ref.path)) {
-        refs.set(ref.path, ref.line);
-      }
-    }
+    references.push(...extractFileReferencesFromPayload(payload, {
+      source: sourceForEvent(event),
+      eventId: event.id,
+      runId: event.runId,
+    }));
   }
   for (const file of currentChangeSet.value?.changedFiles ?? []) {
-    if (file.path && !refs.has(file.path)) {
-      refs.set(file.path, undefined);
+    if (file.path) {
+      references.push({
+        path: file.path,
+        normalizedPath: file.path,
+        source: 'changeset',
+        changeSetId: currentChangeSet.value?.id,
+        confidence: 'high',
+      });
     }
   }
-  return [...refs.keys()];
+  return dedupeFileReferences(references);
 });
 
 function openWorkspacePath() {
   if (workspacePath.value) {
-    openRelatedFile(workspacePath.value);
+    openRelatedFile(relatedReferences.value[0]);
   }
 }
 
-function openRelatedFile(path: string) {
-  const line = relatedLine(path);
-  navigate('/console/workspace', line ? { file: path, line: String(line) } : { file: path });
+function openRelatedFile(reference: FileReference | undefined) {
+  if (!reference) {
+    return;
+  }
+  const line = reference.line ?? reference.startLine;
+  navigate('/console/workspace', line
+    ? { file: reference.normalizedPath, line: String(line) }
+    : { file: reference.normalizedPath });
 }
 
-function relatedLine(path: string) {
-  for (const ref of extractWorkspaceFileRefsFromPayload(selectedEvent.value)) {
-    if (ref.path === path) {
-      return ref.line;
-    }
+function sourceForEvent(event: { kind?: string; category?: string; eventType?: string } | null | undefined): FileReferenceSource {
+  if (!event) {
+    return 'timeline';
   }
-  return undefined;
+  if (event.kind === 'tool' || event.category === 'tool' || event.eventType === 'tool_call') {
+    return 'tool_call';
+  }
+  if (event.kind === 'approval' || event.category === 'approval') {
+    return 'approval';
+  }
+  if (event.kind === 'trace') {
+    return 'trace';
+  }
+  return 'timeline';
 }
 </script>
