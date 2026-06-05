@@ -15,7 +15,7 @@
         :class="{ active: currentRoute.path === route.path }"
         @click.prevent="navigate(route.path)"
       >
-        {{ route.label }}
+        {{ t(route.labelKey) }}
       </a>
     </nav>
   </aside>
@@ -23,4 +23,7 @@
 
 <script setup lang="ts">
 import { currentRoute, navigate, routes } from '@/router';
+import { useLocaleStore } from '@/stores/localeStore';
+
+const { t } = useLocaleStore();
 </script>

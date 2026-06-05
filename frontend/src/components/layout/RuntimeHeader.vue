@@ -1,26 +1,42 @@
 <template>
   <header class="runtime-header">
     <div>
-      <h1>{{ currentRoute.label }}</h1>
-      <p>{{ runtimeStore.modeLabel }}</p>
+      <h1>{{ t(currentRoute.labelKey) }}</h1>
+      <p>{{ modeLabel }}</p>
     </div>
     <div class="runtime-header-metrics">
       <div class="run-metric">
-        <span>Status</span>
-        <strong>{{ runtimeStore.modeLabel }}</strong>
+        <span>{{ t('common.status') }}</span>
+        <strong>{{ modeLabel }}</strong>
       </div>
       <div class="run-metric">
-        <span>Provider</span>
-        <strong>{{ runtimeStore.displayProvider }}</strong>
+        <span>{{ t('common.provider') }}</span>
+        <strong>{{ displayRuntimeValue(runtimeStore.displayProvider) }}</strong>
       </div>
       <div class="run-metric">
-        <span>Model</span>
-        <strong>{{ runtimeStore.displayModel }}</strong>
+        <span>{{ t('common.model') }}</span>
+        <strong>{{ displayRuntimeValue(runtimeStore.displayModel) }}</strong>
       </div>
       <div class="run-metric wide">
-        <span>Workspace</span>
+        <span>{{ t('common.workspace') }}</span>
         <strong>{{ runtimeStore.runtime.workspace || sessionStore.currentSession?.workspace || 'n/a' }}</strong>
       </div>
+      <el-select
+        data-test="runtime-language-select"
+        class="runtime-language-select"
+        size="small"
+        :model-value="currentLocale"
+        :aria-label="t('common.language')"
+        @change="selectLocale"
+      >
+        <el-option
+          v-for="locale in locales"
+          :key="locale.code"
+          :label="locale.nativeLabel"
+          :value="locale.code"
+        />
+      </el-select>
+      <span class="language-current">{{ currentConfig.nativeLabel }}</span>
       <el-tag :type="streamTag">{{ streamLabel }}</el-tag>
     </div>
   </header>
@@ -28,25 +44,32 @@
 
 <script setup lang="ts">
 import { computed } from 'vue';
+import { storeToRefs } from 'pinia';
 
 import { currentRoute } from '@/router';
-import { useRuntimeStore } from '@/stores/runtimeStore';
+import { type LocaleCode, useLocaleStore } from '@/stores/localeStore';
+import { NOT_CONFIGURED, useRuntimeStore } from '@/stores/runtimeStore';
 import { useSessionStore } from '@/stores/sessionStore';
 
 const runtimeStore = useRuntimeStore();
 const sessionStore = useSessionStore();
+const localeStore = useLocaleStore();
+const { currentConfig, currentLocale } = storeToRefs(localeStore);
+const { locales, setLocale, t } = localeStore;
+
+const modeLabel = computed(() => runtimeStore.isBackendConnected ? t('common.backendConnected') : t('common.mockPreview'));
 
 const streamLabel = computed(() => {
   if (sessionStore.streamStatus === 'live') {
-    return 'Stream Live';
+    return t('top.streamLive');
   }
   if (sessionStore.streamStatus === 'fallback_polling' || sessionStore.pollingStatus === 'polling') {
-    return 'Polling';
+    return t('top.polling');
   }
   if (sessionStore.streamStatus === 'connecting') {
-    return 'Connecting';
+    return t('top.connecting');
   }
-  return runtimeStore.isBackendConnected ? 'Backend Connected' : 'Mock Preview';
+  return modeLabel.value;
 });
 
 const streamTag = computed(() => {
@@ -58,4 +81,12 @@ const streamTag = computed(() => {
   }
   return 'info';
 });
+
+function displayRuntimeValue(value: string) {
+  return value === NOT_CONFIGURED ? t('common.notConfigured') : value;
+}
+
+function selectLocale(value: string) {
+  setLocale(value as LocaleCode);
+}
 </script>

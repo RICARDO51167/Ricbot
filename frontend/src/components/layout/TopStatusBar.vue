@@ -42,24 +42,22 @@
       </div>
     </div>
 
-    <div class="language-switch" role="group" aria-label="Language switch">
-      <button
-        type="button"
-        :class="{ active: currentLocale === 'zh' }"
-        :aria-pressed="currentLocale === 'zh'"
-        @click="setLocale('zh')"
-      >
-        {{ t('top.language.zh') }}
-      </button>
-      <button
-        type="button"
-        :class="{ active: currentLocale === 'en' }"
-        :aria-pressed="currentLocale === 'en'"
-        @click="setLocale('en')"
-      >
-        {{ t('top.language.en') }}
-      </button>
-    </div>
+    <el-select
+      data-test="top-language-select"
+      class="language-select"
+      size="small"
+      :model-value="currentLocale"
+      :aria-label="t('common.language')"
+      @change="selectLocale"
+    >
+      <el-option
+        v-for="locale in locales"
+        :key="locale.code"
+        :label="locale.nativeLabel"
+        :value="locale.code"
+      />
+    </el-select>
+    <span class="language-current">{{ currentConfig.nativeLabel }}</span>
   </header>
 </template>
 
@@ -68,20 +66,24 @@ import { computed } from 'vue';
 import { storeToRefs } from 'pinia';
 
 import { useSessionStore } from '@/stores/sessionStore';
-import { useLocaleStore } from '@/stores/localeStore';
+import { type LocaleCode, useLocaleStore } from '@/stores/localeStore';
 import { NOT_CONFIGURED, useRuntimeStore } from '@/stores/runtimeStore';
 
 const sessionStore = useSessionStore();
 const { currentSession: session } = storeToRefs(sessionStore);
 const runtimeStore = useRuntimeStore();
 const localeStore = useLocaleStore();
-const { currentLocale } = storeToRefs(localeStore);
-const { setLocale, t } = localeStore;
+const { currentConfig, currentLocale } = storeToRefs(localeStore);
+const { locales, setLocale, t } = localeStore;
 
 const isBackendMode = computed(() => runtimeStore.isBackendConnected && !sessionStore.backendUnavailable);
 
 function displayRuntimeValue(value: string) {
   return value === NOT_CONFIGURED ? t('top.notConfigured') : value;
+}
+
+function selectLocale(value: string) {
+  setLocale(value as LocaleCode);
 }
 
 const statusType = computed(() => {

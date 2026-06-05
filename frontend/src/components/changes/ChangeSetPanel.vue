@@ -35,7 +35,20 @@
 
       <div v-if="diffLoading" class="diff-view diff-empty">{{ t('changes.loadingDiff') }}</div>
       <div v-else-if="diffError" class="diff-view diff-empty">{{ diffError }}</div>
-      <pre v-else-if="currentDiff" class="diff-view"><code>{{ currentDiff }}</code></pre>
+      <div v-else-if="currentDiff" class="diff-view-wrap">
+        <div class="diff-toolbar">
+          <el-button
+            size="small"
+            type="primary"
+            plain
+            data-test="open-workspace-file"
+            @click="openWorkspaceFile"
+          >
+            {{ t('changes.openWorkspace') }}
+          </el-button>
+        </div>
+        <pre class="diff-view"><code>{{ currentDiff }}</code></pre>
+      </div>
       <div v-else class="diff-view diff-empty">{{ diffEmptyMessage || t('changes.noRealDiff') }}</div>
     </div>
   </section>
@@ -44,6 +57,7 @@
 <script setup lang="ts">
 import { storeToRefs } from 'pinia';
 
+import { navigate } from '@/router';
 import { useChangeSetStore } from '@/stores/changeSetStore';
 import { useLocaleStore } from '@/stores/localeStore';
 
@@ -51,4 +65,10 @@ const store = useChangeSetStore();
 const { currentChangeSet: changeSet, selectedFile, currentDiff, diffLoading, diffError, diffEmptyMessage } = storeToRefs(store);
 const { selectFile } = store;
 const { t } = useLocaleStore();
+
+function openWorkspaceFile() {
+  if (selectedFile.value?.path) {
+    navigate('/console/workspace', { file: selectedFile.value.path });
+  }
+}
 </script>

@@ -43,7 +43,7 @@
         {{ t('approval.reject') }}
       </el-button>
     </div>
-    <el-tag v-if="isMockMode" type="info">Mock Preview</el-tag>
+    <el-tag v-if="isMockMode" type="info">{{ t('approval.mockPreview') }}</el-tag>
     <el-alert
       v-if="actionError"
       type="error"
