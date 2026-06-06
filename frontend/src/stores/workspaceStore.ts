@@ -26,10 +26,14 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const fileError = ref('');
   const treeVisibilityHint = ref('');
   const expandedPaths = ref(new Set<string>());
+  const loadingDirs = ref<Record<string, boolean>>({});
+  const loadedDirs = ref(new Set<string>());
   const searchKeyword = ref('');
   const searchResults = ref<WorkspaceSearchResult[]>([]);
   const searchLoading = ref(false);
   const searchError = ref('');
+  const previewCache = ref<Record<string, WorkspaceFileContent>>({});
+  const previewErrorCache = ref<Record<string, string>>({});
 
   const changedPaths = computed(() => new Set(
     useChangeSetStore().currentChangeSet?.changedFiles.map((item) => item.path) ?? [],
@@ -43,13 +47,13 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     try {
       const response = await getWorkspaceTree({
         root: options.root ?? '',
-        depth: options.depth ?? 3,
+        depth: options.depth ?? 1,
         includeHidden: options.includeHidden ?? false,
       });
       workspaceRoot.value = response.workspace;
       treeRoot.value = response.root;
       treeNodes.value = response.nodes ?? [];
-      expandedPaths.value = collectDirectoryPaths(treeNodes.value, expandedPaths.value);
+      loadedDirs.value = collectLoadedDirectoryPaths(treeNodes.value, new Set([response.root || '']));
       updateTreeVisibilityHint();
     } catch (error) {
       workspaceRoot.value = '';
@@ -62,19 +66,91 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   }
 
   async function refreshTree() {
+    loadedDirs.value = new Set();
+    loadingDirs.value = {};
     await loadTree({
       root: treeRoot.value,
     });
   }
 
-  function toggleDirectory(path: string) {
+  async function toggleDirectory(path: string) {
     const next = new Set(expandedPaths.value);
     if (next.has(path)) {
       next.delete(path);
+      expandedPaths.value = next;
     } else {
       next.add(path);
+      expandedPaths.value = next;
+      await loadDirectory(path);
     }
-    expandedPaths.value = next;
+  }
+
+  async function loadDirectory(path: string, options: { force?: boolean } = {}) {
+    const cleanPath = normalizePath(path);
+    if (!cleanPath && treeNodes.value.length > 0 && loadedDirs.value.has('') && !options.force) {
+      return;
+    }
+    if (loadedDirs.value.has(cleanPath) && !options.force) {
+      return;
+    }
+    loadingDirs.value = { ...loadingDirs.value, [cleanPath]: true };
+    treeError.value = '';
+    try {
+      const response = await getWorkspaceTree({
+        root: cleanPath,
+        depth: 1,
+        includeHidden: false,
+      });
+      workspaceRoot.value = response.workspace || workspaceRoot.value;
+      mergeTreeChildren(cleanPath, response.nodes ?? []);
+      const nextLoaded = new Set(loadedDirs.value);
+      nextLoaded.add(cleanPath);
+      for (const node of response.nodes ?? []) {
+        if (node.type === 'directory' && node.loaded) {
+          nextLoaded.add(node.path);
+        }
+      }
+      loadedDirs.value = nextLoaded;
+      updateTreeVisibilityHint();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Directory load failed';
+      treeError.value = message;
+      throw error;
+    } finally {
+      const nextLoading = { ...loadingDirs.value };
+      delete nextLoading[cleanPath];
+      loadingDirs.value = nextLoading;
+    }
+  }
+
+  async function ensurePathLoaded(filePath: string) {
+    const cleanPath = normalizePath(filePath);
+    const parts = cleanPath.split('/').filter(Boolean);
+    if (parts.length <= 1) {
+      updateTreeVisibilityHint();
+      return;
+    }
+    if (treeNodes.value.length === 0 && !loadedDirs.value.has('')) {
+      await loadTree({ depth: 1 });
+    }
+    const nextExpanded = new Set(expandedPaths.value);
+    for (let index = 1; index < parts.length; index += 1) {
+      const parentPath = parts.slice(0, index).join('/');
+      nextExpanded.add(parentPath);
+      expandedPaths.value = new Set(nextExpanded);
+      await loadDirectory(parentPath);
+    }
+    updateTreeVisibilityHint();
+  }
+
+  function mergeTreeChildren(parentPath: string, children: WorkspaceNode[]) {
+    const normalizedParent = normalizePath(parentPath);
+    const normalizedChildren = children.map(normalizeNode);
+    if (!normalizedParent) {
+      treeNodes.value = normalizedChildren;
+      return;
+    }
+    treeNodes.value = mergeChildrenIntoNodes(treeNodes.value, normalizedParent, normalizedChildren);
   }
 
   async function openFile(path: string, line?: number | null) {
@@ -93,6 +169,13 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       return;
     }
     expandParentPaths(selectedPath.value);
+    try {
+      await ensurePathLoaded(selectedPath.value);
+    } catch (error) {
+      if (isWorkspaceSecurityError(error)) {
+        treeVisibilityHint.value = 'workspace.blockedBySecurityPolicy';
+      }
+    }
     updateTreeVisibilityHint();
     syncChangeSetFile(selectedPath.value);
     fileLoading.value = true;
@@ -154,6 +237,28 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
   }
 
+  async function loadPreview(reference: { normalizedPath?: string; path: string }) {
+    const path = normalizePath(reference.normalizedPath || reference.path);
+    if (!path) {
+      throw new Error('Preview unavailable');
+    }
+    if (previewCache.value[path]) {
+      return previewCache.value[path];
+    }
+    if (previewErrorCache.value[path]) {
+      throw new Error(previewErrorCache.value[path]);
+    }
+    try {
+      const content = await getWorkspaceFileContent(path);
+      previewCache.value = { ...previewCache.value, [path]: content };
+      return content;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Preview unavailable';
+      previewErrorCache.value = { ...previewErrorCache.value, [path]: message };
+      throw error;
+    }
+  }
+
   function expandParentPaths(path: string) {
     const parts = normalizePath(path).split('/').filter(Boolean);
     if (parts.length <= 1) {
@@ -167,6 +272,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   }
 
   function updateTreeVisibilityHint() {
+    if (treeVisibilityHint.value === 'workspace.blockedBySecurityPolicy') {
+      return;
+    }
     if (!selectedPath.value || treeNodes.value.length === 0) {
       treeVisibilityHint.value = '';
       return;
@@ -189,10 +297,14 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     fileError,
     treeVisibilityHint,
     expandedPaths,
+    loadingDirs,
+    loadedDirs,
     searchKeyword,
     searchResults,
     searchLoading,
     searchError,
+    previewCache,
+    previewErrorCache,
     changedPaths,
     selectedIsChanged,
     loadTree,
@@ -202,17 +314,23 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     clearSearch,
     focusLine,
     toggleDirectory,
+    loadDirectory,
+    ensurePathLoaded,
+    mergeTreeChildren,
+    loadPreview,
     clearSelection,
     expandParentPaths,
   };
 });
 
-function collectDirectoryPaths(nodes: WorkspaceNode[], existing: Set<string>) {
+function collectLoadedDirectoryPaths(nodes: WorkspaceNode[], existing: Set<string>) {
   const next = new Set(existing);
   for (const node of nodes) {
     if (node.type === 'directory') {
-      next.add(node.path);
-      collectDirectoryPaths(node.children ?? [], next).forEach((path) => next.add(path));
+      if (node.loaded) {
+        next.add(node.path);
+      }
+      collectLoadedDirectoryPaths(node.children ?? [], next).forEach((path) => next.add(path));
     }
   }
   return next;
@@ -239,4 +357,46 @@ function pathExistsInTree(nodes: WorkspaceNode[], path: string): boolean {
     }
   }
   return false;
+}
+
+function normalizeNode(node: WorkspaceNode): WorkspaceNode {
+  if (node.type !== 'directory') {
+    return { ...node, children: node.children ?? [], loaded: true, hasChildren: false };
+  }
+  return {
+    ...node,
+    children: node.children ?? [],
+    loaded: node.loaded ?? !(node.hasChildren ?? false),
+    hasChildren: node.hasChildren ?? Boolean(node.children?.length),
+  };
+}
+
+function mergeChildrenIntoNodes(nodes: WorkspaceNode[], parentPath: string, children: WorkspaceNode[]): WorkspaceNode[] {
+  return nodes.map((node) => {
+    if (node.path === parentPath) {
+      return {
+        ...normalizeNode(node),
+        children,
+        loaded: true,
+        hasChildren: node.hasChildren ?? children.length > 0,
+      };
+    }
+    if (node.children?.length) {
+      return {
+        ...node,
+        children: mergeChildrenIntoNodes(node.children, parentPath, children),
+      };
+    }
+    return node;
+  });
+}
+
+function isWorkspaceSecurityError(error: unknown) {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  const message = error.message.toLowerCase();
+  return message.includes('blocked')
+    || message.includes('security policy')
+    || message.includes('outside workspace');
 }

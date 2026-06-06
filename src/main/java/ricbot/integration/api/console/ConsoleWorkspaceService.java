@@ -54,7 +54,7 @@ public class ConsoleWorkspaceService {
             throw new ConsoleWorkspaceException("path_not_directory", "workspace path is not a directory: " + relativePath(target), 400);
         }
         if (isBlocked(target, includeHidden)) {
-            throw new ConsoleWorkspaceException("path_not_previewable", "workspace path is not previewable: " + relativePath(target), 403);
+            throw new ConsoleWorkspaceException("path_blocked", "workspace path is blocked by security policy: " + relativePath(target), 403);
         }
 
         int safeDepth = Math.max(0, Math.min(depth, 8));
@@ -193,14 +193,26 @@ public class ConsoleWorkspaceService {
 
     private WorkspaceTreeNode node(Path path, int childDepth, boolean includeHidden) {
         boolean directory = Files.isDirectory(path);
+        boolean hasChildren = directory && hasVisibleChildren(path, includeHidden);
+        List<WorkspaceTreeNode> childNodes = directory ? children(path, childDepth, includeHidden) : List.of();
         return new WorkspaceTreeNode(
                 path.getFileName().toString(),
                 relativePath(path),
                 directory ? WorkspaceNodeType.DIRECTORY : WorkspaceNodeType.FILE,
                 directory ? 0 : fileSize(path),
                 directory ? "" : modifiedAt(path),
-                directory ? children(path, childDepth, includeHidden) : List.of()
+                childNodes,
+                !directory || childDepth > 0 || !hasChildren,
+                hasChildren
         );
+    }
+
+    private boolean hasVisibleChildren(Path directory, boolean includeHidden) {
+        try (Stream<Path> stream = Files.list(directory)) {
+            return stream.anyMatch(path -> !isBlocked(path, includeHidden));
+        } catch (IOException e) {
+            return false;
+        }
     }
 
     private Path resolveWorkspaceRoot() {

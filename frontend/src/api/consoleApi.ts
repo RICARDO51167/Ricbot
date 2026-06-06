@@ -131,6 +131,8 @@ export interface ConsoleWorkspaceTreeNode {
   size?: number;
   modifiedAt?: string;
   children?: ConsoleWorkspaceTreeNode[];
+  loaded?: boolean;
+  hasChildren?: boolean;
 }
 
 export interface ConsoleWorkspaceTreeResponse {

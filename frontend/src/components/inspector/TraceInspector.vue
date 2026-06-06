@@ -24,22 +24,24 @@
     </div>
     <section v-if="relatedReferences.length" class="related-files">
       <h3>{{ t('workspace.fileReferences') }} / {{ t('workspace.relatedFiles') }}</h3>
-      <button
+      <div
         v-for="reference in relatedReferences"
         :key="`${reference.normalizedPath}:${reference.line ?? reference.startLine ?? ''}`"
-        type="button"
         class="related-file"
         :class="{ selected: reference.normalizedPath === selectedWorkspacePath }"
-        data-test="related-file-link"
-        @click="openRelatedFile(reference)"
       >
-        <span class="related-file-path">{{ reference.normalizedPath }}</span>
+        <FileReferencePreview :reference="reference">
+          <span class="related-file-path">{{ reference.normalizedPath }}</span>
+        </FileReferencePreview>
         <span class="related-file-meta">
           {{ t('workspace.source') }}={{ reference.source }}
           <template v-if="reference.line || reference.startLine"> / {{ t('workspace.line') }}={{ reference.line ?? reference.startLine }}</template>
           / {{ t('workspace.confidence') }}={{ reference.confidence }}
         </span>
-      </button>
+        <button type="button" class="link-button" data-test="related-file-link" @click="openRelatedFile(reference)">
+          {{ t('workspace.openFile') }}
+        </button>
+      </div>
     </section>
 
     <ApprovalPanel v-if="inspectorMode === 'approval' && selectedApproval" />
@@ -126,6 +128,7 @@ import ActionLog from './ActionLog.vue';
 import ApprovalPanel from './ApprovalPanel.vue';
 import DashboardPanel from './DashboardPanel.vue';
 import EventSearch from './EventSearch.vue';
+import FileReferencePreview from '@/components/workspace/FileReferencePreview.vue';
 import JsonViewer from './JsonViewer.vue';
 import RunHistory from './RunHistory.vue';
 

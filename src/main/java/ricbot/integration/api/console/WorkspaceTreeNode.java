@@ -8,6 +8,8 @@ public record WorkspaceTreeNode(
         WorkspaceNodeType type,
         long size,
         String modifiedAt,
-        List<WorkspaceTreeNode> children
+        List<WorkspaceTreeNode> children,
+        boolean loaded,
+        boolean hasChildren
 ) {
 }

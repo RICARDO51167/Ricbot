@@ -28,6 +28,7 @@
             <span class="file-stats">+{{ file.additions }} / -{{ file.deletions }}</span>
           </button>
           <div class="file-row-actions">
+            <FileReferencePreview :reference="fileReferenceForPath(file.path)" />
             <button type="button" class="link-button" @click="openWorkspaceFile(file.path)">
               {{ t('workspace.openFile') }}
             </button>
@@ -78,6 +79,11 @@
               >
                 {{ t('workspace.openAtLine') }}
               </el-button>
+              <FileReferencePreview
+                v-if="!isDeletedHunk(hunk, selectedFile?.changeType)"
+                :reference="hunkReference(hunk)"
+                :label="`${t('workspace.preview')} ${t('workspace.line')} ${hunk.newStart}`"
+              />
             </div>
             <p v-if="isDeletedHunk(hunk, selectedFile?.changeType)" class="diff-hunk-note">
               {{ t('workspace.fileMayBeDeleted') }}
@@ -99,7 +105,9 @@ import { navigate } from '@/router';
 import { useChangeSetStore } from '@/stores/changeSetStore';
 import { useLocaleStore } from '@/stores/localeStore';
 import type { FileChangeType } from '@/types/agent-console';
+import type { FileReference } from '@/types/file-reference';
 import { parseDiffHunks, type DiffFileHunk } from '@/utils/diffHunks';
+import FileReferencePreview from '@/components/workspace/FileReferencePreview.vue';
 
 const store = useChangeSetStore();
 const { currentChangeSet: changeSet, selectedFile, currentDiff, diffLoading, diffError, diffEmptyMessage } = storeToRefs(store);
@@ -142,5 +150,28 @@ function openHunk(hunk: DiffFileHunk) {
 
 function isDeletedHunk(hunk: DiffFileHunk | undefined, changeType?: FileChangeType) {
   return !hunk || hunk.deleted || hunk.newLines === 0 || changeType === 'deleted';
+}
+
+function fileReferenceForPath(path: string): FileReference {
+  return {
+    path,
+    normalizedPath: path,
+    source: 'changeset',
+    changeSetId: changeSet.value?.id,
+    confidence: 'high',
+  };
+}
+
+function hunkReference(hunk: DiffFileHunk): FileReference {
+  return {
+    path: hunk.filePath,
+    normalizedPath: hunk.filePath,
+    line: hunk.newStart,
+    startLine: hunk.newStart,
+    endLine: hunk.newStart + Math.max(0, hunk.newLines - 1),
+    source: 'diff',
+    changeSetId: changeSet.value?.id,
+    confidence: 'high',
+  };
 }
 </script>

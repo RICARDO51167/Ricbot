@@ -1306,7 +1306,7 @@
   min-height: 30px;
   padding: 4px 8px;
   display: grid;
-  grid-template-columns: 18px minmax(0, 1fr) auto;
+  grid-template-columns: 18px minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 6px;
   color: var(--text);
@@ -1338,6 +1338,11 @@
 
 .workspace-node-badge {
   color: var(--teal);
+  font-size: 11px;
+}
+
+.workspace-node-loading {
+  color: var(--muted);
   font-size: 11px;
 }
 
@@ -1450,14 +1455,13 @@
   min-width: 0;
   padding: 6px 8px;
   display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 2px;
   color: var(--text);
   background: transparent;
-  border: 0;
   border-radius: 6px;
   text-align: left;
   overflow-wrap: anywhere;
-  cursor: pointer;
 }
 
 .related-file:hover,
@@ -1471,8 +1475,116 @@
 }
 
 .related-file-meta {
+  grid-column: 1 / -1;
   color: var(--muted);
   font-size: 11px;
+}
+
+.file-reference-preview {
+  position: relative;
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+}
+
+.file-reference-trigger {
+  min-width: 0;
+  padding: 0;
+  overflow: hidden;
+  color: var(--teal);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 720;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-reference-trigger:focus-visible {
+  outline: 2px solid rgba(15, 118, 110, 0.32);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.file-reference-popover {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 6px);
+  left: 0;
+  width: min(520px, 78vw);
+  max-height: 360px;
+  padding: 10px;
+  display: grid;
+  gap: 8px;
+  color: var(--text);
+  background: #fff;
+  border: 1px solid rgba(15, 118, 110, 0.28);
+  border-radius: 8px;
+  box-shadow: 0 18px 46px rgba(15, 23, 42, 0.16);
+}
+
+.file-reference-popover-head,
+.file-reference-state,
+.file-reference-code-wrap {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.file-reference-popover-head small,
+.file-reference-state small,
+.file-reference-context {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-reference-code {
+  max-height: 250px;
+  overflow: auto;
+  display: grid;
+  color: #233041;
+  background: #fbfcfd;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.file-reference-line {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+}
+
+.file-reference-line.highlighted {
+  background: #fff7c2;
+}
+
+.file-reference-line-number {
+  padding: 0 8px;
+  color: #8a97a8;
+  background: #f1f5f9;
+  border-right: 1px solid var(--line);
+  text-align: right;
+  user-select: none;
+}
+
+.file-reference-line span:last-child {
+  min-width: 0;
+  padding: 0 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: pre;
+}
+
+.file-reference-open {
+  justify-self: start;
 }
 
 .console-layout[dir="rtl"] .workspace-tree-pane {

@@ -14,6 +14,7 @@ import MainNavSidebar from '@/components/layout/MainNavSidebar.vue';
 import RuntimeHeader from '@/components/layout/RuntimeHeader.vue';
 import ChatTimeline from '@/components/timeline/ChatTimeline.vue';
 import FileViewer from '@/components/workspace/FileViewer.vue';
+import FileReferencePreview from '@/components/workspace/FileReferencePreview.vue';
 import WorkspaceTree from '@/components/workspace/WorkspaceTree.vue';
 import ApprovalsPage from '@/pages/ApprovalsPage.vue';
 import ChangeSetsPage from '@/pages/ChangeSetsPage.vue';
@@ -525,6 +526,137 @@ describe('agent console stores', () => {
     expect(wrapper.text()).toContain('文件已打开，但未出现在当前树深度中');
   });
 
+  it('workspaceStore_loadDirectoryMergesChildren', async () => {
+    vi.stubGlobal('fetch', backendFetchStub({
+      workspaceTreeResponses: {
+        '': {
+          workspace: '/tmp/ricbot',
+          root: '',
+          nodes: [{ name: 'src', path: 'src', type: 'directory', loaded: false, hasChildren: true, children: [] }],
+        },
+        src: {
+          workspace: '/tmp/ricbot',
+          root: 'src',
+          nodes: [{ name: 'main', path: 'src/main', type: 'directory', loaded: true, hasChildren: false, children: [] }],
+        },
+      },
+    }));
+    const workspace = useWorkspaceStore();
+
+    await workspace.loadTree({ depth: 1 });
+    await workspace.loadDirectory('src');
+
+    expect(workspace.treeNodes[0]?.children?.map((node) => node.path)).toEqual(['src/main']);
+    expect(workspace.loadedDirs.has('src')).toBe(true);
+  });
+
+  it('workspaceStore_doesNotReloadLoadedDirectory', async () => {
+    const fetch = backendFetchStub({
+      workspaceTreeResponses: {
+        '': {
+          workspace: '/tmp/ricbot',
+          root: '',
+          nodes: [{ name: 'src', path: 'src', type: 'directory', loaded: false, hasChildren: true, children: [] }],
+        },
+        src: {
+          workspace: '/tmp/ricbot',
+          root: 'src',
+          nodes: [{ name: 'main', path: 'src/main', type: 'directory', loaded: true, hasChildren: false, children: [] }],
+        },
+      },
+    });
+    vi.stubGlobal('fetch', fetch);
+    const workspace = useWorkspaceStore();
+
+    await workspace.loadTree({ depth: 1 });
+    await workspace.loadDirectory('src');
+    await workspace.loadDirectory('src');
+
+    const treeRequests = fetch.mock.calls
+      .map(([input]) => String(input))
+      .filter((url) => url.includes('/api/console/workspace/tree') && url.includes('root=src'));
+    expect(treeRequests).toHaveLength(1);
+  });
+
+  it('workspaceStore_ensurePathLoadedExpandsParents', async () => {
+    vi.stubGlobal('fetch', backendFetchStub({
+      workspaceTreeResponses: {
+        '': {
+          workspace: '/tmp/ricbot',
+          root: '',
+          nodes: [{ name: 'src', path: 'src', type: 'directory', loaded: false, hasChildren: true, children: [] }],
+        },
+        src: {
+          workspace: '/tmp/ricbot',
+          root: 'src',
+          nodes: [{ name: 'main', path: 'src/main', type: 'directory', loaded: false, hasChildren: true, children: [] }],
+        },
+        'src/main': {
+          workspace: '/tmp/ricbot',
+          root: 'src/main',
+          nodes: [{ name: 'java', path: 'src/main/java', type: 'directory', loaded: false, hasChildren: true, children: [] }],
+        },
+        'src/main/java': {
+          workspace: '/tmp/ricbot',
+          root: 'src/main/java',
+          nodes: [{ name: 'App.java', path: 'src/main/java/App.java', type: 'file', size: 12, modifiedAt: '2026-06-04T08:00:00Z' }],
+        },
+      },
+    }));
+    const workspace = useWorkspaceStore();
+
+    await workspace.loadTree({ depth: 1 });
+    await workspace.ensurePathLoaded('src/main/java/App.java');
+
+    expect(workspace.expandedPaths.has('src')).toBe(true);
+    expect(workspace.expandedPaths.has('src/main')).toBe(true);
+    expect(workspace.expandedPaths.has('src/main/java')).toBe(true);
+    expect(workspace.treeVisibilityHint).toBe('');
+  });
+
+  it('workspacePage_deepFileQueryLoadsParentsAndHighlightsFile', async () => {
+    vi.stubGlobal('fetch', backendFetchStub({
+      workspaceTreeResponses: {
+        '': {
+          workspace: '/tmp/ricbot',
+          root: '',
+          nodes: [{ name: 'src', path: 'src', type: 'directory', loaded: false, hasChildren: true, children: [] }],
+        },
+        src: {
+          workspace: '/tmp/ricbot',
+          root: 'src',
+          nodes: [{ name: 'main', path: 'src/main', type: 'directory', loaded: false, hasChildren: true, children: [] }],
+        },
+        'src/main': {
+          workspace: '/tmp/ricbot',
+          root: 'src/main',
+          nodes: [{ name: 'java', path: 'src/main/java', type: 'directory', loaded: false, hasChildren: true, children: [] }],
+        },
+        'src/main/java': {
+          workspace: '/tmp/ricbot',
+          root: 'src/main/java',
+          nodes: [{ name: 'App.java', path: 'src/main/java/App.java', type: 'file', size: 12, modifiedAt: '2026-06-04T08:00:00Z' }],
+        },
+      },
+      workspaceFileResponse: {
+        path: 'src/main/java/App.java',
+        language: 'java',
+        size: 12,
+        modifiedAt: '2026-06-04T08:00:00Z',
+        binary: false,
+        truncated: false,
+        content: 'class App {}',
+      },
+    }));
+    navigate('/console/workspace', { file: 'src/main/java/App.java' });
+
+    const wrapper = mount(WorkspacePage, { global: { plugins: [ElementPlus] } });
+    await flushPromises();
+
+    expect(wrapper.find('.workspace-node.selected').text()).toContain('App.java');
+    expect(wrapper.text()).not.toContain('文件已打开，但未出现在当前树深度中');
+  });
+
   it('workspaceTree_highlightsSelectedFile', () => {
     const wrapper = mount(WorkspaceTree, {
       props: {
@@ -890,6 +1022,170 @@ diff --git a/src/B.java b/src/B.java
 
     expect(wrapper.text()).toContain('Opened from diff');
     expect(wrapper.find('[data-test="highlighted-file-line"]').text()).toContain('two');
+  });
+
+  it('fileReferencePreview_loadsPreviewOnHover', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', backendFetchStub({
+      workspaceFileResponse: {
+        path: 'src/App.java',
+        language: 'java',
+        size: 32,
+        modifiedAt: '2026-06-04T08:00:00Z',
+        binary: false,
+        truncated: false,
+        content: 'one\ntwo\nthree\n',
+      },
+    }));
+    const wrapper = mount(FileReferencePreview, {
+      global: { plugins: [ElementPlus] },
+      props: {
+        reference: { path: 'src/App.java', normalizedPath: 'src/App.java', source: 'trace', confidence: 'high' },
+      },
+    });
+
+    await wrapper.find('[data-test="file-reference-preview-trigger"]').trigger('mouseenter');
+    await vi.advanceTimersByTimeAsync(200);
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('src/App.java');
+    expect(wrapper.text()).toContain('one');
+  });
+
+  it('fileReferencePreview_showsLineContext', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', backendFetchStub({
+      workspaceFileResponse: {
+        path: 'src/App.java',
+        language: 'java',
+        size: 80,
+        modifiedAt: '2026-06-04T08:00:00Z',
+        binary: false,
+        truncated: false,
+        content: Array.from({ length: 12 }, (_, index) => `line ${index + 1}`).join('\n'),
+      },
+    }));
+    const wrapper = mount(FileReferencePreview, {
+      global: { plugins: [ElementPlus] },
+      props: {
+        reference: { path: 'src/App.java', normalizedPath: 'src/App.java', line: 8, source: 'diff', confidence: 'high' },
+      },
+    });
+
+    await wrapper.find('[data-test="file-reference-preview-trigger"]').trigger('focus');
+    await vi.advanceTimersByTimeAsync(200);
+    await flushPromises();
+
+    expect(wrapper.find('[data-test="preview-highlighted-line"]').text()).toContain('line 8');
+    expect(wrapper.text()).toContain('line 3');
+    expect(wrapper.findAll('.file-reference-line-number').map((line) => line.text())).not.toContain('1');
+  });
+
+  it('fileReferencePreview_handlesBinaryFile', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', backendFetchStub({
+      workspaceFileResponse: {
+        path: 'image.bin',
+        language: 'bin',
+        size: 4,
+        modifiedAt: '2026-06-04T08:00:00Z',
+        binary: true,
+        truncated: false,
+        content: '',
+      },
+    }));
+    useLocaleStore().setLocale('en-US');
+    const wrapper = mount(FileReferencePreview, {
+      global: { plugins: [ElementPlus] },
+      props: {
+        reference: { path: 'image.bin', normalizedPath: 'image.bin', source: 'trace', confidence: 'high' },
+      },
+    });
+
+    await wrapper.find('[data-test="file-reference-preview-trigger"]').trigger('mouseenter');
+    await vi.advanceTimersByTimeAsync(200);
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('Preview unavailable');
+    expect(wrapper.text()).toContain('Binary file preview is unavailable');
+  });
+
+  it('fileReferencePreview_handlesMissingFile', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', backendFetchStub({ workspaceFileFails: true }));
+    useLocaleStore().setLocale('en-US');
+    const wrapper = mount(FileReferencePreview, {
+      global: { plugins: [ElementPlus] },
+      props: {
+        reference: { path: 'missing.txt', normalizedPath: 'missing.txt', source: 'trace', confidence: 'high' },
+      },
+    });
+
+    await wrapper.find('[data-test="file-reference-preview-trigger"]').trigger('mouseenter');
+    await vi.advanceTimersByTimeAsync(200);
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('Preview unavailable');
+    expect(wrapper.text()).toContain('Workspace unavailable');
+  });
+
+  it('traceInspector_relatedFileHoverShowsPreview', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', backendFetchStub({
+      timeline: [
+        {
+          id: 'evt-file-preview',
+          type: 'tool_call',
+          title: 'Tool: ReadFileTool',
+          status: 'SUCCEEDED',
+          payload: { arguments: { filePath: 'src/App.java', line: 2 } },
+        },
+      ],
+      workspaceFileResponse: {
+        path: 'src/App.java',
+        language: 'java',
+        size: 20,
+        modifiedAt: '2026-06-04T08:00:00Z',
+        binary: false,
+        truncated: false,
+        content: 'one\ntwo\nthree\n',
+      },
+    }));
+    const sessions = useSessionStore();
+    const inspector = useInspectorStore();
+
+    await sessions.loadFromBackend();
+    inspector.selectEvent('evt-file-preview');
+    const wrapper = mount(TraceInspector, { global: { plugins: [ElementPlus] } });
+    await wrapper.find('[data-test="file-reference-preview-trigger"]').trigger('mouseenter');
+    await vi.advanceTimersByTimeAsync(200);
+    await flushPromises();
+
+    expect(wrapper.find('[data-test="preview-highlighted-line"]').text()).toContain('two');
+  });
+
+  it('changeSetPanel_fileReferenceHoverShowsPreview', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', backendFetchStub({
+      workspaceFileResponse: {
+        path: 'README.md',
+        language: 'markdown',
+        size: 24,
+        modifiedAt: '2026-06-04T08:00:00Z',
+        binary: false,
+        truncated: false,
+        content: 'title\nbody\n',
+      },
+    }));
+    const sessions = useSessionStore();
+    sessions.selectSession('team-worktree-run');
+
+    const wrapper = mount(ChangeSetPanel, { global: { plugins: [ElementPlus] } });
+    await wrapper.find('[data-test="file-reference-preview-trigger"]').trigger('mouseenter');
+    await vi.advanceTimersByTimeAsync(200);
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('title');
   });
 
   it('selecting a tool event drives the tool inspector payload', () => {
@@ -2602,7 +2898,9 @@ function backendFetchStub(options: {
   eventSearchResponse?: Record<string, unknown>;
   metricsSummaryResponse?: Record<string, unknown>;
   workspaceTreeResponse?: Record<string, unknown>;
+  workspaceTreeResponses?: Record<string, Record<string, unknown>>;
   workspaceFileResponse?: Record<string, unknown>;
+  workspaceFileResponses?: Record<string, Record<string, unknown>>;
   workspaceSearchResponse?: Record<string, unknown>;
   runFails?: boolean;
   cancelFails?: boolean;
@@ -2616,15 +2914,16 @@ function backendFetchStub(options: {
   return vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url.includes('/api/console/workspace/tree')) {
-      if (options.workspaceFileFails) {
+      if (options.workspaceFileFails || options.workspaceTreeResponse?.error) {
         return {
           ok: false,
           status: 500,
           headers: { get: () => 'application/json' },
-          json: async () => ({ error: { message: 'Workspace unavailable' } }),
+          json: async () => ({ error: { message: String(options.workspaceTreeResponse?.error ?? 'Workspace unavailable') } }),
         };
       }
-      return jsonResponse(options.workspaceTreeResponse ?? { workspace: '/tmp/ricbot', root: '', nodes: [] });
+      const root = new URL(url, 'http://127.0.0.1').searchParams.get('root') ?? '';
+      return jsonResponse(options.workspaceTreeResponses?.[root] ?? options.workspaceTreeResponse ?? { workspace: '/tmp/ricbot', root: '', nodes: [] });
     }
     if (url.includes('/api/console/workspace/files/content')) {
       if (options.workspaceFileFails) {
@@ -2636,7 +2935,7 @@ function backendFetchStub(options: {
         };
       }
       const path = new URL(url, 'http://127.0.0.1').searchParams.get('path') ?? '';
-      return jsonResponse(options.workspaceFileResponse ?? {
+      return jsonResponse(options.workspaceFileResponses?.[path] ?? options.workspaceFileResponse ?? {
         path,
         language: 'text',
         size: 0,

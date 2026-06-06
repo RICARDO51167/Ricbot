@@ -44,7 +44,8 @@
           :selected-path="store.selectedPath"
           :changed-paths="store.changedPaths"
           :expanded-paths="store.expandedPaths"
-          @toggle-directory="store.toggleDirectory"
+          :loading-dirs="store.loadingDirs"
+          @toggle-directory="toggleDirectory"
           @select-file="selectFile"
         />
       </aside>
@@ -100,6 +101,10 @@ async function refreshTree() {
 
 async function selectFile(path: string) {
   await openWorkspaceFile(path);
+}
+
+async function toggleDirectory(path: string) {
+  await store.toggleDirectory(path);
 }
 
 async function openWorkspaceFile(path: string, line?: number | null) {

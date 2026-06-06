@@ -40,6 +40,34 @@ class ConsoleWorkspaceServiceTest {
 
         assertEquals(WorkspaceNodeType.DIRECTORY, src.type());
         assertEquals(0, src.children().size());
+        assertFalse(src.loaded());
+        assertTrue(src.hasChildren());
+    }
+
+    @Test
+    void workspaceTree_loadsChildDirectoryByRoot(@TempDir Path workspace) throws Exception {
+        Files.createDirectories(workspace.resolve("src/main/java"));
+        Files.writeString(workspace.resolve("src/main/java/App.java"), "class App {}\n");
+
+        WorkspaceTreeResponse response = new ConsoleWorkspaceService(workspace).tree("src/main", 1, false);
+
+        assertEquals("src/main", response.root());
+        assertEquals(List.of("src/main/java"), response.nodes().stream().map(WorkspaceTreeNode::path).toList());
+        assertEquals(WorkspaceNodeType.DIRECTORY, response.nodes().get(0).type());
+        assertFalse(response.nodes().get(0).loaded());
+        assertTrue(response.nodes().get(0).hasChildren());
+    }
+
+    @Test
+    void workspaceTree_rootFileReturnsErrorOrEmpty(@TempDir Path workspace) throws Exception {
+        Files.writeString(workspace.resolve("README.md"), "readme\n");
+        ConsoleWorkspaceService service = new ConsoleWorkspaceService(workspace);
+
+        ConsoleWorkspaceException error = assertThrows(ConsoleWorkspaceException.class,
+                () -> service.tree("README.md", 1, false));
+
+        assertEquals("path_not_directory", error.code());
+        assertEquals(400, error.status());
     }
 
     @Test
@@ -50,6 +78,47 @@ class ConsoleWorkspaceServiceTest {
                 () -> service.tree("../outside", 2, false));
 
         assertEquals("path_outside_workspace", error.code());
+    }
+
+    @Test
+    void workspaceTree_rejectsTraversalRoot(@TempDir Path workspace) {
+        ConsoleWorkspaceService service = new ConsoleWorkspaceService(workspace);
+
+        ConsoleWorkspaceException error = assertThrows(ConsoleWorkspaceException.class,
+                () -> service.tree("src/../../outside", 1, false));
+
+        assertEquals("path_outside_workspace", error.code());
+    }
+
+    @Test
+    void workspaceTree_skipsBlockedDirectoryOnLazyLoad(@TempDir Path workspace) throws Exception {
+        Files.createDirectories(workspace.resolve("src/target/generated"));
+        Files.writeString(workspace.resolve("src/target/generated/App.java"), "class App {}\n");
+        Files.createDirectories(workspace.resolve("src/main"));
+
+        WorkspaceTreeResponse response = new ConsoleWorkspaceService(workspace).tree("src", 1, false);
+
+        assertEquals(List.of("src/main"), response.nodes().stream().map(WorkspaceTreeNode::path).toList());
+        ConsoleWorkspaceException blocked = assertThrows(ConsoleWorkspaceException.class,
+                () -> new ConsoleWorkspaceService(workspace).tree("src/target", 1, false));
+        assertEquals("path_blocked", blocked.code());
+        assertEquals(403, blocked.status());
+    }
+
+    @Test
+    void workspaceTree_marksHasChildrenForDirectories(@TempDir Path workspace) throws Exception {
+        Files.createDirectories(workspace.resolve("empty"));
+        Files.createDirectories(workspace.resolve("src/main"));
+        Files.writeString(workspace.resolve("src/App.java"), "class App {}\n");
+
+        WorkspaceTreeResponse response = new ConsoleWorkspaceService(workspace).tree("", 1, false);
+
+        WorkspaceTreeNode empty = response.nodes().stream().filter(node -> node.path().equals("empty")).findFirst().orElseThrow();
+        WorkspaceTreeNode src = response.nodes().stream().filter(node -> node.path().equals("src")).findFirst().orElseThrow();
+        assertFalse(empty.hasChildren());
+        assertTrue(empty.loaded());
+        assertTrue(src.hasChildren());
+        assertFalse(src.loaded());
     }
 
     @Test
