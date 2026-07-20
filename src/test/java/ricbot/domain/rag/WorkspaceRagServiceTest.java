@@ -12,6 +12,25 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.*;
 
 class WorkspaceRagServiceTest {
+
+    @Test
+    void exposesHybridScoresAndIsolatesTenantIndexes(@TempDir Path workspace) throws Exception {
+        Files.createDirectories(workspace.resolve("src"));
+        Files.writeString(workspace.resolve("src/Recovery.java"),
+                "class Recovery { void durableCheckpointReplay() {} }");
+        WorkspaceRagService tenantA = new WorkspaceRagService(workspace, "tenant-a",
+                new ricbot.domain.retrieval.HashingEmbeddingProvider());
+        WorkspaceRagService tenantB = new WorkspaceRagService(workspace, "tenant-b",
+                new ricbot.domain.retrieval.HashingEmbeddingProvider());
+
+        tenantA.indexWorkspace();
+        WorkspaceRagService.SearchResult result = tenantA.searchCode("durable checkpoint replay", 1).get(0);
+
+        assertTrue(result.lexicalScore() > 0d);
+        assertTrue(result.vectorScore() > 0d);
+        assertEquals("tenant-a", tenantA.tenantId());
+        assertNotEquals(tenantA.indexWorkspace().chunksFile(), tenantB.indexWorkspace().chunksFile());
+    }
     private static final ObjectMapper MAPPER = new ObjectMapper().findAndRegisterModules();
 
     @Test

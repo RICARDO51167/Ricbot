@@ -28,6 +28,7 @@ class SessionPersistenceServiceTest {
         session.addMessage("assistant", "old reply");
         session.getMetadata().put(SessionRuntimeKeys.PENDING_USER_TURN_KEY, true);
         session.getMetadata().put(SessionRuntimeKeys.RUNTIME_CHECKPOINT_KEY, Map.of("id", "cp"));
+        session.getMetadata().put(SessionRuntimeKeys.RECOVERY_DECISIONS_KEY, Map.of("call-1", "confirm"));
         session.getMetadata().put("_last_interrupt_reason", "manual_stop");
 
         AgentRequestContext request = new AgentRequestContext(
@@ -82,6 +83,7 @@ class SessionPersistenceServiceTest {
         assertEquals("completed", String.valueOf(((Map<?, ?>) session.getMetadata().get(SessionRuntimeKeys.TASK_STATE_KEY)).get("status")));
         assertFalse(session.getMetadata().containsKey(SessionRuntimeKeys.PENDING_USER_TURN_KEY));
         assertFalse(session.getMetadata().containsKey(SessionRuntimeKeys.RUNTIME_CHECKPOINT_KEY));
+        assertFalse(session.getMetadata().containsKey(SessionRuntimeKeys.RECOVERY_DECISIONS_KEY));
         assertFalse(session.getMetadata().containsKey("_last_interrupt_reason"));
     }
 
@@ -247,5 +249,42 @@ class SessionPersistenceServiceTest {
         assertTrue(jsonl.contains("\"summary\":\"我偏好简短回答\""), jsonl);
         assertTrue(jsonl.contains("\"source\":\"candidate\""), jsonl);
         assertTrue(jsonl.contains("\"tags\":[\"user\"]"), jsonl);
+    }
+
+    @Test
+    void persistInteractiveTurnMarksCheckpointCommittedBeforeClearingRuntimeState(@TempDir Path workspace) {
+        SessionManager sessions = new SessionManager(workspace);
+        SessionPersistenceService service = new SessionPersistenceService(sessions, 100);
+        Session session = new Session("cli:direct");
+        session.getMetadata().put(SessionRuntimeKeys.RUNTIME_CHECKPOINT_KEY, Map.of(
+                "checkpoint_id", "run-7:1:TOOLS_COMPLETED"
+        ));
+        AgentRequestContext request = new AgentRequestContext(
+                new InboundMessage("cli", "user", "direct", "hello"),
+                "cli:direct",
+                session,
+                "",
+                new PromptContextBundle(),
+                List.of(),
+                List.of(),
+                null,
+                false
+        );
+        ExecutionOutcome outcome = new ExecutionOutcome(
+                new AgentRunResult()
+                        .setMessages(List.of(
+                                Map.of("role", "user", "content", "hello"),
+                                Map.of("role", "assistant", "content", "done")
+                        ))
+                        .setFinalContent("done"),
+                "done"
+        );
+
+        service.persistInteractiveTurn(request, outcome);
+
+        Session restored = new SessionManager(workspace).find("cli:direct").orElseThrow();
+        assertEquals("run-7:1:TOOLS_COMPLETED", restored.getMetadata()
+                .get(SessionRuntimeKeys.LAST_RESTORED_CHECKPOINT_ID_KEY));
+        assertFalse(restored.getMetadata().containsKey(SessionRuntimeKeys.RUNTIME_CHECKPOINT_KEY));
     }
 }

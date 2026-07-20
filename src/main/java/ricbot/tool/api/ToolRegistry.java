@@ -243,6 +243,35 @@ public class ToolRegistry {
         return execute(name, params, ToolExecutionContext.approved(approvalId));
     }
 
+    public Object executeProtocol(
+            String name,
+            java.util.Map<String, Object> params,
+            String idempotencyKey,
+            String approvalId
+    ) {
+        return execute(name, params, ToolExecutionContext.protocol(idempotencyKey, approvalId));
+    }
+
+    public Object compensate(
+            String name,
+            java.util.Map<String, Object> params,
+            Object previousResult,
+            String idempotencyKey,
+            String approvalId
+    ) {
+        Tool tool = get(name);
+        if (tool == null) return toolNotFoundMessage(name);
+        if (!tool.supportsCompensation()) {
+            return "Error: tool '" + name + "' does not support compensation";
+        }
+        ToolExecutionContext context = ToolExecutionContext.protocol(idempotencyKey, approvalId);
+        try (ToolExecutionContext.Scope ignored = ToolExecutionContext.activate(context)) {
+            return tool.compensate(params, previousResult, context);
+        } catch (Exception e) {
+            return executionFailedMessage(name + " compensation", e);
+        }
+    }
+
     private Object execute(String name, java.util.Map<String, Object> params, ToolExecutionContext context) {
         // 再次获取工具实例以防万一
         Tool tool = get(name);

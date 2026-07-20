@@ -45,7 +45,6 @@ class AgentExecutionServiceTest {
                 8000,
                 24
         );
-
         ExecutionOutcome outcome = service.executeInteractive(requestContext(null), payload -> {});
 
         assertEquals("done", outcome.finalContent());
@@ -78,7 +77,6 @@ class AgentExecutionServiceTest {
                 8000,
                 24
         );
-
         ExecutionOutcome outcome = service.executeInteractive(requestContext(null), payload -> {});
 
         assertEquals("recovered", outcome.finalContent());
@@ -103,8 +101,9 @@ class AgentExecutionServiceTest {
                 8000,
                 24
         );
+        List<Map<String, Object>> checkpoints = new ArrayList<>();
 
-        ExecutionOutcome outcome = service.executeInteractive(requestContext(null), payload -> {});
+        ExecutionOutcome outcome = service.executeInteractive(requestContext(null), checkpoints::add);
 
         assertEquals("done", outcome.finalContent());
         assertEquals(2, calls.get());
@@ -112,6 +111,8 @@ class AgentExecutionServiceTest {
                 "run_retry".equals(event.get("type"))
                         && "tool_loop".equals(event.get("retry_reason"))
                         && Integer.valueOf(1).equals(event.get("retry_count"))));
+        Map<String, Object> lastCheckpoint = checkpoints.get(checkpoints.size() - 1);
+        assertEquals(3, ((List<?>) lastCheckpoint.get("run_messages")).size());
     }
 
     @Test
@@ -200,6 +201,69 @@ class AgentExecutionServiceTest {
 
         assertEquals("partial", outcome.finalContent());
         assertEquals(1, runner.specs().size());
+    }
+
+    @Test
+    void executeSystem_forwardsDurableCheckpointCallback(@TempDir Path workspace) throws Exception {
+        StubRunner runner = new StubRunner(
+                new AgentRunResult()
+                        .setMessages(List.of(Map.of("role", "assistant", "content", "done")))
+                        .setStopReason("stop")
+                        .setFinalContent("done")
+        );
+        AgentExecutionService service = new AgentExecutionService(
+                runner,
+                new ToolRegistry(),
+                workspace,
+                "test-model",
+                4,
+                4000,
+                "standard",
+                8000,
+                24
+        );
+        java.util.function.Consumer<Map<String, Object>> callback = payload -> {};
+
+        ExecutionOutcome outcome = service.executeSystem(requestContext(null), callback);
+
+        assertEquals("done", outcome.finalContent());
+        assertSame(callback, runner.specs().get(0).getCheckpointCallback());
+    }
+
+    @Test
+    void executeInteractive_consoleRetryUsesDistinctJournalAttempt(@TempDir Path workspace) throws Exception {
+        ToolRegistry tools = new ToolRegistry();
+        tools.register(tool("echo", "ok"));
+        AtomicInteger calls = new AtomicInteger();
+        FileRunJournalStore journalStore = new FileRunJournalStore(workspace);
+        AgentExecutionService service = new AgentExecutionService(
+                new AgentRunner(loopThenDoneProvider(calls, "echo")),
+                tools,
+                workspace,
+                "test-model",
+                1,
+                4000,
+                "standard",
+                8000,
+                24,
+                null,
+                journalStore
+        );
+        AgentRequestContext request = requestContext(null);
+        request.message().getMetadata().put("consoleRunId", "console-run-1");
+        List<Map<String, Object>> checkpoints = new ArrayList<>();
+
+        ExecutionOutcome outcome = service.executeInteractive(request, checkpoints::add);
+
+        assertEquals("done", outcome.finalContent());
+        assertEquals(RunStatus.PAUSED, journalStore.load("cli:direct", "console-run-1").orElseThrow().status());
+        assertEquals(
+                RunStatus.COMPLETED,
+                journalStore.load("cli:direct", "console-run-1:attempt:1").orElseThrow().status()
+        );
+        Map<String, Object> lastCheckpoint = checkpoints.get(checkpoints.size() - 1);
+        assertEquals("console-run-1", lastCheckpoint.get("run_id"));
+        assertEquals("console-run-1:attempt:1", lastCheckpoint.get("journal_run_id"));
     }
 
     private AgentRequestContext requestContext(AgentHook hook) {

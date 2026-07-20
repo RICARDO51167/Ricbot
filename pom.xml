@@ -23,6 +23,12 @@
             <version>2.0.13</version>
         </dependency>
 
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-api</artifactId>
+            <version>1.49.0</version>
+        </dependency>
+
         <!-- 一个简单的日志实现，控制台输出日志 -->
         <dependency>
             <groupId>ch.qos.logback</groupId>

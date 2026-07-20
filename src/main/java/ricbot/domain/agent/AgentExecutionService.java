@@ -35,6 +35,9 @@ final class AgentExecutionService {
     private final Integer contextBlockLimit;
     // 静态/启发式模型能力，用于运行时保守降级
     private final ProviderCapability providerCapability;
+    // 类型化运行事件的持久化出口
+    private final RunEventSink runEventSink;
+    private final SideEffectStore sideEffectStore;
 
     // 构造函数，初始化所有必要配置
     AgentExecutionService(
@@ -58,7 +61,8 @@ final class AgentExecutionService {
                 providerRetryMode,
                 contextWindowTokens,
                 contextBlockLimit,
-                null
+                null,
+                RunEventSink.disabled()
         );
     }
 
@@ -75,6 +79,54 @@ final class AgentExecutionService {
             Integer contextBlockLimit,
             ProviderCapability providerCapability
     ) {
+        this(
+                runner,
+                tools,
+                workspace,
+                model,
+                maxIterations,
+                maxToolResultChars,
+                providerRetryMode,
+                contextWindowTokens,
+                contextBlockLimit,
+                providerCapability,
+                RunEventSink.disabled(),
+                SideEffectStore.disabled()
+        );
+    }
+
+    AgentExecutionService(
+            AgentRunner runner,
+            ToolRegistry tools,
+            Path workspace,
+            String model,
+            int maxIterations,
+            int maxToolResultChars,
+            String providerRetryMode,
+            int contextWindowTokens,
+            Integer contextBlockLimit,
+            ProviderCapability providerCapability,
+            RunEventSink runEventSink
+    ) {
+        this(runner, tools, workspace, model, maxIterations, maxToolResultChars,
+                providerRetryMode, contextWindowTokens, contextBlockLimit, providerCapability,
+                runEventSink, SideEffectStore.disabled());
+    }
+
+    AgentExecutionService(
+            AgentRunner runner,
+            ToolRegistry tools,
+            Path workspace,
+            String model,
+            int maxIterations,
+            int maxToolResultChars,
+            String providerRetryMode,
+            int contextWindowTokens,
+            Integer contextBlockLimit,
+            ProviderCapability providerCapability,
+            RunEventSink runEventSink,
+            SideEffectStore sideEffectStore
+    ) {
         this.runner = runner;
         this.tools = tools;
         this.workspace = workspace;
@@ -85,6 +137,8 @@ final class AgentExecutionService {
         this.contextWindowTokens = contextWindowTokens;
         this.contextBlockLimit = contextBlockLimit;
         this.providerCapability = providerCapability;
+        this.runEventSink = runEventSink != null ? runEventSink : RunEventSink.disabled();
+        this.sideEffectStore = sideEffectStore != null ? sideEffectStore : SideEffectStore.disabled();
     }
 
     // 执行交互式 Agent 任务
@@ -123,6 +177,7 @@ final class AgentExecutionService {
                         request.session(),
                         request.message().getMetadata()
                 );
+                retrySpec.setCheckpointMessageOffset(request.initialMessages().size());
                 retrySpec.getMetadata().put("retryReason", retryPolicy.lastRetryReason().orElse(null));
                 retrySpec.getMetadata().put("retryCount", retryPolicy.retryCount());
                 LOGGER.info(() -> "Agent retry requested: reason="
@@ -147,14 +202,22 @@ final class AgentExecutionService {
     // @param request Agent 请求上下文
     // @return ExecutionOutcome 执行结果对象
     ExecutionOutcome executeSystem(AgentRequestContext request) throws Exception {
-        // 构建运行规格并执行 Agent，不使用钩子和检查点回调
+        return executeSystem(request, null);
+    }
+
+    // 执行系统级 Agent 任务，并在每个可恢复边界持久化检查点。
+    ExecutionOutcome executeSystem(
+            AgentRequestContext request,
+            Consumer<Map<String, Object>> checkpointCallback
+    ) throws Exception {
+        // 系统任务不使用交互钩子，但与交互任务共享同一套持久化检查点语义。
         AgentRunResult result = runner.run(buildSpec(
                 request.initialMessages(),
                 request.session().getKey(),
                 null,
                 maxIterations,
                 maxIterationsMessage(maxIterations),
-                null,
+                checkpointCallback,
                 request.session(),
                 request.message().getMetadata()
         ));
@@ -204,6 +267,8 @@ final class AgentExecutionService {
                 .setContextBlockLimit(contextBlockLimit) // 设置上下文块限制
                 .setProviderCapability(providerCapability) // 设置模型能力元数据
                 .setCheckpointCallback(checkpointCallback) // 设置检查点回调
+                .setRunEventSink(runEventSink)
+                .setSideEffectStore(sideEffectStore)
                 // 设置工具生命周期回调，用于记录工具执行状态
                 .setToolLifecycleCallback(new AgentRunSpec.ToolLifecycleCallback() {
                     @Override

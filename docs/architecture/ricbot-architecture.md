@@ -35,6 +35,18 @@ CLI / API / Channel
 - 处理 hook、checkpoint、progress；
 - 根据 provider capability 做 tool/streaming/vision 降级。
 
+执行控制不再只由隐式 ReAct 循环表达。`AgentNodeScheduler` 显式维护 `MODEL -> TOOLS -> MODEL/TERMINAL` 节点状态；节点迁移、模型边界和工具边界都写入 durable journal。`RunCheckpoint` 保存节点、消息和 journal sequence，可按历史版本恢复或 fork 到独立 session/run。
+
+### Durable Runtime
+
+核心运行态包含三条相互校验的持久化链：
+
+- `RunJournalStore`：类型化、单调序号的事件源和可重建 `RunState`；
+- `RunCheckpointStore`：latest pointer 加不可变历史版本，用于恢复模型上下文；
+- `SideEffectStore`：写工具的幂等键、结果和补偿状态。
+
+崩溃恢复默认 fail closed。已完成结果可以复用；未知的只读工具在名称、策略和参数摘要完全一致时可自动重试；未知副作用必须显式授权。断线客户端通过 `RunEventReplayService` 使用 exclusive cursor 补齐事件。
+
 ### Provider / Capability
 
 Provider 层通过 OpenAI-compatible、Anthropic、Azure OpenAI 等适配器发起模型调用。Capability 层不做在线探测，而是通过静态/启发式规则和用户 `model_capabilities` override 生成最终能力结果。
@@ -64,9 +76,13 @@ Context 层负责把 session、workspace、skills、memory 和 policy 组合成�
 - 将 verified experience promote 成 generated skill；
 - 避免未经验证的经验污染上下文。
 
+RAG 使用词法与向量信号混合排序，embedding provider 可替换，离线默认使用 deterministic feature hashing。tenant-specific index 使用散列目录隔离。`TenantMemoryService` 在共享 CAS store 上隔离租户，并管理 working、episodic、semantic、perceptual 分层和晋升。
+
 ### Team / Workspace / ChangeSet
 
 Team 层把复杂任务拆成 planner / implementer / verifier 等角色执行。Workspace 层支持本地 workspace 和受管 git worktree。ChangeSet 层把 worktree diff 收口为可审阅变更，避免 agent 直接把未审阅改动并入主工作区。
+
+`PersistentTeamRuntime` 为 worker 提供独立生命周期、跨进程 mailbox sequence、cursor/ack、broadcast、join 和 handoff。它与既有 TeamEngine 兼容，可逐步把规则 worker 迁移为独立长生命周期 worker。
 
 ### Eval / Release Gate
 
@@ -78,6 +94,8 @@ Eval 层提供 deterministic smoke provider、golden scenarios、baseline 管理
 - fixed smoke eval；
 - baseline compare；
 - release report。
+
+`EvalMatrixRunner` 可对 provider/model 矩阵重复运行，聚合通过率、长轨迹覆盖、P50/P95、token、工具调用、失败类型和估算成本。`evals/long_trajectory.jsonl` 提供 12-turn 基础长轨迹。
 
 ### Console / Gateway
 
@@ -129,6 +147,8 @@ serve
 - Console POST 复用 bearer auth、Origin/Referer 检查和轻量 rate limit。
 - Console 写操作有审计记录，且仅开放人工确认型动作。
 - File/exec/web 工具受 workspace 限制、SSRF 防护、审批和风险策略约束。
+- `ExecTool` 通过 `ExecutionBackend` 执行；Local 有超时和进程树终止，Docker 默认断网且只挂载 workspace，Remote 可接 E2B/OpenSandbox/Kubernetes client。
+- 副作用工具先持久化幂等 reservation；不确定状态不会自动重复执行。
 - Worktree-backed team task 隔离修改，ChangeSet 作为人工审阅边界。
 - Release Check 使用 deterministic smoke eval，不要求真实模型或外网。
 - Webhook 入站只支持文本和已实现校验，不解密 Feishu/WeCom 加密事件。
@@ -144,4 +164,7 @@ serve
 - Skills：把 verified experience promote 为 generated skill，或手写 skill。
 - Channel：实现 `BaseChannel`，接入 `ChannelManager` 和 webhook controller。
 - Eval：新增 JSONL scenario，扩展 baseline 和 compare。
+- Execution：实现 `ExecutionBackend` 或 `RemoteExecutionClient`，通过能力探测显式选择；降级必须由调用方开启。
+- Storage：实现 `SharedStateStore` 接入 SQL、Redis 或对象存储，保留 CAS 版本语义。
+- Telemetry：配置 OpenTelemetry SDK/exporter；核心只依赖 API，并把 journal event 映射为 span event。
 - Console：新增只读 service + endpoint + card；写操作必须走 auth、CSRF-lite、rate limit 和 audit。

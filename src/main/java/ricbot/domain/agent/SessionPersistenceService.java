@@ -79,8 +79,10 @@ final class SessionPersistenceService {
         appendMemoryCandidates(request.message(), outcome);
 
         // 清理会话元数据中的临时运行时键
+        markCheckpointCommitted(session);
         session.getMetadata().remove(SessionRuntimeKeys.PENDING_USER_TURN_KEY);
         session.getMetadata().remove(SessionRuntimeKeys.RUNTIME_CHECKPOINT_KEY);
+        session.getMetadata().remove(SessionRuntimeKeys.RECOVERY_DECISIONS_KEY);
         session.getMetadata().remove("_last_interrupt_reason");
         // 保存会话到存储
         sessionManager.save(session);
@@ -118,7 +120,9 @@ final class SessionPersistenceService {
         // 更新任务状态
         updateTaskState(session, outcome);
         // 清理会话元数据中的临时运行时键
+        markCheckpointCommitted(session);
         session.getMetadata().remove(SessionRuntimeKeys.RUNTIME_CHECKPOINT_KEY);
+        session.getMetadata().remove(SessionRuntimeKeys.RECOVERY_DECISIONS_KEY);
         session.getMetadata().remove("_last_interrupt_reason");
         // 保存会话到存储
         sessionManager.save(session);
@@ -126,6 +130,20 @@ final class SessionPersistenceService {
         // 构建系统出站消息
         OutboundMessage outbound = OutboundMessages.of(channel, chatId, outcome.finalContent());
         return new PersistenceResult(session, outbound);
+    }
+
+    private void markCheckpointCommitted(Session session) {
+        Object raw = session.getMetadata().get(SessionRuntimeKeys.RUNTIME_CHECKPOINT_KEY);
+        if (!(raw instanceof Map<?, ?> checkpoint)) {
+            return;
+        }
+        Object checkpointId = checkpoint.get("checkpoint_id");
+        if (checkpointId != null && !String.valueOf(checkpointId).isBlank()) {
+            session.getMetadata().put(
+                    SessionRuntimeKeys.LAST_RESTORED_CHECKPOINT_ID_KEY,
+                    String.valueOf(checkpointId).trim()
+            );
+        }
     }
 
     /**

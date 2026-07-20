@@ -82,15 +82,28 @@ public class AgentRunner implements AutoCloseable {
      * @throws Exception 异常
      */
     public AgentRunResult run(AgentRunSpec spec) throws Exception {
+        Objects.requireNonNull(spec, "spec");
+        RunState initialRunState = spec.getInitialRunState();
         String metadataRunId = spec != null && spec.getMetadata() != null
                 ? String.valueOf(spec.getMetadata().getOrDefault("consoleRunId", "")).trim()
                 : "";
-        String runId = !metadataRunId.isBlank() ? metadataRunId : UUID.randomUUID().toString();
+        String runId = initialRunState != null
+                ? initialRunState.runId()
+                : (!metadataRunId.isBlank() ? metadataRunId : UUID.randomUUID().toString());
+        int runAttempt = spec != null && spec.getMetadata() != null
+                ? nonNegativeInt(spec.getMetadata().get("retryCount"))
+                : 0;
+        String journalRunId = initialRunState != null
+                ? initialRunState.runId()
+                : (runAttempt > 0 ? runId + ":attempt:" + runAttempt : runId);
         Instant runStartedAt = Instant.now();
         // 初始化消息列表，如果 spec 中有初始消息则使用，否则为空列表
         List<Map<String, Object>> messages = new ArrayList<>(
                 spec.getInitialMessages() != null ? spec.getInitialMessages() : List.of()
         );
+        int checkpointMessageOffset = spec.getCheckpointMessageOffset() != null
+                ? Math.max(0, Math.min(spec.getCheckpointMessageOffset(), messages.size()))
+                : messages.size();
 
         // 创建运行结果对象
         AgentRunResult result = new AgentRunResult();
@@ -100,6 +113,26 @@ public class AgentRunner implements AutoCloseable {
         List<Map<String, Object>> toolEvents = new ArrayList<>();
         List<Map<String, Object>> runEvents = new ArrayList<>();
         TraceRecorder traceRecorder = TraceRecorder.forRunEvents(runEvents);
+        String durableSessionKey = spec.getSessionKey() != null && !spec.getSessionKey().isBlank()
+                ? spec.getSessionKey()
+                : "run:" + runId;
+        if (initialRunState != null) {
+            if (initialRunState.status() != RunStatus.CREATED) {
+                throw new IllegalArgumentException("initialRunState must be a CREATED fork state");
+            }
+            if (!durableSessionKey.equals(initialRunState.sessionKey())) {
+                throw new IllegalArgumentException("initialRunState session does not match AgentRunSpec");
+            }
+        }
+        RunEventEmitter durableEvents = initialRunState != null
+                ? new RunEventEmitter(spec.getRunEventSink(), initialRunState)
+                : new RunEventEmitter(spec.getRunEventSink(), journalRunId, durableSessionKey);
+        if (initialRunState == null) {
+            durableEvents.emit(0, RunEventType.RUN_STARTED, RunStatus.CREATED, null, Map.of(
+                    "model", spec.getModel() != null ? spec.getModel() : "",
+                    "max_iterations", spec.getMaxIterations()
+            ));
+        }
         traceRecorder.recordRunEvent("run_start", Map.of(
                 "run_id", runId,
                 "session_key", spec.getSessionKey() != null ? spec.getSessionKey() : "",
@@ -131,6 +164,7 @@ public class AgentRunner implements AutoCloseable {
             spec.getRunControllerConsumer().accept(controller);
         }
         boolean cancelledRecorded = false;
+        AgentNodeScheduler nodeScheduler = new AgentNodeScheduler(controller);
 
         // 获取钩子实现
         AgentHook hook = spec.getHook();
@@ -146,7 +180,7 @@ public class AgentRunner implements AutoCloseable {
             result.setError(runtimePolicy.unsupportedVisionMessage());
             result.setToolsUsed(toolsUsed);
             result.setToolEvents(toolEvents);
-            finishRunResult(result, runId, runStartedAt, iterationsCompleted, runEvents, traceRecorder);
+            finishRunResult(result, runId, runStartedAt, iterationsCompleted, runEvents, traceRecorder, durableEvents);
             return result;
         }
         if (runtimePolicy.noExposedToolsMessage() != null) {
@@ -156,15 +190,20 @@ public class AgentRunner implements AutoCloseable {
             result.setError(runtimePolicy.noExposedToolsMessage());
             result.setToolsUsed(toolsUsed);
             result.setToolEvents(toolEvents);
-            finishRunResult(result, runId, runStartedAt, iterationsCompleted, runEvents, traceRecorder);
+            finishRunResult(result, runId, runStartedAt, iterationsCompleted, runEvents, traceRecorder, durableEvents);
             return result;
         }
 
         // 开始主循环，最多执行 spec.getMaxIterations() 次
-        while (controller.canContinue()) {
-            controller.recordTurn();
+        while (nodeScheduler.canSchedule()) {
+            AgentNodeState modelNode = nodeScheduler.startModel();
             int iteration = controller.currentTurn();
             iterationsCompleted = iteration;
+            durableEvents.emit(iteration, RunEventType.NODE_STARTED,
+                    durableEvents.currentState().status(), null, Map.of(
+                            "node", modelNode.node().name(),
+                            "transition", modelNode.transition()
+                    ));
             if (controller.cancelled()) {
                 stopReason = "cancelled";
                 finalContent = "Agent run cancelled.";
@@ -185,6 +224,10 @@ public class AgentRunner implements AutoCloseable {
                     "message_count", messages.size(),
                     "tool_definition_count", toolDefinitions.size()
             )));
+            durableEvents.emit(iteration, RunEventType.MODEL_REQUESTED, RunStatus.MODEL_RUNNING, null, Map.of(
+                    "message_count", messages.size(),
+                    "tool_definition_count", toolDefinitions.size()
+            ));
             try {
                 response = requestModel(spec, messages, toolDefinitions, hook, iteration, runtimePolicy.disableStreaming());
             } catch (Exception e) {
@@ -204,7 +247,10 @@ public class AgentRunner implements AutoCloseable {
                         "error", e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName(),
                         "duration_ms", Duration.between(modelStartedAt, Instant.now()).toMillis()
                 )));
-                finishRunResult(result, runId, runStartedAt, iterationsCompleted, runEvents, traceRecorder);
+                durableEvents.emit(iteration, RunEventType.MODEL_FAILED, RunStatus.FAILED, null, Map.of(
+                        "error", e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()
+                ));
+                finishRunResult(result, runId, runStartedAt, iterationsCompleted, runEvents, traceRecorder, durableEvents);
                 return result; // 直接返回错误结果
             }
             traceRecorder.recordRunEvent("model_response", metadata(iteration, Map.of(
@@ -247,16 +293,41 @@ public class AgentRunner implements AutoCloseable {
             }
 
             // 检查点：如果有检查点回调且存在工具调用，保存当前状态
-            publishCheckpoint(spec, assistantMessage, List.of(), response.getToolCalls());
+            publishCheckpoint(
+                    spec,
+                    runId,
+                    journalRunId,
+                    durableEvents.nextSequence(),
+                    iteration,
+                    RunCheckpointPhase.MODEL_RESPONSE_RECEIVED,
+                    modelNode,
+                    messages,
+                    checkpointMessageOffset,
+                    assistantMessage,
+                    List.of(),
+                    response.getToolCalls()
+            );
+            durableEvents.emit(
+                    iteration,
+                    RunEventType.MODEL_RESPONSE_RECEIVED,
+                    response.hasToolCalls() ? RunStatus.WAITING_TOOL : RunStatus.MODEL_RUNNING,
+                    null,
+                    Map.of(
+                            "finish_reason", response.getFinishReason() != null ? response.getFinishReason() : "",
+                            "tool_call_count", response.getToolCalls() != null ? response.getToolCalls().size() : 0
+                    )
+            );
 
             // 如果没有工具调用，结束循环
             if (!response.hasToolCalls()) {
+                nodeScheduler.terminal();
                 finalContent = finalizeContent(hook, context, response.getContent());
                 // 确定停止原因，优先使用模型返回的 finishReason，否则默认为 "stop"
                 stopReason = response.getFinishReason() != null ? response.getFinishReason() : "stop";
                 break; // 跳出循环
             }
             if (runtimePolicy.disableToolCalling()) {
+                nodeScheduler.terminal();
                 addCapabilityWarning(traceRecorder, 0, capability, "supportsToolCalling", "IGNORED_MODEL_TOOL_CALLS",
                         "模型 capability 标记为不支持 tool calling，运行时不会进入工具调用循环。");
                 finalContent = response.getContent() != null && !response.getContent().isBlank()
@@ -267,6 +338,13 @@ public class AgentRunner implements AutoCloseable {
             }
             // 增加连续工具调用轮数计数
             consecutiveToolTurns++;
+            AgentNodeState toolNode = nodeScheduler.tools();
+            durableEvents.emit(iteration, RunEventType.NODE_TRANSITIONED,
+                    durableEvents.currentState().status(), null, Map.of(
+                            "from", AgentNodeType.MODEL.name(),
+                            "to", toolNode.node().name(),
+                            "transition", toolNode.transition()
+                    ));
             if (controller.cancelled()) {
                 stopReason = "cancelled";
                 finalContent = "Agent run cancelled.";
@@ -294,8 +372,8 @@ public class AgentRunner implements AutoCloseable {
                     "tools", requestedToolNames
             )));
             List<Map<String, Object>> toolResults = concurrent
-                    ? executeToolsConcurrent(tools, response.getToolCalls(), toolsUsed, toolEvents, spec, iteration)
-                    : executeToolsSequential(tools, response.getToolCalls(), toolsUsed, toolEvents, spec, iteration);
+                    ? executeToolsConcurrent(tools, response.getToolCalls(), toolsUsed, toolEvents, spec, iteration, durableEvents)
+                    : executeToolsSequential(tools, response.getToolCalls(), toolsUsed, toolEvents, spec, iteration, durableEvents);
             for (Map<String, Object> event : toolEvents.subList(toolEventStart, toolEvents.size())) {
                 traceRecorder.recordToolEvent(String.valueOf(event.getOrDefault("tool_call_id", "")), metadata(iteration, event));
             }
@@ -308,6 +386,9 @@ public class AgentRunner implements AutoCloseable {
 
             // 将工具执行结果加入消息历史
             messages.addAll(toolResults);
+            durableEvents.emit(iteration, RunEventType.TOOL_BATCH_COMPLETED, RunStatus.MODEL_RUNNING, null, Map.of(
+                    "tool_call_count", toolResults.size()
+            ));
 
             // 工具执行后钩子
             if (hook != null) {
@@ -315,7 +396,20 @@ public class AgentRunner implements AutoCloseable {
             }
 
             // 更新检查点：工具执行完成后
-            publishCheckpoint(spec, assistantMessage, toolResults, List.of());
+            publishCheckpoint(
+                    spec,
+                    runId,
+                    journalRunId,
+                    durableEvents.currentSequence(),
+                    iteration,
+                    RunCheckpointPhase.TOOLS_COMPLETED,
+                    toolNode,
+                    messages,
+                    checkpointMessageOffset,
+                    assistantMessage,
+                    toolResults,
+                    List.of()
+            );
 
             // 如果配置了遇到工具错误即失败，检查是否有错误
             Map<String, Object> firstError = firstToolError(toolEvents, toolEventStart);
@@ -337,6 +431,13 @@ public class AgentRunner implements AutoCloseable {
                 hadInjections = true;
                 injectionRounds++;
             }
+            AgentNodeState nextModelNode = nodeScheduler.nextModel();
+            durableEvents.emit(iteration, RunEventType.NODE_TRANSITIONED,
+                    durableEvents.currentState().status(), null, Map.of(
+                            "from", AgentNodeType.TOOLS.name(),
+                            "to", nextModelNode.node().name(),
+                            "transition", nextModelNode.transition()
+                    ));
         }
 
         // 如果循环结束后 finalContent 仍为 null，说明达到了最大迭代次数
@@ -380,7 +481,7 @@ public class AgentRunner implements AutoCloseable {
         result.setHadInjections(hadInjections);
         result.setToolsUsed(toolsUsed);
         result.setToolEvents(toolEvents);
-        finishRunResult(result, runId, runStartedAt, iterationsCompleted, runEvents, traceRecorder);
+        finishRunResult(result, runId, runStartedAt, iterationsCompleted, runEvents, traceRecorder, durableEvents);
         return result; // 返回结果
     }
 
@@ -390,7 +491,8 @@ public class AgentRunner implements AutoCloseable {
             Instant startedAt,
             int iterations,
             List<Map<String, Object>> runEvents,
-            TraceRecorder traceRecorder
+            TraceRecorder traceRecorder,
+            RunEventEmitter durableEvents
     ) {
         traceRecorder.recordRunEvent("run_stop", Map.of(
                 "stop_reason", result.getStopReason() != null ? result.getStopReason() : "",
@@ -403,11 +505,31 @@ public class AgentRunner implements AutoCloseable {
                 "iterations", iterations,
                 "duration_ms", Duration.between(startedAt, Instant.now()).toMillis()
         ));
+        durableEvents.emit(
+                iterations,
+                RunEventType.RUN_FINISHED,
+                durableStatus(result.getStopReason()),
+                null,
+                Map.of(
+                        "stop_reason", result.getStopReason() != null ? result.getStopReason() : "",
+                        "error", result.getError() != null ? result.getError() : ""
+                )
+        );
         result.setRunId(runId);
         result.setStartedAt(startedAt.toString());
         result.setEndedAt(Instant.now().toString());
         result.setIterations(iterations);
         result.setRunEvents(runEvents);
+    }
+
+    private static RunStatus durableStatus(String stopReason) {
+        String reason = stopReason != null ? stopReason.trim() : "";
+        return switch (reason) {
+            case "cancelled" -> RunStatus.CANCELLED;
+            case "timeout", "max_iterations", "tool_loop", "tool_error_loop" -> RunStatus.PAUSED;
+            case "error", "tool_error", "unsupported_capability", "no_exposed_tools" -> RunStatus.FAILED;
+            default -> RunStatus.COMPLETED;
+        };
     }
 
     private boolean recordCancelled(
@@ -753,6 +875,14 @@ public class AgentRunner implements AutoCloseable {
 
     private void publishCheckpoint(
             AgentRunSpec spec,
+            String runId,
+            String journalRunId,
+            long journalSequence,
+            int iteration,
+            RunCheckpointPhase phase,
+            AgentNodeState nodeState,
+            List<Map<String, Object>> messages,
+            int checkpointMessageOffset,
             Map<String, Object> assistantMessage,
             List<Map<String, Object>> completedToolResults,
             List<ToolCallRequest> pendingToolCalls
@@ -761,6 +891,30 @@ public class AgentRunner implements AutoCloseable {
             return;
         }
         Map<String, Object> checkpoint = new LinkedHashMap<>();
+        checkpoint.put("checkpoint_id", journalRunId + ":" + iteration + ":" + phase.name());
+        checkpoint.put("run_id", runId);
+        checkpoint.put("journal_run_id", journalRunId);
+        checkpoint.put("journal_sequence", journalSequence);
+        checkpoint.put("session_key", spec.getSessionKey() != null ? spec.getSessionKey() : "");
+        checkpoint.put("iteration", iteration);
+        checkpoint.put("phase", phase.name());
+        if (nodeState != null) {
+            checkpoint.put("node_state", Map.of(
+                    "schema_version", nodeState.schemaVersion(),
+                    "node", nodeState.node().name(),
+                    "iteration", nodeState.iteration(),
+                    "transition", nodeState.transition(),
+                    "terminal", nodeState.terminal(),
+                    "updated_at", nodeState.updatedAt().toString()
+            ));
+        }
+        checkpoint.put(
+                "run_messages",
+                new ArrayList<>(messages.subList(
+                        Math.max(0, Math.min(checkpointMessageOffset, messages.size())),
+                        messages.size()
+                ))
+        );
         checkpoint.put("assistant_message", assistantMessage);
         checkpoint.put("completed_tool_results", completedToolResults != null ? completedToolResults : List.of());
         checkpoint.put(
@@ -770,6 +924,17 @@ public class AgentRunner implements AutoCloseable {
                         : List.of()
         );
         spec.getCheckpointCallback().accept(checkpoint);
+    }
+
+    private static int nonNegativeInt(Object value) {
+        if (value instanceof Number number) {
+            return Math.max(0, number.intValue());
+        }
+        try {
+            return value != null ? Math.max(0, Integer.parseInt(String.valueOf(value))) : 0;
+        } catch (NumberFormatException ignored) {
+            return 0;
+        }
     }
 
     private String finalizeContent(AgentHook hook, AgentHookContext context, String content) throws Exception {
@@ -817,13 +982,14 @@ public class AgentRunner implements AutoCloseable {
             List<String> toolsUsed,
             List<Map<String, Object>> toolEvents,
             AgentRunSpec spec,
-            int iteration
+            int iteration,
+            RunEventEmitter durableEvents
     ) {
         List<Map<String, Object>> results = new ArrayList<>();
 
         // 遍历每个工具调用
         for (ToolCallRequest toolCall : toolCalls) {
-            ToolExecution out = executeSingleTool(tools, toolCall, spec, iteration); // 执行单个工具
+            ToolExecution out = executeSingleTool(tools, toolCall, spec, iteration, durableEvents); // 执行单个工具
             toolsUsed.add(out.name()); // 记录工具名
             toolEvents.add(out.event()); // 记录事件
             results.add(out.toolMsg()); // 添加结果消息
@@ -848,23 +1014,48 @@ public class AgentRunner implements AutoCloseable {
             List<String> toolsUsed,
             List<Map<String, Object>> toolEvents,
             AgentRunSpec spec,
-            int iteration
+            int iteration,
+            RunEventEmitter durableEvents
     ) {
         CompletionService<IndexedToolExecution> cs = new ExecutorCompletionService<>(toolExecutor);
+        Map<Future<IndexedToolExecution>, Integer> submittedIndexes = new HashMap<>();
         int submitted = 0;
         for (int i = 0; i < toolCalls.size(); i++) {
             ToolCallRequest toolCall = toolCalls.get(i);
             int index = i;
-            cs.submit(() -> new IndexedToolExecution(index, executeSingleTool(tools, toolCall, spec, iteration)));
+            Future<IndexedToolExecution> future = cs.submit(() -> new IndexedToolExecution(
+                    index,
+                    executeSingleTool(tools, toolCall, spec, iteration, durableEvents)
+            ));
+            submittedIndexes.put(future, index);
             submitted++;
         }
 
         Map<Integer, ToolExecution> byIndex = new HashMap<>();
+        RunJournalException journalFailure = null;
         for (int i = 0; i < submitted; i++) {
+            Future<IndexedToolExecution> completedFuture = null;
             try {
-                IndexedToolExecution out = cs.take().get();
+                completedFuture = cs.take();
+                IndexedToolExecution out = completedFuture.get();
                 byIndex.put(out.index(), out.execution());
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("interrupted while waiting for concurrent tools", e);
             } catch (Exception e) {
+                Throwable cause = e instanceof ExecutionException && e.getCause() != null ? e.getCause() : e;
+                if (cause instanceof RunJournalException failure) {
+                    if (journalFailure == null) {
+                        journalFailure = failure;
+                    }
+                    // Drain every submitted task before failing the run. A
+                    // side-effect tool may already be executing and must not
+                    // escape the lifecycle boundary in the background.
+                    continue;
+                }
+                int failedIndex = completedFuture != null
+                        ? submittedIndexes.getOrDefault(completedFuture, i)
+                        : i;
                 ToolExecution fallback = new ToolExecution(
                         "unknown",
                         buildToolMessage("unknown", "unknown", false, null, "工具并发执行失败: " + e.getMessage(), null, Integer.MAX_VALUE),
@@ -874,8 +1065,11 @@ public class AgentRunner implements AutoCloseable {
                                 "detail", truncate("工具并发执行失败: " + e.getMessage(), 300)
                         )
                 );
-                byIndex.put(i, fallback);
+                byIndex.put(failedIndex, fallback);
             }
+        }
+        if (journalFailure != null) {
+            throw journalFailure;
         }
 
         List<Map<String, Object>> results = new ArrayList<>();
@@ -898,8 +1092,35 @@ public class AgentRunner implements AutoCloseable {
      * @param spec 运行规格
      * @return ToolExecution 包含工具名、结果消息和事件
      */
-    private ToolExecution executeSingleTool(ToolRegistry tools, ToolCallRequest toolCall, AgentRunSpec spec, int iteration) {
+    private ToolExecution executeSingleTool(
+            ToolRegistry tools,
+            ToolCallRequest toolCall,
+            AgentRunSpec spec,
+            int iteration,
+            RunEventEmitter durableEvents
+    ) {
         String toolName = toolCall.getName(); // 获取工具名
+        ToolRegistry.ToolPolicy policy = toolExecutionPolicy(tools).policyFor(
+                toolName,
+                tools != null ? tools.get(toolName) : null
+        );
+        ToolInvocationRecord invocation = ToolInvocationRecord.running(
+                durableEvents.runId(),
+                iteration,
+                toolCall.getId(),
+                toolName,
+                toolCall.getArguments(),
+                policy.readOnly(),
+                policy.risk()
+        );
+        // The RUNNING ledger entry is durable before any tool side effect.
+        durableEvents.emit(
+                iteration,
+                RunEventType.TOOL_CALL_STARTED,
+                RunStatus.TOOL_RUNNING,
+                invocation,
+                Map.of()
+        );
         if (spec.getToolLifecycleCallback() != null) {
             spec.getToolLifecycleCallback().onToolStart(toolName, toolCall.getArguments());
         }
@@ -912,7 +1133,17 @@ public class AgentRunner implements AutoCloseable {
 
         try {
             // 执行工具
-            result = tools.execute(toolName, toolCall.getArguments());
+            SideEffectOutcome effect = new SideEffectCoordinator(spec.getSideEffectStore()).execute(
+                    tools,
+                    spec.getSessionKey() != null && !spec.getSessionKey().isBlank()
+                            ? spec.getSessionKey() : "run:" + durableEvents.runId(),
+                    invocation.invocationId(),
+                    toolName,
+                    toolCall.getArguments(),
+                    policy.readOnly(),
+                    this::isToolOk
+            );
+            result = effect.result();
             boolean ok = isToolOk(result);
             if (!ok) {
                 status = "error";
@@ -930,14 +1161,17 @@ public class AgentRunner implements AutoCloseable {
             }
         } catch (Exception e) {
             // 捕获异常，设置错误结果
-            result = Map.of("exception", e.getClass().getName(), "message", e.getMessage());
+            String exceptionMessage = e.getMessage() != null && !e.getMessage().isBlank()
+                    ? e.getMessage()
+                    : e.getClass().getSimpleName();
+            result = Map.of("exception", e.getClass().getName(), "message", exceptionMessage);
             status = "error";
-            detail = truncate("执行 " + toolName + " 时出错: " + e.getMessage(), 300);
+            detail = truncate("执行 " + toolName + " 时出错: " + exceptionMessage, 300);
             contentObj = buildToolResultPayload(
                     toolName,
                     false,
                     result,
-                    "执行 " + toolName + " 时出错: " + e.getMessage(),
+                    "执行 " + toolName + " 时出错: " + exceptionMessage,
                     e.getClass().getName()
             );
         }
@@ -950,7 +1184,6 @@ public class AgentRunner implements AutoCloseable {
         event.put("iteration", iteration);
         event.put("tool_call_id", toolCall.getId());
         if (tools != null) {
-            ToolRegistry.ToolPolicy policy = toolExecutionPolicy(tools).policyFor(toolName, tools.get(toolName));
             event.put("read_only", policy.readOnly());
             event.put("exclusive", policy.exclusive());
             event.put("concurrent_safe", policy.concurrentSafe());
@@ -975,6 +1208,19 @@ public class AgentRunner implements AutoCloseable {
         if (content instanceof String s) {
             event.put("truncated", s.contains("\"truncated\":true") || s.contains("(truncated)"));
         }
+        boolean succeeded = "ok".equals(status);
+        ToolInvocationRecord completedInvocation = invocation.completed(
+                toolMsg,
+                succeeded,
+                succeeded ? "" : detail
+        );
+        durableEvents.emit(
+                iteration,
+                succeeded ? RunEventType.TOOL_CALL_COMPLETED : RunEventType.TOOL_CALL_FAILED,
+                RunStatus.TOOL_RUNNING,
+                completedInvocation,
+                Map.of()
+        );
         if (spec.getToolLifecycleCallback() != null) {
             spec.getToolLifecycleCallback().onToolFinish(event);
         }

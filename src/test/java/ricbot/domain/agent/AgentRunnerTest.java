@@ -973,6 +973,224 @@ public class AgentRunnerTest {
         ));
     }
 
+    @Test
+    void checkpointCallbackPublishesTypedRecoveryMetadataForBothToolPhases() throws Exception {
+        ToolRegistry tools = new ToolRegistry();
+        tools.register(echoTool());
+        AtomicInteger calls = new AtomicInteger();
+        LLMProvider provider = new LLMProvider("k", "http://localhost") {
+            @Override
+            public LLMResponse chat(
+                    List<Map<String, Object>> messages,
+                    List<Map<String, Object>> toolsDef,
+                    String model,
+                    Integer maxTokens,
+                    Double temperature,
+                    String reasoningEffort,
+                    Object toolChoice
+            ) {
+                if (calls.incrementAndGet() == 1) {
+                    return new LLMResponse()
+                            .setContent("")
+                            .setToolCalls(List.of(new ToolCallRequest("call-1", "echo", Map.of("text", "ok"))))
+                            .setFinishReason("tool_calls");
+                }
+                return new LLMResponse().setContent("done").setFinishReason("stop");
+            }
+        };
+        List<Map<String, Object>> checkpoints = new java.util.ArrayList<>();
+        List<RunEvent> durableEvents = new java.util.ArrayList<>();
+
+        AgentRunResult result = new AgentRunner(provider).run(new AgentRunSpec()
+                .setInitialMessages(List.of(Map.of("role", "user", "content", "run")))
+                .setTools(tools)
+                .setModel("test-model")
+                .setSessionKey("cli:direct")
+                .setRunEventSink(durableEvents::add)
+                .setCheckpointCallback(checkpoints::add));
+
+        assertEquals("done", result.getFinalContent());
+        assertEquals(3, checkpoints.size());
+        Map<String, Object> pending = checkpoints.get(0);
+        assertEquals(result.getRunId(), pending.get("run_id"));
+        assertEquals("cli:direct", pending.get("session_key"));
+        assertEquals(1, pending.get("iteration"));
+        assertEquals("MODEL_RESPONSE_RECEIVED", pending.get("phase"));
+        assertEquals(1, ((List<?>) pending.get("pending_tool_calls")).size());
+
+        Map<String, Object> completed = checkpoints.get(1);
+        assertEquals("TOOLS_COMPLETED", completed.get("phase"));
+        assertEquals(1, ((List<?>) completed.get("completed_tool_results")).size());
+        assertEquals(2, ((List<?>) completed.get("run_messages")).size());
+        assertTrue(((List<?>) completed.get("pending_tool_calls")).isEmpty());
+
+        Map<String, Object> finalResponse = checkpoints.get(2);
+        assertEquals(2, finalResponse.get("iteration"));
+        assertEquals("MODEL_RESPONSE_RECEIVED", finalResponse.get("phase"));
+        assertTrue(((List<?>) finalResponse.get("pending_tool_calls")).isEmpty());
+        assertEquals("done", ((Map<?, ?>) finalResponse.get("assistant_message")).get("content"));
+        assertEquals(3, ((List<?>) finalResponse.get("run_messages")).size());
+
+        assertEquals(
+                List.of(
+                        RunEventType.RUN_STARTED,
+                        RunEventType.NODE_STARTED,
+                        RunEventType.MODEL_REQUESTED,
+                        RunEventType.MODEL_RESPONSE_RECEIVED,
+                        RunEventType.NODE_TRANSITIONED,
+                        RunEventType.TOOL_CALL_STARTED,
+                        RunEventType.TOOL_CALL_COMPLETED,
+                        RunEventType.TOOL_BATCH_COMPLETED,
+                        RunEventType.NODE_TRANSITIONED,
+                        RunEventType.NODE_STARTED,
+                        RunEventType.MODEL_REQUESTED,
+                        RunEventType.MODEL_RESPONSE_RECEIVED,
+                        RunEventType.RUN_FINISHED
+                ),
+                durableEvents.stream().map(RunEvent::type).toList()
+        );
+        assertEquals(
+                java.util.stream.LongStream.rangeClosed(1, durableEvents.size()).boxed().toList(),
+                durableEvents.stream().map(RunEvent::sequence).toList()
+        );
+        ToolInvocationRecord started = durableEvents.stream()
+                .filter(event -> event.type() == RunEventType.TOOL_CALL_STARTED)
+                .map(RunEvent::toolInvocation)
+                .findFirst()
+                .orElseThrow();
+        ToolInvocationRecord completedInvocation = durableEvents.stream()
+                .filter(event -> event.type() == RunEventType.TOOL_CALL_COMPLETED)
+                .map(RunEvent::toolInvocation)
+                .findFirst()
+                .orElseThrow();
+        assertEquals(started.invocationId(), completedInvocation.invocationId());
+        assertEquals(ToolInvocationStatus.RUNNING, started.status());
+        assertEquals(ToolInvocationStatus.SUCCEEDED, completedInvocation.status());
+        assertEquals(RunStatus.COMPLETED, durableEvents.get(durableEvents.size() - 1).status());
+    }
+
+    @Test
+    void durableJournalFailureBeforeToolExecutionFailsClosed() {
+        AtomicInteger toolExecutions = new AtomicInteger();
+        ToolRegistry tools = new ToolRegistry();
+        tools.register(new Tool() {
+            @Override
+            public String getName() {
+                return "mutate";
+            }
+
+            @Override
+            public String getDescription() {
+                return "side effect";
+            }
+
+            @Override
+            public Object execute(Map<String, Object> params) {
+                toolExecutions.incrementAndGet();
+                return "changed";
+            }
+        });
+        LLMProvider provider = new LLMProvider("k", "http://localhost") {
+            @Override
+            public LLMResponse chat(
+                    List<Map<String, Object>> messages,
+                    List<Map<String, Object>> toolsDef,
+                    String model,
+                    Integer maxTokens,
+                    Double temperature,
+                    String reasoningEffort,
+                    Object toolChoice
+            ) {
+                return new LLMResponse()
+                        .setContent("")
+                        .setToolCalls(List.of(new ToolCallRequest("call-1", "mutate", Map.of())))
+                        .setFinishReason("tool_calls");
+            }
+        };
+
+        RunJournalException failure = assertThrows(RunJournalException.class, () ->
+                new AgentRunner(provider).run(new AgentRunSpec()
+                        .setInitialMessages(List.of(Map.of("role", "user", "content", "change it")))
+                        .setTools(tools)
+                        .setModel("test-model")
+                        .setSessionKey("cli:direct")
+                        .setRunEventSink(event -> {
+                            if (event.type() == RunEventType.TOOL_CALL_STARTED) {
+                                throw new IllegalStateException("disk unavailable");
+                            }
+                        }))
+        );
+
+        assertTrue(failure.getMessage().contains("TOOL_CALL_STARTED"));
+        assertEquals(0, toolExecutions.get());
+    }
+
+    @Test
+    void durableJournalFailureAfterSideEffectRecoversAsUnknown(@TempDir Path workspace) {
+        AtomicInteger toolExecutions = new AtomicInteger();
+        ToolRegistry tools = new ToolRegistry();
+        tools.register(new Tool() {
+            @Override
+            public String getName() {
+                return "mutate";
+            }
+
+            @Override
+            public String getDescription() {
+                return "side effect";
+            }
+
+            @Override
+            public Object execute(Map<String, Object> params) {
+                toolExecutions.incrementAndGet();
+                return "changed";
+            }
+        });
+        LLMProvider provider = new LLMProvider("k", "http://localhost") {
+            @Override
+            public LLMResponse chat(
+                    List<Map<String, Object>> messages,
+                    List<Map<String, Object>> toolsDef,
+                    String model,
+                    Integer maxTokens,
+                    Double temperature,
+                    String reasoningEffort,
+                    Object toolChoice
+            ) {
+                return new LLMResponse()
+                        .setContent("")
+                        .setToolCalls(List.of(new ToolCallRequest("call-1", "mutate", Map.of())))
+                        .setFinishReason("tool_calls");
+            }
+        };
+        FileRunJournalStore store = new FileRunJournalStore(workspace);
+        RunEventSink failCompletion = event -> {
+            if (event.type() == RunEventType.TOOL_CALL_COMPLETED) {
+                throw new IllegalStateException("disk unavailable after side effect");
+            }
+            store.append(event);
+        };
+
+        assertThrows(RunJournalException.class, () -> new AgentRunner(provider).run(new AgentRunSpec()
+                .setInitialMessages(List.of(Map.of("role", "user", "content", "change it")))
+                .setTools(tools)
+                .setModel("test-model")
+                .setSessionKey("cli:direct")
+                .setRunEventSink(failCompletion)));
+
+        assertEquals(1, toolExecutions.get());
+        RunState beforeRecovery = store.latest("cli:direct").orElseThrow();
+        ToolInvocationRecord running = beforeRecovery.toolInvocations().values().iterator().next();
+        assertEquals(ToolInvocationStatus.RUNNING, running.status());
+
+        RunState recovered = store.pauseLatestInterrupted("cli:direct", "process_recovery").orElseThrow();
+        assertEquals(RunStatus.PAUSED, recovered.status());
+        assertEquals(
+                ToolInvocationStatus.UNKNOWN,
+                recovered.toolInvocations().get(running.invocationId()).status()
+        );
+    }
+
     private static Tool echoTool() {
         return new Tool() {
             @Override

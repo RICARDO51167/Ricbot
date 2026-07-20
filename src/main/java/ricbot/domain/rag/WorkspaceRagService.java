@@ -4,6 +4,9 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ricbot.infra.common.HelperUtils;
 import ricbot.tool.filesystem.FileToolSupport;
+import ricbot.domain.retrieval.EmbeddingProvider;
+import ricbot.domain.retrieval.HashingEmbeddingProvider;
+import ricbot.domain.retrieval.HybridScoring;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -38,10 +41,22 @@ public class WorkspaceRagService {
     private final Path symbolIndexFile;
     private final Path scanStateFile;
     private final Path vectorIndexDir;
+    private final String tenantId;
+    private final EmbeddingProvider embeddingProvider;
+    private final Map<String, double[]> embeddingCache = new java.util.concurrent.ConcurrentHashMap<>();
 
     public WorkspaceRagService(Path workspace) {
+        this(workspace, "default", new HashingEmbeddingProvider());
+    }
+
+    public WorkspaceRagService(Path workspace, String tenantId, EmbeddingProvider embeddingProvider) {
         this.workspace = workspace.toAbsolutePath().normalize();
-        this.ragDir = this.workspace.resolve(".rag");
+        this.tenantId = tenantId != null && !tenantId.isBlank() ? tenantId.trim() : "default";
+        this.embeddingProvider = embeddingProvider != null ? embeddingProvider : new HashingEmbeddingProvider();
+        Path baseRag = this.workspace.resolve(".rag");
+        this.ragDir = "default".equals(this.tenantId)
+                ? baseRag
+                : baseRag.resolve("tenants").resolve(sha256(this.tenantId));
         this.codeIndexDir = ragDir.resolve("code_index");
         this.chunksFile = codeIndexDir.resolve("file_chunks.jsonl");
         this.symbolIndexFile = codeIndexDir.resolve("symbol_index.json");
@@ -209,19 +224,29 @@ public class WorkspaceRagService {
     private List<SearchResult> search(String query, int limit, Set<String> kinds) {
         ensureIndex();
         Set<String> queryTokens = tokenize(query);
+        double[] queryEmbedding = embeddingProvider.embed(query);
         List<SearchResult> results = new ArrayList<>();
         for (FileChunk chunk : readChunks()) {
             if (!kinds.contains(chunk.kind())) {
                 continue;
             }
-            double score = score(queryTokens, chunk);
+            double lexicalScore = score(queryTokens, chunk);
+            double vectorScore = Math.max(0d, HybridScoring.cosine(
+                    queryEmbedding,
+                    embeddingCache.computeIfAbsent(
+                            chunk.id() + ":" + chunk.updatedAt(),
+                            ignored -> embeddingProvider.embed(chunk.path() + "\n" + String.join(" ", chunk.symbols()) + "\n" + chunk.text())
+                    )
+            ));
+            double score = (lexicalScore * 0.72d) + (vectorScore * 2.4d);
             if (queryTokens.isEmpty()) {
                 score = 0.05d;
             }
             if (score <= 0d) {
                 continue;
             }
-            results.add(new SearchResult(chunk, score, snippet(chunk.text(), queryTokens)));
+            results.add(new SearchResult(chunk, score, lexicalScore, vectorScore,
+                    snippet(chunk.text(), queryTokens)));
         }
         results.sort(Comparator.comparingDouble(SearchResult::score).reversed());
         return results.stream().limit(Math.max(1, limit)).toList();
@@ -560,6 +585,16 @@ public class WorkspaceRagService {
         }
     }
 
+    private static String sha256(String value) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(StandardCharsets.UTF_8));
+            return java.util.HexFormat.of().formatHex(digest);
+        } catch (Exception e) {
+            throw new IllegalStateException("SHA-256 unavailable", e);
+        }
+    }
+
     private Set<String> tokenize(String text) {
         Set<String> out = new LinkedHashSet<>();
         if (text == null || text.isBlank()) {
@@ -645,7 +680,16 @@ public class WorkspaceRagService {
         }
     }
 
-    public record SearchResult(FileChunk chunk, double score, String snippet) {
+    public String tenantId() { return tenantId; }
+    public String embeddingModelId() { return embeddingProvider.modelId(); }
+
+    public record SearchResult(
+            FileChunk chunk,
+            double score,
+            double lexicalScore,
+            double vectorScore,
+            String snippet
+    ) {
     }
 
     public record FileChunk(

@@ -101,6 +101,13 @@ public class AgentLoop {
     private final ContextBuilder contextBuilder;
     /** 会话管理器，负责会话的创建、加载和保存 */
     private final SessionManager sessionManager;
+    /** 独立于会话转录的运行时检查点存储。 */
+    private final RunCheckpointStore runCheckpointStore;
+    /** 追加式运行事件与工具调用账本。 */
+    private final RunJournalStore runJournalStore;
+    private final RunEventSink runEventSink;
+    /** Durable write-tool idempotency and compensation ledger. */
+    private final SideEffectStore sideEffectStore;
     /** 记忆存储，用于长期记忆管理 */
     private final MemoryStore memoryStore;
     /** 记忆整合器，用于压缩和整理历史消息 */
@@ -238,6 +245,14 @@ public class AgentLoop {
         // 初始化核心组件
         this.contextBuilder = new ContextBuilder(this.workspace, timezone, disabledSkills);
         this.sessionManager = sessionManager != null ? sessionManager : new SessionManager(this.workspace);
+        this.runCheckpointStore = new FileRunCheckpointStore(this.workspace);
+        this.runJournalStore = new FileRunJournalStore(this.workspace);
+        this.runEventSink = RunEventSink.composite(
+                this.runJournalStore,
+                new OpenTelemetryRunEventSink(
+                        io.opentelemetry.api.GlobalOpenTelemetry.getTracer("ricbot.agent", "1.0"))
+        );
+        this.sideEffectStore = new FileSideEffectStore(this.workspace);
         this.memoryStore = new MemoryStore(this.workspace);
         
         // 初始化记忆整合器
@@ -292,7 +307,14 @@ public class AgentLoop {
         this.runner = new AgentRunner(provider);
         ToolContextApplier toolContextApplier = new ToolContextInjector(this.tools);
         this.hookFactory = new AgentHookFactory(this.bus, toolContextApplier);
-        this.sessionPreparationService = new SessionPreparationService(this.sessionManager, this.autoCompact, this.consolidator);
+        this.sessionPreparationService = new SessionPreparationService(
+                this.sessionManager,
+                this.autoCompact,
+                this.consolidator,
+                this.runCheckpointStore,
+                this.runJournalStore,
+                new RunRecoveryCoordinator(this.runJournalStore, this.tools)
+        );
         ContextSelectionService contextSelectionService = new ContextSelectionService(
                 this.memoryStore,
                 new ToolTraceSummarizer(),
@@ -324,7 +346,9 @@ public class AgentLoop {
                 this.providerRetryMode,
                 this.contextWindowTokens,
                 this.contextBlockLimit,
-                this.providerCapability
+                this.providerCapability,
+                this.runEventSink,
+                this.sideEffectStore
         );
         this.sessionPersistenceService = new SessionPersistenceService(this.sessionManager, this.maxToolResultChars, this.memoryStore);
         this.mcpLoader = new MCPLoader(this.tools, this.mcpServers);
@@ -712,6 +736,7 @@ public class AgentLoop {
         
         // 持久化交互式轮次的结果：将 Agent 的回复、工具调用记录等保存到会话存储中
         PersistenceResult persistence = sessionPersistenceService.persistInteractiveTurn(request, outcome);
+        deleteRunCheckpoint(request.session().getKey());
 
         // 记录回复日志，包含渠道、发送者和回复内容的缩写（限制 120 字符）
         log.info("回复给 {}:{}: {}", msg.getChannel(), msg.getSenderId(), abbreviate(outcome.finalContent(), 120));
@@ -756,11 +781,22 @@ public class AgentLoop {
 
         // 执行系统级的 Agent 逻辑
         // 调用 LLM 进行处理，可能涉及工具调用或状态更新，但不一定产生直接的用户可见回复
-        ExecutionOutcome outcome = agentExecutionService.executeSystem(request);
+        ExecutionOutcome outcome = agentExecutionService.executeSystem(
+                request,
+                payload -> storeRuntimeCheckpoint(request.session(), payload)
+        );
 
         // 持久化系统轮次的处理结果
         // 将 LLM 的输出、状态变更等保存回会话存储，并生成最终的出站消息对象
-        return sessionPersistenceService.persistSystemTurn(msg, channel, chatId, request, outcome).outboundMessage();
+        PersistenceResult persistence = sessionPersistenceService.persistSystemTurn(
+                msg,
+                channel,
+                chatId,
+                request,
+                outcome
+        );
+        deleteRunCheckpoint(request.session().getKey());
+        return persistence.outboundMessage();
     }
 
     /**
@@ -903,14 +939,31 @@ public class AgentLoop {
      * @param payload 额外的负载数据映射，可能包含特定的上下文信息
      */
     private void storeRuntimeCheckpoint(Session session, Map<String, Object> payload) {
-        // 如果 payload 不为 null，则创建一个新的 LinkedHashMap 并复制 payload 的内容；否则创建一个新的空 LinkedHashMap
-        Map<String, Object> checkpoint = payload != null ? new LinkedHashMap<>(payload) : new LinkedHashMap<>();
-        // 从会话中提取任务状态，并将其转换为 Map 形式，放入检查点中
-        checkpoint.put("task_state", TaskState.fromSession(session).toMap());
-        // 将构建好的检查点数据存入会话的元数据中，使用预定义的键
-        session.getMetadata().put(SessionRuntimeKeys.RUNTIME_CHECKPOINT_KEY, checkpoint);
+        Map<String, Object> enrichedPayload = payload != null
+                ? new LinkedHashMap<>(payload)
+                : new LinkedHashMap<>();
+        enrichedPayload.putIfAbsent("session_message_count", session.getMessages().size());
+        RunCheckpoint checkpoint = RunCheckpoint.fromPayload(
+                session.getKey(),
+                enrichedPayload,
+                TaskState.fromSession(session).toMap()
+        );
+        // Persist the standalone snapshot first. If the process exits before
+        // the session write, SessionPreparationService can still recover it.
+        runCheckpointStore.save(checkpoint);
+        session.getMetadata().put(SessionRuntimeKeys.RUNTIME_CHECKPOINT_KEY, checkpoint.toSessionPayload());
         // 保存更新后的会话到持久化存储
         sessionManager.save(session);
+    }
+
+    private void deleteRunCheckpoint(String sessionKey) {
+        try {
+            runCheckpointStore.delete(sessionKey);
+        } catch (RuntimeException e) {
+            // The committed checkpoint id is stored with the session before
+            // this cleanup, preventing a stale file from being restored twice.
+            log.warn("清理 durable run checkpoint 失败: sessionKey={}", sessionKey, e);
+        }
     }
 
     /**
@@ -1098,6 +1151,10 @@ public class AgentLoop {
             Session session = sessionManager.getOrCreate(sessionKey);
             session.getMetadata().put("_last_interrupt_reason", reason);
             sessionManager.save(session);
+            runCheckpointStore.load(sessionKey)
+                    .map(checkpoint -> checkpoint.withInterruptionReason(reason))
+                    .ifPresent(runCheckpointStore::save);
+            runJournalStore.pauseLatestInterrupted(sessionKey, reason);
         } catch (Exception e) {
             log.debug("记录会话中断原因失败: sessionKey={}, reason={}", sessionKey, reason, e);
         }

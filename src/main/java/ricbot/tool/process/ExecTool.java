@@ -10,6 +10,10 @@ import ricbot.domain.security.ApprovalService;
 import ricbot.domain.security.CommandRiskAnalyzer;
 import ricbot.domain.security.CommandRiskLevel;
 import ricbot.domain.security.RiskAssessment;
+import ricbot.infra.execution.ExecutionBackend;
+import ricbot.infra.execution.ExecutionRequest;
+import ricbot.infra.execution.ExecutionResult;
+import ricbot.infra.execution.LocalExecutionBackend;
 
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
@@ -65,6 +69,7 @@ public class ExecTool extends Tool {
     private final List<String> allowedEnvKeys;
     private final CommandRiskAnalyzer riskAnalyzer;
     private final ApprovalService approvalService;
+    private final ExecutionBackend executionBackend;
 
     /**
      * 构造函数
@@ -88,7 +93,8 @@ public class ExecTool extends Tool {
             String pathAppend,
             List<String> allowedEnvKeys
     ) {
-        this(timeout, workingDir, denyPatterns, allowPatterns, restrictToWorkspace, sandbox, pathAppend, allowedEnvKeys, null, null);
+        this(timeout, workingDir, denyPatterns, allowPatterns, restrictToWorkspace, sandbox,
+                pathAppend, allowedEnvKeys, null, null, new LocalExecutionBackend());
     }
 
     public ExecTool(
@@ -103,6 +109,23 @@ public class ExecTool extends Tool {
             CommandRiskAnalyzer riskAnalyzer,
             ApprovalService approvalService
     ) {
+        this(timeout, workingDir, denyPatterns, allowPatterns, restrictToWorkspace, sandbox,
+                pathAppend, allowedEnvKeys, riskAnalyzer, approvalService, new LocalExecutionBackend());
+    }
+
+    public ExecTool(
+            int timeout,
+            String workingDir,
+            List<String> denyPatterns,
+            List<String> allowPatterns,
+            boolean restrictToWorkspace,
+            String sandbox,
+            String pathAppend,
+            List<String> allowedEnvKeys,
+            CommandRiskAnalyzer riskAnalyzer,
+            ApprovalService approvalService,
+            ExecutionBackend executionBackend
+    ) {
         this.timeout = timeout > 0 ? timeout : 60;
         this.workingDir = workingDir;
         this.sandbox = sandbox != null ? sandbox : "";
@@ -113,6 +136,7 @@ public class ExecTool extends Tool {
         this.allowedEnvKeys = allowedEnvKeys != null ? allowedEnvKeys : new ArrayList<>();
         this.riskAnalyzer = riskAnalyzer;
         this.approvalService = approvalService;
+        this.executionBackend = executionBackend != null ? executionBackend : new LocalExecutionBackend();
     }
 
     @Override
@@ -239,70 +263,33 @@ public class ExecTool extends Tool {
         Map<String, String> env = buildEnv();
 
         try {
-            // 构建进程
-            ProcessBuilder pb = buildProcess(effectiveCommand, effectiveCwd, env);
-            Process process = pb.start();
-            ExecutorService readerExecutor = Executors.newFixedThreadPool(2);
-            Future<StreamOutput> stdoutFuture = readerExecutor.submit(() -> readAll(process.getInputStream()));
-            Future<StreamOutput> stderrFuture = readerExecutor.submit(() -> readAll(process.getErrorStream()));
-
-            boolean finished = false;
-            try {
-                // 等待进程结束，如果超时则杀死进程
-                finished = process.waitFor(effectiveTimeout, TimeUnit.SECONDS);
-                if (!finished) {
-                    killProcess(process);
-                    process.waitFor(5, TimeUnit.SECONDS);
-                    awaitDrain(stdoutFuture, 5, TimeUnit.SECONDS);
-                    awaitDrain(stderrFuture, 5, TimeUnit.SECONDS);
-                    return "错误：命令执行超时（" + effectiveTimeout + " 秒）";
-                }
-
-                // 并发读取标准输出和标准错误，避免管道写满导致的假超时
-                StreamOutput stdout = stdoutFuture.get();
-                StreamOutput stderr = stderrFuture.get();
-
-                StringBuilder output = new StringBuilder();
-
-                if (stdout != null && !stdout.text().isBlank()) {
-                    output.append(stdout.text());
-                }
-                if (stderr != null && !stderr.text().isBlank()) {
-                    if (!output.isEmpty()) {
-                        output.append("\n");
-                    }
-                    output.append(stderr.text());
-                }
-                if ((stdout != null && stdout.truncated()) || (stderr != null && stderr.truncated())) {
-                    if (!output.isEmpty()) {
-                        output.append("\n");
-                    }
-                    output.append("...（输出过长，已停止继续保留完整内容）");
-                }
-
-                String result = output.toString().trim();
-                if (result.isBlank()) {
-                    result = "（无输出）";
-                }
-
-                // 截断过长的输出
-                if (result.length() > MAX_OUTPUT) {
-                    result = result.substring(0, MAX_OUTPUT) + "\n...（已截断）";
-                }
-
-                int exitCode = process.exitValue();
-                if (exitCode != 0) {
-                    return "[退出码 " + exitCode + "]\n" + result;
-                }
-                return result;
-            } finally {
-                stdoutFuture.cancel(!finished);
-                stderrFuture.cancel(!finished);
-                readerExecutor.shutdownNow();
+            ExecutionResult execution = executionBackend.execute(new ExecutionRequest(
+                    effectiveCommand,
+                    Path.of(effectiveCwd),
+                    env,
+                    java.time.Duration.ofSeconds(effectiveTimeout),
+                    MAX_CAPTURE_BYTES
+            ));
+            if (execution.timedOut()) {
+                return "错误：命令执行超时（" + effectiveTimeout + " 秒，backend="
+                        + execution.backend() + "）";
             }
-        } catch (ExecutionException e) {
-            Throwable cause = e.getCause() != null ? e.getCause() : e;
-            return "错误：" + cause.getMessage();
+            StringBuilder output = new StringBuilder();
+            if (!execution.stdout().isBlank()) output.append(execution.stdout());
+            if (!execution.stderr().isBlank()) {
+                if (!output.isEmpty()) output.append('\n');
+                output.append(execution.stderr());
+            }
+            if (execution.truncated()) {
+                if (!output.isEmpty()) output.append('\n');
+                output.append("...（输出过长，已停止继续保留完整内容）");
+            }
+            String rendered = output.toString().trim();
+            if (rendered.isBlank()) rendered = "（无输出）";
+            if (rendered.length() > MAX_OUTPUT) rendered = rendered.substring(0, MAX_OUTPUT) + "\n...（已截断）";
+            return execution.exitCode() != 0
+                    ? "[退出码 " + execution.exitCode() + ", backend=" + execution.backend() + "]\n" + rendered
+                    : rendered;
         } catch (Exception e) {
             return "错误：" + e.getMessage();
         }

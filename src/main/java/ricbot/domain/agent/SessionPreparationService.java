@@ -1,5 +1,7 @@
 package ricbot.domain.agent;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import ricbot.domain.memory.Consolidator;
 import ricbot.domain.message.InboundMessage;
 import ricbot.domain.message.OutboundMessage;
@@ -7,11 +9,59 @@ import ricbot.domain.session.Session;
 import ricbot.domain.session.SessionManager;
 
 import java.time.Instant;
+import java.time.format.DateTimeParseException;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
-record SessionPreparationService(SessionManager sessionManager, AutoCompact autoCompact, Consolidator consolidator) {
+record SessionPreparationService(
+        SessionManager sessionManager,
+        AutoCompact autoCompact,
+        Consolidator consolidator,
+        RunCheckpointStore checkpointStore,
+        RunJournalStore runJournalStore,
+        RunRecoveryCoordinator recoveryCoordinator
+) {
+    private static final Logger log = LoggerFactory.getLogger(SessionPreparationService.class);
+
+    SessionPreparationService(SessionManager sessionManager, AutoCompact autoCompact, Consolidator consolidator) {
+        this(
+                sessionManager,
+                autoCompact,
+                consolidator,
+                RunCheckpointStore.disabled(),
+                RunJournalStore.disabled(),
+                null
+        );
+    }
+
+    SessionPreparationService(
+            SessionManager sessionManager,
+            AutoCompact autoCompact,
+            Consolidator consolidator,
+            RunCheckpointStore checkpointStore
+    ) {
+        this(sessionManager, autoCompact, consolidator, checkpointStore, RunJournalStore.disabled(), null);
+    }
+
+    SessionPreparationService(
+            SessionManager sessionManager,
+            AutoCompact autoCompact,
+            Consolidator consolidator,
+            RunCheckpointStore checkpointStore,
+            RunJournalStore runJournalStore
+    ) {
+        this(sessionManager, autoCompact, consolidator, checkpointStore, runJournalStore, null);
+    }
+
+    SessionPreparationService {
+        checkpointStore = checkpointStore != null ? checkpointStore : RunCheckpointStore.disabled();
+        runJournalStore = runJournalStore != null ? runJournalStore : RunJournalStore.disabled();
+        recoveryCoordinator = recoveryCoordinator != null
+                ? recoveryCoordinator
+                : new RunRecoveryCoordinator(runJournalStore, null);
+    }
 
     @FunctionalInterface
     interface CommandDispatcher {
@@ -113,31 +163,51 @@ record SessionPreparationService(SessionManager sessionManager, AutoCompact auto
     }
 
     void restoreRuntimeCheckpoint(Session session) {
-        // 从会话元数据中获取运行时检查点对象
-        Object raw = session.getMetadata().get(SessionRuntimeKeys.RUNTIME_CHECKPOINT_KEY);
-        // 如果检查点不是 Map 类型，则直接返回，不进行恢复操作
-        if (!(raw instanceof Map<?, ?> rawMap)) {
+        Optional<RunState> interruptedRun = pauseInterruptedRun(session.getKey());
+        Map<String, Object> checkpoint = checkpointPayload(session);
+        if (checkpoint.isEmpty()) {
             return;
         }
-
-        // 将原始对象复制为 Map<String, Object> 以便后续处理
-        Map<String, Object> checkpoint = copyObjectMap(rawMap);
+        String checkpointId = text(checkpoint.get("checkpoint_id"));
+        String lastRestoredId = text(session.getMetadata().get(SessionRuntimeKeys.LAST_RESTORED_CHECKPOINT_ID_KEY));
+        if (!checkpointId.isBlank() && checkpointId.equals(lastRestoredId)) {
+            if (session.getMetadata().remove(SessionRuntimeKeys.RUNTIME_CHECKPOINT_KEY) != null) {
+                sessionManager.save(session);
+            }
+            deleteDurableCheckpoint(session.getKey());
+            return;
+        }
         // 提取检查点中的各个组成部分：助手消息、已完成的工具结果、待处理的工具调用、任务状态
         Object assistantMessage = checkpoint.get("assistant_message");
+        Object runMessages = checkpoint.get("run_messages");
         Object completedToolResults = checkpoint.get("completed_tool_results");
         Object pendingToolCalls = checkpoint.get("pending_tool_calls");
         Object taskState = checkpoint.get("task_state");
+        Map<String, ToolRecoveryResolution> recoveryResolutions = pendingToolCalls instanceof List<?> pending
+                ? recoveryCoordinator.resolve(checkpoint, interruptedRun, pending)
+                : Map.of();
+        persistRecoveryDecisions(session, checkpoint, recoveryResolutions);
 
-        // 如果存在助手消息且为 Map 类型，将其添加到会话消息列表中
-        if (assistantMessage instanceof Map<?, ?> assistant) {
-            session.getMessages().add(copyObjectMap(assistant));
+        boolean restoredRunMessages = false;
+        if (runMessages instanceof List<?> generated && !generated.isEmpty()) {
+            for (Object item : generated) {
+                if (item instanceof Map<?, ?> message) {
+                    session.getMessages().add(copyObjectMap(message));
+                    restoredRunMessages = true;
+                }
+            }
         }
 
-        // 如果存在已完成的工具结果列表，遍历并添加每个有效的结果消息到会话中
-        if (completedToolResults instanceof List<?> completed) {
-            for (Object item : completed) {
-                if (item instanceof Map<?, ?> result) {
-                    session.getMessages().add(copyObjectMap(result));
+        // Legacy checkpoints only stored the latest assistant/tool batch.
+        if (!restoredRunMessages) {
+            if (assistantMessage instanceof Map<?, ?> assistant && !assistant.isEmpty()) {
+                session.getMessages().add(copyObjectMap(assistant));
+            }
+            if (completedToolResults instanceof List<?> completed) {
+                for (Object item : completed) {
+                    if (item instanceof Map<?, ?> result) {
+                        session.getMessages().add(copyObjectMap(result));
+                    }
                 }
             }
         }
@@ -154,13 +224,24 @@ record SessionPreparationService(SessionManager sessionManager, AutoCompact auto
                 Map<String, Object> function = toolCall.get("function") instanceof Map<?, ?> fn
                         ? copyObjectMap(fn)
                         : new LinkedHashMap<>();
+                String toolCallId = text(toolCall.get("id"));
+                ToolRecoveryResolution resolution = recoveryResolutions.get(toolCallId);
+                if (resolution != null && resolution.hasResult()) {
+                    session.getMessages().add(copyObjectMap(resolution.resultMessage()));
+                    continue;
+                }
 
                 // 构建表示工具执行中断的消息对象
                 Map<String, Object> toolMessage = new LinkedHashMap<>();
                 toolMessage.put("role", "tool"); // 角色标记为 tool
-                toolMessage.put("tool_call_id", toolCall.get("id")); // 关联的工具调用 ID
+                toolMessage.put("tool_call_id", toolCallId); // 关联的工具调用 ID
                 toolMessage.put("name", function.getOrDefault("name", "tool")); // 工具名称，默认为 "tool"
-                toolMessage.put("content", interruptedToolMessage(checkpoint, session)); // 中断原因描述
+                toolMessage.put(
+                        "content",
+                        resolution != null && resolution.action() == ToolRecoveryAction.REQUIRE_CONFIRMATION
+                                ? "错误：该工具执行结果不确定，需要确认后才能继续。原因：" + resolution.reason()
+                                : interruptedToolMessage(checkpoint, session)
+                ); // 中断原因描述
                 toolMessage.put("timestamp", Instant.now().toString()); // 当前时间戳
                 session.getMessages().add(toolMessage); // 将中断消息加入会话历史
             }
@@ -170,12 +251,16 @@ record SessionPreparationService(SessionManager sessionManager, AutoCompact auto
         if (taskState instanceof Map<?, ?> taskMap) {
             session.getMetadata().put(SessionRuntimeKeys.TASK_STATE_KEY, copyObjectMap(taskMap));
         }
+        if (!checkpointId.isBlank()) {
+            session.getMetadata().put(SessionRuntimeKeys.LAST_RESTORED_CHECKPOINT_ID_KEY, checkpointId);
+        }
 
         // 清理元数据中的临时标记和已恢复的检查点数据
         session.getMetadata().remove(SessionRuntimeKeys.PENDING_USER_TURN_KEY);
         session.getMetadata().remove(SessionRuntimeKeys.RUNTIME_CHECKPOINT_KEY);
         // 保存更新后的会话状态
         sessionManager.save(session);
+        deleteDurableCheckpoint(session.getKey());
     }
 
     void restorePendingUserTurn(Session session) {
@@ -237,6 +322,91 @@ record SessionPreparationService(SessionManager sessionManager, AutoCompact auto
 
     private static Map<String, Object> copyObjectMap(Map<?, ?> raw) {
         return ricbot.infra.common.JsonMapUtils.copyObjectMap(raw);
+    }
+
+    private Map<String, Object> checkpointPayload(Session session) {
+        Object sessionValue = session.getMetadata().get(SessionRuntimeKeys.RUNTIME_CHECKPOINT_KEY);
+        Map<String, Object> sessionCheckpoint = sessionValue instanceof Map<?, ?> rawMap
+                ? copyObjectMap(rawMap)
+                : new LinkedHashMap<>();
+        try {
+            Map<String, Object> durableCheckpoint = checkpointStore.load(session.getKey())
+                    .map(RunCheckpoint::toSessionPayload)
+                    .orElseGet(LinkedHashMap::new);
+            if (sessionCheckpoint.isEmpty()) {
+                return durableCheckpoint;
+            }
+            if (durableCheckpoint.isEmpty()) {
+                return sessionCheckpoint;
+            }
+            // The standalone checkpoint is written before session metadata.
+            // If a process exits between those writes, it is the newer source.
+            return updatedAt(durableCheckpoint).isAfter(updatedAt(sessionCheckpoint))
+                    ? durableCheckpoint
+                    : sessionCheckpoint;
+        } catch (RuntimeException e) {
+            log.warn("读取 durable run checkpoint 失败: sessionKey={}", session.getKey(), e);
+            return sessionCheckpoint;
+        }
+    }
+
+    private void deleteDurableCheckpoint(String sessionKey) {
+        try {
+            checkpointStore.delete(sessionKey);
+        } catch (RuntimeException e) {
+            // The restored checkpoint id remains on the session, so a stale
+            // file cannot duplicate messages on the next process start.
+            log.warn("清理 durable run checkpoint 失败: sessionKey={}", sessionKey, e);
+        }
+    }
+
+    private Optional<RunState> pauseInterruptedRun(String sessionKey) {
+        try {
+            return runJournalStore.pauseLatestInterrupted(sessionKey, "process_recovery");
+        } catch (RuntimeException e) {
+            log.warn("恢复 durable run journal 失败: sessionKey={}", sessionKey, e);
+            return Optional.empty();
+        }
+    }
+
+    private static void persistRecoveryDecisions(
+            Session session,
+            Map<String, Object> checkpoint,
+            Map<String, ToolRecoveryResolution> resolutions
+    ) {
+        Map<String, Object> unresolved = new LinkedHashMap<>();
+        resolutions.forEach((toolCallId, resolution) -> {
+            if (resolution.hasResult()) {
+                return;
+            }
+            unresolved.put(toolCallId, Map.of(
+                    "action", resolution.action().name(),
+                    "reason", resolution.reason(),
+                    "journal_run_id", text(checkpoint.get("journal_run_id"))
+            ));
+        });
+        if (unresolved.isEmpty()) {
+            session.getMetadata().remove(SessionRuntimeKeys.RECOVERY_DECISIONS_KEY);
+        } else {
+            session.getMetadata().put(SessionRuntimeKeys.RECOVERY_DECISIONS_KEY, unresolved);
+        }
+    }
+
+
+    private static String text(Object value) {
+        return value != null ? String.valueOf(value).trim() : "";
+    }
+
+    private static Instant updatedAt(Map<String, Object> checkpoint) {
+        String value = text(checkpoint.get("updated_at"));
+        if (value.isBlank()) {
+            return Instant.MIN;
+        }
+        try {
+            return Instant.parse(value);
+        } catch (DateTimeParseException ignored) {
+            return Instant.MIN;
+        }
     }
 
     private static String trim(String s) {

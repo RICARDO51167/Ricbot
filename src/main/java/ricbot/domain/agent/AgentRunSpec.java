@@ -73,6 +73,22 @@ public class AgentRunSpec {
      */
     private Consumer<Map<String, Object>> checkpointCallback;
 
+    /** Typed durable event sink; invoked synchronously before unsafe boundaries. */
+    private RunEventSink runEventSink = RunEventSink.disabled();
+
+    /** Existing CREATED branch state used to continue an executable journal fork. */
+    private RunState initialRunState;
+
+    /** Durable protocol store for write-tool idempotency and compensation. */
+    private SideEffectStore sideEffectStore = SideEffectStore.disabled();
+
+    /**
+     * Index of the first message produced by this logical request. A retry can
+     * start with messages produced by an earlier runner invocation, while all
+     * of them still belong to the same recoverable request.
+     */
+    private Integer checkpointMessageOffset;
+
     /**
      * 进度回调，用于报告执行进度
      */
