@@ -33,7 +33,6 @@ import ricbot.infra.config.Config; // 导入配置类
 import ricbot.infra.config.ConfigLoader; // 导入配置加载器
 import ricbot.infra.config.RuntimePaths; // 导入运行时路径工具类
 import ricbot.domain.skill.SkillsLoader;
-import ricbot.infra.heartbeat.HeartbeatService;
 import ricbot.integration.api.RicbotApiAppContext;
 import ricbot.integration.api.RicbotApiServer;
 import ricbot.integration.mcp.MCPLoader;
@@ -790,14 +789,14 @@ public final class CliCommands {
     }
 
     /**
-     * 运行 Ricbot 服务模式，启动所有已配置的渠道（飞书、钉钉、企微、WebSocket 等）。
+     * 运行 Ricbot 服务模式，启动 HTTP API 与已配置的通用输入渠道。
      *
      * @param args 命令行参数，支持 --config, --workspace
      * @throws Exception 执行过程中可能抛出的异常
      */
     /**
      * 启动 Ricbot 服务模式。
-     * 该方法会初始化核心组件（AgentLoop, ChannelManager, HeartbeatService, ApiServer），
+     * 该方法会初始化核心组件（AgentLoop, ChannelManager, ApiServer），
      * 并阻塞主线程以保持服务运行，直到接收到停止信号。
      *
      * @param args 命令行参数，支持 --config, --workspace
@@ -821,33 +820,8 @@ public final class CliCommands {
 
         // 创建 Agent 循环实例，负责处理核心逻辑
         AgentLoop agentLoop = BOOTSTRAPPER.createAgentLoop(resolvedConfig, bus, provider);
-        // 创建渠道管理器，负责管理各种通讯渠道（如飞书、钉钉等）
+        // 创建渠道管理器，负责管理通用输入渠道
         ChannelManager channelManager = BOOTSTRAPPER.createChannelManager(resolvedConfig, bus);
-
-        // 创建心跳服务
-        HeartbeatService heartbeat = BOOTSTRAPPER.createHeartbeatService(
-                resolvedConfig,
-                provider,
-                // 心跳任务执行回调：当需要执行心跳任务时调用
-                (tasks) -> {
-                    log.info("心跳任务执行中：{}", tasks);
-                    // 直接处理心跳任务消息
-                    OutboundMessage out = agentLoop.processDirect(tasks, "heartbeat:default", "system", "heartbeat");
-                    // 返回处理结果内容，若无结果则返回 null
-                    return out != null ? out.getContent() : null;
-                },
-                // 心跳结果处理回调：当收到心跳任务结果时调用
-                (response) -> {
-                    log.info("心跳任务结果：{}", response);
-                    // 这里可以按需分发给特定渠道，或者通过 bus 发布
-                    // 创建出站消息对象
-                    OutboundMessage out = new OutboundMessage();
-                    out.setChannel("system"); // 设置通道为系统通道
-                    out.setChatId("heartbeat"); // 设置聊天 ID 为 heartbeat
-                    out.setContent(response); // 设置消息内容为响应结果
-                    bus.publishOutbound(out); // 发布出站消息到总线
-                }
-        );
 
         System.out.println("正在启动 Ricbot 服务…");
         
@@ -857,11 +831,8 @@ public final class CliCommands {
         // 启动所有已配置的通讯渠道
         channelManager.startAll();
 
-        // 启动心跳服务，定期执行健康检查或维持连接
-        heartbeat.start();
-
         // 启动 OpenAI 兼容 API 服务，允许外部通过标准 OpenAI API 格式调用 Ricbot
-        Config.GatewayConfig gateway = resolvedConfig.getGateway(); // 获取 gateway 配置（heartbeat 仍走这里）
+        Config.GatewayConfig gateway = resolvedConfig.getGateway();
         Config.ApiConfig apiConfig = resolvedConfig.getApi();
         String apiHost = apiConfig.getHost();
         int apiPort = apiConfig.getPort() > 0 ? apiConfig.getPort() : gateway.getPort();
@@ -888,7 +859,6 @@ public final class CliCommands {
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             System.out.println("\n正在关闭…");
             apiServer.stop(1); // 停止 API 服务器
-            heartbeat.stop(); // 停止心跳服务
             channelManager.stopAll(); // 停止所有通讯渠道
             agentLoop.stop(); // 停止 Agent 循环
         }));

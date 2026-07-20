@@ -5,7 +5,6 @@ import ricbot.domain.config.ProviderCapabilityResolver;
 import ricbot.domain.message.MessageBus;
 import ricbot.infra.config.Config;
 import ricbot.infra.config.ConfigLoader;
-import ricbot.infra.heartbeat.HeartbeatService;
 import ricbot.integration.llm.api.LLMProvider;
 import ricbot.integration.llm.provider.ProviderFactory;
 import ricbot.integration.channel.ChannelManager;
@@ -80,26 +79,5 @@ public class Bootstrapper {
 
     public ChannelManager createChannelManager(Config config, MessageBus bus) {
         return new ChannelManager(config, bus);
-    }
-    public HeartbeatService createHeartbeatService(
-            Config config,
-            LLMProvider provider,
-            HeartbeatService.ExecuteHandler onExecute,
-            HeartbeatService.NotifyHandler onNotify
-    ) {
-        Config.GatewayConfig gateway = config.getGateway();
-        Config.HeartbeatConfig hb = gateway.getHeartbeat();
-        Config.AgentDefaults defaults = config.getAgents().getDefaults();
-
-        return new HeartbeatService(
-                config.getWorkspacePath(),
-                provider,
-                defaults.getModel(),
-                onExecute,
-                onNotify,
-                hb.getIntervalS(),
-                hb.isEnabled(),
-                defaults.getTimezone()
-        );
     }
 }

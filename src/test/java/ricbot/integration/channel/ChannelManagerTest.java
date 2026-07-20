@@ -23,7 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class ChannelManagerTest {
 
     @Test
-    void initChannels_injectsTranscriptionSettingsAndRemovesDenyAllChannels() {
+    void initChannels_injectsTranscriptionSettings() {
         Config config = new Config();
         config.getChannels().setTranscriptionProvider("openai_whisper");
         config.getProviders().getOpenai().setApiKey("openai-key");
@@ -32,12 +32,8 @@ class ChannelManagerTest {
         config.getChannels().getWebsocket().setEnabled(true);
         config.getChannels().getWebsocket().setAllowFrom(List.of("*"));
 
-        config.getChannels().getQq().setEnabled(true);
-        config.getChannels().getQq().setAllowFrom(List.of());
-
         Map<String, Class<? extends BaseChannel>> discovered = new LinkedHashMap<>();
         discovered.put("websocket", RecordingWebSocketChannel.class);
-        discovered.put("qq", DenyAllQqChannel.class);
 
         ChannelManager manager = new ChannelManager(config, new MessageBus(), discovered);
 
@@ -47,7 +43,6 @@ class ChannelManagerTest {
         assertEquals("openai", websocket.recordedProviderName());
         assertEquals("openai-key", websocket.recordedApiKey());
         assertEquals("https://openai.example.com", websocket.recordedApiBase());
-        assertNull(manager.getChannel("qq"));
     }
 
     @Test
@@ -333,34 +328,4 @@ class ChannelManagerTest {
         }
     }
 
-    static class DenyAllQqChannel extends BaseChannel {
-        private final List<String> allowFrom;
-
-        DenyAllQqChannel(Object config, MessageBus bus) {
-            super(config, bus);
-            this.name = "qq";
-            this.allowFrom = config instanceof QQChannel.QQConfig qq
-                    ? qq.getAllowFrom()
-                    : List.of();
-        }
-
-        @Override
-        public void start() {
-            running = true;
-        }
-
-        @Override
-        public void stop() {
-            running = false;
-        }
-
-        @Override
-        public List<String> getAllowFrom() {
-            return allowFrom;
-        }
-
-        @Override
-        public void send(OutboundMessage msg) {
-        }
-    }
 }

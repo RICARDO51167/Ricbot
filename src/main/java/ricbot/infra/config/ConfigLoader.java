@@ -379,7 +379,6 @@ public final class ConfigLoader {
         dc.setModelOverride(string(dream.get("model_override"), dc.getModelOverride()));
         dc.setMaxBatchSize(intValue(dream.get("max_batch_size"), dc.getMaxBatchSize()));
         dc.setMaxIterations(intValue(dream.get("max_iterations"), dc.getMaxIterations()));
-        dc.setCron(string(dream.get("cron"), dc.getCron()));
 
         // --- 处理 providers 部分 ---
         Map<String, Object> providers = asMap(data.get("providers"));
@@ -464,55 +463,6 @@ public final class ConfigLoader {
                 config.getChannels().getTranscriptionProvider()
         ));
 
-        Map<String, Object> feishu = asMap(channels.get("feishu"));
-        var fsc = config.getChannels().getFeishu();
-        fsc.setEnabled(booleanValue(feishu.get("enabled"), fsc.isEnabled()));
-        fsc.setAppId(string(feishu.get("app_id"), string(feishu.get("appId"), fsc.getAppId())));
-        fsc.setAppSecret(string(feishu.get("app_secret"), string(feishu.get("appSecret"), fsc.getAppSecret())));
-        fsc.setWebhookToken(string(feishu.get("webhook_token"), string(feishu.get("webhookToken"), fsc.getWebhookToken())));
-        fsc.setEncryptKey(string(feishu.get("encrypt_key"), string(feishu.get("encryptKey"), fsc.getEncryptKey())));
-        fsc.setAllowFrom(stringList(feishu.containsKey("allow_from") ? feishu.get("allow_from") : feishu.get("allowFrom")));
-
-        Map<String, Object> dingtalk = asMap(channels.get("dingtalk"));
-        var dtc = config.getChannels().getDingtalk();
-        dtc.setEnabled(booleanValue(dingtalk.get("enabled"), dtc.isEnabled()));
-        dtc.setAppKey(string(dingtalk.get("app_key"), string(dingtalk.get("appKey"), dtc.getAppKey())));
-        dtc.setAppSecret(string(dingtalk.get("app_secret"), string(dingtalk.get("appSecret"), dtc.getAppSecret())));
-        dtc.setWebhookSecret(string(dingtalk.get("webhook_secret"), string(dingtalk.get("webhookSecret"), dtc.getWebhookSecret())));
-        dtc.setAllowFrom(stringList(dingtalk.containsKey("allow_from") ? dingtalk.get("allow_from") : dingtalk.get("allowFrom")));
-
-        Map<String, Object> wecom = asMap(channels.get("wecom"));
-        var wcc = config.getChannels().getWecom();
-        wcc.setEnabled(booleanValue(wecom.get("enabled"), wcc.isEnabled()));
-        wcc.setBotId(string(wecom.get("bot_id"), string(wecom.get("botId"), wcc.getBotId())));
-        wcc.setSecret(string(wecom.get("secret"), wcc.getSecret()));
-        wcc.setToken(string(wecom.get("token"), wcc.getToken()));
-        wcc.setWelcomeMessage(string(wecom.get("welcome_message"), string(wecom.get("welcomeMessage"), wcc.getWelcomeMessage())));
-        wcc.setAllowFrom(stringList(wecom.containsKey("allow_from") ? wecom.get("allow_from") : wecom.get("allowFrom")));
-
-        Map<String, Object> qq = asMap(channels.get("qq"));
-        var qqc = config.getChannels().getQq();
-        qqc.setEnabled(booleanValue(qq.get("enabled"), qqc.isEnabled()));
-        qqc.setAppId(string(qq.get("app_id"), string(qq.get("appId"), qqc.getAppId())));
-        qqc.setSecret(string(qq.get("secret"), qqc.getSecret()));
-        qqc.setAllowFrom(stringList(qq.containsKey("allow_from") ? qq.get("allow_from") : qq.get("allowFrom")));
-        qqc.setMsgFormat(string(qq.get("msg_format"), string(qq.get("msgFormat"), qqc.getMsgFormat())));
-        qqc.setAckMessage(string(qq.get("ack_message"), string(qq.get("ackMessage"), qqc.getAckMessage())));
-        qqc.setMediaDir(string(qq.get("media_dir"), string(qq.get("mediaDir"), qqc.getMediaDir())));
-        qqc.setDownloadChunkSize(intValue(qq.get("download_chunk_size"), intValue(qq.get("downloadChunkSize"), qqc.getDownloadChunkSize())));
-        qqc.setDownloadMaxBytes(longValue(qq.get("download_max_bytes"), longValue(qq.get("downloadMaxBytes"), qqc.getDownloadMaxBytes())));
-
-        Map<String, Object> weixin = asMap(channels.get("weixin"));
-        var wc2c = config.getChannels().getWeixin();
-        wc2c.setEnabled(booleanValue(weixin.get("enabled"), wc2c.isEnabled()));
-        wc2c.setAllowFrom(stringList(weixin.containsKey("allow_from") ? weixin.get("allow_from") : weixin.get("allowFrom")));
-        wc2c.setBaseUrl(string(weixin.get("base_url"), string(weixin.get("baseUrl"), wc2c.getBaseUrl())));
-        wc2c.setCdnBaseUrl(string(weixin.get("cdn_base_url"), string(weixin.get("cdnBaseUrl"), wc2c.getCdnBaseUrl())));
-        wc2c.setRouteTag(string(weixin.get("route_tag"), string(weixin.get("routeTag"), wc2c.getRouteTag())));
-        wc2c.setToken(string(weixin.get("token"), wc2c.getToken()));
-        wc2c.setStateDir(string(weixin.get("state_dir"), string(weixin.get("stateDir"), wc2c.getStateDir())));
-        wc2c.setPollTimeout(intValue(weixin.get("poll_timeout"), intValue(weixin.get("pollTimeout"), wc2c.getPollTimeout())));
-
         Map<String, Object> websocket = asMap(channels.get("websocket"));
         var wsch = config.getChannels().getWebsocket();
         wsch.setEnabled(booleanValue(websocket.get("enabled"), wsch.isEnabled()));
@@ -538,13 +488,6 @@ public final class ConfigLoader {
         // --- 处理 gateway 部分 ---
         Map<String, Object> gateway = asMap(data.get("gateway"));
         config.getGateway().setPort(intValue(gateway.get("port"), config.getGateway().getPort()));
-
-        // 处理 heartbeat 配置
-        Map<String, Object> heartbeat = asMap(gateway.get("heartbeat"));
-        Config.HeartbeatConfig hc = config.getGateway().getHeartbeat();
-        hc.setEnabled(booleanValue(heartbeat.get("enabled"), hc.isEnabled()));
-        hc.setIntervalS(intValue(heartbeat.get("interval_s"), hc.getIntervalS()));
-        hc.setKeepRecentMessages(intValue(heartbeat.get("keep_recent_messages"), hc.getKeepRecentMessages()));
 
         // --- 处理 api 部分 ---
         Map<String, Object> api = asMap(data.get("api"));
@@ -593,7 +536,6 @@ public final class ConfigLoader {
         dream.put("model_override", ad.getDream().getModelOverride());
         dream.put("max_batch_size", ad.getDream().getMaxBatchSize());
         dream.put("max_iterations", ad.getDream().getMaxIterations());
-        dream.put("cron", ad.getDream().getCron());
         defaults.put("dream", dream);
 
         agents.put("defaults", defaults);
@@ -676,55 +618,6 @@ public final class ConfigLoader {
         channels.put("send_tool_hints", config.getChannels().isSendToolHints());
         channels.put("transcription_provider", config.getChannels().getTranscriptionProvider());
 
-        Map<String, Object> feishu = new LinkedHashMap<>();
-        feishu.put("enabled", config.getChannels().getFeishu().isEnabled());
-        feishu.put("app_id", config.getChannels().getFeishu().getAppId());
-        feishu.put("app_secret", config.getChannels().getFeishu().getAppSecret());
-        feishu.put("webhook_token", config.getChannels().getFeishu().getWebhookToken());
-        feishu.put("encrypt_key", config.getChannels().getFeishu().getEncryptKey());
-        feishu.put("allow_from", config.getChannels().getFeishu().getAllowFrom());
-        channels.put("feishu", feishu);
-
-        Map<String, Object> dingtalk = new LinkedHashMap<>();
-        dingtalk.put("enabled", config.getChannels().getDingtalk().isEnabled());
-        dingtalk.put("app_key", config.getChannels().getDingtalk().getAppKey());
-        dingtalk.put("app_secret", config.getChannels().getDingtalk().getAppSecret());
-        dingtalk.put("webhook_secret", config.getChannels().getDingtalk().getWebhookSecret());
-        dingtalk.put("allow_from", config.getChannels().getDingtalk().getAllowFrom());
-        channels.put("dingtalk", dingtalk);
-
-        Map<String, Object> wecom = new LinkedHashMap<>();
-        wecom.put("enabled", config.getChannels().getWecom().isEnabled());
-        wecom.put("bot_id", config.getChannels().getWecom().getBotId());
-        wecom.put("secret", config.getChannels().getWecom().getSecret());
-        wecom.put("token", config.getChannels().getWecom().getToken());
-        wecom.put("allow_from", config.getChannels().getWecom().getAllowFrom());
-        wecom.put("welcome_message", config.getChannels().getWecom().getWelcomeMessage());
-        channels.put("wecom", wecom);
-
-        Map<String, Object> qq = new LinkedHashMap<>();
-        qq.put("enabled", config.getChannels().getQq().isEnabled());
-        qq.put("app_id", config.getChannels().getQq().getAppId());
-        qq.put("secret", config.getChannels().getQq().getSecret());
-        qq.put("allow_from", config.getChannels().getQq().getAllowFrom());
-        qq.put("msg_format", config.getChannels().getQq().getMsgFormat());
-        qq.put("ack_message", config.getChannels().getQq().getAckMessage());
-        qq.put("media_dir", config.getChannels().getQq().getMediaDir());
-        qq.put("download_chunk_size", config.getChannels().getQq().getDownloadChunkSize());
-        qq.put("download_max_bytes", config.getChannels().getQq().getDownloadMaxBytes());
-        channels.put("qq", qq);
-
-        Map<String, Object> weixin = new LinkedHashMap<>();
-        weixin.put("enabled", config.getChannels().getWeixin().isEnabled());
-        weixin.put("allow_from", config.getChannels().getWeixin().getAllowFrom());
-        weixin.put("base_url", config.getChannels().getWeixin().getBaseUrl());
-        weixin.put("cdn_base_url", config.getChannels().getWeixin().getCdnBaseUrl());
-        weixin.put("route_tag", config.getChannels().getWeixin().getRouteTag());
-        weixin.put("token", config.getChannels().getWeixin().getToken());
-        weixin.put("state_dir", config.getChannels().getWeixin().getStateDir());
-        weixin.put("poll_timeout", config.getChannels().getWeixin().getPollTimeout());
-        channels.put("weixin", weixin);
-
         Map<String, Object> websocket = new LinkedHashMap<>();
         websocket.put("enabled", config.getChannels().getWebsocket().isEnabled());
         websocket.put("host", config.getChannels().getWebsocket().getHost());
@@ -750,12 +643,6 @@ public final class ConfigLoader {
         Map<String, Object> gateway = new LinkedHashMap<>();
         gateway.put("port", config.getGateway().getPort());
         
-        // 构建 heartbeat 配置
-        Map<String, Object> heartbeat = new LinkedHashMap<>();
-        heartbeat.put("enabled", config.getGateway().getHeartbeat().isEnabled());
-        heartbeat.put("interval_s", config.getGateway().getHeartbeat().getIntervalS());
-        heartbeat.put("keep_recent_messages", config.getGateway().getHeartbeat().getKeepRecentMessages());
-        gateway.put("heartbeat", heartbeat);
         root.put("gateway", gateway);
 
         // --- 构建 api 部分 ---

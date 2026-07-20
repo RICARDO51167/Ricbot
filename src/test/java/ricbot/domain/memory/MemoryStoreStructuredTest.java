@@ -94,7 +94,7 @@ class MemoryStoreStructuredTest {
                 .setDetails("相关实现位于渠道集成模块")
                 .setImportance(0.7d)
                 .setConfidence(0.9d)
-                .setTags(List.of("feishu"));
+                .setTags(List.of("confirmed"));
         MemoryEntry unrelated = new MemoryEntry()
                 .setType(MemoryEntry.TYPE_PROJECT)
                 .setScope(MemoryEntry.SCOPE_LONG_TERM)

@@ -174,21 +174,13 @@ GET /console/api/mcp/diagnostics
 
 > MCP 最大的问题不是接不上，而是接上后不知道哪些工具真的暴露给模型。diagnostics 把这个决策过程解释出来。
 
-## 6:40-7:30 Webhook / Gateway
-
-本地 smoke：
-
-```bash
-sh scripts/webhook-smoke.sh
-```
+## 6:40-7:30 Runtime Input Boundary
 
 讲解点：
 
-- Feishu / DingTalk / WeCom 三类企业 IM 入站。
-- token/sign 校验。
-- 文本消息归一化到 MessageBus。
-- 5 分钟内存去重。
-- 加密回调和附件/图片/语音是当前限制。
+- CLI、OpenAI-compatible API 与通用 WebSocket 输入统一归一化到 MessageBus。
+- 外部调度器通过显式输入或 Resume 接口唤醒持久任务。
+- 具体企业渠道属于独立适配器，不进入 Core Runtime。
 
 ## 7:30-8:00 Closing
 

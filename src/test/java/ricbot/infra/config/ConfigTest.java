@@ -55,10 +55,6 @@ class ConfigTest {
         provider.setExtraHeaders(null);
         assertNotNull(provider.getExtraHeaders());
 
-        Config.GatewayConfig gateway = new Config.GatewayConfig();
-        gateway.setHeartbeat(null);
-        assertNotNull(gateway.getHeartbeat());
-
         Config.ApiConfig api = new Config.ApiConfig();
         api.setBearerToken(null);
         assertEquals("", api.getBearerToken());

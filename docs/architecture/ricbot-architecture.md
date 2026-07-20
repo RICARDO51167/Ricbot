@@ -1,6 +1,6 @@
 # Ricbot Architecture
 
-Ricbot 是一个 Java 17 Agent Runtime，把模型调用、工具执行、团队协作、工作区变更、经验沉淀、评测门禁和本地 Console 观测串成一个可演示、可回放、可治理的工程闭环。
+Ricbot 是一个面向长任务与多智能体协作的 Java 持久化 Agent Runtime，围绕持久执行、精确恢复、副作用安全、Worker 协作、工作区隔离和评测验证组织能力。
 
 ## Layers
 
@@ -21,7 +21,7 @@ CLI / API / Channel
 
 - CLI：单次 agent、交互命令、team、eval、config doctor。
 - API：OpenAI-compatible `/v1/chat/completions`、sessions、MCP dashboard、health。
-- Channel/Gateway：Feishu、DingTalk、WeCom webhook 文本入站和多渠道消息出口。
+- Channel：保留通用 WebSocket 输入适配器；具体业务渠道应作为 Core Runtime 之外的插件。
 
 这一层负责把外部输入标准化成 session、message 或 command，不直接承载模型推理策略。
 
@@ -151,7 +151,6 @@ serve
 - 副作用工具先持久化幂等 reservation；不确定状态不会自动重复执行。
 - Worktree-backed team task 隔离修改，ChangeSet 作为人工审阅边界。
 - Release Check 使用 deterministic smoke eval，不要求真实模型或外网。
-- Webhook 入站只支持文本和已实现校验，不解密 Feishu/WeCom 加密事件。
 - MCP diagnostics 只读，不启动、停止、reload、reconnect 或调用 MCP tool。
 - config doctor、Console、trace 和 MCP diagnostics 对敏感字段脱敏。
 
@@ -162,7 +161,7 @@ serve
 - Tool：实现 `Tool` 并注册到 `ToolRegistry`。
 - MCP：在 `tools.mcpServers` 中接入 stdio / sse / streamableHttp server。
 - Skills：把 verified experience promote 为 generated skill，或手写 skill。
-- Channel：实现 `BaseChannel`，接入 `ChannelManager` 和 webhook controller。
+- Channel：实现 `BaseChannel` 插件并接入 `ChannelManager`，不得反向依赖 Core Runtime。
 - Eval：新增 JSONL scenario，扩展 baseline 和 compare。
 - Execution：实现 `ExecutionBackend` 或 `RemoteExecutionClient`，通过能力探测显式选择；降级必须由调用方开启。
 - Storage：实现 `SharedStateStore` 接入 SQL、Redis 或对象存储，保留 CAS 版本语义。

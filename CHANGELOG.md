@@ -1,17 +1,17 @@
 # Changelog
 
+## Runtime Pruning
+
+- Runtime Core 收敛为 CLI、OpenAI-compatible API 与通用 WebSocket 输入，不再内置具体企业通信适配器。
+- 删除内置定时任务工具、持久调度器与后台心跳服务；外部调度器通过显式输入或 Resume 接口唤醒任务。
+- 移除后台 Dream 调度，Memory/Dream 暂时仅允许显式调用，等待后续边界收敛。
+
 ## V5.4 - Provider Capability Override
 
 - 新增顶层 `model_capabilities` 配置，用于覆盖特定模型的 tool calling、streaming、vision、JSON mode、reasoning effort 和 token 窗口能力。
 - Provider capability resolver 先执行静态/启发式推断，再合并用户 override，并在 Config Doctor 中展示 `STATIC`、`HEURISTIC`、`USER_OVERRIDE` 或 `MIXED` 来源。
 - Config Doctor 增加 capability override 风险提示、非法 token 数 warning 和未命中当前默认模型的低优先级提示。
 - 运行时仍只消费最终 ProviderCapability；明确 `false` 的 override 会触发现有 tool/streaming 降级策略。
-
-## V5.3 - Gateway Webhook Docs + Smoke Templates
-
-- 新增 Feishu、DingTalk、WeCom webhook 入站实测文档，覆盖 endpoint、文本消息示例、校验规则、去重和当前限制。
-- 新增企业 IM webhook 配置模板，使用环境变量占位并保留本地 API 安全配置示例。
-- 新增 `scripts/webhook-smoke.sh`，使用 curl 本地模拟三类企业 IM 文本消息和重复事件，不访问真实平台。
 
 ## V5.2 - Console UI Polish + Demo Flow
 
@@ -57,12 +57,6 @@
 - Provider capability 从诊断展示接入 AgentRunner 运行时策略。
 - 明确 `supportsToolCalling=false` 时不暴露 tools，streaming/vision 能力明确不支持时做降级提示。
 - `UNKNOWN` 保持原行为，只记录 capability warning。
-
-## V4.26 - Enterprise IM Webhook Ingress
-
-- 新增 Feishu、DingTalk、WeCom 统一 webhook endpoint。
-- 支持文本事件标准化为 `InboundMessage` 并进入 MessageBus。
-- 增加签名/token 校验、事件去重和部分加密能力说明。
 
 ## V4.25 - Console Action Audit + Security
 

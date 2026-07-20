@@ -27,14 +27,14 @@ class EvalGoldenScenariosTest {
                     .setScenariosPath(Path.of("evals/golden.jsonl"))
                     .setOutputDir(Path.of("target", "eval-artifacts", "golden")));
 
-            assertEquals(17, summary.getTotal());
-            assertEquals(14, summary.getPassed(), "failures=" + summary.getFailuresByKind() + ", artifacts=" + summary.getArtifactDir());
+            assertEquals(16, summary.getTotal());
+            assertEquals(13, summary.getPassed(), "failures=" + summary.getFailuresByKind() + ", artifacts=" + summary.getArtifactDir());
             assertEquals(0, summary.getFailed(), "failures=" + summary.getFailuresByKind() + ", artifacts=" + summary.getArtifactDir());
             assertEquals(1, summary.getSkipped());
             assertEquals(2, summary.getExpectedFailed());
             assertEquals(0, summary.getUnexpectedPassed());
-            assertEquals(28, summary.getTotalModelCalls());
-            assertEquals(11, summary.getTotalToolCalls());
+            assertEquals(26, summary.getTotalModelCalls());
+            assertEquals(10, summary.getTotalToolCalls());
             assertEquals(3, summary.getTotalWorkspaceChanges());
             assertTrue(summary.getDurationP50Ms() >= 0);
             assertTrue(summary.getDurationP95Ms() >= summary.getDurationP50Ms());

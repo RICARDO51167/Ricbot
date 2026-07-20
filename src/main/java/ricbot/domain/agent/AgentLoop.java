@@ -2,10 +2,6 @@ package ricbot.domain.agent;
 
 import ricbot.domain.skill.SkillsLoader;
 import ricbot.domain.skill.SkillRouter;
-import ricbot.infra.cron.CronService;
-import ricbot.infra.cron.CronTypes.CronJob;
-import ricbot.infra.cron.CronTypes.CronSchedule;
-import ricbot.infra.cron.CronTypes.ScheduleKind;
 import ricbot.tool.web.WebFetchTool;
 import ricbot.tool.web.WebSearchTool;
 import ricbot.domain.memory.Consolidator;
@@ -22,7 +18,6 @@ import ricbot.domain.trace.TraceStore;
 import ricbot.domain.hook.AgentHook;
 import ricbot.tool.api.BuiltinToolRegistrar;
 import ricbot.tool.api.ToolRegistry;
-import ricbot.tool.cron.CronTool;
 import ricbot.tool.filesystem.NotebookEditTool;
 import ricbot.tool.process.SpawnTool;
 import ricbot.tool.skill.ReadSkillTool;
@@ -55,8 +50,6 @@ public class AgentLoop {
     private static final Logger log = LoggerFactory.getLogger(AgentLoop.class);
     /** 入站消息轮询超时 */
     private static final int INBOUND_POLL_TIMEOUT_MS = 500;
-    private static final long DEFAULT_DREAM_INTERVAL_MILLIS = TimeUnit.MINUTES.toMillis(15);
-    private static final long MIN_DREAM_DELAY_MILLIS = TimeUnit.SECONDS.toMillis(1);
 
     /** 统一会话的默认键值，当启用统一会话模式时使用 */
     public static final String UNIFIED_SESSION_KEY = "unified:default";
@@ -127,8 +120,6 @@ public class AgentLoop {
     private final SkillsLoader skillsLoader;
     /** 技能路由器，用于根据上下文选择合适技能 */
     private final SkillRouter skillRouter;
-    /** 定时任务服务 */
-    private final CronService cronService;
     /** 工具注册表，管理所有可用工具 */
     private final ToolRegistry tools;
     /** Agent 运行器，负责执行具体的 LLM 交互循环 */
@@ -305,10 +296,6 @@ public class AgentLoop {
                 parseInt(System.getenv("RICBOT_SKILLS_MAX_CHARS"), 12000)
         );
         
-        // 初始化定时任务服务
-        this.cronService = new CronService(workspace.resolve(".ricbot").resolve("cron").resolve("store.json"));
-        this.cronService.setOnJob(this::handleCronJob);
-
         // 初始化工具注册表和运行器
         this.tools = new ToolRegistry();
         this.runner = new AgentRunner(provider);
@@ -445,10 +432,6 @@ public class AgentLoop {
             tools.register(new SpawnTool(subagents));
         }
 
-        if (cronService != null) {
-            tools.register(new CronTool(cronService, contextBuilder.getTimezone()));
-        }
-
         if (webConfig.isEnable()) {
             tools.register(new WebFetchTool(
                     webConfig.getMaxChars(),
@@ -471,40 +454,13 @@ public class AgentLoop {
     // ---------------------------------------------------------------------
 
     /**
-     * 处理定时任务回调。
-     *
-     * @param job 定时任务对象
-     * @return 处理结果字符串
-     */
-    private String handleCronJob(CronJob job) {
-        log.info("执行定时任务: {}", job.getName());
-        
-        // 构建入站消息
-        InboundMessage msg = InboundMessages.of(
-                job.getPayload().getChannel() != null ? job.getPayload().getChannel() : "system",
-                "cron",
-                job.getPayload().getTo() != null ? job.getPayload().getTo() : "cron",
-                job.getPayload().getMessage()
-        );
-        
-        // 标记这是一个 cron 任务
-        msg.getMetadata().put("_cron_job_id", job.getId());
-        msg.getMetadata().put("_cron_job_name", job.getName());
-        msg.getMetadata().put("_deliver", job.getPayload().isDeliver());
-
-        // 提交任务到线程池异步分发
-        executor.submit(() -> dispatch(msg));
-        return "任务已分发";
-    }
-
-    /**
      * 启动 Agent 主循环。
      * <p>
-     * 该方法首先确保后台服务（如定时任务、MCP加载等）已启动，
+     * 该方法首先确保后台服务（如 MCP 加载等）已启动，
      * 然后使用 CAS 操作保证 Agent 主循环线程只被创建和启动一次。
      */
     public void start() {
-        // 启动必要的后台服务（如 Cron, Dream, MCP 等），内部有幂等性保护
+        // 启动必要的后台服务，内部有幂等性保护
         startBackgroundIfNeeded();
         
         // 尝试将 loopThreadStarted 标志从 false 设置为 true
@@ -573,9 +529,6 @@ public class AgentLoop {
         }
         // 标记 Agent 循环为运行状态
         this.running = true;
-        // 启动定时任务服务
-        this.cronService.start();
-        
         // 如果配置了 MCP 服务器且不为空，则异步加载 MCP 服务
         if (mcpServers != null && !mcpServers.isEmpty()) {
             executor.submit(() -> {
@@ -589,11 +542,6 @@ public class AgentLoop {
             });
         }
         
-        // 如果启用了 Dream 配置，则调度定期执行 Dream 任务
-        if (dreamConfig != null && dreamConfig.isEnabled()) {
-            scheduleNextDreamRun(computeDreamDelayMillis(dreamConfig, contextBuilder.getTimezone(), System.currentTimeMillis()));
-        }
-
         // 如果设置了会话自动归档 TTL（大于 0），则调度定期执行自动归档扫描
         if (sessionTtlMinutes > 0) {
             // 每 1 分钟执行一次自动归档扫描，初始延迟为 1 分钟
@@ -606,7 +554,6 @@ public class AgentLoop {
         for (String sessionKey : activeTasks.keySet()) {
             markSessionInterrupted(sessionKey, "shutdown");
         }
-        this.cronService.stop();
         try {
             subagents.close();
         } catch (Exception e) {
@@ -631,35 +578,6 @@ public class AgentLoop {
 
     public MemoryStore getMemoryStore() { return memoryStore; }
     public Consolidator getConsolidator() { return consolidator; }
-
-    private void scheduleNextDreamRun(long delayMillis) {
-        scheduler.schedule(() -> {
-            try {
-                dream.run();
-            } catch (Exception e) {
-                log.error("后台 Dream 任务出错", e);
-            } finally {
-                if (running && dreamConfig != null && dreamConfig.isEnabled() && !scheduler.isShutdown()) {
-                    scheduleNextDreamRun(computeDreamDelayMillis(dreamConfig, contextBuilder.getTimezone(), System.currentTimeMillis()));
-                }
-            }
-        }, delayMillis, TimeUnit.MILLISECONDS);
-    }
-
-    public static long computeDreamDelayMillis(Config.DreamConfig dreamConfig, String timezone, long nowMs) {
-        if (dreamConfig == null || dreamConfig.getCron() == null || dreamConfig.getCron().isBlank()) {
-            return DEFAULT_DREAM_INTERVAL_MILLIS;
-        }
-
-        CronSchedule schedule = new CronSchedule(ScheduleKind.CRON);
-        schedule.setExpr(dreamConfig.getCron());
-        schedule.setTz(timezone);
-        Long nextRun = CronService.computeNextRun(schedule, nowMs);
-        if (nextRun == null) {
-            return DEFAULT_DREAM_INTERVAL_MILLIS;
-        }
-        return Math.max(MIN_DREAM_DELAY_MILLIS, nextRun - nowMs);
-    }
 
     // ---------------------------------------------------------------------
     // Dispatch / processing

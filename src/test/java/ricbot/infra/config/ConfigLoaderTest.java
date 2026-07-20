@@ -74,12 +74,12 @@ class ConfigLoaderTest {
     void resolveConfigEnvVars_keepsMissingPlaceholdersButResolvesPresentOnes() {
         Config config = new Config();
         config.getProviders().getOpenai().setApiKey("${PATH}");
-        config.getChannels().getQq().setAppId("${DEFINITELY_MISSING_RICBOT_ENV}");
+        config.getChannels().getWebsocket().setToken("${DEFINITELY_MISSING_RICBOT_ENV}");
 
         Config resolved = ConfigLoader.resolveConfigEnvVars(config);
 
         assertNotEquals("${PATH}", resolved.getProviders().getOpenai().getApiKey());
-        assertEquals("${DEFINITELY_MISSING_RICBOT_ENV}", resolved.getChannels().getQq().getAppId());
+        assertEquals("${DEFINITELY_MISSING_RICBOT_ENV}", resolved.getChannels().getWebsocket().getToken());
     }
 
     @Test
@@ -185,56 +185,4 @@ class ConfigLoaderTest {
         assertNull(override.getMaxOutputTokens());
     }
 
-    @Test
-    void loadConfig_readsEnterpriseWebhookChannelSettings(@TempDir Path tempDir) throws Exception {
-        Path configPath = tempDir.resolve("webhooks.json");
-        Files.writeString(configPath, """
-                {
-                  "channels": {
-                    "feishu": {
-                      "enabled": true,
-                      "app_id": "fs-app",
-                      "app_secret": "fs-app-secret",
-                      "webhookToken": "fs-token",
-                      "encryptKey": "fs-encrypt",
-                      "allow_from": ["user-1"]
-                    },
-                    "dingtalk": {
-                      "enabled": true,
-                      "app_key": "dt-app",
-                      "app_secret": "dt-app-secret",
-                      "webhookSecret": "dt-webhook-secret",
-                      "allow_from": ["user-2"]
-                    },
-                    "wecom": {
-                      "enabled": true,
-                      "bot_id": "wecom-bot",
-                      "secret": "wecom-secret",
-                      "token": "wecom-token",
-                      "welcome_message": "hello",
-                      "allow_from": ["user-3"]
-                    }
-                  }
-                }
-                """);
-
-        Config config = ConfigLoader.loadConfig(configPath);
-
-        assertTrue(config.getChannels().getFeishu().isEnabled());
-        assertEquals("fs-app", config.getChannels().getFeishu().getAppId());
-        assertEquals("fs-token", config.getChannels().getFeishu().getWebhookToken());
-        assertEquals("fs-encrypt", config.getChannels().getFeishu().getEncryptKey());
-        assertEquals(List.of("user-1"), config.getChannels().getFeishu().getAllowFrom());
-
-        assertTrue(config.getChannels().getDingtalk().isEnabled());
-        assertEquals("dt-app", config.getChannels().getDingtalk().getAppKey());
-        assertEquals("dt-webhook-secret", config.getChannels().getDingtalk().getWebhookSecret());
-        assertEquals(List.of("user-2"), config.getChannels().getDingtalk().getAllowFrom());
-
-        assertTrue(config.getChannels().getWecom().isEnabled());
-        assertEquals("wecom-bot", config.getChannels().getWecom().getBotId());
-        assertEquals("wecom-token", config.getChannels().getWecom().getToken());
-        assertEquals("hello", config.getChannels().getWecom().getWelcomeMessage());
-        assertEquals(List.of("user-3"), config.getChannels().getWecom().getAllowFrom());
-    }
 }

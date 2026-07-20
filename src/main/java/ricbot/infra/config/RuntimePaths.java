@@ -52,14 +52,6 @@ public final class RuntimePaths {
     }
 
     /**
-     * 获取定时任务目录 (~/.ricbot/cron)
-     * @return 定时任务目录路径
-     */
-    public static Path getCronDir() {
-        return getRuntimeSubdir("cron");
-    }
-
-    /**
      * 获取日志目录 (~/.ricbot/logs)
      * @return 日志目录路径
      */

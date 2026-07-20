@@ -569,9 +569,6 @@ public class EvalHarness {
         if (name.startsWith("web_")) {
             return "network";
         }
-        if (name.equals("cron")) {
-            return "cron";
-        }
         if (name.startsWith("mcp_")) {
             return "mcp";
         }
@@ -597,10 +594,6 @@ public class EvalHarness {
             return normalizedPolicy.contains("network")
                     || normalizedPolicy.contains("web")
                     || normalizedPolicy.contains("http");
-        }
-        if ("cron".equals(category)) {
-            return normalizedPolicy.contains("cron")
-                    || normalizedPolicy.contains("schedule");
         }
         if ("mcp".equals(category)) {
             return normalizedPolicy.contains("mcp")

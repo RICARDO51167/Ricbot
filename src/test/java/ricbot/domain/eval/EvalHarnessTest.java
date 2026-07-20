@@ -198,7 +198,7 @@ class EvalHarnessTest {
         );
 
         assertEquals("pass", result.getStatus());
-        assertEquals(17, result.getTotalScenarios());
+        assertEquals(16, result.getTotalScenarios());
         assertEquals(0, result.getErrors());
         assertTrue(Files.exists(Path.of(result.getArtifactDir()).resolve("lint.json")));
         assertTrue(Files.readString(Path.of(result.getArtifactDir()).resolve("lint-report.md")).contains("No lint issues found."));
@@ -550,32 +550,6 @@ class EvalHarnessTest {
     }
 
     @Test
-    void run_blocksToolCategoriesNotAllowedBySideEffectPolicy(@TempDir Path workspace) throws Exception {
-        Path scenarios = workspace.resolve("scenarios.jsonl");
-        Files.writeString(scenarios, """
-                {"id":"cron-blocked","input":"check cron status","expected_contains":["done"],"allowed_side_effects":"files"}
-                """);
-
-        AgentLoop loop = loop(workspace, cronStatusProvider());
-        try {
-            EvalRunSummary summary = new EvalHarness(loop, config(workspace)).run(new EvalOptions()
-                    .setScenariosPath(scenarios)
-                    .setOutputDir(workspace.resolve("eval-out")));
-
-            assertEquals(1, summary.getFailed());
-            assertEquals(1, summary.getFailuresByKind().get("side_effect_violation"));
-            Map<String, Object> caseArtifact = MAPPER.readValue(
-                    Path.of(summary.getArtifactDir()).resolve("cases").resolve("cron-blocked.json").toFile(),
-                    new TypeReference<>() {}
-            );
-            Map<?, ?> result = (Map<?, ?>) caseArtifact.get("result");
-            assertTrue(String.valueOf(result.get("side_effect_violations")).contains("cron"));
-        } finally {
-            loop.stop();
-        }
-    }
-
-    @Test
     void run_assertsToolUseAndCallBudgets(@TempDir Path workspace) throws Exception {
         Path scenarios = workspace.resolve("scenarios.jsonl");
         Files.writeString(scenarios, """
@@ -857,34 +831,6 @@ class EvalHarnessTest {
                     return new LLMResponse("done").setFinishReason("stop");
                 }
                 return new LLMResponse("ok").setFinishReason("stop");
-            }
-        };
-    }
-
-    private static LLMProvider cronStatusProvider() {
-        AtomicInteger calls = new AtomicInteger();
-        return new LLMProvider("k", "http://localhost") {
-            @Override
-            public LLMResponse chat(
-                    List<Map<String, Object>> messages,
-                    List<Map<String, Object>> tools,
-                    String model,
-                    Integer maxTokens,
-                    Double temperature,
-                    String reasoningEffort,
-                    Object toolChoice
-            ) {
-                if (calls.incrementAndGet() == 1) {
-                    return new LLMResponse()
-                            .setContent("")
-                            .setFinishReason("tool_calls")
-                            .setToolCalls(List.of(new ToolCallRequest(
-                                    "call_cron",
-                                    "cron",
-                                    Map.of("action", "status")
-                            )));
-                }
-                return new LLMResponse("done").setFinishReason("stop");
             }
         };
     }

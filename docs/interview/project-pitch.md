@@ -6,7 +6,7 @@ Ricbot 是我用 Java 17 做的 Agent Runtime。它不是单纯聊天机器人�
 
 ## 1 分钟版本
 
-Ricbot 是一个面向 Coding Agent 和 AI Infra 的 Java Agent Runtime。它支持 CLI、OpenAI-compatible API、多渠道消息和本地 Console。内部有 AgentLoop/AgentRunner 负责模型-工具循环，ToolRegistry 管理内置工具和 MCP 工具，Team/Workspace 模块把复杂任务放到受管 git worktree 里执行，再通过 ChangeSet 做人工审阅。它还有 Config Doctor、Provider Capability fallback、Trace Viewer、Experience to Skill、固定 smoke eval、baseline compare 和 release-check。我的目标是把 Agent 从“能调用工具”推进到“能被工程团队安全演示、排查和发布”。
+Ricbot 是一个面向长任务与多智能体协作的 Java 持久化 Agent Runtime。内部以 Journal/Checkpoint 支撑精确恢复，以副作用 reservation 和幂等键保证安全重放，以持久 Worker、Mailbox、Join/Handoff 支撑协作，并通过受管 git worktree 隔离修改、用 Eval/Baseline 验证回归。CLI、OpenAI-compatible API 和 WebSocket 只是输入适配层，不承担运行事实。
 
 ## 3 分钟版本
 

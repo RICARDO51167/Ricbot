@@ -112,18 +112,6 @@ public final class ChannelRegistry {
         // 创建一个有序的 LinkedHashMap 用于存储内置渠道
         Map<String, Class<? extends BaseChannel>> map = new LinkedHashMap<>();
 
-        // 注册飞书渠道
-        map.put("feishu", FeishuChannel.class);
-        // 注册钉钉渠道
-        map.put("dingtalk", DingTalkChannel.class);
-        // 注册企业微信渠道
-        map.put("wecom", WecomChannel.class);
-        // 注册 QQ 渠道
-        map.put("qq", QQChannel.class);
-        // 注册微信渠道
-        map.put("weixin", WeixinChannel.class);
-        // 注册邮件渠道
-        map.put("email", EmailChannel.class);
         // 注册 WebSocket 渠道
         map.put("websocket", WebSocketChannel.class);
 

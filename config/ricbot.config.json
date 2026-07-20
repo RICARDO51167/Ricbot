@@ -35,14 +35,5 @@
       "allowed_env_keys": []
     },
     "mcpServers": {}
-  },
-  "channels": {
-    "qq": {
-      "enabled": false,
-      "app_id": "${RICBOT_QQ_APP_ID}",
-      "secret": "${RICBOT_QQ_SECRET}",
-      "allow_from": ["*"],
-      "media_dir": "./workspace/.ricbot/media/qq"
-    }
   }
 }

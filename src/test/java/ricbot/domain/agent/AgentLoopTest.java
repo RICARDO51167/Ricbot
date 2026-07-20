@@ -78,7 +78,7 @@ public class AgentLoopTest {
                 dreamConfig         // Dream 配置
         );
 
-        // 使用 start() 启动 AgentLoop（会自动启动 cronService 等）
+        // 使用 start() 启动 AgentLoop 及必要的后台组件
         loop.start();
         try {
             // 创建一条来自 CLI 用户的入站消息，内容为 "ping"

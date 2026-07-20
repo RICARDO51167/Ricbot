@@ -39,12 +39,9 @@ import ricbot.integration.api.console.ConsoleActionAuditService;
 import ricbot.integration.api.console.ConsoleEvent;
 import ricbot.integration.api.console.ConsoleController;
 import ricbot.integration.api.console.JsonlConsoleEventStore;
-import ricbot.integration.api.webhook.ChannelWebhookController;
 import ricbot.integration.llm.api.LLMProvider;
 import ricbot.integration.llm.api.LLMResponse;
 
-import javax.crypto.Mac;
-import javax.crypto.spec.SecretKeySpec;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
@@ -59,7 +56,6 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
-import java.util.Base64;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -2406,187 +2402,9 @@ public class RicbotApiServerTest {
         }
     }
 
-    @Test
-    void channelWebhooks_handleFeishuChallengeAndTextMessage(@TempDir Path workspace) throws Exception {
-        AgentLoop loop = buildLoopNoStart(workspace);
-        Config config = new Config();
-        config.getChannels().getFeishu().setWebhookToken("feishu-token");
-        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", config, null, workspace);
-
-        try {
-            TestExchange challenge = postExchangeRaw("/webhook/feishu", """
-                    {"type":"url_verification","token":"feishu-token","challenge":"challenge-code"}
-                    """);
-            ChannelWebhookController.handler(app, "feishu").handle(challenge);
-            assertEquals(200, challenge.getResponseCode(), challenge.responseText());
-            assertTrue(challenge.responseText().contains("\"challenge\":\"challenge-code\""), challenge.responseText());
-
-            TestExchange message = postExchangeRaw("/webhook/feishu", """
-                    {
-                      "token": "feishu-token",
-                      "header": {"event_id": "feishu-evt-1", "event_type": "im.message.receive_v1"},
-                      "event": {
-                        "sender": {"sender_id": {"user_id": "user-1"}},
-                        "message": {
-                          "message_id": "msg-1",
-                          "chat_id": "chat-1",
-                          "message_type": "text",
-                          "content": "{\\"text\\":\\"hello feishu\\"}"
-                        }
-                      }
-                    }
-                    """);
-            ChannelWebhookController.handler(app, "feishu").handle(message);
-            assertEquals(200, message.getResponseCode(), message.responseText());
-
-            var inbound = loop.getBus().consumeInbound(1, TimeUnit.SECONDS);
-            assertNotNull(inbound);
-            assertEquals("feishu", inbound.getChannel());
-            assertEquals("user-1", inbound.getSenderId());
-            assertEquals("chat-1", inbound.getChatId());
-            assertEquals("hello feishu", inbound.getContent());
-            assertEquals("feishu:chat-1", inbound.getSessionKey());
-            assertEquals("msg-1", inbound.getMetadata().get("feishu_message_id"));
-        } finally {
-            loop.stop();
-        }
-    }
-
-    @Test
-    void channelWebhooks_handleDingTalkTextSignatureAndDedup(@TempDir Path workspace) throws Exception {
-        AgentLoop loop = buildLoopNoStart(workspace);
-        Config config = new Config();
-        config.getChannels().getDingtalk().setWebhookSecret("ding-secret");
-        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", config, null, workspace);
-        String timestamp = "1710000000000";
-        String sign = dingtalkSign(timestamp, "ding-secret");
-        String path = "/webhook/dingtalk?timestamp=" + timestamp + "&sign=" + URLEncoder.encode(sign, StandardCharsets.UTF_8);
-        String body = """
-                {
-                  "msgId": "ding-msg-1",
-                  "msgtype": "text",
-                  "senderStaffId": "user-2",
-                  "senderNick": "Bob",
-                  "conversationId": "conv-1",
-                  "text": {"content": "hello dingtalk"}
-                }
-                """;
-
-        try {
-            TestExchange message = postExchangeRaw(path, body);
-            ChannelWebhookController.handler(app, "dingtalk").handle(message);
-            assertEquals(200, message.getResponseCode(), message.responseText());
-            var inbound = loop.getBus().consumeInbound(1, TimeUnit.SECONDS);
-            assertNotNull(inbound);
-            assertEquals("dingtalk", inbound.getChannel());
-            assertEquals("user-2", inbound.getSenderId());
-            assertEquals("conv-1", inbound.getChatId());
-            assertEquals("hello dingtalk", inbound.getContent());
-            assertEquals("dingtalk:conv-1", inbound.getSessionKey());
-
-            TestExchange duplicate = postExchangeRaw(path, body);
-            ChannelWebhookController.handler(app, "dingtalk").handle(duplicate);
-            assertEquals(200, duplicate.getResponseCode(), duplicate.responseText());
-            assertTrue(duplicate.responseText().contains("\"duplicate\":true"), duplicate.responseText());
-            assertNull(loop.getBus().consumeInbound(100, TimeUnit.MILLISECONDS));
-
-            TestExchange badSign = postExchangeRaw("/webhook/dingtalk?timestamp=" + timestamp + "&sign=bad", body.replace("ding-msg-1", "ding-msg-2"));
-            ChannelWebhookController.handler(app, "dingtalk").handle(badSign);
-            assertEquals(403, badSign.getResponseCode(), badSign.responseText());
-        } finally {
-            loop.stop();
-        }
-    }
-
-    @Test
-    void channelWebhooks_handleWecomTextAndRejectBadToken(@TempDir Path workspace) throws Exception {
-        AgentLoop loop = buildLoopNoStart(workspace);
-        Config config = new Config();
-        config.getChannels().getWecom().setToken("wecom-token");
-        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", config, null, workspace);
-
-        try {
-            TestExchange message = postExchangeRaw("/webhook/wecom?token=wecom-token", """
-                    {
-                      "msgid": "wecom-msg-1",
-                      "msgtype": "text",
-                      "from_userid": "external-1",
-                      "roomid": "room-1",
-                      "content": "hello wecom"
-                    }
-                    """);
-            ChannelWebhookController.handler(app, "wecom").handle(message);
-            assertEquals(200, message.getResponseCode(), message.responseText());
-            var inbound = loop.getBus().consumeInbound(1, TimeUnit.SECONDS);
-            assertNotNull(inbound);
-            assertEquals("wecom", inbound.getChannel());
-            assertEquals("external-1", inbound.getSenderId());
-            assertEquals("room-1", inbound.getChatId());
-            assertEquals("hello wecom", inbound.getContent());
-            assertEquals("wecom:room-1", inbound.getSessionKey());
-
-            TestExchange badToken = postExchangeRaw("/webhook/wecom?token=bad", """
-                    {"msgid":"wecom-msg-2","msgtype":"text","from_userid":"external-1","content":"blocked"}
-                    """);
-            ChannelWebhookController.handler(app, "wecom").handle(badToken);
-            assertEquals(403, badToken.getResponseCode(), badToken.responseText());
-        } finally {
-            loop.stop();
-        }
-    }
-
-    @Test
-    void channelWebhooks_handleUnsupportedAndBadJsonWithoutBreakingApi(@TempDir Path workspace) throws Exception {
-        AgentLoop loop = buildLoopNoStart(workspace);
-        Config config = new Config();
-        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", config, null, workspace);
-
-        try {
-            TestExchange unsupported = postExchangeRaw("/webhook/feishu", """
-                    {
-                      "header": {"event_id": "feishu-image-1"},
-                      "event": {
-                        "sender": {"sender_id": {"user_id": "user-1"}},
-                        "message": {"message_id": "img-1", "chat_id": "chat-1", "message_type": "image"}
-                      }
-                    }
-                    """);
-            ChannelWebhookController.handler(app, "feishu").handle(unsupported);
-            assertEquals(200, unsupported.getResponseCode(), unsupported.responseText());
-            assertTrue(unsupported.responseText().contains("unsupported message type"), unsupported.responseText());
-            assertNull(loop.getBus().consumeInbound(100, TimeUnit.MILLISECONDS));
-
-            TestExchange badJson = postExchangeRaw("/webhook/feishu", "{bad json");
-            ChannelWebhookController.handler(app, "feishu").handle(badJson);
-            assertEquals(400, badJson.getResponseCode(), badJson.responseText());
-
-            TestExchange console = getExchange("/console");
-            ConsoleController.pageHandler(app).handle(console);
-            assertEquals(200, console.getResponseCode(), console.responseText());
-
-            TestExchange chatExchange = postExchange("/v1/chat/completions", Map.of(
-                    "model", "gpt-4o-mini",
-                    "messages", List.of(Map.of("role", "user", "content", "ping"))
-            ));
-            new RicbotApiServer.ChatCompletionsHandler(app).handle(chatExchange);
-            assertEquals(200, chatExchange.getResponseCode(), chatExchange.responseText());
-
-            String health = handleGet(new RicbotApiServer.HealthHandler(app), "/health");
-            assertTrue(health.contains("\"status\":\"ok\""), health);
-        } finally {
-            loop.stop();
-        }
-    }
-
     private static TestExchange postExchange(String path, Map<String, Object> body) throws Exception {
         String json = MAPPER.writeValueAsString(body);
         return new TestExchange("POST", URI.create("http://localhost" + path), json);
-    }
-
-    private static String dingtalkSign(String timestamp, String secret) throws Exception {
-        Mac mac = Mac.getInstance("HmacSHA256");
-        mac.init(new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
-        return Base64.getEncoder().encodeToString(mac.doFinal((timestamp + "\n" + secret).getBytes(StandardCharsets.UTF_8)));
     }
 
     private static WorkspaceSession createManagedWorktree(

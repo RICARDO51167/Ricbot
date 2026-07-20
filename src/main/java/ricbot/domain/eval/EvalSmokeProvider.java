@@ -32,9 +32,6 @@ public class EvalSmokeProvider extends LLMProvider {
         if (lastToolResultContains(messages, "错误：")) {
             return response("tool failed as expected");
         }
-        if (hasToolResult(messages, "cron")) {
-            return response("cron status checked");
-        }
         if (hasToolResult(messages, "mcp_demo_echo")) {
             if (lastToolResultContains(messages, "timed out")) {
                 return response("mcp timeout handled");
@@ -87,9 +84,6 @@ public class EvalSmokeProvider extends LLMProvider {
         }
         if (lower.contains("read missing file")) {
             return toolCall("read_file", Map.of("path", "missing.txt"));
-        }
-        if (lower.contains("check cron status")) {
-            return toolCall("cron", Map.of("action", "status"));
         }
         if (lower.contains("mcp echo timeout")) {
             return toolCall("mcp_demo_echo", Map.of("text", "slow mcp response", "sleep_ms", 1500));

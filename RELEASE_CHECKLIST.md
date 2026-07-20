@@ -58,29 +58,12 @@ http://127.0.0.1:8000/console
 GET /console/api/mcp/diagnostics
 ```
 
-## Webhook Smoke
-
-在 `serve` 已运行的情况下：
-
-```bash
-sh scripts/webhook-smoke.sh
-```
-
-预期结果：
-
-- Feishu challenge 返回 200
-- Feishu/DingTalk/WeCom 文本请求返回结构化 JSON
-- 重复请求返回 `duplicate: true`
-- 不访问真实平台或外部网络
-
 ## 需要确认的当前限制
 
 - Console 以本地使用为优先；未配置 `api.bearer_token` 时不要公网暴露。
 - Console MCP Hub 只读；不支持 reload/reconnect/start/stop，也不支持工具调用。
 - Console UI 中唯一开放的 eval 操作是固定 smoke eval。
 - Team worktree 变更仍需要人工 diff/ChangeSet review。
-- Feishu/WeCom 加密 webhook 回调解密尚未实现。
-- 附件、图片、语音 webhook payload 尚未归一化为文本。
 - Provider capability override 是用户声明，不是在线探测。
 - 缺少本地 API key 可能导致 config doctor 报 `ERROR`；deterministic smoke eval 和 release-check 仍可通过。
 

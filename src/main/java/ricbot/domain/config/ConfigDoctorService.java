@@ -145,7 +145,7 @@ public final class ConfigDoctorService {
         int apiPort = config.getApi().getPort();
         int actualPort = apiPort > 0 ? apiPort : gatewayPort;
         if (apiPort > 0 && gatewayPort > 0 && apiPort != gatewayPort) {
-            report.addWarning("gateway.port 与 api.port 不同：serve 实际监听 api.port=" + actualPort + "，gateway.port=" + gatewayPort + " 仍保留给 gateway/heartbeat 配置段。");
+            report.addWarning("gateway.port 与 api.port 不同：serve 实际监听 api.port=" + actualPort + "，gateway.port=" + gatewayPort + " 仅作为兼容回退端口。");
             report.addSuggestedFix("如果希望减少混淆，请让 gateway.port 与 api.port 保持一致，或只配置 api.port。");
         }
         if (hasPath(rawJson, "api", "host")) {

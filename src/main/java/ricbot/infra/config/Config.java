@@ -4,12 +4,6 @@ package ricbot.infra.config;
 import lombok.*;
 import ricbot.integration.llm.provider.ProviderRegistry;
 import ricbot.integration.llm.provider.ProviderSpec;
-import ricbot.integration.channel.DingTalkChannel;
-import ricbot.integration.channel.FeishuChannel;
-import ricbot.integration.channel.WecomChannel;
-import ricbot.integration.channel.QQChannel;
-import ricbot.integration.channel.WeixinChannel;
-import ricbot.integration.channel.EmailChannel;
 import ricbot.integration.channel.WebSocketChannel;
 
 import java.nio.file.Path;
@@ -26,10 +20,10 @@ import java.util.function.Function;
  * 3. 提供 workspace / api_base / provider config 访问方法
  *
  * 设计说明（重要）：
- * - 这是一个“巨型配置类”：agent/provider/tool/mcp/channel/gateway/api/heartbeat/dream 等都在此文件中。
+ * - 这是一个“巨型配置类”：agent/provider/tool/mcp/channel/gateway/api/dream 等都在此文件中。
  *   这种写法对“快速跑起来/单文件查配置”很友好，但长期维护会面临可读性差、模块边界模糊、修改冲击面大等问题。
  * - 部分字段属于“接口先长出来，主链实现未完全接入”的状态：调用方不要默认认为所有配置都已生效。
- *   例如 DreamConfig.buildSchedule(timezone) 当前不使用 timezone；ToolsConfig.mcpServers 仍是弱类型 Map；
+ *   例如 ToolsConfig.mcpServers 仍是弱类型 Map；
  *   ExecToolConfig 的 sandbox 暴露为 String 属于兼容历史接口的折中。
  * - ProvidersConfig/ChannelsConfig 采用“静态枚举式字段”，扩展新 provider/channel 往往需要改这个类与相关 switch/asMap。
  *   这比动态注册式配置更直观，但扩展性较弱。
@@ -278,17 +272,11 @@ public class Config {
 
     @Data
     public static class DreamConfig {
-        /**
-         * Dream 属于长期记忆整合流程，是否开启与调度策略取决于场景：
-         * - 开发环境开启便于体验；
-         * - 生产环境建议结合成本、隐私与任务类型谨慎配置。
-         */
+        /** Dream 仅允许显式触发；Runtime Core 不负责后台调度。 */
         private boolean enabled = true;
         private String modelOverride;
         private int maxBatchSize = 20;
         private int maxIterations = 5;
-        private String cron = "0 3 * * *";
-
     }
 
     // =========================================================
@@ -629,23 +617,11 @@ public class Config {
 
     @Data
     public static class ChannelsConfig {
-        /**
-         * 设计取舍：
-         * - 这里直接引用各 Channel 的内部 Config 类型，导致 Config 层反向依赖 transport/channel 实现层。
-         * - 优点：配置结构直观、无需额外 DTO；
-         * - 缺点：模块耦合偏紧，渠道实现变化会影响配置模型，长期边界不够清晰。
-         */
         private boolean sendProgress = true;
         private boolean sendToolHints = true;
         private String transcriptionProvider = "groq";
         private int sendMaxRetries = 3;
 
-        private FeishuChannel.FeishuConfig feishu = new FeishuChannel.FeishuConfig();
-        private DingTalkChannel.DingTalkConfig dingtalk = new DingTalkChannel.DingTalkConfig();
-        private WecomChannel.WecomConfig wecom = new WecomChannel.WecomConfig();
-        private QQChannel.QQConfig qq = new QQChannel.QQConfig();
-        private WeixinChannel.WeixinConfig weixin = new WeixinChannel.WeixinConfig();
-        private EmailChannel.EmailConfig email = new EmailChannel.EmailConfig();
         private WebSocketChannel.WebSocketConfig websocket = new WebSocketChannel.WebSocketConfig();
 
         public Object getSection(String name) {
@@ -654,12 +630,6 @@ public class Config {
                 return null;
             }
             return switch (key) {
-                case "feishu" -> feishu;
-                case "dingtalk" -> dingtalk;
-                case "wecom" -> wecom;
-                case "qq" -> qq;
-                case "weixin" -> weixin;
-                case "email" -> email;
                 case "websocket" -> websocket;
                 default -> null;
             };
@@ -667,12 +637,6 @@ public class Config {
 
         public boolean isEnabled(String name) {
             Object section = getSection(name);
-            if (section instanceof FeishuChannel.FeishuConfig c) return c.isEnabled();
-            if (section instanceof DingTalkChannel.DingTalkConfig c) return c.isEnabled();
-            if (section instanceof WecomChannel.WecomConfig c) return c.isEnabled();
-            if (section instanceof QQChannel.QQConfig c) return c.isEnabled();
-            if (section instanceof WeixinChannel.WeixinConfig c) return c.isEnabled();
-            if (section instanceof EmailChannel.EmailConfig c) return c.isEnabled();
             if (section instanceof WebSocketChannel.WebSocketConfig c) return c.isEnabled();
             return false;
         }
@@ -696,23 +660,6 @@ public class Config {
     @Data
     public static class GatewayConfig {
         private int port = 8000;
-        private HeartbeatConfig heartbeat = new HeartbeatConfig();
-
-        public void setHeartbeat(HeartbeatConfig heartbeat) {
-            this.heartbeat = heartbeat != null ? heartbeat : new HeartbeatConfig();
-        }
-    }
-
-    @Data
-    public static class HeartbeatConfig {
-        /**
-         * Heartbeat 属于“后台定时任务 + 会话压缩/通知”场景配置。
-         * 目前主要是字段承载（薄壳），更多策略逻辑在 HeartbeatService 内。
-         */
-        private boolean enabled = true;
-        private int intervalS = 60;
-        private int keepRecentMessages = 20;
-
     }
 
     @Getter

@@ -13,7 +13,7 @@
 
 ## 简历 5 条版
 
-- 构建 Java 17 Agent Runtime，覆盖 CLI、OpenAI-compatible API、多渠道消息、AgentLoop、ToolRegistry、MCP、Memory、Experience、Eval 和 Console。
+- 构建面向长任务与多智能体协作的 Java 17 持久化 Agent Runtime，覆盖 Journal/Checkpoint 精确恢复、副作用安全、Worker 协作、MCP、工作区隔离与 Eval 回归门禁。
 - 实现 Team worktree 执行模式，将复杂任务拆分为计划、执行、验证，并用受管 git worktree 隔离修改。
 - 设计 Workspace/ChangeSet 审阅链路，把 Agent 产生的 diff 收口成可审阅变更，降低自动化修改风险。
 - 建立 Provider Capability 体系，支持静态/启发式推断和用户 override，对 tool calling、streaming、vision 等能力做运行时降级。

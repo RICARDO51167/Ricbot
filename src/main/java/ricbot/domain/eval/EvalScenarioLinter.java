@@ -22,7 +22,7 @@ public class EvalScenarioLinter {
     private static final Set<String> KNOWN_SIDE_EFFECT_TOKENS = Set.of(
             "none", "read_only", "readonly", "no_files", "files", "file_write", "write",
             "network", "web", "http", "process", "exec", "shell", "spawn",
-            "cron", "schedule", "mcp", "any", "all"
+            "mcp", "any", "all"
     );
 
     public EvalLintResult lint(Path scenariosPath, Path outputDir) throws Exception {
