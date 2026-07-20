@@ -4,8 +4,13 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import ricbot.tool.api.Tool;
 import ricbot.tool.api.ToolRegistry;
+import ricbot.domain.security.ApprovalRequest;
+import ricbot.domain.security.ApprovalService;
+import ricbot.domain.trace.TraceEventType;
+import ricbot.domain.trace.TraceStore;
 
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -64,6 +69,40 @@ class SideEffectCoordinatorTest {
 
         assertEquals(SideEffectStatus.COMPENSATED, compensated.status());
         assertEquals(1, tool.compensations.get());
+    }
+
+    @Test
+    void retryAndCompensationRequireBoundOneShotApprovals(@TempDir Path workspace) {
+        TraceStore traces = new TraceStore(workspace);
+        SideEffectStore store = new AuditedSideEffectStore(new FileSideEffectStore(workspace), traces);
+        ApprovalService approvals = new ApprovalService(traces);
+        SideEffectApplicationService service = new SideEffectApplicationService(store, approvals);
+        CountingTool tool = new CountingTool(new AtomicInteger(), true);
+        ToolRegistry tools = registry(tool);
+        Map<String, Object> args = Map.of("value", "x");
+        store.claim(SideEffectRecord.reserved(
+                "uncertain", "session", "write", ToolInvocationRecord.argumentsDigest(args)));
+
+        ApprovalRequest retry = service.requestRetry("uncertain");
+        assertThrows(IllegalStateException.class, () -> service.applyApprovedRetry(retry.requestId()));
+        approvals.approve(retry.requestId());
+        assertEquals(SideEffectStatus.RETRY_AUTHORIZED,
+                service.applyApprovedRetry(retry.requestId()).status());
+        assertThrows(IllegalStateException.class, () -> service.applyApprovedRetry(retry.requestId()));
+
+        new SideEffectCoordinator(store).execute(
+                tools, "session", "uncertain", "write", args, false, ignored -> true);
+        ApprovalRequest compensation = service.requestCompensation("uncertain", args);
+        approvals.approve(compensation.requestId());
+        assertEquals(SideEffectStatus.COMPENSATED,
+                service.applyApprovedCompensation(tools, compensation.requestId()).status());
+
+        List<TraceEventType> types = traces.loadEvents(traces.traceIdForSession("session")).stream()
+                .map(event -> event.type()).toList();
+        assertTrue(types.contains(TraceEventType.SIDE_EFFECT_RESERVED));
+        assertTrue(types.contains(TraceEventType.SIDE_EFFECT_RETRY_AUTHORIZED));
+        assertTrue(types.contains(TraceEventType.SIDE_EFFECT_SUCCEEDED));
+        assertTrue(types.contains(TraceEventType.SIDE_EFFECT_COMPENSATED));
     }
 
     private static ToolRegistry registry(Tool tool) {

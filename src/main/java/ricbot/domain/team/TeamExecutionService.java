@@ -120,14 +120,26 @@ public class TeamExecutionService {
             return planned;
         }
 
+        PersistentWorkerSession workerSession = teamEngine.startWorker(task.id(), task.role());
         teamEngine.startProducing(task.id());
-        TeamWorkerResult workerResult = workerRunner.run(task, workspaceSession, executionRoot);
+        TeamWorkerResult workerResult;
+        try {
+            workerResult = workerRunner.run(task, workspaceSession, executionRoot);
+        } catch (RuntimeException e) {
+            teamEngine.failWorker(workerSession.workerId(), e.getMessage());
+            throw e;
+        }
         WorkerExecutionResult worker = workerResult.toWorkerExecutionResult(task, executionRoot.toString(),
                 teamEngine.whiteboard(task.sessionId()).readSummary());
         teamEngine.recordRoleToolCall(task.id(), worker);
         teamEngine.submitWorkerResult(task.id(), worker.summary(), worker.artifacts());
         if (workerResult.status() == TeamWorkerStatus.APPLIED) {
             teamEngine.recordAppliedChanges(task.id(), workerResult.changedFiles());
+        }
+        if (workerResult.status() == TeamWorkerStatus.FAILED) {
+            teamEngine.failWorker(workerSession.workerId(), worker.summary());
+        } else {
+            teamEngine.completeWorker(workerSession.workerId(), worker.summary());
         }
         recordAudit(task, workerResult.status() == TeamWorkerStatus.FAILED ? StepAuditEventType.STEP_FAILED : StepAuditEventType.STEP_TOOL_APPLIED,
                 "", teamEngine.findTask(task.id()).state().name(),

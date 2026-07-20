@@ -132,6 +132,36 @@ class ConfigLoaderTest {
     }
 
     @Test
+    void roundTripsExecutionBackendConfiguration(@TempDir Path tempDir) throws Exception {
+        Path configPath = tempDir.resolve("execution.json");
+        Files.writeString(configPath, """
+                {
+                  "tools": {
+                    "exec": {
+                      "backend": "docker",
+                      "fallback_backend": "local",
+                      "allow_backend_fallback": true,
+                      "docker_image": "eclipse-temurin:21-jdk",
+                      "docker_network_enabled": false,
+                      "approval_enabled": true
+                    }
+                  }
+                }
+                """);
+
+        Config loaded = ConfigLoader.loadConfig(configPath);
+        Config.ExecToolConfig exec = loaded.getTools().getExec();
+        assertEquals("docker", exec.getBackend());
+        assertEquals("local", exec.getFallbackBackend());
+        assertTrue(exec.isAllowBackendFallback());
+        assertEquals("eclipse-temurin:21-jdk", exec.getDockerImage());
+        assertFalse(exec.isDockerNetworkEnabled());
+
+        ConfigLoader.saveConfig(loaded, configPath);
+        assertEquals("docker", ConfigLoader.loadConfig(configPath).getTools().getExec().getBackend());
+    }
+
+    @Test
     void loadConfig_ignoresInvalidCapabilityTokenCounts(@TempDir Path tempDir) throws Exception {
         Path configPath = tempDir.resolve("invalid-capabilities.json");
         Files.writeString(configPath, """

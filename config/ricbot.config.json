@@ -25,6 +25,12 @@
       "enable": false,
       "timeout": 60,
       "sandbox": false,
+      "approval_enabled": true,
+      "backend": "local",
+      "fallback_backend": "local",
+      "allow_backend_fallback": false,
+      "docker_image": "eclipse-temurin:17-jdk",
+      "docker_network_enabled": false,
       "path_append": "",
       "allowed_env_keys": []
     },

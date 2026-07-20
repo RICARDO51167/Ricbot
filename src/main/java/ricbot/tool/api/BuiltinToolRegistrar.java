@@ -3,6 +3,8 @@ package ricbot.tool.api;
 import ricbot.infra.config.Config;
 import ricbot.domain.security.ApprovalService;
 import ricbot.domain.security.CommandRiskAnalyzer;
+import ricbot.infra.execution.ExecutionBackend;
+import ricbot.infra.execution.ExecutionBackendFactory;
 import ricbot.tool.filesystem.EditFileTool;
 import ricbot.tool.filesystem.ListDirTool;
 import ricbot.tool.filesystem.ReadFileTool;
@@ -60,17 +62,19 @@ public final class BuiltinToolRegistrar {
         if (execConfig == null || !execConfig.isEnable()) {
             return;
         }
+        ExecutionBackend backend = ExecutionBackendFactory.create(execConfig);
         registry.register(new ExecTool(
                 execConfig.getTimeout(),
                 workspace.toString(),
                 null,
                 null,
                 restrictToWorkspace,
-                execConfig.isSandbox() ? "sandbox" : "",
+                execConfig.isSandbox() && "local".equals(backend.name()) ? "sandbox" : "",
                 execConfig.getPathAppend(),
                 execConfig.getAllowedEnvKeys(),
                 approvalService != null ? new CommandRiskAnalyzer(workspace) : null,
-                approvalService
+                approvalService,
+                backend
         ));
     }
 }

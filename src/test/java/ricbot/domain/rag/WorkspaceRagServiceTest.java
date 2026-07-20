@@ -8,10 +8,32 @@ import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 class WorkspaceRagServiceTest {
+
+    @Test
+    void persistsVectorsByModelAndChunkFingerprint(@TempDir Path workspace) throws Exception {
+        Files.writeString(workspace.resolve("README.md"), "durable vector content");
+        AtomicInteger calls = new AtomicInteger();
+        ricbot.domain.retrieval.EmbeddingProvider provider = new ricbot.domain.retrieval.EmbeddingProvider() {
+            public String modelId() { return "test-real-model"; }
+            public double[] embed(String text) { calls.incrementAndGet(); return new double[]{text.length(), 1d}; }
+        };
+
+        new WorkspaceRagService(workspace, "tenant", provider).indexWorkspace();
+        int firstIndexCalls = calls.get();
+        new WorkspaceRagService(workspace, "tenant", provider).indexWorkspace();
+
+        assertTrue(firstIndexCalls > 0);
+        assertEquals(firstIndexCalls, calls.get());
+        try (var files = Files.list(workspace.resolve(".rag/tenants").resolve(
+                sha256("tenant")).resolve("code_index/vector_index"))) {
+            assertEquals(1, files.filter(Files::isRegularFile).count());
+        }
+    }
 
     @Test
     void exposesHybridScoresAndIsolatesTenantIndexes(@TempDir Path workspace) throws Exception {
@@ -77,5 +99,10 @@ class WorkspaceRagServiceTest {
         Map<?, ?> aState = (Map<?, ?>) files.get("docs/a.md");
         assertTrue(aState.containsKey("sha256"));
         assertTrue(aState.containsKey("chunkCount"));
+    }
+
+    private static String sha256(String value) throws Exception {
+        return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                .digest(value.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
     }
 }

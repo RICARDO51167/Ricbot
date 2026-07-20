@@ -4,6 +4,7 @@ package ricbot.domain.agent;
 public enum RunEventType {
     RUN_STARTED,
     RUN_FORKED,
+    CHECKPOINT_RESTORED,
     NODE_STARTED,
     NODE_TRANSITIONED,
     MODEL_REQUESTED,

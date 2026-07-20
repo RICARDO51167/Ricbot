@@ -17,6 +17,29 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class TeamEngineTest {
 
     @Test
+    void workerLifecycleAndMailboxAreDurableAcrossEngineRestart(@TempDir Path workspace) {
+        TeamEngine engine = new TeamEngine(workspace);
+        TeamSession session = engine.createSession("durable team");
+        TeamTask task = engine.createTask(session.id(), TeamRole.EXPLORER, "inspect persistence");
+
+        PersistentWorkerSession worker = engine.startWorker(task.id(), TeamRole.EXPLORER);
+        List<TeamMailboxMessage> assignment = engine.workerInbox(session.id(), worker.workerId(), 0, false);
+        assertEquals(TeamMessageType.TASK, assignment.get(0).type());
+        engine.acknowledgeWorkerMessage(session.id(), worker.workerId(), assignment.get(0).messageId());
+        engine.completeWorker(worker.workerId(), "inspection complete");
+
+        TeamEngine restarted = new TeamEngine(workspace);
+        PersistentWorkerSession restored = restarted.workersForTask(task.id()).stream()
+                .filter(value -> value.workerId().equals(worker.workerId()))
+                .findFirst().orElseThrow();
+        assertEquals(WorkerSessionStatus.COMPLETED, restored.status());
+        assertTrue(restarted.joinWorkers(session.id(), List.of(worker.workerId())).successful());
+        assertTrue(restarted.workerInbox(session.id(), "leader", 0, false).stream()
+                .anyMatch(message -> message.type() == TeamMessageType.RESULT
+                        && task.id().equals(message.correlationId())));
+    }
+
+    @Test
     void createSessionAndTaskWritesInitialState(@TempDir Path workspace) {
         TeamEngine engine = new TeamEngine(workspace);
 

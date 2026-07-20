@@ -5,6 +5,7 @@ import ricbot.tool.api.ToolRegistry;
 
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.function.Predicate;
 
 /** Enforces durable idempotency, explicit uncertain retries, and compensation. */
@@ -13,6 +14,10 @@ public final class SideEffectCoordinator {
 
     public SideEffectCoordinator(SideEffectStore store) {
         this.store = store != null ? store : SideEffectStore.disabled();
+    }
+
+    public Optional<SideEffectRecord> load(String idempotencyKey) {
+        return store.load(idempotencyKey);
     }
 
     public SideEffectOutcome execute(

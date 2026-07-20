@@ -48,6 +48,7 @@ class RunResumeServiceTest {
         assertEquals("parent", fork.childSession().getMetadata().get("fork_parent_run"));
         AgentRunSpec spec = fork.applyTo(new AgentRunSpec().setRunEventSink(journal));
         assertEquals("child-run", spec.getInitialRunState().runId());
+        assertEquals("cp-3", spec.getResumeCheckpoint().checkpointId());
         assertEquals(1, spec.getInitialRunState().lastSequence());
         assertEquals(2, spec.getCheckpointMessageOffset());
     }

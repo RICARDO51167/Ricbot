@@ -21,6 +21,10 @@ import ricbot.domain.eval.EvalScenarioLinter;
 import ricbot.domain.eval.EvalSmokeProvider;
 import ricbot.domain.eval.EvalSmokeRuntime;
 import ricbot.domain.eval.EvalExperienceExtractor;
+import ricbot.domain.eval.EvalCaseResult;
+import ricbot.domain.eval.EvalMatrixRunner;
+import ricbot.domain.eval.EvalMatrixSpec;
+import ricbot.domain.eval.EvalModelTarget;
 import ricbot.domain.config.ConfigDoctorReport;
 import ricbot.domain.config.ConfigDoctorService;
 import ricbot.domain.experience.ExperienceEntry;
@@ -134,6 +138,10 @@ public final class CliCommands {
     }
 
     private static void eval(List<String> args) throws Exception {
+        if (!args.isEmpty() && "matrix".equals(args.get(0))) {
+            evalMatrix(args.subList(1, args.size()));
+            return;
+        }
         if (!args.isEmpty() && "lint".equals(args.get(0))) {
             evalLint(args.subList(1, args.size()));
             return;
@@ -215,6 +223,90 @@ public final class CliCommands {
         } finally {
             agentLoop.stop();
         }
+    }
+
+    private static void evalMatrix(List<String> args) throws Exception {
+        String specPath = optionValue(args, "--spec", null);
+        String scenarios = optionValue(args, "--scenarios", "-s");
+        String configPath = optionValue(args, "--config", "-c");
+        String workspace = optionValue(args, "--workspace", "-w");
+        String out = optionValue(args, "--out", "-o");
+        Integer limit = optionIntValue(args, "--limit", null);
+        boolean allowUnsafeWorkspaceClean = hasFlag(args, "--allow-unsafe-workspace-clean");
+        if (specPath == null || specPath.isBlank() || scenarios == null || scenarios.isBlank()) {
+            System.out.println("用法：ricbot eval matrix --spec matrix.json --scenarios scenarios.jsonl [--config path] [--workspace dir] [--out dir] [--limit n]");
+            return;
+        }
+
+        EvalMatrixSpec spec = MAPPER.readValue(Path.of(specPath).toFile(), EvalMatrixSpec.class);
+        Path matrixRoot = out != null && !out.isBlank()
+                ? Path.of(out).toAbsolutePath().normalize()
+                : Path.of("eval-artifacts", "matrix-" + System.currentTimeMillis()).toAbsolutePath().normalize();
+        Files.createDirectories(matrixRoot);
+        EvalMatrixRunner.MatrixReport report = new EvalMatrixRunner().run(spec, (target, repetition) -> {
+            Config config = loadRuntimeConfig(configPath, workspace);
+            config.getAgents().getDefaults().setModel(targetModel(target));
+            MessageBus bus = new MessageBus();
+            var provider = BOOTSTRAPPER.createProvider(config);
+            EvalRecordingProvider recorder = new EvalRecordingProvider(provider);
+            AgentLoop loop = BOOTSTRAPPER.createAgentLoop(config, bus, recorder);
+            Path cellOut = matrixRoot.resolve(safeMatrixId(target.id())).resolve("run-" + (repetition + 1));
+            EvalOptions options = new EvalOptions()
+                    .setScenariosPath(Path.of(scenarios))
+                    .setOutputDir(cellOut)
+                    .setLimit(limit != null ? limit : 0)
+                    .setSessionPrefix("matrix:" + safeMatrixId(target.id()) + ":" + repetition)
+                    .setAllowUnsafeWorkspaceClean(allowUnsafeWorkspaceClean);
+            try {
+                EvalRunSummary summary = new EvalHarness(loop, config, recorder).run(options);
+                return new EvalMatrixRunner.EvalRunData(summary, readMatrixCases(Path.of(summary.getArtifactDir())));
+            } finally {
+                loop.stop();
+            }
+        });
+        Files.writeString(matrixRoot.resolve("matrix-report.json"),
+                MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(report));
+        Files.writeString(matrixRoot.resolve("matrix-report.md"), renderMatrixReport(report));
+        System.out.println("ricbot eval matrix");
+        System.out.println("recommended: " + report.recommendedTargetId());
+        System.out.println("cells: " + report.cells().size());
+        System.out.println("report: " + matrixRoot.resolve("matrix-report.md"));
+    }
+
+    private static List<EvalCaseResult> readMatrixCases(Path artifactDir) throws Exception {
+        Path cases = artifactDir.resolve("cases.jsonl");
+        if (!Files.isRegularFile(cases)) return List.of();
+        List<EvalCaseResult> results = new ArrayList<>();
+        for (String line : Files.readAllLines(cases)) {
+            if (!line.isBlank()) results.add(MAPPER.readValue(line, EvalCaseResult.class));
+        }
+        return results;
+    }
+
+    private static String targetModel(EvalModelTarget target) {
+        if (target.model().contains("/") || target.provider().isBlank()) return target.model();
+        return target.provider() + "/" + target.model();
+    }
+
+    private static String safeMatrixId(String value) {
+        String safe = value != null ? value.replaceAll("[^A-Za-z0-9._-]+", "-") : "";
+        return safe.isBlank() ? "target" : safe;
+    }
+
+    private static String renderMatrixReport(EvalMatrixRunner.MatrixReport report) {
+        StringBuilder out = new StringBuilder("# Ricbot Eval Matrix\n\n");
+        out.append("Recommended: `").append(report.recommendedTargetId()).append("`\n\n");
+        out.append("| Target | Pass rate | P95 ms | Cost USD | Long trajectory |\n");
+        out.append("|---|---:|---:|---:|---:|\n");
+        for (EvalMatrixRunner.CellReport cell : report.cells()) {
+            out.append("| ").append(cell.target().id())
+                    .append(" | ").append(String.format(Locale.ROOT, "%.2f%%", cell.passRate() * 100d))
+                    .append(" | ").append(cell.durationP95Ms())
+                    .append(" | ").append(String.format(Locale.ROOT, "%.6f", cell.estimatedCostUsd()))
+                    .append(" | ").append(cell.longTrajectoryPassed()).append("/").append(cell.longTrajectoryCases())
+                    .append(" |\n");
+        }
+        return out.toString();
     }
 
     private static void evalLint(List<String> args) throws Exception {
@@ -1363,6 +1455,7 @@ public final class CliCommands {
         System.out.println("  eval smoke 使用内置确定性 provider 跑 eval smoke");
         System.out.println("  eval replay  离线回放 eval case/run artifact");
         System.out.println("  eval compare 对比两个 eval run 并识别回归");
+        System.out.println("  eval matrix 对多个真实 provider/model 重复评测成本、延迟与长轨迹");
         System.out.println("  eval learn  从失败 eval artifact 生成 candidate experience");
         System.out.println("  status     显示 ricbot 状态");
         System.out.println("  provider"); // 打印 provider 命令

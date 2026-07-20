@@ -603,6 +603,11 @@ public class Config {
         private int timeout = 60;
         private boolean sandbox = false;
         private boolean approvalEnabled = true;
+        private String backend = "local";
+        private String fallbackBackend = "local";
+        private boolean allowBackendFallback = false;
+        private String dockerImage = "eclipse-temurin:17-jdk";
+        private boolean dockerNetworkEnabled = false;
         private String pathAppend = "";
         private List<String> allowedEnvKeys = new ArrayList<>();
         public void setAllowedEnvKeys(List<String> allowedEnvKeys) {

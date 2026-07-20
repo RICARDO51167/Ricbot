@@ -35,7 +35,7 @@ public final class OpenTelemetryRunEventSink implements RunEventSink {
         if (event.status() == RunStatus.FAILED) {
             span.setStatus(StatusCode.ERROR, String.valueOf(event.details().getOrDefault("error", "run failed")));
         }
-        if (event.type() == RunEventType.RUN_FINISHED) {
+        if (event.status().terminal()) {
             if (event.status() == RunStatus.CANCELLED) span.setAttribute("ricbot.run.cancelled", true);
             spans.remove(key);
             span.end();

@@ -2,6 +2,7 @@ package ricbot.domain.agent;
 
 import ricbot.domain.session.Session;
 import ricbot.domain.session.SessionManager;
+import ricbot.tool.api.ToolRegistry;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -16,11 +17,22 @@ public final class RunResumeService {
     private final SessionManager sessions;
     private final RunCheckpointStore checkpoints;
     private final RunJournalStore journal;
+    private final ToolRegistry tools;
 
     public RunResumeService(SessionManager sessions, RunCheckpointStore checkpoints, RunJournalStore journal) {
+        this(sessions, checkpoints, journal, null);
+    }
+
+    public RunResumeService(
+            SessionManager sessions,
+            RunCheckpointStore checkpoints,
+            RunJournalStore journal,
+            ToolRegistry tools
+    ) {
         this.sessions = java.util.Objects.requireNonNull(sessions, "sessions");
         this.checkpoints = java.util.Objects.requireNonNull(checkpoints, "checkpoints");
         this.journal = java.util.Objects.requireNonNull(journal, "journal");
+        this.tools = tools;
     }
 
     public Optional<ResumePoint> at(String sessionKey, String runId, long sequence) {
@@ -52,6 +64,7 @@ public final class RunResumeService {
     ) {
         ResumePoint source = at(sourceSessionKey, parentRunId, sequence).orElseThrow(() ->
                 new IllegalArgumentException("no recoverable checkpoint exists at the requested sequence"));
+        validateExecutableBoundary(source, sequence);
         if (sessions.find(childSessionKey).isPresent()) {
             throw new IllegalStateException("child session already exists");
         }
@@ -69,5 +82,27 @@ public final class RunResumeService {
                 .setLastConsolidated(Math.min(parent.getLastConsolidated(), source.messages().size()));
         sessions.save(child);
         return new ExecutableRunFork(lineage, source, child);
+    }
+
+    private void validateExecutableBoundary(ResumePoint source, long requestedSequence) {
+        RunCheckpoint checkpoint = source.checkpoint();
+        if (checkpoint.pendingToolCalls().isEmpty()) return;
+        if (checkpoint.phase() != RunCheckpointPhase.MODEL_RESPONSE_RECEIVED
+                || checkpoint.journalSequence() != requestedSequence) {
+            throw new IllegalStateException(
+                    "cannot fork from the middle of a pending tool batch; choose its model-response or tools-completed checkpoint");
+        }
+        if (tools == null) {
+            throw new IllegalStateException("tool registry is required to validate a pending-tool fork");
+        }
+        for (Map<String, Object> pending : checkpoint.pendingToolCalls()) {
+            Map<?, ?> function = pending.get("function") instanceof Map<?, ?> value ? value : Map.of();
+            Object rawName = function.get("name");
+            String name = rawName != null ? String.valueOf(rawName).trim() : "";
+            if (name.isBlank() || !tools.policyFor(name).readOnly()) {
+                throw new IllegalStateException(
+                        "historical fork cannot replay pending side-effect tool without reconciliation: " + name);
+            }
+        }
     }
 }

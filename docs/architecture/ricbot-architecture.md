@@ -35,7 +35,7 @@ CLI / API / Channel
 - 处理 hook、checkpoint、progress；
 - 根据 provider capability 做 tool/streaming/vision 降级。
 
-执行控制不再只由隐式 ReAct 循环表达。`AgentNodeScheduler` 显式维护 `MODEL -> TOOLS -> MODEL/TERMINAL` 节点状态；节点迁移、模型边界和工具边界都写入 durable journal。`RunCheckpoint` 保存节点、消息和 journal sequence，可按历史版本恢复或 fork 到独立 session/run。
+执行控制不再只由隐式 ReAct 循环表达。`AgentGraphRuntime` 支持注册节点、条件边、暂停和 cursor 恢复；`AgentNodeScheduler` 用默认 graph 维护 `MODEL -> TOOLS -> MODEL/TERMINAL` 兼容行为。节点迁移、模型边界和工具边界都写入 durable journal。`RunCheckpoint` 保存节点、消息和 journal sequence，可按历史版本原地恢复或 fork 到独立 session/run。
 
 ### Durable Runtime
 
@@ -76,13 +76,13 @@ Context 层负责把 session、workspace、skills、memory 和 policy 组合成�
 - 将 verified experience promote 成 generated skill；
 - 避免未经验证的经验污染上下文。
 
-RAG 使用词法与向量信号混合排序，embedding provider 可替换，离线默认使用 deterministic feature hashing。tenant-specific index 使用散列目录隔离。`TenantMemoryService` 在共享 CAS store 上隔离租户，并管理 working、episodic、semantic、perceptual 分层和晋升。
+RAG 使用词法与向量信号混合排序，embedding provider 可替换，离线默认使用 deterministic feature hashing，也可显式接入 OpenAI-compatible embeddings。向量按 model 和 chunk fingerprint 持久化，tenant-specific index 使用散列目录隔离。`TenantMemoryService` 在共享 CAS store 上隔离租户，并管理 working、episodic、semantic、perceptual 分层和晋升。
 
 ### Team / Workspace / ChangeSet
 
 Team 层把复杂任务拆成 planner / implementer / verifier 等角色执行。Workspace 层支持本地 workspace 和受管 git worktree。ChangeSet 层把 worktree diff 收口为可审阅变更，避免 agent 直接把未审阅改动并入主工作区。
 
-`PersistentTeamRuntime` 为 worker 提供独立生命周期、跨进程 mailbox sequence、cursor/ack、broadcast、join 和 handoff。它与既有 TeamEngine 兼容，可逐步把规则 worker 迁移为独立长生命周期 worker。
+`PersistentTeamRuntime` 为 worker 提供独立生命周期、跨进程 mailbox sequence、cursor/ack、broadcast、join 和 handoff。`TeamEngine` 创建任务时即分配持久 worker，真实 worker 与 verifier 执行会同步 RUNNING/COMPLETED/FAILED，并通过 mailbox 把结果交回 leader。
 
 ### Eval / Release Gate
 
@@ -166,5 +166,5 @@ serve
 - Eval：新增 JSONL scenario，扩展 baseline 和 compare。
 - Execution：实现 `ExecutionBackend` 或 `RemoteExecutionClient`，通过能力探测显式选择；降级必须由调用方开启。
 - Storage：实现 `SharedStateStore` 接入 SQL、Redis 或对象存储，保留 CAS 版本语义。
-- Telemetry：配置 OpenTelemetry SDK/exporter；核心只依赖 API，并把 journal event 映射为 span event。
+- Telemetry：通过标准 OTLP endpoint 环境变量启用 SDK/batch exporter；未配置时保持 no-op，并把 journal event 映射为 span event。
 - Console：新增只读 service + endpoint + card；写操作必须走 auth、CSRF-lite、rate limit 和 audit。

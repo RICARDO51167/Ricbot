@@ -164,7 +164,7 @@ public class AgentRunner implements AutoCloseable {
             spec.getRunControllerConsumer().accept(controller);
         }
         boolean cancelledRecorded = false;
-        AgentNodeScheduler nodeScheduler = new AgentNodeScheduler(controller);
+        AgentNodeScheduler nodeScheduler;
 
         // 获取钩子实现
         AgentHook hook = spec.getHook();
@@ -194,10 +194,81 @@ public class AgentRunner implements AutoCloseable {
             return result;
         }
 
+        RunCheckpoint resumeCheckpoint = spec.getResumeCheckpoint();
+        AgentNodeState resumeNodeState = resumeCheckpoint != null
+                ? resumeCheckpoint.nodeState()
+                : AgentNodeState.initial();
+        nodeScheduler = new AgentNodeScheduler(controller, new AgentNodeState(
+                resumeNodeState.schemaVersion(),
+                AgentNodeType.MODEL,
+                resumeCheckpoint != null ? resumeCheckpoint.iteration() : 0,
+                resumeNodeState.transition(),
+                false,
+                resumeNodeState.updatedAt()
+        ));
+
+        if (resumeCheckpoint != null && !resumeCheckpoint.pendingToolCalls().isEmpty()) {
+            if (initialRunState == null) {
+                throw new IllegalArgumentException("pending-tool checkpoint continuation requires an existing fork run state");
+            }
+            if (resumeCheckpoint.phase() != RunCheckpointPhase.MODEL_RESPONSE_RECEIVED) {
+                throw new IllegalArgumentException("pending tools require a MODEL_RESPONSE_RECEIVED checkpoint");
+            }
+            List<ToolCallRequest> restoredCalls = restoreToolCalls(resumeCheckpoint.pendingToolCalls());
+            validateForkedToolContinuation(tools, restoredCalls);
+            int restoredIteration = Math.max(1, resumeCheckpoint.iteration());
+            iterationsCompleted = restoredIteration;
+            AgentNodeState toolNode = nodeScheduler.tools();
+            durableEvents.emit(restoredIteration, RunEventType.CHECKPOINT_RESTORED,
+                    RunStatus.WAITING_TOOL, null, Map.of(
+                            "checkpoint_id", resumeCheckpoint.checkpointId(),
+                            "source_run_id", resumeCheckpoint.journalRunId(),
+                            "source_sequence", resumeCheckpoint.journalSequence(),
+                            "node", AgentNodeType.TOOLS.name(),
+                            "pending_tool_count", restoredCalls.size()
+                    ));
+            durableEvents.emit(restoredIteration, RunEventType.NODE_TRANSITIONED,
+                    RunStatus.WAITING_TOOL, null, Map.of(
+                            "from", AgentNodeType.MODEL.name(),
+                            "to", AgentNodeType.TOOLS.name(),
+                            "transition", toolNode.transition(),
+                            "restored", true
+                    ));
+            AgentHookContext restoredContext = newHookContext(messages, restoredIteration, spec.getSessionKey());
+            if (hook != null) safeHook(() -> hook.beforeExecuteTools(restoredContext), hook);
+            ToolBatchExecution restoredBatch = executeToolBatch(
+                    tools, restoredCalls, toolsUsed, toolEvents, spec,
+                    restoredIteration, durableEvents, traceRecorder);
+            messages.addAll(restoredBatch.results());
+            if (hook != null) safeHook(() -> hook.afterExecuteTools(restoredContext), hook);
+            publishCheckpoint(
+                    spec, runId, journalRunId, durableEvents.currentSequence(), restoredIteration,
+                    RunCheckpointPhase.TOOLS_COMPLETED, toolNode, messages, checkpointMessageOffset,
+                    resumeCheckpoint.assistantMessage(), restoredBatch.results(), List.of()
+            );
+            if (toolExecutionPolicy(tools).shouldStopRunOnToolError(
+                    restoredBatch.firstError(), spec.isFailOnToolError())) {
+                stopReason = "tool_error";
+                stopDetail = String.valueOf(restoredBatch.firstError().getOrDefault("detail", "tool_error"));
+                finalContent = spec.getErrorMessage();
+            } else {
+                if (restoredBatch.firstError() != null) toolErrorTurns++;
+                consecutiveToolTurns++;
+                AgentNodeState nextModel = nodeScheduler.nextModel();
+                durableEvents.emit(restoredIteration, RunEventType.NODE_TRANSITIONED,
+                        RunStatus.MODEL_RUNNING, null, Map.of(
+                                "from", AgentNodeType.TOOLS.name(),
+                                "to", AgentNodeType.MODEL.name(),
+                                "transition", nextModel.transition(),
+                                "restored", true
+                        ));
+            }
+        }
+
         // 开始主循环，最多执行 spec.getMaxIterations() 次
-        while (nodeScheduler.canSchedule()) {
+        while (finalContent == null && nodeScheduler.canSchedule()) {
             AgentNodeState modelNode = nodeScheduler.startModel();
-            int iteration = controller.currentTurn();
+            int iteration = modelNode.iteration();
             iterationsCompleted = iteration;
             durableEvents.emit(iteration, RunEventType.NODE_STARTED,
                     durableEvents.currentState().status(), null, Map.of(
@@ -358,25 +429,10 @@ public class AgentRunner implements AutoCloseable {
             }
 
             // 执行工具：根据配置选择并发或顺序执行
-            int toolEventStart = toolEvents.size();
-            List<String> requestedToolNames = response.getToolCalls().stream().map(ToolCallRequest::getName).toList();
-            ToolExecutionPolicy toolExecutionPolicy = toolExecutionPolicy(tools);
-            boolean concurrent = tools != null && toolExecutionPolicy.shouldRunConcurrently(
-                    spec.isConcurrentTools(),
-                    requestedToolNames,
-                    tools::policyFor
-            );
-            traceRecorder.recordRunEvent("tool_batch", metadata(iteration, Map.of(
-                    "tool_call_count", requestedToolNames.size(),
-                    "execution_mode", concurrent ? "concurrent" : "sequential",
-                    "tools", requestedToolNames
-            )));
-            List<Map<String, Object>> toolResults = concurrent
-                    ? executeToolsConcurrent(tools, response.getToolCalls(), toolsUsed, toolEvents, spec, iteration, durableEvents)
-                    : executeToolsSequential(tools, response.getToolCalls(), toolsUsed, toolEvents, spec, iteration, durableEvents);
-            for (Map<String, Object> event : toolEvents.subList(toolEventStart, toolEvents.size())) {
-                traceRecorder.recordToolEvent(String.valueOf(event.getOrDefault("tool_call_id", "")), metadata(iteration, event));
-            }
+            ToolBatchExecution toolBatch = executeToolBatch(
+                    tools, response.getToolCalls(), toolsUsed, toolEvents, spec,
+                    iteration, durableEvents, traceRecorder);
+            List<Map<String, Object>> toolResults = toolBatch.results();
             if (controller.cancelled()) {
                 stopReason = "cancelled";
                 finalContent = "Agent run cancelled.";
@@ -386,9 +442,6 @@ public class AgentRunner implements AutoCloseable {
 
             // 将工具执行结果加入消息历史
             messages.addAll(toolResults);
-            durableEvents.emit(iteration, RunEventType.TOOL_BATCH_COMPLETED, RunStatus.MODEL_RUNNING, null, Map.of(
-                    "tool_call_count", toolResults.size()
-            ));
 
             // 工具执行后钩子
             if (hook != null) {
@@ -412,7 +465,8 @@ public class AgentRunner implements AutoCloseable {
             );
 
             // 如果配置了遇到工具错误即失败，检查是否有错误
-            Map<String, Object> firstError = firstToolError(toolEvents, toolEventStart);
+            ToolExecutionPolicy toolExecutionPolicy = toolExecutionPolicy(tools);
+            Map<String, Object> firstError = toolBatch.firstError();
             if (toolExecutionPolicy.shouldStopRunOnToolError(firstError, spec.isFailOnToolError())) {
                 stopReason = "tool_error";
                 stopDetail = String.valueOf(firstError.getOrDefault("detail", "tool_error"));
@@ -967,6 +1021,86 @@ public class AgentRunner implements AutoCloseable {
         return normalizeInjectedMessages(injected, MAX_INJECTIONS_PER_TURN);
     }
 
+    private ToolBatchExecution executeToolBatch(
+            ToolRegistry tools,
+            List<ToolCallRequest> toolCalls,
+            List<String> toolsUsed,
+            List<Map<String, Object>> toolEvents,
+            AgentRunSpec spec,
+            int iteration,
+            RunEventEmitter durableEvents,
+            TraceRecorder traceRecorder
+    ) {
+        int toolEventStart = toolEvents.size();
+        List<String> requestedToolNames = toolCalls.stream().map(ToolCallRequest::getName).toList();
+        ToolExecutionPolicy policy = toolExecutionPolicy(tools);
+        boolean concurrent = tools != null && policy.shouldRunConcurrently(
+                spec.isConcurrentTools(), requestedToolNames, tools::policyFor);
+        traceRecorder.recordRunEvent("tool_batch", metadata(iteration, Map.of(
+                "tool_call_count", requestedToolNames.size(),
+                "execution_mode", concurrent ? "concurrent" : "sequential",
+                "tools", requestedToolNames
+        )));
+        List<Map<String, Object>> results = concurrent
+                ? executeToolsConcurrent(tools, toolCalls, toolsUsed, toolEvents, spec, iteration, durableEvents)
+                : executeToolsSequential(tools, toolCalls, toolsUsed, toolEvents, spec, iteration, durableEvents);
+        for (Map<String, Object> event : toolEvents.subList(toolEventStart, toolEvents.size())) {
+            traceRecorder.recordToolEvent(
+                    String.valueOf(event.getOrDefault("tool_call_id", "")), metadata(iteration, event));
+        }
+        durableEvents.emit(iteration, RunEventType.TOOL_BATCH_COMPLETED, RunStatus.MODEL_RUNNING, null, Map.of(
+                "tool_call_count", results.size()
+        ));
+        return new ToolBatchExecution(results, firstToolError(toolEvents, toolEventStart));
+    }
+
+    private static List<ToolCallRequest> restoreToolCalls(List<Map<String, Object>> storedCalls) {
+        List<ToolCallRequest> calls = new ArrayList<>();
+        for (Map<String, Object> stored : storedCalls != null ? storedCalls : List.<Map<String, Object>>of()) {
+            Map<String, Object> function = stored.get("function") instanceof Map<?, ?> raw
+                    ? copyObjectMap(raw) : Map.of();
+            String id = String.valueOf(stored.getOrDefault("id", "")).trim();
+            String name = String.valueOf(function.getOrDefault("name", "")).trim();
+            if (id.isBlank() || name.isBlank()) {
+                throw new IllegalArgumentException("checkpoint contains an invalid pending tool call");
+            }
+            Object rawArguments = function.get("arguments");
+            Map<String, Object> arguments;
+            if (rawArguments instanceof Map<?, ?> raw) {
+                arguments = copyObjectMap(raw);
+            } else if (rawArguments instanceof String json && !json.isBlank()) {
+                try {
+                    arguments = MAPPER.readValue(json, new com.fasterxml.jackson.core.type.TypeReference<>() { });
+                } catch (Exception e) {
+                    throw new IllegalArgumentException("checkpoint tool arguments are invalid JSON", e);
+                }
+            } else {
+                arguments = Map.of();
+            }
+            calls.add(new ToolCallRequest(id, name, arguments));
+        }
+        return List.copyOf(calls);
+    }
+
+    private static void validateForkedToolContinuation(ToolRegistry tools, List<ToolCallRequest> calls) {
+        if (tools == null) throw new IllegalArgumentException("tool registry is required for checkpoint continuation");
+        for (ToolCallRequest call : calls) {
+            if (!tools.policyFor(call.getName()).readOnly()) {
+                throw new IllegalStateException(
+                        "historical fork cannot replay pending side-effect tool without explicit reconciliation: "
+                                + call.getName());
+            }
+        }
+    }
+
+    private static Map<String, Object> copyObjectMap(Map<?, ?> raw) {
+        Map<String, Object> copy = new LinkedHashMap<>();
+        raw.forEach((key, value) -> {
+            if (key != null) copy.put(String.valueOf(key), value);
+        });
+        return copy;
+    }
+
     /**
      * 顺序执行工具
      * @param tools 工具注册表
@@ -1293,6 +1427,15 @@ public class AgentRunner implements AutoCloseable {
     private record ToolExecution(String name, Map<String, Object> toolMsg, Map<String, Object> event) {}
 
     private record IndexedToolExecution(int index, ToolExecution execution) {}
+
+    private record ToolBatchExecution(
+            List<Map<String, Object>> results,
+            Map<String, Object> firstError
+    ) {
+        private ToolBatchExecution {
+            results = results != null ? List.copyOf(results) : List.of();
+        }
+    }
 
     private record RuntimePolicy(
             List<Map<String, Object>> toolDefinitions,

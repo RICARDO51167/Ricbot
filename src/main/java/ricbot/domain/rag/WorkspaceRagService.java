@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import ricbot.infra.common.HelperUtils;
 import ricbot.tool.filesystem.FileToolSupport;
 import ricbot.domain.retrieval.EmbeddingProvider;
+import ricbot.domain.retrieval.EmbeddingProviderFactory;
+import ricbot.domain.retrieval.FileVectorIndex;
 import ricbot.domain.retrieval.HashingEmbeddingProvider;
 import ricbot.domain.retrieval.HybridScoring;
 
@@ -43,10 +45,10 @@ public class WorkspaceRagService {
     private final Path vectorIndexDir;
     private final String tenantId;
     private final EmbeddingProvider embeddingProvider;
-    private final Map<String, double[]> embeddingCache = new java.util.concurrent.ConcurrentHashMap<>();
+    private final FileVectorIndex vectorIndex;
 
     public WorkspaceRagService(Path workspace) {
-        this(workspace, "default", new HashingEmbeddingProvider());
+        this(workspace, "default", EmbeddingProviderFactory.fromEnvironment());
     }
 
     public WorkspaceRagService(Path workspace, String tenantId, EmbeddingProvider embeddingProvider) {
@@ -62,6 +64,7 @@ public class WorkspaceRagService {
         this.symbolIndexFile = codeIndexDir.resolve("symbol_index.json");
         this.scanStateFile = codeIndexDir.resolve("last_scan_state.json");
         this.vectorIndexDir = codeIndexDir.resolve("vector_index");
+        this.vectorIndex = new FileVectorIndex(this.vectorIndexDir, this.embeddingProvider.modelId());
         ensureLayout();
     }
 
@@ -86,6 +89,7 @@ public class WorkspaceRagService {
                 fileStates.put(relative(path), fileState(path, fileChunks.size()));
             }
             writeChunks(chunks);
+            syncVectorIndex(chunks);
             writeJson(symbolIndexFile, symbols);
             writeScanState(fileStates, files, chunks.size(), 0, 0, 0, 0);
             return new IndexReport(files, chunks.size(), symbols.size(), chunksFile.toString(), files, 0, 0, 0);
@@ -213,6 +217,7 @@ public class WorkspaceRagService {
         nextChunks.sort(Comparator.comparing(FileChunk::path).thenComparingInt(FileChunk::startLine));
         try {
             writeChunks(nextChunks);
+            syncVectorIndex(nextChunks);
             writeJson(symbolIndexFile, symbols);
             writeScanState(nextStates, nextStates.size(), nextChunks.size(), added, modified, deleted, skipped);
             return new IndexReport(nextStates.size(), nextChunks.size(), symbols.size(), chunksFile.toString(), added, modified, deleted, skipped);
@@ -233,10 +238,7 @@ public class WorkspaceRagService {
             double lexicalScore = score(queryTokens, chunk);
             double vectorScore = Math.max(0d, HybridScoring.cosine(
                     queryEmbedding,
-                    embeddingCache.computeIfAbsent(
-                            chunk.id() + ":" + chunk.updatedAt(),
-                            ignored -> embeddingProvider.embed(chunk.path() + "\n" + String.join(" ", chunk.symbols()) + "\n" + chunk.text())
-                    )
+                    vectorIndex.getOrCompute(vectorKey(chunk), () -> embeddingProvider.embed(vectorText(chunk)))
             ));
             double score = (lexicalScore * 0.72d) + (vectorScore * 2.4d);
             if (queryTokens.isEmpty()) {
@@ -249,7 +251,27 @@ public class WorkspaceRagService {
                     snippet(chunk.text(), queryTokens)));
         }
         results.sort(Comparator.comparingDouble(SearchResult::score).reversed());
+        vectorIndex.flush();
         return results.stream().limit(Math.max(1, limit)).toList();
+    }
+
+    private void syncVectorIndex(List<FileChunk> chunks) {
+        Set<String> active = new LinkedHashSet<>();
+        for (FileChunk chunk : chunks) {
+            String key = vectorKey(chunk);
+            active.add(key);
+            vectorIndex.getOrCompute(key, () -> embeddingProvider.embed(vectorText(chunk)));
+        }
+        vectorIndex.retainOnly(active);
+        vectorIndex.flush();
+    }
+
+    private static String vectorKey(FileChunk chunk) {
+        return chunk.id() + ":" + chunk.updatedAt();
+    }
+
+    private static String vectorText(FileChunk chunk) {
+        return chunk.path() + "\n" + String.join(" ", chunk.symbols()) + "\n" + chunk.text();
     }
 
     private Map<String, Path> discoverIndexableFiles() {

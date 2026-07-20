@@ -23,13 +23,13 @@ import java.util.stream.Stream;
 /** Multi-process CAS implementation for local/single-node deployments. */
 public final class FileSharedStateStore implements SharedStateStore {
     private static final ObjectMapper MAPPER = new ObjectMapper().findAndRegisterModules();
+    private static final Object[] LOCKS = new Object[64];
+    static { java.util.Arrays.setAll(LOCKS, ignored -> new Object()); }
     private final Path root;
-    private final Object[] locks = new Object[64];
 
     public FileSharedStateStore(Path workspace) {
         if (workspace == null) throw new IllegalArgumentException("workspace is required");
         root = workspace.toAbsolutePath().normalize().resolve(".ricbot").resolve("shared-state");
-        java.util.Arrays.setAll(locks, ignored -> new Object());
     }
 
     public Optional<SharedValue> get(String namespace, String key) {
@@ -126,7 +126,7 @@ public final class FileSharedStateStore implements SharedStateStore {
         return root.resolve(hash(required(namespace, "namespace")))
                 .resolve(hash(required(key, "key")) + ".json");
     }
-    private Object lock(Path path) { return locks[(path.toString().hashCode() & Integer.MAX_VALUE) % locks.length]; }
+    private Object lock(Path path) { return LOCKS[(path.toString().hashCode() & Integer.MAX_VALUE) % LOCKS.length]; }
     private static String required(String value, String field) {
         String clean = value != null ? value.trim() : "";
         if (clean.isBlank()) throw new IllegalArgumentException(field + " is required");

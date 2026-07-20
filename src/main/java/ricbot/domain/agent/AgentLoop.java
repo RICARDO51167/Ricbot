@@ -34,6 +34,7 @@ import ricbot.domain.message.MessageBus;
 import ricbot.domain.message.OutboundMessage;
 import ricbot.domain.message.OutboundMessages;
 import ricbot.infra.config.Config;
+import ricbot.infra.telemetry.OpenTelemetryRuntime;
 import ricbot.integration.llm.api.LLMProvider;
 import ricbot.domain.session.Session;
 import ricbot.domain.session.SessionManager;
@@ -106,8 +107,10 @@ public class AgentLoop {
     /** 追加式运行事件与工具调用账本。 */
     private final RunJournalStore runJournalStore;
     private final RunEventSink runEventSink;
+    private final OpenTelemetryRuntime telemetryRuntime;
     /** Durable write-tool idempotency and compensation ledger. */
     private final SideEffectStore sideEffectStore;
+    private final SideEffectApplicationService sideEffectApplicationService;
     /** 记忆存储，用于长期记忆管理 */
     private final MemoryStore memoryStore;
     /** 记忆整合器，用于压缩和整理历史消息 */
@@ -244,15 +247,18 @@ public class AgentLoop {
 
         // 初始化核心组件
         this.contextBuilder = new ContextBuilder(this.workspace, timezone, disabledSkills);
-        this.sessionManager = sessionManager != null ? sessionManager : new SessionManager(this.workspace);
-        this.runCheckpointStore = new FileRunCheckpointStore(this.workspace);
-        this.runJournalStore = new FileRunJournalStore(this.workspace);
+        AgentPersistenceComponents persistence = AgentPersistenceFactory.create(this.workspace, sessionManager);
+        this.sessionManager = persistence.sessionManager();
+        this.runCheckpointStore = persistence.checkpointStore();
+        this.runJournalStore = persistence.journalStore();
+        this.telemetryRuntime = OpenTelemetryRuntime.fromEnvironment();
         this.runEventSink = RunEventSink.composite(
                 this.runJournalStore,
                 new OpenTelemetryRunEventSink(
-                        io.opentelemetry.api.GlobalOpenTelemetry.getTracer("ricbot.agent", "1.0"))
+                        this.telemetryRuntime.tracer("ricbot.agent", "1.0"))
         );
-        this.sideEffectStore = new FileSideEffectStore(this.workspace);
+        this.traceStore = new TraceStore(this.workspace);
+        this.sideEffectStore = new AuditedSideEffectStore(persistence.sideEffectStore(), this.traceStore);
         this.memoryStore = new MemoryStore(this.workspace);
         
         // 初始化记忆整合器
@@ -267,8 +273,9 @@ public class AgentLoop {
         
         // 初始化 Dream 模块
         this.dream = new Dream(this.provider, this.model, this.memoryStore);
-        this.traceStore = new TraceStore(this.workspace);
         this.approvalService = new ApprovalService(this.traceStore);
+        this.sideEffectApplicationService = new SideEffectApplicationService(
+                this.sideEffectStore, this.approvalService);
         this.autoCompact = new AutoCompact(this.sessionManager, this.consolidator, this.sessionTtlMinutes);
         
         // 初始化子代理管理器
@@ -606,6 +613,7 @@ public class AgentLoop {
             log.warn("关闭子代理管理器失败", e);
         }
         mcpLoader.close();
+        telemetryRuntime.close();
         executor.shutdownNow();
         scheduler.shutdownNow();
         log.info("Agent 循环正在停止");
@@ -616,6 +624,7 @@ public class AgentLoop {
     public SessionManager getSessions() { return sessionManager; }
     public ToolRegistry getTools() { return tools; }
     public ApprovalService getApprovalService() { return approvalService; }
+    public SideEffectApplicationService getSideEffectApplicationService() { return sideEffectApplicationService; }
     public MessageBus getBus() { return bus; }
 
     public MCPLoader getMcpLoader() { return mcpLoader; }

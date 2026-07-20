@@ -28,6 +28,16 @@
             <artifactId>opentelemetry-api</artifactId>
             <version>1.49.0</version>
         </dependency>
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-sdk</artifactId>
+            <version>1.49.0</version>
+        </dependency>
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-exporter-otlp</artifactId>
+            <version>1.49.0</version>
+        </dependency>
 
         <!-- 一个简单的日志实现，控制台输出日志 -->
         <dependency>

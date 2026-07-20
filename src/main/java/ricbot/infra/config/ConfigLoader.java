@@ -440,6 +440,12 @@ public final class ConfigLoader {
         ec.setEnable(booleanValue(exec.get("enable"), ec.isEnable()));
         ec.setTimeout(intValue(exec.get("timeout"), ec.getTimeout()));
         ec.setSandbox(booleanValue(exec.get("sandbox"), ec.isSandbox()));
+        ec.setApprovalEnabled(booleanValue(exec.get("approval_enabled"), ec.isApprovalEnabled()));
+        ec.setBackend(string(exec.get("backend"), ec.getBackend()));
+        ec.setFallbackBackend(string(exec.get("fallback_backend"), ec.getFallbackBackend()));
+        ec.setAllowBackendFallback(booleanValue(exec.get("allow_backend_fallback"), ec.isAllowBackendFallback()));
+        ec.setDockerImage(string(exec.get("docker_image"), ec.getDockerImage()));
+        ec.setDockerNetworkEnabled(booleanValue(exec.get("docker_network_enabled"), ec.isDockerNetworkEnabled()));
         ec.setPathAppend(string(exec.get("path_append"), ec.getPathAppend()));
         ec.setAllowedEnvKeys(stringList(exec.get("allowed_env_keys")));
 
@@ -648,6 +654,12 @@ public final class ConfigLoader {
         exec.put("enable", config.getTools().getExec().isEnable());
         exec.put("timeout", config.getTools().getExec().getTimeout());
         exec.put("sandbox", config.getTools().getExec().isSandbox());
+        exec.put("approval_enabled", config.getTools().getExec().isApprovalEnabled());
+        exec.put("backend", config.getTools().getExec().getBackend());
+        exec.put("fallback_backend", config.getTools().getExec().getFallbackBackend());
+        exec.put("allow_backend_fallback", config.getTools().getExec().isAllowBackendFallback());
+        exec.put("docker_image", config.getTools().getExec().getDockerImage());
+        exec.put("docker_network_enabled", config.getTools().getExec().isDockerNetworkEnabled());
         exec.put("path_append", config.getTools().getExec().getPathAppend());
         exec.put("allowed_env_keys", config.getTools().getExec().getAllowedEnvKeys());
         tools.put("exec", exec);

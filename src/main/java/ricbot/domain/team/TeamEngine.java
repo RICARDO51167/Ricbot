@@ -15,7 +15,10 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
+import java.util.UUID;
 
 public class TeamEngine {
     public static final String TEAM_SESSION_ID_KEY = SessionRuntimeKeys.TEAM_SESSION_ID_KEY;
@@ -28,6 +31,7 @@ public class TeamEngine {
     private final TeamWorkerExecutor workerExecutor;
     private final StepAuditService stepAuditService;
     private final TeamTaskReportService taskReportService;
+    private final PersistentTeamRuntime teamRuntime;
     private final Map<String, TeamSession> sessions = new LinkedHashMap<>();
     private final Map<String, TeamTask> tasks = new LinkedHashMap<>();
     private final Map<String, List<TeamEvent>> events = new LinkedHashMap<>();
@@ -43,12 +47,14 @@ public class TeamEngine {
         this.workerExecutor = new TeamWorkerExecutor(verificationService, new PolicyEngine(this.workspace));
         this.stepAuditService = new StepAuditService(this.workspace, traceStore);
         this.taskReportService = new TeamTaskReportService(stepAuditService);
+        this.teamRuntime = new PersistentTeamRuntime(this.workspace);
         restoreKnownSessions();
     }
 
     public TeamSession createSession(String goal) {
         TeamSession session = new TeamSession(null, goal, TeamTaskState.PLANNING, List.of(), null, null);
         sessions.put(session.id(), session);
+        ensureWorker(session.id(), "leader", TeamRole.LEADER, "", Map.of("goal", session.goal()));
         TeamWhiteboard whiteboard = whiteboard(session.id());
         whiteboard.appendNote("Leader started team session.\n\nGoal: " + session.goal());
         store.saveSession(session);
@@ -60,6 +66,10 @@ public class TeamEngine {
         TeamSession session = requireSession(sessionId);
         TeamTask task = new TeamTask(null, session.id(), role, goal, TeamTaskState.CREATED, "", List.of(), null, "", null, null);
         tasks.put(task.id(), task);
+        PersistentWorkerSession worker = ensureWorker(
+                session.id(), workerId(task, role), role, "leader", Map.of("task_id", task.id(), "goal", task.goal()));
+        teamRuntime.send(session.id(), "leader", worker.workerId(), TeamMessageType.TASK, task.id(), Map.of(
+                "task_id", task.id(), "goal", task.goal(), "role", task.role().name()));
         refreshSessionTasks(session.id());
         whiteboard(session.id()).appendNote("Task created: " + task.id() + "\nRole: " + task.role() + "\nGoal: " + task.goal());
         appendEvent(TeamEvent.of(session.id(), task.id(), task.role(), TeamEvent.TASK_CREATED, task.goal()));
@@ -97,6 +107,7 @@ public class TeamEngine {
     public WorkerExecutionResult runWorker(String taskId, WorkerExecutionInput input) {
         TeamTask current = requireTask(taskId);
         WorkerExecutionInput merged = mergeWorkerInput(current, input);
+        PersistentWorkerSession worker = startWorker(current, current.role());
         traceWorkerLifecycle(TraceEventType.WORKER_STARTED, current, merged, null, "");
         try {
             startProducing(taskId);
@@ -114,8 +125,10 @@ public class TeamEngine {
                 traceWorkerLifecycle(TraceEventType.DEVELOPER_PLAN_CREATED, task, merged, result, "");
             }
             traceWorkerLifecycle(TraceEventType.WORKER_FINISHED, task, merged, result, "");
+            finishWorker(worker, result.status(), result.summary());
             return result;
         } catch (RuntimeException e) {
+            failWorker(worker, e.getMessage());
             traceWorkerLifecycle(TraceEventType.WORKER_FAILED, current, merged, null, e.getMessage());
             throw e;
         }
@@ -124,6 +137,7 @@ public class TeamEngine {
     public WorkerExecutionResult runVerifier(String taskId, WorkerExecutionInput input) {
         TeamTask current = requireTask(taskId);
         WorkerExecutionInput merged = mergeWorkerInput(current, input, TeamRole.VERIFIER);
+        PersistentWorkerSession worker = startWorker(current, TeamRole.VERIFIER);
         traceWorkerLifecycle(TraceEventType.VERIFIER_STARTED, current, merged, null, "");
         try {
             startVerifying(taskId);
@@ -133,11 +147,74 @@ public class TeamEngine {
             TeamTask task = submitVerification(taskId, verification);
             whiteboard(current.sessionId()).appendNote(renderWorkerExecutionNote("Verifier execution", result));
             traceWorkerLifecycle(TraceEventType.VERIFIER_FINISHED, task, merged, result, "");
+            finishWorker(worker, result.status(), result.summary());
             return result;
         } catch (RuntimeException e) {
+            failWorker(worker, e.getMessage());
             traceWorkerLifecycle(TraceEventType.WORKER_FAILED, current, merged, null, e.getMessage());
             throw e;
         }
+    }
+
+    /** Starts (or resumes) an independent durable worker attempt for a task. */
+    public PersistentWorkerSession startWorker(String taskId, TeamRole role) {
+        return startWorker(requireTask(taskId), role);
+    }
+
+    public PersistentWorkerSession completeWorker(String workerId, String summary) {
+        PersistentWorkerSession worker = requireWorker(workerId);
+        PersistentWorkerSession completed = teamRuntime.transition(
+                worker.teamSessionId(), worker.workerId(), WorkerSessionStatus.COMPLETED, worker.currentTaskId());
+        sendWorkerResult(completed, summary, "COMPLETED");
+        return completed;
+    }
+
+    public PersistentWorkerSession failWorker(String workerId, String error) {
+        PersistentWorkerSession worker = requireWorker(workerId);
+        failWorker(worker, error);
+        return teamRuntime.worker(worker.teamSessionId(), worker.workerId()).orElseThrow();
+    }
+
+    public List<PersistentWorkerSession> workers(String teamSessionId) {
+        requireSession(teamSessionId);
+        return teamRuntime.workers(teamSessionId);
+    }
+
+    public List<PersistentWorkerSession> workersForTask(String taskId) {
+        TeamTask task = requireTask(taskId);
+        return teamRuntime.workers(task.sessionId()).stream()
+                .filter(worker -> task.id().equals(String.valueOf(worker.metadata().get("task_id"))))
+                .toList();
+    }
+
+    public TeamMailboxMessage sendWorkerMessage(String teamSessionId, String fromWorkerId, String toWorkerId,
+                                                TeamMessageType type, String correlationId,
+                                                Map<String, Object> payload) {
+        requireSession(teamSessionId);
+        return teamRuntime.send(teamSessionId, fromWorkerId, toWorkerId, type, correlationId, payload);
+    }
+
+    public List<TeamMailboxMessage> workerInbox(String teamSessionId, String workerId,
+                                                long afterSequence, boolean includeAcknowledged) {
+        requireSession(teamSessionId);
+        return teamRuntime.inbox(teamSessionId, workerId, afterSequence, includeAcknowledged);
+    }
+
+    public void acknowledgeWorkerMessage(String teamSessionId, String workerId, String messageId) {
+        requireSession(teamSessionId);
+        teamRuntime.acknowledge(teamSessionId, workerId, messageId);
+    }
+
+    public PersistentTeamRuntime.JoinResult joinWorkers(String teamSessionId, List<String> workerIds) {
+        requireSession(teamSessionId);
+        return teamRuntime.join(teamSessionId, workerIds);
+    }
+
+    public PersistentTeamRuntime.HandoffResult handoff(String teamSessionId, String sourceWorkerId,
+                                                       String targetWorkerId, String taskId,
+                                                       Map<String, Object> context) {
+        requireSession(teamSessionId);
+        return teamRuntime.handoff(teamSessionId, sourceWorkerId, targetWorkerId, taskId, context);
     }
 
     public PolicyAwareToolExecutor.PolicyToolResult executeToolAsRole(
@@ -1109,6 +1186,85 @@ public class TeamEngine {
         String tail = normalized.substring(index + "/.workspaces/".length());
         int slash = tail.indexOf('/');
         return slash >= 0 ? tail.substring(0, slash) : tail;
+    }
+
+    private PersistentWorkerSession startWorker(TeamTask task, TeamRole role) {
+        TeamRole effectiveRole = role != null ? role : task.role();
+        ensureWorker(task.sessionId(), "leader", TeamRole.LEADER, "", Map.of("restored", true));
+        Optional<PersistentWorkerSession> reusable = teamRuntime.workers(task.sessionId()).stream()
+                .filter(worker -> effectiveRole == worker.role())
+                .filter(worker -> task.id().equals(String.valueOf(worker.metadata().get("task_id"))))
+                .filter(worker -> !worker.status().terminal())
+                .findFirst();
+        String baseId = workerId(task, effectiveRole);
+        PersistentWorkerSession worker = reusable.orElseGet(() -> ensureWorker(
+                task.sessionId(),
+                teamRuntime.worker(task.sessionId(), baseId).isEmpty()
+                        ? baseId
+                        : baseId + "-" + UUID.randomUUID().toString().substring(0, 8),
+                effectiveRole,
+                "leader",
+                Map.of("task_id", task.id(), "goal", task.goal())
+        ));
+        if (worker.status() == WorkerSessionStatus.CREATED || worker.status() == WorkerSessionStatus.PAUSED) {
+            worker = teamRuntime.transition(task.sessionId(), worker.workerId(), WorkerSessionStatus.RUNNING, task.id());
+        }
+        teamRuntime.send(task.sessionId(), worker.workerId(), "leader", TeamMessageType.PROGRESS,
+                task.id(), Map.of("status", "RUNNING", "role", effectiveRole.name()));
+        return worker;
+    }
+
+    private void finishWorker(PersistentWorkerSession worker, String resultStatus, String summary) {
+        if (worker == null) return;
+        if ("FAILED".equalsIgnoreCase(resultStatus)) {
+            failWorker(worker, summary);
+            return;
+        }
+        PersistentWorkerSession completed = teamRuntime.transition(
+                worker.teamSessionId(), worker.workerId(), WorkerSessionStatus.COMPLETED, worker.currentTaskId());
+        sendWorkerResult(completed, summary, "COMPLETED");
+    }
+
+    private void failWorker(PersistentWorkerSession worker, String error) {
+        if (worker == null || worker.status().terminal()) return;
+        PersistentWorkerSession failed = teamRuntime.transition(
+                worker.teamSessionId(), worker.workerId(), WorkerSessionStatus.FAILED, worker.currentTaskId());
+        sendWorkerResult(failed, error, "FAILED");
+    }
+
+    private void sendWorkerResult(PersistentWorkerSession worker, String summary, String status) {
+        ensureWorker(worker.teamSessionId(), "leader", TeamRole.LEADER, "", Map.of("restored", true));
+        teamRuntime.send(worker.teamSessionId(), worker.workerId(), "leader", TeamMessageType.RESULT,
+                worker.currentTaskId(), Map.of(
+                        "task_id", worker.currentTaskId(),
+                        "status", status,
+                        "summary", summary != null ? summary : ""
+                ));
+    }
+
+    private PersistentWorkerSession ensureWorker(String teamSessionId, String workerId, TeamRole role,
+                                                  String parentWorkerId, Map<String, Object> metadata) {
+        Optional<PersistentWorkerSession> existing = teamRuntime.worker(teamSessionId, workerId);
+        if (existing.isPresent()) return existing.orElseThrow();
+        try {
+            return teamRuntime.createWorker(teamSessionId, workerId, role, parentWorkerId, metadata);
+        } catch (IllegalStateException race) {
+            return teamRuntime.worker(teamSessionId, workerId).orElseThrow(() -> race);
+        }
+    }
+
+    private PersistentWorkerSession requireWorker(String workerId) {
+        String id = workerId != null ? workerId.trim() : "";
+        if (id.isBlank()) throw new IllegalArgumentException("workerId is required");
+        return sessions.keySet().stream()
+                .map(sessionId -> teamRuntime.worker(sessionId, id))
+                .flatMap(Optional::stream)
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("worker does not exist: " + id));
+    }
+
+    private static String workerId(TeamTask task, TeamRole role) {
+        return role.name().toLowerCase(Locale.ROOT) + "-" + task.id();
     }
 
     private TeamSession requireSession(String sessionId) {

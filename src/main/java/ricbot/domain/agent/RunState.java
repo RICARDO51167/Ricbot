@@ -106,7 +106,8 @@ public record RunState(
             return true;
         }
         return switch (current) {
-            case CREATED -> next == RunStatus.MODEL_RUNNING || next == RunStatus.COMPLETED;
+            case CREATED -> next == RunStatus.MODEL_RUNNING || next == RunStatus.WAITING_TOOL
+                    || next == RunStatus.COMPLETED;
             case MODEL_RUNNING -> next == RunStatus.WAITING_TOOL || next == RunStatus.COMPLETED;
             case WAITING_TOOL -> next == RunStatus.TOOL_RUNNING;
             case TOOL_RUNNING -> next == RunStatus.MODEL_RUNNING;

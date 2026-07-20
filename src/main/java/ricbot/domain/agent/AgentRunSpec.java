@@ -79,6 +79,9 @@ public class AgentRunSpec {
     /** Existing CREATED branch state used to continue an executable journal fork. */
     private RunState initialRunState;
 
+    /** Historical checkpoint whose exact node boundary should be continued. */
+    private RunCheckpoint resumeCheckpoint;
+
     /** Durable protocol store for write-tool idempotency and compensation. */
     private SideEffectStore sideEffectStore = SideEffectStore.disabled();
 

@@ -30,13 +30,13 @@ import java.util.stream.Stream;
  */
 public final class PersistentTeamRuntime {
     private static final ObjectMapper MAPPER = new ObjectMapper().findAndRegisterModules();
+    private static final Object[] LOCKS = new Object[64];
+    static { java.util.Arrays.setAll(LOCKS, ignored -> new Object()); }
     private final Path root;
-    private final Object[] locks = new Object[64];
 
     public PersistentTeamRuntime(Path workspace) {
         if (workspace == null) throw new IllegalArgumentException("workspace is required");
-        root = workspace.toAbsolutePath().normalize().resolve(".team");
-        java.util.Arrays.setAll(locks, ignored -> new Object());
+        root = workspace.toAbsolutePath().normalize().resolve(".ricbot").resolve("team-runtime");
     }
 
     public PersistentWorkerSession createWorker(
@@ -50,8 +50,11 @@ public final class PersistentTeamRuntime {
                 teamSessionId, workerId, role, parentWorkerId, metadata);
         Path target = workerFile(teamSessionId, workerId);
         synchronized (lock(target)) {
-            if (Files.isRegularFile(target)) throw new IllegalStateException("worker already exists: " + workerId);
-            write(target, created);
+            withWorkerFileLock(target, () -> {
+                if (Files.isRegularFile(target)) throw new IllegalStateException("worker already exists: " + workerId);
+                write(target, created);
+                return created;
+            });
         }
         return created;
     }
@@ -74,10 +77,12 @@ public final class PersistentTeamRuntime {
             String teamSessionId, String workerId, WorkerSessionStatus status, String taskId) {
         Path target = workerFile(teamSessionId, workerId);
         synchronized (lock(target)) {
-            PersistentWorkerSession next = worker(teamSessionId, workerId).orElseThrow(() ->
-                    new IllegalArgumentException("worker does not exist: " + workerId)).transition(status, taskId);
-            write(target, next);
-            return next;
+            return withWorkerFileLock(target, () -> {
+                PersistentWorkerSession next = worker(teamSessionId, workerId).orElseThrow(() ->
+                        new IllegalArgumentException("worker does not exist: " + workerId)).transition(status, taskId);
+                write(target, next);
+                return next;
+            });
         }
     }
 
@@ -233,7 +238,23 @@ public final class PersistentTeamRuntime {
         return workerDirectory(team, worker).resolve("acks").resolve(hash(message) + ".json");
     }
     private Object lock(Path path) {
-        return locks[(path.toString().hashCode() & Integer.MAX_VALUE) % locks.length];
+        return LOCKS[(path.toString().hashCode() & Integer.MAX_VALUE) % LOCKS.length];
+    }
+
+    private <T> T withWorkerFileLock(Path target, IoSupplier<T> operation) {
+        Path lockFile = target.resolveSibling(target.getFileName() + ".lock");
+        try {
+            Files.createDirectories(lockFile.getParent());
+            try (FileChannel channel = FileChannel.open(lockFile,
+                    StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+                 FileLock ignored = channel.lock()) {
+                return operation.get();
+            }
+        } catch (Exception e) {
+            if (e instanceof IllegalStateException state) throw state;
+            if (e instanceof IllegalArgumentException argument) throw argument;
+            throw new IllegalStateException("failed to lock worker state", e);
+        }
     }
 
     private static void write(Path target, Object value) {
@@ -267,4 +288,5 @@ public final class PersistentTeamRuntime {
     public record JoinResult(Map<String, WorkerSessionStatus> statuses, boolean complete, boolean successful) { }
     public record HandoffResult(PersistentWorkerSession source, PersistentWorkerSession target,
                                 TeamMailboxMessage message) { }
+    @FunctionalInterface private interface IoSupplier<T> { T get() throws Exception; }
 }

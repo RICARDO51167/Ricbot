@@ -17,6 +17,7 @@ public record ExecutableRunFork(RunFork lineage, ResumePoint source, Session chi
         return spec.setSessionKey(childSession.getKey())
                 .setInitialMessages(childSession.getMessages())
                 .setCheckpointMessageOffset(childSession.getMessages().size())
-                .setInitialRunState(lineage.childState());
+                .setInitialRunState(lineage.childState())
+                .setResumeCheckpoint(source.checkpoint());
     }
 }

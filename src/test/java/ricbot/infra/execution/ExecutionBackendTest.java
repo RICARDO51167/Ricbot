@@ -2,6 +2,7 @@ package ricbot.infra.execution;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import ricbot.infra.config.Config;
 
 import java.nio.file.Path;
 import java.time.Duration;
@@ -57,5 +58,29 @@ class ExecutionBackendTest {
     @Test
     void rejectsUnsafeDockerImageReferences() {
         assertThrows(IllegalArgumentException.class, () -> new DockerExecutionBackend("image; touch /tmp/x"));
+    }
+
+    @Test
+    void factorySelectsConfiguredBackendAndAuditsSelection(@TempDir Path workspace) throws Exception {
+        Config.ExecToolConfig config = new Config.ExecToolConfig();
+        config.setBackend("local");
+
+        ExecutionBackend backend = ExecutionBackendFactory.create(config);
+        ExecutionResult result = backend.execute(new ExecutionRequest(
+                "printf selected", workspace, Map.of("PATH", System.getenv().getOrDefault("PATH", "")),
+                Duration.ofSeconds(5), 4096));
+
+        assertEquals("local", backend.name());
+        assertEquals("local", result.metadata().get("preferred_backend"));
+        assertEquals(false, result.metadata().get("fallback_used"));
+    }
+
+    @Test
+    void factoryRejectsUnknownBackendWithoutSilentLocalFallback() {
+        Config.ExecToolConfig config = new Config.ExecToolConfig();
+        config.setBackend("missing");
+        config.setAllowBackendFallback(false);
+
+        assertThrows(IllegalArgumentException.class, () -> ExecutionBackendFactory.create(config));
     }
 }
