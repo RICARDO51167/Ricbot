@@ -1,106 +1,126 @@
 package ricbot.domain.agent;
 
 
+import lombok.Getter;
+import lombok.Setter;
+import lombok.experimental.Accessors;
+import ricbot.domain.config.ProviderCapability;
 import ricbot.domain.hook.AgentHook;
 import ricbot.tool.api.ToolRegistry;
 
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.*;
 import java.util.function.Consumer;
 
 /**
  * AgentRunner 的运行参数
+ *
+ * 主要目标：
+ * 1. 封装一次 runner.run(...) 所需的全部参数
+ *
+ * 对应 Python: AgentRunSpec
  */
+@Getter
+@Setter
+@Accessors(chain = true)
 public class AgentRunSpec {
 
+    // 初始消息列表，用于启动 Agent 对话
     private List<Map<String, Object>> initialMessages = new ArrayList<>();
+    // 工具注册表，包含 Agent 可调用的所有工具
     private ToolRegistry tools;
+    // 使用的模型名称
     private String model;
+    // 最大迭代次数，防止无限循环
     private int maxIterations = 20;
+    // 单次 run 的软超时；仅在每轮开始前检查，不中断正在执行的 Provider/Tool 调用。
+    private Duration runTimeout;
+    // 工具结果的最大字符数限制
     private int maxToolResultChars = 16000;
+    // Agent 钩子，用于拦截和处理 Agent 生命周期事件
     private AgentHook hook;
+    // 发生错误时的默认错误消息
     private String errorMessage = "抱歉，我在调用 AI 模型时遇到了错误。";
+    // 达到最大迭代次数时的提示消息
     private String maxIterationsMessage =
             "我已达到最大工具调用迭代次数，但仍未完成任务。";
+    // 是否在工具执行出错时立即失败
     private boolean failOnToolError = false;
+    // 是否允许并发执行工具
     private boolean concurrentTools = false;
+    // 工作空间路径
     private Path workspace;
+    // 会话密钥，用于标识和隔离不同会话
     private String sessionKey;
+    // 上下文窗口令牌数限制
     private Integer contextWindowTokens;
+    // 上下文块数量限制
     private Integer contextBlockLimit;
+    // 提供商重试模式，默认为标准模式
     private String providerRetryMode = "standard";
+    // 静态/启发式 Provider capability，用于运行时保守降级。
+    private ProviderCapability providerCapability;
+    // 运行模式元数据；普通 agent 模式可为空，team-worker 等适配层用于审计与测试。
+    private Map<String, Object> metadata = new LinkedHashMap<>();
+    // 适配层声明的允许工具名；实际限制由传入的 ToolRegistry 决定。
+    private List<String> allowedTools = new ArrayList<>();
+    // 可选外部运行控制器监听器；Console 异步 run 用它取得本次真实 controller 以便取消。
+    private Consumer<AgentRunController> runControllerConsumer;
 
+    /**
+     * checkpoint 回调，用于保存中间状态
+     */
     private Consumer<Map<String, Object>> checkpointCallback;
 
+    /** Typed durable event sink; invoked synchronously before unsafe boundaries. */
+    private RunEventSink runEventSink = RunEventSink.disabled();
+
+    /** Existing CREATED branch state used to continue an executable journal fork. */
+    private RunState initialRunState;
+
+    /** Historical checkpoint whose exact node boundary should be continued. */
+    private RunCheckpoint resumeCheckpoint;
+
+    /** Durable protocol store for write-tool idempotency and compensation. */
+    private SideEffectStore sideEffectStore = SideEffectStore.disabled();
+
+    /**
+     * Index of the first message produced by this logical request. A retry can
+     * start with messages produced by an earlier runner invocation, while all
+     * of them still belong to the same recoverable request.
+     */
+    private Integer checkpointMessageOffset;
+
+    /**
+     * 进度回调，用于报告执行进度
+     */
     private ProgressCallback progressCallback;
 
+    /**
+     * 注入 follow-up user message 的回调，用于动态插入用户消息
+     */
     private InjectionCallback injectionCallback;
 
-    public List<Map<String, Object>> getInitialMessages() {
-        return initialMessages;
-    }
+    private ToolLifecycleCallback toolLifecycleCallback;
 
+    /**
+     * 设置初始消息列表
+     * @param initialMessages 初始消息列表
+     * @return 当前对象实例，支持链式调用
+     */
     public AgentRunSpec setInitialMessages(List<Map<String, Object>> initialMessages) {
         this.initialMessages = initialMessages != null ? initialMessages : new ArrayList<>();
         return this;
     }
 
-    public ToolRegistry getTools() {
-        return tools;
-    }
-
-    public AgentRunSpec setTools(ToolRegistry tools) {
-        this.tools = tools;
-        return this;
-    }
-
-    public String getModel() {
-        return model;
-    }
-
-    public AgentRunSpec setModel(String model) {
-        this.model = model;
-        return this;
-    }
-
-    public int getMaxIterations() {
-        return maxIterations;
-    }
-
-    public AgentRunSpec setMaxIterations(int maxIterations) {
-        this.maxIterations = maxIterations;
-        return this;
-    }
-
-    public int getMaxToolResultChars() {
-        return maxToolResultChars;
-    }
-
-    public AgentRunSpec setMaxToolResultChars(int maxToolResultChars) {
-        this.maxToolResultChars = maxToolResultChars;
-        return this;
-    }
-
-    public AgentHook getHook() {
-        return hook;
-    }
-
-    public AgentRunSpec setHook(AgentHook hook) {
-        this.hook = hook;
-        return this;
-    }
-
-    public String getErrorMessage() {
-        return errorMessage;
-    }
-
+    /**
+     * 获取错误消息
+     * @return 错误消息
+     */
     public AgentRunSpec setErrorMessage(String errorMessage) {
         this.errorMessage = errorMessage;
         return this;
-    }
-
-    public String getMaxIterationsMessage() {
-        return maxIterationsMessage;
     }
 
     public AgentRunSpec setMaxIterationsMessage(String maxIterationsMessage) {
@@ -108,81 +128,36 @@ public class AgentRunSpec {
         return this;
     }
 
-    public boolean isFailOnToolError() {
-        return failOnToolError;
-    }
-
-    public AgentRunSpec setFailOnToolError(boolean failOnToolError) {
-        this.failOnToolError = failOnToolError;
-        return this;
-    }
-
-    public boolean isConcurrentTools() {
-        return concurrentTools;
-    }
-
-    public AgentRunSpec setConcurrentTools(boolean concurrentTools) {
-        this.concurrentTools = concurrentTools;
-        return this;
-    }
-
-    public Path getWorkspace() {
-        return workspace;
-    }
-
-    public AgentRunSpec setWorkspace(Path workspace) {
-        this.workspace = workspace;
-        return this;
-    }
-
-    public String getSessionKey() {
-        return sessionKey;
-    }
-
-    public AgentRunSpec setSessionKey(String sessionKey) {
-        this.sessionKey = sessionKey;
-        return this;
-    }
-
-    public AgentRunSpec setContextWindowTokens(Integer contextWindowTokens) {
-        this.contextWindowTokens = contextWindowTokens;
-        return this;
-    }
-
-    public AgentRunSpec setContextBlockLimit(Integer contextBlockLimit) {
-        this.contextBlockLimit = contextBlockLimit;
-        return this;
-    }
-
-    public String getProviderRetryMode() {
-        return providerRetryMode;
-    }
-
-    public AgentRunSpec setProviderRetryMode(String providerRetryMode) {
-        this.providerRetryMode = providerRetryMode;
-        return this;
-    }
-
-    public Consumer<Map<String, Object>> getCheckpointCallback() {
-        return checkpointCallback;
-    }
-
-    public AgentRunSpec setCheckpointCallback(Consumer<Map<String, Object>> checkpointCallback) {
-        this.checkpointCallback = checkpointCallback;
-        return this;
-    }
-
-    public InjectionCallback getInjectionCallback() {
-        return injectionCallback;
-    }
-
+    /**
+     * 进度回调函数式接口
+     */
     @FunctionalInterface
     public interface ProgressCallback {
+        /**
+         * 当有进度更新时调用
+         * @param content 进度内容
+         * @param toolHint 是否为工具提示
+         * @throws Exception 异常
+         */
         void onProgress(String content, boolean toolHint) throws Exception;
     }
 
+    /**
+     * 注入回调函数式接口
+     */
     @FunctionalInterface
     public interface InjectionCallback {
+        /**
+         * 注入额外的用户消息
+         * @return 消息列表
+         * @throws Exception 异常
+         */
         List<Map<String, Object>> inject() throws Exception;
+    }
+
+    interface ToolLifecycleCallback {
+        void onToolStart(String toolName, Map<String, Object> arguments);
+
+        void onToolFinish(Map<String, Object> event);
     }
 }

@@ -40,5 +40,9 @@ build/
 
 ### Ricbot runtime / secrets ###
 workspace/
+!src/main/java/ricbot/domain/workspace/
+!src/main/java/ricbot/domain/workspace/**
+!src/test/java/ricbot/domain/workspace/
+!src/test/java/ricbot/domain/workspace/**
 **/.ricbot/
 **/*.log

@@ -17,8 +17,22 @@ import java.util.concurrent.*;
 
 /**
  * 个人微信渠道实现。
+ *
+ * 对应 Python: weixin.py
+ *
+ * 主要职责：
+ * 1. 通过 ilinkai.weixin.qq.com 的 HTTP long-poll 接口收发消息
+ * 2. token / account 状态持久化
+ * 3. QR 登录后持久化 token
+ * 4. context_token / typing_ticket 缓存
+ * 5. 支持文本、图片、语音、文件、视频
+ * 6. 支持 typing keepalive
  */
 public class WeixinChannel extends BaseChannel {
+
+    // ------------------------------------------------------------------
+    // Protocol constants
+    // ------------------------------------------------------------------
 
     private static final int ITEM_TEXT = 1;
     private static final int ITEM_IMAGE = 2;
@@ -141,13 +155,19 @@ public class WeixinChannel extends BaseChannel {
         }
     }
 
+    // ------------------------------------------------------------------
+    // State persistence
+    // ------------------------------------------------------------------
+
     private Path getStateDir() throws IOException {
         if (stateDir != null) return stateDir;
 
         if (config.getStateDir() != null && !config.getStateDir().isBlank()) {
             stateDir = Path.of(config.getStateDir()).toAbsolutePath().normalize();
         } else {
-            stateDir = Path.of(System.getProperty("user.home"), ".nanobot", "weixin");
+            Path newDir = Path.of(System.getProperty("user.home"), ".ricbot", "weixin");
+            Path legacyDir = Path.of(System.getProperty("user.home"), ".nanobot", "weixin");
+            stateDir = Files.exists(legacyDir) && !Files.exists(newDir) ? legacyDir : newDir;
         }
         Files.createDirectories(stateDir);
         return stateDir;
@@ -173,9 +193,7 @@ public class WeixinChannel extends BaseChannel {
             if (ticketsObj instanceof Map<?, ?> map) {
                 for (Map.Entry<?, ?> e : map.entrySet()) {
                     if (e.getValue() instanceof Map<?, ?> inner) {
-                        @SuppressWarnings("unchecked")
-                        Map<String, Object> cast = (Map<String, Object>) inner;
-                        typingTickets.put(String.valueOf(e.getKey()), cast);
+                        typingTickets.put(String.valueOf(e.getKey()), copyObjectMap(inner));
                     }
                 }
             }
@@ -203,7 +221,10 @@ public class WeixinChannel extends BaseChannel {
         }
     }
 
-    @SuppressWarnings("unchecked")
+    // ------------------------------------------------------------------
+    // Polling
+    // ------------------------------------------------------------------
+
     private void pollOnce() {
         if (!running) return;
         if (System.currentTimeMillis() < sessionPauseUntilMillis) return;
@@ -234,15 +255,13 @@ public class WeixinChannel extends BaseChannel {
 
             for (Object mObj : messages) {
                 if (!(mObj instanceof Map<?, ?> raw)) continue;
-                Map<String, Object> msg = (Map<String, Object>) raw;
-                handleInboundMessage(msg);
+                handleInboundMessage(copyObjectMap(raw));
             }
 
         } catch (Exception ignored) {
         }
     }
 
-    @SuppressWarnings("unchecked")
     private void handleInboundMessage(Map<String, Object> msg) {
         String messageId = stringValue(msg.get("message_id"));
         if (!messageId.isBlank()) {
@@ -268,7 +287,7 @@ public class WeixinChannel extends BaseChannel {
         if (itemsObj instanceof List<?> items) {
             for (Object itemObj : items) {
                 if (!(itemObj instanceof Map<?, ?> raw)) continue;
-                Map<String, Object> item = (Map<String, Object>) raw;
+                Map<String, Object> item = copyObjectMap(raw);
 
                 Number itemType = number(item.get("item_type"));
                 if (itemType == null) continue;
@@ -312,6 +331,10 @@ public class WeixinChannel extends BaseChannel {
         }
     }
 
+    // ------------------------------------------------------------------
+    // Send
+    // ------------------------------------------------------------------
+
     private void sendTextMessage(String toUserId, String content) throws Exception {
         Map<String, Object> item = new LinkedHashMap<>();
         item.put("item_type", ITEM_TEXT);
@@ -333,6 +356,7 @@ public class WeixinChannel extends BaseChannel {
         int uploadType = guessUploadMediaType(path.getFileName().toString());
         String uploadUrl = getUploadUrl(uploadType);
 
+        // 这里简化成直接把文件作为 bytes 发到 upload_url
         byte[] data = Files.readAllBytes(path);
         String mediaKey = uploadMedia(uploadUrl, data);
 
@@ -354,6 +378,10 @@ public class WeixinChannel extends BaseChannel {
 
         apiPost("sendmessage", body, true);
     }
+
+    // ------------------------------------------------------------------
+    // Typing
+    // ------------------------------------------------------------------
 
     public void startTyping(String toUserId) {
         stopTyping(toUserId);
@@ -386,6 +414,10 @@ public class WeixinChannel extends BaseChannel {
         apiPost("typing", body, true);
     }
 
+    // ------------------------------------------------------------------
+    // Media download/upload
+    // ------------------------------------------------------------------
+
     private String downloadMediaItem(Map<String, Object> item, int itemType) {
         try {
             String mediaUrl = stringValue(item.get("full_url"));
@@ -407,7 +439,7 @@ public class WeixinChannel extends BaseChannel {
             HttpResponse<byte[]> response = sendHttp(request, HttpResponse.BodyHandlers.ofByteArray());
             if (response.statusCode() >= 400) return null;
 
-            Path mediaDir = Path.of(System.getProperty("user.home"), ".nanobot", "media", "weixin");
+            Path mediaDir = Path.of(System.getProperty("user.home"), ".ricbot", "media", "weixin");
             Files.createDirectories(mediaDir);
 
             String suffix = switch (itemType) {
@@ -461,6 +493,10 @@ public class WeixinChannel extends BaseChannel {
         }
         return UPLOAD_MEDIA_FILE;
     }
+
+    // ------------------------------------------------------------------
+    // HTTP helpers
+    // ------------------------------------------------------------------
 
     private Map<String, Object> apiGet(String endpoint, Map<String, Object> params, boolean auth) throws Exception {
         StringBuilder url = new StringBuilder(config.getBaseUrl()).append("/").append(endpoint);
@@ -551,6 +587,10 @@ public class WeixinChannel extends BaseChannel {
 
     private static Number number(Object value) {
         return value instanceof Number n ? n : null;
+    }
+
+    private static Map<String, Object> copyObjectMap(Map<?, ?> raw) {
+        return ricbot.infra.common.JsonMapUtils.copyObjectMap(raw);
     }
 
     private <T> HttpResponse<T> sendHttp(HttpRequest request, HttpResponse.BodyHandler<T> handler) throws Exception {

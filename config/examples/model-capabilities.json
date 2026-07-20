@@ -1,0 +1,30 @@
+{
+  "agents": {
+    "defaults": {
+      "model": "qwen-plus"
+    }
+  },
+  "providers": {
+    "dashscope": {
+      "api_key": "${RICBOT_API_KEY}",
+      "api_base": "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    }
+  },
+  "api": {
+    "host": "127.0.0.1",
+    "port": 8000,
+    "bearer_token": "${RICBOT_API_BEARER_TOKEN}"
+  },
+  "model_capabilities": {
+    "qwen-plus": {
+      "supportsToolCalling": true,
+      "supportsStreaming": true,
+      "supportsVision": false,
+      "supportsJsonMode": true,
+      "supportsReasoningEffort": false,
+      "contextWindowTokens": 131072,
+      "maxOutputTokens": 8192,
+      "apiMode": "openai-compatible"
+    }
+  }
+}

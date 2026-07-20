@@ -1,6 +1,7 @@
 ---
 name: tmux
 description: 通过发送按键并抓取窗格输出来远程控制 tmux 会话，用于交互式 CLI。
+keywords: tmux, tty, 交互式, 终端会话, repl, attach, capture-pane
 metadata: {"ricbot":{"emoji":"🧵","os":["darwin","linux"],"requires":{"bins":["tmux"]}}}
 ---
 
@@ -11,7 +12,7 @@ metadata: {"ricbot":{"emoji":"🧵","os":["darwin","linux"],"requires":{"bins":[
 ## 快速开始（隔离 socket，配合 exec 工具）
 
 ```bash
-SOCKET_DIR="${NANOBOT_TMUX_SOCKET_DIR:-${TMPDIR:-/tmp}/ricbot-tmux-sockets}"
+SOCKET_DIR="${RICBOT_TMUX_SOCKET_DIR:-${NANOBOT_TMUX_SOCKET_DIR:-${TMPDIR:-/tmp}/ricbot-tmux-sockets}}"
 mkdir -p "$SOCKET_DIR"
 SOCKET="$SOCKET_DIR/ricbot.sock"
 SESSION=ricbot-python
@@ -31,8 +32,8 @@ tmux -S "$SOCKET" capture-pane -p -J -t "$SESSION":0.0 -S -200
 
 ## Socket 约定
 
-- 使用环境变量 `NANOBOT_TMUX_SOCKET_DIR`。
-- 默认 socket 路径：`"$NANOBOT_TMUX_SOCKET_DIR/ricbot.sock"`。
+- 使用环境变量 `RICBOT_TMUX_SOCKET_DIR`，兼容旧变量 `NANOBOT_TMUX_SOCKET_DIR`。
+- 默认 socket 路径：`"$RICBOT_TMUX_SOCKET_DIR/ricbot.sock"`。
 
 ## 选择窗格与命名
 
@@ -43,7 +44,7 @@ tmux -S "$SOCKET" capture-pane -p -J -t "$SESSION":0.0 -S -200
 ## 查找会话
 
 - 列出指定 socket 上的会话：`{baseDir}/scripts/find-sessions.sh -S "$SOCKET"`。
-- 扫描所有 socket：`{baseDir}/scripts/find-sessions.sh --all`（使用 `NANOBOT_TMUX_SOCKET_DIR`）。
+- 扫描所有 socket：`{baseDir}/scripts/find-sessions.sh --all`（使用 `RICBOT_TMUX_SOCKET_DIR`）。
 
 ## 安全发送输入
 

@@ -1,6 +1,7 @@
 ---
 name: summarize
 description: 总结或从 URL、播客与本地文件中提取文本/字幕（是“转录这个 YouTube/视频”的优质兜底方案）。
+keywords: summarize, 总结, 摘要, 转录, 字幕, youtube, 视频, 播客, url, 文章
 homepage: https://summarize.sh
 metadata: {"ricbot":{"emoji":"🧾","requires":{"bins":["summarize"]},"install":[{"id":"brew","kind":"brew","formula":"steipete/tap/summarize","bins":["summarize"],"label":"安装 summarize（brew）"}]}}
 ---

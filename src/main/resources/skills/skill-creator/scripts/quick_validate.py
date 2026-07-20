@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-用于 nanobot 技能目录的最小校验器。
+用于 ricbot 技能目录的最小校验器。
 """
 
 import re

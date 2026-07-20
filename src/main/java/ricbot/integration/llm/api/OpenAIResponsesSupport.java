@@ -10,44 +10,72 @@ import java.nio.charset.StandardCharsets;
 import java.util.*;
 
 /**
- * OpenAI Responses API 辅助类
+ * OpenAI Responses API 相关公共辅助类
+ *
+ * 主要目标：
+ * 1. 转换消息 (convert_messages)
+ * 2. 转换工具 (convert_tools)
+ * 3. 解析响应输出 (parse_response_output)
+ * 4. 消费 SSE / SDK 流 (consume_sse / consume_sdk_stream)
  */
 public final class OpenAIResponsesSupport {
 
+    // 创建 ObjectMapper 实例，用于 JSON 序列化与反序列化
     private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final TypeReference<Map<String, Object>> JSON_OBJECT_TYPE = new TypeReference<>() {
+    };
 
+    // 私有构造函数，防止实例化
     private OpenAIResponsesSupport() {
     }
 
-    @SuppressWarnings("unchecked")
+    /**
+     * 消费 OpenAI 标准 SSE 流 (基于 Stream<String>)
+     *
+     * @param lines   行流
+     * @param onDelta 增量处理器
+     * @param onEnd   结束处理器
+     * @return LLMResponse
+     */
     public static LLMResponse consumeSSE(
             java.util.stream.Stream<String> lines,
             LLMProvider.StreamDeltaHandler onDelta,
             LLMProvider.StreamEndHandler onEnd
     ) {
+        // 初始化全文本构建器
         StringBuilder fullContent = new StringBuilder();
         Map<Integer, ToolCallBuilder> toolCallBuilders = new HashMap<>();
+        // 初始化使用量 Map
         Map<String, Integer> usage = new LinkedHashMap<>();
+        // 使用数组包裹以在 lambda 中修改
         String[] finishReasonArr = {"stop"};
 
+        // 遍历每一行
         lines.forEach(line -> {
             String trimmed = line.trim();
+            // 跳过空行或非 data 行
             if (trimmed.isEmpty() || !trimmed.startsWith("data: ")) {
                 return;
             }
 
+            // 提取数据部分
             String data = trimmed.substring(6).trim();
+            // 跳过结束标记
             if ("[DONE]".equals(data)) {
                 return;
             }
 
             try {
-                Map<String, Object> chunk = MAPPER.readValue(data, new TypeReference<>() {});
-                List<Map<String, Object>> choices = (List<Map<String, Object>>) chunk.get("choices");
+                // 解析 JSON 块
+                Map<String, Object> chunk = MAPPER.readValue(data, JSON_OBJECT_TYPE);
+                // 获取 choices 列表
+                List<Map<String, Object>> choices = asObjectMapList(chunk.get("choices"));
                 if (choices != null && !choices.isEmpty()) {
                     Map<String, Object> choice = choices.get(0);
-                    Map<String, Object> delta = (Map<String, Object>) choice.get("delta");
+                    // 获取 delta 对象
+                    Map<String, Object> delta = asObjectMap(choice.get("delta"));
                     if (delta != null) {
+                        // 获取增量内容
                         Object contentObj = delta.get("content");
                         String content = extractDeltaText(contentObj);
                         if (content != null && !content.isEmpty()) {
@@ -88,12 +116,14 @@ public final class OpenAIResponsesSupport {
                             }
                         }
                     }
+                    // 更新结束原因
                     if (choice.get("finish_reason") != null) {
                         finishReasonArr[0] = String.valueOf(choice.get("finish_reason"));
                     }
                 }
 
-                Map<String, Object> usageRaw = (Map<String, Object>) chunk.get("usage");
+                // 处理使用量信息
+                Map<String, Object> usageRaw = asObjectMap(chunk.get("usage"));
                 if (usageRaw != null) {
                     usage.put("prompt_tokens", toInt(usageRaw.get("prompt_tokens")));
                     usage.put("completion_tokens", toInt(usageRaw.get("completion_tokens")));
@@ -101,16 +131,19 @@ public final class OpenAIResponsesSupport {
                 }
 
             } catch (Exception ignored) {
+                // 忽略解析异常
             }
         });
 
         List<ToolCallRequest> toolCalls = finalizeToolCalls(toolCallBuilders);
+        // 构建最终响应
         LLMResponse resp = new LLMResponse()
                 .setContent(fullContent.toString())
                 .setFinishReason(finishReasonArr[0])
                 .setToolCalls(toolCalls)
                 .setUsage(usage);
 
+        // 调用结束处理器
         if (onEnd != null) {
             try {
                 onEnd.handle(resp);
@@ -119,17 +152,33 @@ public final class OpenAIResponsesSupport {
         return resp;
     }
 
+    /**
+     * 消费基于 InputStream 的 SSE 流
+     *
+     * @param inputStream 输入流
+     * @param onDelta     增量处理器
+     * @param onEnd       结束处理器
+     * @return LLMResponse
+     * @throws Exception 异常
+     */
     public static LLMResponse consumeSSE(
             InputStream inputStream,
             LLMProvider.StreamDeltaHandler onDelta,
             LLMProvider.StreamEndHandler onEnd
     ) throws Exception {
+        // 创建 BufferedReader 并转换为行流，委托给另一个 consumeSSE 方法
         try (BufferedReader reader = new BufferedReader(
                 new InputStreamReader(inputStream, StandardCharsets.UTF_8))) {
             return consumeSSE(reader.lines(), onDelta, onEnd);
         }
     }
 
+    /**
+     * 安全地将对象转换为 Integer
+     *
+     * @param o 对象
+     * @return Integer 值，如果非数字则返回 null
+     */
     private static Integer toInt(Object o) {
         if (o instanceof Number n) return n.intValue();
         return null;
@@ -179,8 +228,7 @@ public final class OpenAIResponsesSupport {
             String rawArgs = b.arguments.toString();
             if (!rawArgs.isBlank()) {
                 try {
-                    @SuppressWarnings("unchecked")
-                    Map<String, Object> parsed = MAPPER.readValue(rawArgs, Map.class);
+                    Map<String, Object> parsed = MAPPER.readValue(rawArgs, JSON_OBJECT_TYPE);
                     if (parsed != null) {
                         args = parsed;
                     }
@@ -196,5 +244,13 @@ public final class OpenAIResponsesSupport {
         String id;
         String name;
         StringBuilder arguments = new StringBuilder();
+    }
+
+    private static Map<String, Object> asObjectMap(Object value) {
+        return ricbot.infra.common.JsonMapUtils.asNullableObjectMap(value);
+    }
+
+    private static List<Map<String, Object>> asObjectMapList(Object value) {
+        return ricbot.infra.common.JsonMapUtils.asNullableObjectMapList(value);
     }
 }

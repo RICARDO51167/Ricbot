@@ -1,6 +1,7 @@
 package ricbot.app.bootstrap;
 
 import ricbot.domain.agent.AgentLoop;
+import ricbot.domain.config.ProviderCapabilityResolver;
 import ricbot.domain.message.MessageBus;
 import ricbot.infra.config.Config;
 import ricbot.infra.config.ConfigLoader;
@@ -48,7 +49,7 @@ public class Bootstrapper {
     public AgentLoop createAgentLoop(Config config, MessageBus bus, LLMProvider provider) {
         Config.AgentDefaults defaults = config.getAgents().getDefaults();
 
-        return new AgentLoop(
+        AgentLoop loop = new AgentLoop(
                 bus,
                 provider,
                 config.getWorkspacePath(),
@@ -69,12 +70,17 @@ public class Bootstrapper {
                 defaults.getSessionTtlMinutes(),
                 defaults.getDream()
         );
+        loop.setProviderCapability(new ProviderCapabilityResolver().resolve(
+                config,
+                config.getProviderName(defaults.getModel()),
+                defaults.getModel()
+        ));
+        return loop;
     }
 
     public ChannelManager createChannelManager(Config config, MessageBus bus) {
         return new ChannelManager(config, bus);
     }
-
     public HeartbeatService createHeartbeatService(
             Config config,
             LLMProvider provider,

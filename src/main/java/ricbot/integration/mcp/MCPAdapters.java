@@ -3,6 +3,7 @@ package ricbot.integration.mcp;
 import ricbot.tool.api.Tool;
 import ricbot.tool.api.ToolRegistry;
 import ricbot.infra.config.Config;
+import ricbot.infra.common.TextParsingUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -10,58 +11,154 @@ import java.util.*;
 import java.util.concurrent.*;
 
 /**
- * MCP 适配层
+ * MCP 适配层：
+ * 负责连接 MCP Server，并把 MCP 的 tool/resource/prompt 包装成 ricbot Tool。
+ *
+ * 对应 Python 文件 mcp.py。
  */
 public final class MCPAdapters {
 
     private static final Logger log = LoggerFactory.getLogger(MCPAdapters.class);
+    private static final ExecutorService CALL_EXECUTOR = createCallExecutor();
 
     private MCPAdapters() {
     }
 
-    @SuppressWarnings("unchecked")
+    private static ExecutorService createCallExecutor() {
+        int threads = Math.max(4, Math.min(Runtime.getRuntime().availableProcessors(), 16));
+        return new ThreadPoolExecutor(
+                threads,
+                threads,
+                30L,
+                TimeUnit.SECONDS,
+                new LinkedBlockingQueue<>(256),
+                r -> {
+                    Thread t = new Thread(r, "mcp-call");
+                    t.setDaemon(true);
+                    return t;
+                },
+                new ThreadPoolExecutor.CallerRunsPolicy()
+        );
+    }
+
+    private static ExecutorService createConnectExecutor(int serverCount) {
+        int threads = Math.max(1, Math.min(serverCount, Math.min(Runtime.getRuntime().availableProcessors(), 8)));
+        return new ThreadPoolExecutor(
+                threads,
+                threads,
+                30L,
+                TimeUnit.SECONDS,
+                new LinkedBlockingQueue<>(Math.max(threads, serverCount)),
+                r -> {
+                    Thread t = new Thread(r, "mcp-connect");
+                    t.setDaemon(true);
+                    return t;
+                },
+                new ThreadPoolExecutor.CallerRunsPolicy()
+        );
+    }
+
+    private static <T> T awaitMcpCall(Callable<T> task, int timeoutSeconds) throws Exception {
+        Future<T> future = CALL_EXECUTOR.submit(task);
+        try {
+            return future.get(timeoutSeconds, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            future.cancel(true);
+            Thread.currentThread().interrupt();
+            throw e;
+        } catch (TimeoutException | ExecutionException | CancellationException e) {
+            future.cancel(true);
+            throw e;
+        }
+    }
+
+    /**
+     * 解析原始配置 Map，将其转换为 MCP 服务器配置对象。
+     *
+     * @param raw 原始配置数据，键为服务器名称，值为配置详情（可能是 Config.MCPServerConfig 实例或 Map）
+     * @return 解析后的 MCP 服务器配置映射
+     */
     public static Map<String, Config.MCPServerConfig> parseMcpServers(Map<String, Object> raw) {
+        // 初始化结果映射，保持插入顺序
         Map<String, Config.MCPServerConfig> out = new LinkedHashMap<>();
+        
+        // 如果输入为空或 null，直接返回空映射
         if (raw == null || raw.isEmpty()) {
             return out;
         }
 
+        // 遍历原始配置中的每个条目
         for (Map.Entry<String, Object> entry : raw.entrySet()) {
+            // 获取服务器名称
             String name = entry.getKey();
+            // 获取配置值
             Object value = entry.getValue();
+            
+            // 如果值已经是 Config.MCPServerConfig 类型，直接放入结果映射
             if (value instanceof Config.MCPServerConfig typed) {
                 out.put(name, typed);
                 continue;
             }
+            
+            // 如果值不是 Map 类型，跳过该条目
             if (!(value instanceof Map<?, ?> map)) {
                 continue;
             }
 
-            Map<String, Object> cfg = new LinkedHashMap<>();
-            for (Map.Entry<?, ?> e : map.entrySet()) {
-                cfg.put(String.valueOf(e.getKey()), e.getValue());
-            }
+            // 将原始 Map 转换为字符串键的 Map，便于后续处理
+            Map<String, Object> cfg = copyObjectMap(map);
 
+            // 创建新的 MCP 服务器配置对象
             Config.MCPServerConfig server = new Config.MCPServerConfig();
+            
+            // 设置传输类型，优先使用 "type" 字段， fallback 到默认值
             server.setType(stringValue(cfg, "type", server.getType()));
+            
+            // 设置 URL，优先使用 "url" 字段， fallback 到默认值
             server.setUrl(stringValue(cfg, "url", server.getUrl()));
+            
+            // 设置命令，优先使用 "command" 字段， fallback 到默认值
             server.setCommand(stringValue(cfg, "command", server.getCommand()));
+            
+            // 设置参数列表，优先使用 "args" 字段， fallback 到默认值
             server.setArgs(stringListValue(cfg, "args", server.getArgs()));
+            
+            // 设置环境变量，优先使用 "env" 字段， fallback 到默认值
             server.setEnv(stringMapValue(cfg, "env", server.getEnv()));
+            
+            // 设置启用的工具列表，支持蛇形命名 "enabled_tools" 和驼峰命名 "enabledTools"
             server.setEnabledTools(stringListValue(
                     cfg,
                     "enabled_tools",
                     stringListValue(cfg, "enabledTools", server.getEnabledTools())
             ));
+            
+            // 设置工具超时时间，支持蛇形命名 "tool_timeout" 和驼峰命名 "toolTimeout"
             server.setToolTimeout(intValue(cfg, "tool_timeout", intValue(cfg, "toolTimeout", server.getToolTimeout())));
 
+            // 将解析后的配置放入结果映射
             out.put(name, server);
         }
 
+        // 返回解析结果
         return out;
     }
 
-    @SuppressWarnings("unchecked")
+    // =========================================================
+    // Schema 规范化
+    // =========================================================
+
+    /**
+     * 从 oneOf / anyOf 中提取“唯一非 null 分支”。
+     *
+     * 例如：
+     * [
+     *   {"type":"null"},
+     *   {"type":"string"}
+     * ]
+     *
+     * -> 返回 {"type":"string"}, true
+     */
     public static NullableBranch extractNullableBranch(Object options) {
         if (!(options instanceof List<?> list)) {
             return null;
@@ -75,13 +172,14 @@ public final class MCPAdapters {
                 return null;
             }
 
-            Object type = ((Map<String, Object>) map).get("type");
+            Map<String, Object> branch = copyObjectMap(map);
+            Object type = branch.get("type");
             if ("null".equals(type)) {
                 sawNull = true;
                 continue;
             }
 
-            nonNull.add((Map<String, Object>) map);
+            nonNull.add(branch);
         }
 
         if (sawNull && nonNull.size() == 1) {
@@ -91,7 +189,14 @@ public final class MCPAdapters {
         return null;
     }
 
-    @SuppressWarnings("unchecked")
+    /**
+     * 把 MCP schema 规范化为更适合 ricbot / OpenAI function-tool 风格的 schema。
+     *
+     * 主要处理：
+     * - type: ["string", "null"]
+     * - oneOf / anyOf 中的 nullable 分支
+     * - 递归处理 properties / items
+     */
     public static Map<String, Object> normalizeSchemaForOpenAI(Object schema) {
         if (!(schema instanceof Map<?, ?>)) {
             return new HashMap<>(Map.of(
@@ -100,7 +205,7 @@ public final class MCPAdapters {
             ));
         }
 
-        Map<String, Object> normalized = new HashMap<>((Map<String, Object>) schema);
+        Map<String, Object> normalized = new HashMap<>(copyObjectMap((Map<?, ?>) schema));
 
         Object rawType = normalized.get("type");
         if (rawType instanceof List<?> typeList) {
@@ -141,6 +246,9 @@ public final class MCPAdapters {
         if (propertiesObj instanceof Map<?, ?> properties) {
             Map<String, Object> newProps = new HashMap<>();
             for (Map.Entry<?, ?> entry : properties.entrySet()) {
+                if (entry.getKey() == null) {
+                    continue;
+                }
                 Object value = entry.getValue();
                 if (value instanceof Map<?, ?>) {
                     newProps.put(String.valueOf(entry.getKey()), normalizeSchemaForOpenAI(value));
@@ -166,9 +274,16 @@ public final class MCPAdapters {
         return normalized;
     }
 
+    // =========================================================
+    // MCP Tool Wrapper
+    // =========================================================
+
+    /**
+     * 包装 MCP server 的单个 tool。
+     */
     public static class MCPToolWrapper extends Tool {
 
-        private final MCPClientSession session;
+        private final MCPServerConnection connection;
         private final String originalName;
         private final String name;
         private final String description;
@@ -176,12 +291,12 @@ public final class MCPAdapters {
         private final int toolTimeout;
 
         public MCPToolWrapper(
-                MCPClientSession session,
+                MCPServerConnection connection,
                 String serverName,
                 MCPToolDefinition toolDef,
                 int toolTimeout
         ) {
-            this.session = session;
+            this.connection = connection;
             this.originalName = toolDef.getName();
             this.name = "mcp_" + serverName + "_" + toolDef.getName();
             this.description = toolDef.getDescription() != null
@@ -208,13 +323,8 @@ public final class MCPAdapters {
 
         @Override
         public Object execute(Map<String, Object> kwargs) {
-            ExecutorService executor = Executors.newSingleThreadExecutor();
             try {
-                Future<MCPToolResult> future = executor.submit(() ->
-                        session.callTool(originalName, kwargs)
-                );
-
-                MCPToolResult result = future.get(toolTimeout, TimeUnit.SECONDS);
+                MCPToolResult result = awaitMcpCall(() -> connection.getSession().callTool(originalName, kwargs), toolTimeout);
 
                 List<String> parts = new ArrayList<>();
                 for (Object block : result.getContent()) {
@@ -229,6 +339,10 @@ public final class MCPAdapters {
             } catch (TimeoutException e) {
                 log.warn("MCP 工具 '{}' 在 {} 秒后超时", name, toolTimeout);
                 return "Error: MCP tool call timed out after " + toolTimeout + "s.";
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                log.warn("MCP 工具 '{}' 被中断", name);
+                return "Error: MCP tool call was interrupted.";
             } catch (CancellationException e) {
                 log.warn("MCP 工具 '{}' 已被服务端/SDK 取消", name);
                 return "Error: MCP tool call was cancelled.";
@@ -244,29 +358,50 @@ public final class MCPAdapters {
                         return "Error: MCP tool call was cancelled.";
                     }
                 }
+                if (connection instanceof ReconnectingMCPServerConnection reconnecting && reconnecting.reconnect()) {
+                    try {
+                        MCPToolResult result = awaitMcpCall(() -> connection.getSession().callTool(originalName, kwargs), toolTimeout);
+                        List<String> parts = new ArrayList<>();
+                        for (Object block : result.getContent()) {
+                            if (block instanceof MCPTextContent text) {
+                                parts.add(text.getText());
+                            } else {
+                                parts.add(String.valueOf(block));
+                            }
+                        }
+                        return parts.isEmpty() ? "(no output)" : String.join("\n", parts);
+                    } catch (Exception retryError) {
+                        log.error("MCP 工具 '{}' 自动重连后仍执行失败: {}: {}", name, retryError.getClass().getSimpleName(), retryError.getMessage(), retryError);
+                    }
+                }
                 log.error("MCP 工具 '{}' 执行失败: {}: {}", name, e.getClass().getSimpleName(), e.getMessage(), e);
                 return "Error: MCP tool call failed: " + e.getClass().getSimpleName();
-            } finally {
-                executor.shutdownNow();
             }
         }
     }
 
+    // =========================================================
+    // MCP Resource Wrapper
+    // =========================================================
+
+    /**
+     * 把 MCP resource 包装成只读 Tool。
+     */
     public static class MCPResourceWrapper extends Tool {
 
-        private final MCPClientSession session;
+        private final MCPServerConnection connection;
         private final String uri;
         private final String name;
         private final String description;
         private final int resourceTimeout;
 
         public MCPResourceWrapper(
-                MCPClientSession session,
+                MCPServerConnection connection,
                 String serverName,
                 MCPResourceDefinition resourceDef,
                 int resourceTimeout
         ) {
-            this.session = session;
+            this.connection = connection;
             this.uri = resourceDef.getUri();
             this.name = "mcp_" + serverName + "_resource_" + resourceDef.getName();
 
@@ -295,13 +430,8 @@ public final class MCPAdapters {
 
         @Override
         public Object execute(Map<String, Object> kwargs) {
-            ExecutorService executor = Executors.newSingleThreadExecutor();
             try {
-                Future<MCPResourceResult> future = executor.submit(() ->
-                        session.readResource(uri)
-                );
-
-                MCPResourceResult result = future.get(resourceTimeout, TimeUnit.SECONDS);
+                MCPResourceResult result = awaitMcpCall(() -> connection.getSession().readResource(uri), resourceTimeout);
 
                 List<String> parts = new ArrayList<>();
                 for (Object block : result.getContents()) {
@@ -319,21 +449,30 @@ public final class MCPAdapters {
             } catch (TimeoutException e) {
                 log.warn("MCP 资源 '{}' 在 {} 秒后超时", name, resourceTimeout);
                 return "（MCP 资源读取超时：" + resourceTimeout + " 秒）";
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                log.warn("MCP 资源 '{}' 被中断", name);
+                return "（MCP 资源读取已被中断）";
             } catch (CancellationException e) {
                 log.warn("MCP 资源 '{}' 已被服务端/SDK 取消", name);
                 return "（MCP 资源读取已被服务端/SDK 取消）";
             } catch (Exception e) {
                 log.error("MCP 资源 '{}' 读取失败: {}: {}", name, e.getClass().getSimpleName(), e.getMessage(), e);
                 return "（MCP 资源读取失败：" + e.getClass().getSimpleName() + "）";
-            } finally {
-                executor.shutdownNow();
             }
         }
     }
 
+    // =========================================================
+    // MCP Prompt Wrapper
+    // =========================================================
+
+    /**
+     * 把 MCP prompt 包装成只读 Tool。
+     */
     public static class MCPPromptWrapper extends Tool {
 
-        private final MCPClientSession session;
+        private final MCPServerConnection connection;
         private final String promptName;
         private final String name;
         private final String description;
@@ -341,12 +480,12 @@ public final class MCPAdapters {
         private final int promptTimeout;
 
         public MCPPromptWrapper(
-                MCPClientSession session,
+                MCPServerConnection connection,
                 String serverName,
                 MCPPromptDefinition promptDef,
                 int promptTimeout
         ) {
-            this.session = session;
+            this.connection = connection;
             this.promptName = promptDef.getName();
             this.name = "mcp_" + serverName + "_prompt_" + promptDef.getName();
 
@@ -399,57 +538,82 @@ public final class MCPAdapters {
 
         @Override
         public Object execute(Map<String, Object> kwargs) {
-            ExecutorService executor = Executors.newSingleThreadExecutor();
             try {
-                Future<MCPPromptResult> future = executor.submit(() ->
-                        session.getPrompt(promptName, kwargs)
-                );
+                MCPPromptResult result = awaitMcpCall(() -> connection.getSession().getPrompt(promptName, kwargs), promptTimeout);
 
-                MCPPromptResult result = future.get(promptTimeout, TimeUnit.SECONDS);
-
-                List<String> parts = new ArrayList<>();
-                for (MCPPromptMessage message : result.getMessages()) {
-                    Object content = message.getContent();
-                    if (content instanceof MCPTextContent text) {
-                        parts.add(text.getText());
-                    } else if (content instanceof List<?> list) {
-                        for (Object block : list) {
-                            if (block instanceof MCPTextContent t) {
-                                parts.add(t.getText());
-                            } else {
-                                parts.add(String.valueOf(block));
-                            }
-                        }
-                    } else {
-                        parts.add(String.valueOf(content));
-                    }
-                }
+                List<String> parts = getStrings(result);
 
                 return parts.isEmpty() ? "（无输出）" : String.join("\n", parts);
 
             } catch (TimeoutException e) {
                 log.warn("MCP 提示词 '{}' 在 {} 秒后超时", name, promptTimeout);
                 return "（MCP prompt 调用超时：" + promptTimeout + " 秒）";
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                log.warn("MCP 提示词 '{}' 被中断", name);
+                return "（MCP prompt 调用已被中断）";
             } catch (CancellationException e) {
                 log.warn("MCP 提示词 '{}' 已被服务端/SDK 取消", name);
                 return "（MCP prompt 调用已被服务端/SDK 取消）";
             } catch (Exception e) {
                 log.error("MCP 提示词 '{}' 调用失败: {}: {}", name, e.getClass().getSimpleName(), e.getMessage(), e);
                 return "（MCP prompt 调用失败：" + e.getClass().getSimpleName() + "）";
-            } finally {
-                executor.shutdownNow();
             }
         }
     }
 
+    private static List<String> getStrings(MCPPromptResult result) {
+        List<String> parts = new ArrayList<>();
+        for (MCPPromptMessage message : result.getMessages()) {
+            Object content = message.getContent();
+            if (content instanceof MCPTextContent text) {
+                parts.add(text.getText());
+            } else if (content instanceof List<?> list) {
+                for (Object block : list) {
+                    if (block instanceof MCPTextContent t) {
+                        parts.add(t.getText());
+                    } else {
+                        parts.add(String.valueOf(block));
+                    }
+                }
+            } else {
+                parts.add(String.valueOf(content));
+            }
+        }
+        return parts;
+    }
+
+    // =========================================================
+    // 连接 MCP Servers
+    // =========================================================
+
+    /**
+     * 连接所有配置好的 MCP server，并把其能力注册进 ToolRegistry。
+     *
+     * 返回：
+     * serverName -> MCPServerConnection
+     *
+     * 对应 Python 的 connect_mcp_servers(...)
+     */
     public static Map<String, MCPServerConnection> connectMcpServers(
             Map<String, Config.MCPServerConfig> mcpServers,
             ToolRegistry registry
     ) {
-        Map<String, MCPServerConnection> serverConnections = new HashMap<>();
+        return connectMcpServersDetailed(mcpServers, registry).connections();
+    }
+
+    public static MCPConnectReport connectMcpServersDetailed(
+            Map<String, Config.MCPServerConfig> mcpServers,
+            ToolRegistry registry
+    ) {
+        Map<String, MCPServerConnection> serverConnections = new LinkedHashMap<>();
+        Map<String, MCPServerLoadInfo> serverInfo = new LinkedHashMap<>();
+        if (mcpServers == null || mcpServers.isEmpty()) {
+            return new MCPConnectReport(serverConnections, serverInfo);
+        }
         List<Future<ServerConnectResult>> futures = new ArrayList<>();
 
-        ExecutorService executor = Executors.newCachedThreadPool();
+        ExecutorService executor = createConnectExecutor(mcpServers.size());
 
         List<String> names = new ArrayList<>(mcpServers.keySet());
 
@@ -465,25 +629,93 @@ public final class MCPAdapters {
                 if (result != null && result.connection() != null) {
                     serverConnections.put(result.name(), result.connection());
                 }
+                if (result != null && result.info() != null) {
+                    serverInfo.put(result.name(), result.info());
+                }
             } catch (Exception e) {
                 log.error("MCP 服务器 '{}' 连接任务失败: {}", name, e.getMessage(), e);
+                serverInfo.put(name, new MCPServerLoadInfo(
+                        name,
+                        "unknown",
+                        "FAILED",
+                        List.of(),
+                        List.of(),
+                        List.of(),
+                        e.getClass().getSimpleName() + ": " + e.getMessage(),
+                        List.of("connect task failed")
+                ));
             }
         }
 
         executor.shutdown();
-        return serverConnections;
+        return new MCPConnectReport(serverConnections, serverInfo);
     }
 
+    public static List<MCPServerHealth> healthReport(Map<String, MCPServerConnection> connections, int timeoutSeconds) {
+        if (connections == null || connections.isEmpty()) {
+            return List.of();
+        }
+        List<MCPServerHealth> out = new ArrayList<>();
+        int timeout = Math.max(1, timeoutSeconds);
+        for (Map.Entry<String, MCPServerConnection> entry : new TreeMap<>(connections).entrySet()) {
+            String name = entry.getKey();
+            MCPServerConnection connection = entry.getValue();
+            if (connection == null) {
+                out.add(new MCPServerHealth(name, "disconnected", 0, "no connection"));
+                continue;
+            }
+            try {
+                List<MCPToolDefinition> tools = awaitMcpCall(() -> connection.getSession().listTools(), timeout);
+                out.add(new MCPServerHealth(name, "ok", tools != null ? tools.size() : 0, ""));
+            } catch (TimeoutException e) {
+                out.add(new MCPServerHealth(name, "timeout", 0, "health check timed out after " + timeout + "s"));
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                out.add(new MCPServerHealth(name, "interrupted", 0, "health check interrupted"));
+            } catch (Exception e) {
+                Throwable cause = e instanceof ExecutionException ee && ee.getCause() != null ? ee.getCause() : e;
+                if (connection instanceof ReconnectingMCPServerConnection reconnecting && reconnecting.reconnect()) {
+                    try {
+                        List<MCPToolDefinition> tools = awaitMcpCall(() -> connection.getSession().listTools(), timeout);
+                        out.add(new MCPServerHealth(name, "reconnected", tools != null ? tools.size() : 0, ""));
+                        continue;
+                    } catch (Exception retryError) {
+                        Throwable retryCause = retryError instanceof ExecutionException ee && ee.getCause() != null ? ee.getCause() : retryError;
+                        out.add(new MCPServerHealth(name, "error", 0, retryCause.getClass().getSimpleName() + ": " + retryCause.getMessage()));
+                        continue;
+                    }
+                }
+                out.add(new MCPServerHealth(name, "error", 0, cause.getClass().getSimpleName() + ": " + cause.getMessage()));
+            }
+        }
+        return out;
+    }
+
+    private static MCPServerConnection connectTransport(String name, Config.MCPServerConfig cfg, String transportType) {
+        return switch (transportType) {
+            case "stdio" -> MCPTransportFactory.connectStdio(cfg);
+            case "sse" -> MCPTransportFactory.connectSse(cfg);
+            case "streamableHttp" -> MCPTransportFactory.connectStreamableHttp(cfg);
+            default -> {
+                log.warn("MCP 服务器 '{}': 未知的传输类型：'{}'", name, transportType);
+                yield null;
+            }
+        };
+    }
+
+    /**
+     * 连接单个 MCP server。
+     */
     private static ServerConnectResult connectSingleServer(
             String name,
             Config.MCPServerConfig cfg,
             ToolRegistry registry
     ) {
         MCPServerConnection connection = null;
+        String transportType = cfg != null ? cfg.getType() : "";
+        List<String> configWarnings = new ArrayList<>();
 
         try {
-            String transportType = cfg.getType();
-
             if (transportType == null || transportType.isBlank()) {
                 if (cfg.getCommand() != null && !cfg.getCommand().isBlank()) {
                     transportType = "stdio";
@@ -493,26 +725,37 @@ public final class MCPAdapters {
                             : "streamableHttp";
                 } else {
                     log.warn("MCP 服务器 '{}': 未配置 command 或 url，已跳过", name);
-                    return new ServerConnectResult(name, null);
+                    return new ServerConnectResult(name, null, new MCPServerLoadInfo(
+                            name,
+                            "unknown",
+                            "DISABLED",
+                            List.of(),
+                            List.of(),
+                            List.of(),
+                            "missing command or url",
+                            List.of("missing command or url")
+                    ));
                 }
             }
 
-            connection = switch (transportType) {
-                case "stdio" -> MCPTransportFactory.connectStdio(cfg);
-                case "sse" -> MCPTransportFactory.connectSse(cfg);
-                case "streamableHttp" -> MCPTransportFactory.connectStreamableHttp(cfg);
-                default -> {
-                    log.warn("MCP 服务器 '{}': 未知的传输类型：'{}'", name, transportType);
-                    yield null;
-                }
-            };
+            connection = connectTransport(name, cfg, transportType);
 
             if (connection == null) {
-                return new ServerConnectResult(name, null);
+                return new ServerConnectResult(name, null, new MCPServerLoadInfo(
+                        name,
+                        transportType,
+                        "FAILED",
+                        List.of(),
+                        List.of(),
+                        List.of(),
+                        "transport connection failed",
+                        List.of("transport connection failed")
+                ));
             }
 
             MCPClientSession session = connection.getSession();
             session.initialize();
+            MCPServerConnection managedConnection = new ReconnectingMCPServerConnection(name, cfg, transportType, connection);
 
             int registeredCount = 0;
 
@@ -523,6 +766,8 @@ public final class MCPAdapters {
             List<MCPToolDefinition> toolDefs = session.listTools();
             List<String> availableRawNames = new ArrayList<>();
             List<String> availableWrappedNames = new ArrayList<>();
+            List<String> registeredToolNames = new ArrayList<>();
+            List<String> filteredToolNames = new ArrayList<>();
 
             for (MCPToolDefinition toolDef : toolDefs) {
                 availableRawNames.add(toolDef.getName());
@@ -536,17 +781,19 @@ public final class MCPAdapters {
                         && !enabledTools.contains(toolDef.getName())
                         && !enabledTools.contains(wrappedName)) {
                     log.debug("MCP：跳过工具 '{}'（来自服务器 '{}'，不在 enabledTools 中）", wrappedName, name);
+                    filteredToolNames.add(wrappedName);
                     continue;
                 }
 
                 MCPToolWrapper wrapper = new MCPToolWrapper(
-                        session,
+                        managedConnection,
                         name,
                         toolDef,
                         cfg.getToolTimeout()
                 );
                 registry.register(wrapper);
                 registeredCount++;
+                registeredToolNames.add(wrapper.getName());
 
                 if (enabledTools.contains(toolDef.getName())) {
                     matchedEnabledTools.add(toolDef.getName());
@@ -570,13 +817,14 @@ public final class MCPAdapters {
                             String.join(", ", availableRawNames),
                             String.join(", ", availableWrappedNames)
                     );
+                    configWarnings.add("enabledTools unmatched: " + String.join(", ", unmatched));
                 }
             }
 
             try {
                 for (MCPResourceDefinition resource : session.listResources()) {
                     MCPResourceWrapper wrapper = new MCPResourceWrapper(
-                            session, name, resource, cfg.getToolTimeout()
+                            managedConnection, name, resource, cfg.getToolTimeout()
                     );
                     registry.register(wrapper);
                     registeredCount++;
@@ -589,7 +837,7 @@ public final class MCPAdapters {
             try {
                 for (MCPPromptDefinition prompt : session.listPrompts()) {
                     MCPPromptWrapper wrapper = new MCPPromptWrapper(
-                            session, name, prompt, cfg.getToolTimeout()
+                            managedConnection, name, prompt, cfg.getToolTimeout()
                     );
                     registry.register(wrapper);
                     registeredCount++;
@@ -600,7 +848,16 @@ public final class MCPAdapters {
             }
 
             log.info("MCP 服务器 '{}': 已连接，已注册能力数：{}", name, registeredCount);
-            return new ServerConnectResult(name, connection);
+            return new ServerConnectResult(name, managedConnection, new MCPServerLoadInfo(
+                    name,
+                    transportType,
+                    "CONNECTED",
+                    List.copyOf(availableRawNames),
+                    List.copyOf(registeredToolNames),
+                    List.copyOf(filteredToolNames),
+                    "",
+                    List.copyOf(configWarnings)
+            ));
 
         } catch (Exception e) {
             String text = String.valueOf(e.getMessage()).toLowerCase();
@@ -626,14 +883,113 @@ public final class MCPAdapters {
                 }
             }
 
-            return new ServerConnectResult(name, null);
+            List<String> warnings = new ArrayList<>(configWarnings);
+            if (!hint.isBlank()) {
+                warnings.add(hint.trim());
+            }
+            return new ServerConnectResult(name, null, new MCPServerLoadInfo(
+                    name,
+                    transportType != null && !transportType.isBlank() ? transportType : "unknown",
+                    "FAILED",
+                    List.of(),
+                    List.of(),
+                    List.of(),
+                    e.getClass().getSimpleName() + ": " + e.getMessage(),
+                    List.copyOf(warnings)
+            ));
         }
     }
+
+    // =========================================================
+    // 小型返回结构
+    // =========================================================
 
     public record NullableBranch(Map<String, Object> branch, boolean nullable) {
     }
 
-    public record ServerConnectResult(String name, MCPServerConnection connection) {
+    public record MCPConnectReport(
+            Map<String, MCPServerConnection> connections,
+            Map<String, MCPServerLoadInfo> servers
+    ) {
+    }
+
+    public record MCPServerLoadInfo(
+            String name,
+            String transportType,
+            String status,
+            List<String> rawToolNames,
+            List<String> registeredToolNames,
+            List<String> filteredToolNames,
+            String lastError,
+            List<String> configWarnings
+    ) {
+    }
+
+    public record ServerConnectResult(String name, MCPServerConnection connection, MCPServerLoadInfo info) {
+    }
+
+    public record MCPServerHealth(String name, String status, int toolCount, String error) {
+    }
+
+    private static final class ReconnectingMCPServerConnection implements MCPServerConnection {
+        private final String name;
+        private final Config.MCPServerConfig cfg;
+        private final String transportType;
+        private MCPServerConnection delegate;
+
+        private ReconnectingMCPServerConnection(
+                String name,
+                Config.MCPServerConfig cfg,
+                String transportType,
+                MCPServerConnection delegate
+        ) {
+            this.name = name;
+            this.cfg = cfg;
+            this.transportType = transportType;
+            this.delegate = delegate;
+        }
+
+        @Override
+        public synchronized MCPClientSession getSession() {
+            return delegate.getSession();
+        }
+
+        synchronized boolean reconnect() {
+            MCPServerConnection next = null;
+            try {
+                next = connectTransport(name, cfg, transportType);
+                if (next == null) {
+                    return false;
+                }
+                next.getSession().initialize();
+                MCPServerConnection old = delegate;
+                delegate = next;
+                closeQuietly(old);
+                log.info("MCP 服务器 '{}': 自动重连成功", name);
+                return true;
+            } catch (Exception e) {
+                closeQuietly(next);
+                log.warn("MCP 服务器 '{}': 自动重连失败: {}", name, e.getMessage(), e);
+                return false;
+            }
+        }
+
+        @Override
+        public synchronized void close() throws Exception {
+            if (delegate != null) {
+                delegate.close();
+            }
+        }
+
+        private void closeQuietly(MCPServerConnection connection) {
+            if (connection == null) {
+                return;
+            }
+            try {
+                connection.close();
+            } catch (Exception ignored) {
+            }
+        }
     }
 
     private static String stringValue(Map<String, Object> map, String key, String def) {
@@ -641,37 +997,8 @@ public final class MCPAdapters {
         if (v == null) {
             return def;
         }
-        String s = normalizeQuoted(String.valueOf(v));
+        String s = TextParsingUtils.normalizeQuoted(String.valueOf(v));
         return s.isBlank() ? def : s;
-    }
-
-    private static String normalizeQuoted(String raw) {
-        if (raw == null) {
-            return "";
-        }
-        String s = normalizeWhitespace(raw);
-        if (s.length() >= 2) {
-            char first = s.charAt(0);
-            char last = s.charAt(s.length() - 1);
-            if ((first == '`' && last == '`') || (first == '"' && last == '"') || (first == '\'' && last == '\'')) {
-                s = s.substring(1, s.length() - 1).trim();
-            }
-        }
-        if (s.length() >= 2 && s.charAt(0) == '`' && s.charAt(s.length() - 1) == '`') {
-            s = s.substring(1, s.length() - 1).trim();
-        }
-        return normalizeWhitespace(s);
-    }
-
-    private static String normalizeWhitespace(String raw) {
-        if (raw == null) {
-            return "";
-        }
-        String s = raw
-                .replace('\u00A0', ' ')
-                .replace("\u200B", "")
-                .replace("\uFEFF", "");
-        return s.trim();
     }
 
     private static int intValue(Map<String, Object> map, String key, int def) {
@@ -694,17 +1021,9 @@ public final class MCPAdapters {
         if (v == null) {
             return def != null ? def : new ArrayList<>();
         }
-        if (v instanceof List<?> list) {
-            List<String> out = new ArrayList<>();
-            for (Object item : list) {
-                if (item != null) {
-                    out.add(String.valueOf(item));
-                }
-            }
-            return out;
-        }
-        if (v instanceof String s && !s.isBlank()) {
-            return List.of(s);
+        List<String> parsed = TextParsingUtils.toStringList(v);
+        if (!parsed.isEmpty()) {
+            return parsed;
         }
         return def != null ? def : new ArrayList<>();
     }
@@ -717,10 +1036,20 @@ public final class MCPAdapters {
         if (v instanceof Map<?, ?> raw) {
             Map<String, String> out = new LinkedHashMap<>();
             for (Map.Entry<?, ?> e : raw.entrySet()) {
-                out.put(String.valueOf(e.getKey()), e.getValue() != null ? String.valueOf(e.getValue()) : "");
+                if (e.getKey() == null) {
+                    continue;
+                }
+                out.put(
+                        String.valueOf(e.getKey()),
+                        e.getValue() != null ? TextParsingUtils.normalizeQuoted(String.valueOf(e.getValue())) : ""
+                );
             }
             return out;
         }
         return def != null ? def : new HashMap<>();
+    }
+
+    private static Map<String, Object> copyObjectMap(Map<?, ?> raw) {
+        return ricbot.infra.common.JsonMapUtils.copyObjectMap(raw);
     }
 }

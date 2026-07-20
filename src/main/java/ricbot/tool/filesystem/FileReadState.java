@@ -1,6 +1,7 @@
 package ricbot.tool.filesystem;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
@@ -58,10 +59,14 @@ public final class FileReadState {
     }
 
     private static String hashFile(Path path) {
-        try {
-            byte[] bytes = Files.readAllBytes(path);
+        try (InputStream input = Files.newInputStream(path)) {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] hash = digest.digest(bytes);
+            byte[] buffer = new byte[8192];
+            int read;
+            while ((read = input.read(buffer)) != -1) {
+                digest.update(buffer, 0, read);
+            }
+            byte[] hash = digest.digest();
 
             StringBuilder sb = new StringBuilder();
             for (byte b : hash) {

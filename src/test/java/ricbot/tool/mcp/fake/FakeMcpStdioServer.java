@@ -40,9 +40,7 @@ public class FakeMcpStdioServer {
 
             Object id = req.get("id");
             String method = String.valueOf(req.get("method"));
-            Map<String, Object> params = req.get("params") instanceof Map<?, ?> m
-                    ? new LinkedHashMap<>((Map<String, Object>) m)
-                    : new LinkedHashMap<>();
+            Map<String, Object> params = asObjectMap(req.get("params"));
 
             Map<String, Object> result = switch (method) {
                 case "initialize" -> Map.of("protocolVersion", "2024-11-05", "capabilities", Map.of());
@@ -77,10 +75,9 @@ public class FakeMcpStdioServer {
         }
     }
 
-    @SuppressWarnings("unchecked")
     private static Map<String, Object> handleToolCall(Map<String, Object> params) throws Exception {
         Object argsObj = params.get("arguments");
-        Map<String, Object> args = argsObj instanceof Map<?, ?> m ? new LinkedHashMap<>((Map<String, Object>) m) : Map.of();
+        Map<String, Object> args = asObjectMap(argsObj);
 
         Object sleep = args.get("sleep_ms");
         if (sleep instanceof Number n && n.longValue() > 0) {
@@ -90,5 +87,8 @@ public class FakeMcpStdioServer {
         String text = String.valueOf(args.getOrDefault("text", ""));
         return Map.of("content", List.of(text));
     }
-}
 
+    private static Map<String, Object> asObjectMap(Object value) {
+        return ricbot.infra.common.JsonMapUtils.asObjectMap(value);
+    }
+}

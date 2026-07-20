@@ -1,6 +1,7 @@
 ---
 name: weather
 description: 获取当前天气与预报（无需 API Key）。
+keywords: weather, 天气, 预报, 气温, 温度, wttr
 homepage: https://wttr.in/:help
 metadata: {"ricbot":{"emoji":"🌤️","requires":{"bins":["curl"]}}}
 ---

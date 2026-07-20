@@ -1,6 +1,7 @@
 ---
 name: github
 description: "使用 `gh` CLI 与 GitHub 交互。通过 `gh issue`、`gh pr`、`gh run`、`gh api` 处理 issue、PR、CI 运行记录与高级查询。"
+keywords: github, gh, issue, pr, pull request, workflow, ci, action, 仓库
 metadata: {"ricbot":{"emoji":"🐙","requires":{"bins":["gh"]},"install":[{"id":"brew","kind":"brew","formula":"gh","bins":["gh"],"label":"安装 GitHub CLI（brew）"},{"id":"apt","kind":"apt","package":"gh","bins":["gh"],"label":"安装 GitHub CLI（apt）"}]}}
 ---
 

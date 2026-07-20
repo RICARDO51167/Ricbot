@@ -13,7 +13,7 @@
 
 ## 技能
 
-要使用技能，请先用 read_file 读取 SKILL.md。
+要使用技能，请先用 read_skill 读取完整 SKILL.md。
 
 {{ skills_summary }}
 {% endif %}

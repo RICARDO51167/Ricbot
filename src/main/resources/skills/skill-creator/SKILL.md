@@ -1,6 +1,7 @@
 ---
 name: skill-creator
 description: 创建或更新 AgentSkills。用于设计、组织、打包包含脚本、参考资料与资源文件的技能。
+keywords: skill-creator, 创建技能, 更新技能, 编写技能, agentskills, skill.md
 ---
 
 # 技能创建器

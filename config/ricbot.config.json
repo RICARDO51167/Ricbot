@@ -11,7 +11,7 @@
   },
   "providers": {
     "openai": {
-      "api_key": "${RICBOT_API_KEY}",
+      "api_key": "sk-ba3dc05a544b4914b3f2cca24bcdf45d",
       "api_base": "https://dashscope.aliyuncs.com/compatible-mode/v1",
       "extra_headers": {}
     }
@@ -22,11 +22,27 @@
       "enable": false
     },
     "exec": {
-      "enable": true,
+      "enable": false,
       "timeout": 60,
       "sandbox": false,
+      "approval_enabled": true,
+      "backend": "local",
+      "fallback_backend": "local",
+      "allow_backend_fallback": false,
+      "docker_image": "eclipse-temurin:17-jdk",
+      "docker_network_enabled": false,
       "path_append": "",
       "allowed_env_keys": []
+    },
+    "mcpServers": {}
+  },
+  "channels": {
+    "qq": {
+      "enabled": false,
+      "app_id": "${RICBOT_QQ_APP_ID}",
+      "secret": "${RICBOT_QQ_SECRET}",
+      "allow_from": ["*"],
+      "media_dir": "./workspace/.ricbot/media/qq"
     }
   }
 }

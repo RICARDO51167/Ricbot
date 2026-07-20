@@ -2,18 +2,26 @@ package ricbot.tool.api;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.api.Assumptions;
+import ricbot.domain.security.ApprovalService;
+import ricbot.domain.security.CommandRiskAnalyzer;
+import ricbot.domain.security.PendingToolCall;
 import ricbot.tool.filesystem.EditFileTool;
 import ricbot.tool.filesystem.ReadFileTool;
 import ricbot.tool.filesystem.ListDirTool;
 import ricbot.tool.filesystem.WriteFileTool;
 import ricbot.tool.process.ExecTool;
+import ricbot.tool.api.Tool.ToolExecutionContext;
 import ricbot.tool.search.GlobTool;
 import ricbot.tool.search.GrepTool;
+import ricbot.domain.skill.SkillsLoader;
+import ricbot.tool.skill.ReadSkillTool;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -113,5 +121,339 @@ public class ToolRegistryTest {
         Object out = registry.execute("missing_tool", Map.of());
         // 断言返回的错误消息指出工具未找到
         assertTrue(String.valueOf(out).startsWith("Error: Tool 'missing_tool' not found."), String.valueOf(out));
+    }
+
+    @Test
+    void registryDoesNotExposeMissingGoalUpdateToolByDefault() {
+        ToolRegistry registry = new ToolRegistry();
+        registry.register(namedTool("read_file"));
+
+        String missingTool = missingGoalUpdateToolName();
+
+        assertNull(registry.get(missingTool));
+        assertFalse(registry.toolNames().contains(missingTool));
+        assertTrue(String.valueOf(registry.execute(missingTool, Map.of())).startsWith("Error: Tool '" + missingTool + "' not found."));
+    }
+
+    private static String missingGoalUpdateToolName() {
+        return new String(new char[]{'u', 'p', 'd', 'a', 't', 'e', '_', 'g', 'o', 'a', 'l'});
+    }
+
+    @Test
+    void toolNames_areStableAndSorted() {
+        ToolRegistry registry = new ToolRegistry();
+        registry.register(namedTool("zeta"));
+        registry.register(namedTool("alpha"));
+        registry.register(namedTool("mcp_demo_echo"));
+
+        assertEquals(List.of("alpha", "mcp_demo_echo", "zeta"), registry.toolNames());
+        List<Map<String, Object>> definitions = registry.getDefinitions();
+        assertEquals("alpha", schemaName(definitions.get(0)));
+        assertEquals("zeta", schemaName(definitions.get(1)));
+        assertEquals("mcp_demo_echo", schemaName(definitions.get(2)));
+    }
+
+    @Test
+    void genericMapExecuteTool_usesDefaultToolContract() {
+        ToolRegistry registry = new ToolRegistry();
+        registry.register(new Tool() {
+            @Override
+            public String getName() {
+                return "echo_map";
+            }
+
+            @Override
+            public String getDescription() {
+                return "echo";
+            }
+
+            @Override
+            public Object execute(Map<String, Object> params) {
+                return "value=" + params.get("value");
+            }
+        });
+
+        Object out = registry.execute("echo_map", Map.of("value", "ok"));
+        assertEquals("value=ok", out);
+    }
+
+    @Test
+    void toolExecution_usesPolicyTimeoutAndPreservesResultFormat() {
+        ToolRegistry registry = new ToolRegistry();
+        registry.register(namedReadOnlyTool("read_like"));
+
+        ToolRegistry.ToolPolicy policy = registry.policyFor("read_like");
+        assertEquals(0, registry.executionPolicy().timeoutSecondsFor(policy));
+        assertTrue(registry.canRunConcurrently(List.of("read_like")));
+
+        Object out = registry.execute("read_like", Map.of("value", "ok"));
+        assertEquals("ok", out);
+    }
+
+    @Test
+    void executionContextSeparatesApprovalFromBusinessParams() {
+        ToolRegistry registry = new ToolRegistry();
+        registry.register(new Tool() {
+            @Override
+            public String getName() {
+                return "context_probe";
+            }
+
+            @Override
+            public String getDescription() {
+                return "context";
+            }
+
+            @Override
+            public Object execute(Map<String, Object> params) {
+                return "approved=" + ToolExecutionContext.current().approved()
+                        + ",approvalId=" + ToolExecutionContext.current().approvalId()
+                        + ",hasBypass=" + params.containsKey("__approval_bypass");
+            }
+        });
+
+        Object normal = registry.execute("context_probe", Map.of("__approval_bypass", true));
+        assertEquals("approved=false,approvalId=,hasBypass=false", normal);
+
+        Object approved = registry.executeApproved("context_probe", Map.of("__approval_bypass", true), "approval_test");
+        assertEquals("approved=true,approvalId=approval_test,hasBypass=false", approved);
+    }
+
+    @Test
+    void approvalBypassParamCannotBypassRiskGateButApprovedContextCan(@TempDir Path workspace) throws Exception {
+        ApprovalService approvalService = new ApprovalService();
+        ToolRegistry registry = new ToolRegistry();
+        registry.register(new WriteFileTool(workspace, workspace, new CommandRiskAnalyzer(workspace), approvalService));
+
+        Object malicious = registry.execute("write_file", Map.of(
+                "path", "reports/malicious.txt",
+                "content", "no\n",
+                "__approval_bypass", true
+        ));
+
+        assertTrue(String.valueOf(malicious).contains("需要审批后才能执行"), String.valueOf(malicious));
+        assertFalse(Files.exists(workspace.resolve("reports").resolve("malicious.txt")));
+
+        String requestId = requestId(String.valueOf(malicious));
+        approvalService.approve(requestId);
+        PendingToolCall call = approvalService.consumeApprovedToolCall(requestId);
+        Object approved = registry.executeApproved(call.toolName(), call.arguments(), requestId);
+
+        assertFalse(String.valueOf(approved).contains("需要审批后才能执行"), String.valueOf(approved));
+        assertEquals("no\n", Files.readString(workspace.resolve("reports").resolve("malicious.txt")));
+    }
+
+    @Test
+    void directToolExecuteUsesContextForApprovalInsteadOfBypassParam(@TempDir Path workspace) throws Exception {
+        ApprovalService approvalService = new ApprovalService();
+        WriteFileTool write = new WriteFileTool(workspace, workspace, new CommandRiskAnalyzer(workspace), approvalService);
+
+        Object normal = write.execute(Map.of(
+                "path", "reports/direct.txt",
+                "content", "blocked\n",
+                "__approval_bypass", true
+        ), ToolExecutionContext.normal());
+
+        assertTrue(String.valueOf(normal).contains("需要审批后才能执行"), String.valueOf(normal));
+        assertFalse(Files.exists(workspace.resolve("reports").resolve("direct.txt")));
+
+        Object approved = write.execute(Map.of(
+                "path", "reports/direct.txt",
+                "content", "approved\n",
+                "__approval_bypass", true
+        ), ToolExecutionContext.approved("approval_direct_write"));
+
+        assertFalse(String.valueOf(approved).contains("需要审批后才能执行"), String.valueOf(approved));
+        assertEquals("approved\n", Files.readString(workspace.resolve("reports").resolve("direct.txt")));
+    }
+
+    @Test
+    void editFileAndExecUseApprovedContext(@TempDir Path workspace) throws Exception {
+        Path notes = workspace.resolve("notes.txt");
+        Files.writeString(notes, "hello world\n");
+        ricbot.tool.filesystem.FileReadState.recordRead(notes, 1, 10);
+
+        ApprovalService approvalService = new ApprovalService();
+        EditFileTool edit = new EditFileTool(workspace, workspace, new CommandRiskAnalyzer(workspace), approvalService);
+        Object editResult = edit.execute(Map.of(
+                "path", "notes.txt",
+                "old_text", "world",
+                "new_text", "ricbot",
+                "replace_all", false
+        ), ToolExecutionContext.approved("approval_direct_edit"));
+
+        assertFalse(String.valueOf(editResult).contains("需要审批后才能执行"), String.valueOf(editResult));
+        assertEquals("hello ricbot\n", Files.readString(notes));
+
+        ExecTool exec = new ExecTool(
+                5,
+                workspace.toString(),
+                List.of(),
+                null,
+                true,
+                "",
+                "",
+                List.of(),
+                new CommandRiskAnalyzer(workspace),
+                approvalService
+        );
+        Object execResult = exec.execute(Map.of(
+                "command", "touch direct-exec.txt",
+                "__approval_bypass", true
+        ), ToolExecutionContext.approved("approval_direct_exec"));
+
+        assertFalse(String.valueOf(execResult).contains("需要审批后才能执行"), String.valueOf(execResult));
+        assertTrue(Files.exists(workspace.resolve("direct-exec.txt")));
+    }
+
+    @Test
+    void readSkillTool_returnsFullSkillDocument(@TempDir Path workspace) throws Exception {
+        Path skillDir = workspace.resolve("skills").resolve("demo");
+        Files.createDirectories(skillDir);
+        Files.writeString(skillDir.resolve("SKILL.md"), """
+                ---
+                description: Demo skill
+                version: 1.2.3
+                permissions: read, write
+                tools: read_file, write_file
+                ---
+                Demo body.
+                """);
+
+        ToolRegistry registry = new ToolRegistry();
+        registry.register(new ReadSkillTool(new SkillsLoader(workspace, null, Set.of())));
+
+        Object out = registry.execute("read_skill", Map.of("name", "demo"));
+
+        assertTrue(String.valueOf(out).contains("# Skill: demo"), String.valueOf(out));
+        assertTrue(String.valueOf(out).contains("version: 1.2.3"), String.valueOf(out));
+        assertTrue(String.valueOf(out).contains("risk: elevated"), String.valueOf(out));
+        assertTrue(String.valueOf(out).contains("permissions: read, write"), String.valueOf(out));
+        assertTrue(String.valueOf(out).contains("Demo body."), String.valueOf(out));
+    }
+
+    @Test
+    void readSkillTool_supportsSectionAndChunkReads(@TempDir Path workspace) throws Exception {
+        Path skillDir = workspace.resolve("skills").resolve("demo");
+        Files.createDirectories(skillDir);
+        Files.writeString(skillDir.resolve("SKILL.md"), """
+                ---
+                description: Demo skill
+                ---
+                # Demo
+
+                Intro.
+
+                ## Usage
+
+                First line.
+                Second line.
+
+                ## Examples
+
+                Example body.
+                """);
+
+        ToolRegistry registry = new ToolRegistry();
+        registry.register(new ReadSkillTool(new SkillsLoader(workspace, null, Set.of())));
+
+        Object out = registry.execute("read_skill", Map.of("name", "demo", "section", "Usage", "max_chars", 18));
+        String text = String.valueOf(out);
+
+        assertTrue(text.contains("section: Usage"), text);
+        assertTrue(text.contains("truncated: true"), text);
+        assertTrue(text.contains("## Usage"), text);
+        assertFalse(text.contains("## Examples"), text);
+    }
+
+    @Test
+    void filesystemTools_rejectSymlinkEscapes(@TempDir Path workspace) throws Exception {
+        Path outsideDir = workspace.resolveSibling("outside");
+        Files.createDirectories(outsideDir);
+        Path outsideFile = outsideDir.resolve("secret.txt");
+        Files.writeString(outsideFile, "top-secret");
+
+        Path readLink = workspace.resolve("read-link.txt");
+        Path writeLinkDir = workspace.resolve("write-link-dir");
+        try {
+            Files.createSymbolicLink(readLink, outsideFile);
+            Files.createSymbolicLink(writeLinkDir, outsideDir);
+        } catch (UnsupportedOperationException | java.nio.file.FileSystemException e) {
+            Assumptions.assumeTrue(false, "当前环境不支持创建符号链接: " + e.getMessage());
+            return;
+        }
+
+        ReadFileTool readTool = new ReadFileTool(workspace, workspace, List.of());
+        WriteFileTool writeTool = new WriteFileTool(workspace, workspace);
+        EditFileTool editTool = new EditFileTool(workspace, workspace);
+
+        String readResult = readTool.execute("read-link.txt", 1, 20);
+        assertTrue(readResult.startsWith("错误："), readResult);
+
+        String writeResult = writeTool.execute("write-link-dir/new.txt", "escaped");
+        assertTrue(writeResult.startsWith("错误："), writeResult);
+        assertFalse(Files.exists(outsideDir.resolve("new.txt")));
+
+        String editResult = editTool.execute("read-link.txt", "top-secret", "changed", false);
+        assertTrue(editResult.startsWith("错误："), editResult);
+        assertEquals("top-secret", Files.readString(outsideFile));
+    }
+
+    private static Tool namedTool(String name) {
+        return new Tool() {
+            @Override
+            public String getName() {
+                return name;
+            }
+
+            @Override
+            public String getDescription() {
+                return "test";
+            }
+        };
+    }
+
+    private static Tool namedReadOnlyTool(String name) {
+        return new Tool() {
+            @Override
+            public String getName() {
+                return name;
+            }
+
+            @Override
+            public String getDescription() {
+                return name;
+            }
+
+            @Override
+            public boolean isReadOnly() {
+                return true;
+            }
+
+            @Override
+            public Object execute(Map<String, Object> params) {
+                return String.valueOf(params.get("value"));
+            }
+        };
+    }
+
+    private static String requestId(String text) {
+        for (String line : text.split("\\R")) {
+            if (line.startsWith("requestId:")) {
+                return line.substring("requestId:".length()).trim();
+            }
+        }
+        throw new AssertionError("requestId not found in: " + text);
+    }
+
+    private static String schemaName(Map<String, Object> schema) {
+        Object function = schema.get("function");
+        if (function instanceof Map<?, ?> fn) {
+            Object name = fn.get("name");
+            if (name instanceof String s) {
+                return s;
+            }
+        }
+        return "";
     }
 }

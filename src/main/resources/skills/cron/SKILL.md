@@ -1,6 +1,7 @@
 ---
 name: cron
 description: 安排提醒与周期性任务。
+keywords: cron, 定时, 提醒, 周期任务, 定时任务, schedule, reminder
 ---
 
 # Cron
