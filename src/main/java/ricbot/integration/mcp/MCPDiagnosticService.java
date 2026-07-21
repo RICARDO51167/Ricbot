@@ -248,13 +248,13 @@ public final class MCPDiagnosticService {
         List<String> warnings = new ArrayList<>();
         if (cfg != null) {
             String type = transportType(cfg, info);
-            if (!List.of("stdio", "sse", "streamableHttp").contains(type)) {
+            if (!List.of("stdio", "streamableHttp").contains(type)) {
                 warnings.add("unknown transport type: " + type);
             }
             if ("stdio".equals(type) && (cfg.getCommand() == null || cfg.getCommand().isBlank())) {
                 warnings.add("stdio transport requires command");
             }
-            if (("sse".equals(type) || "streamableHttp".equals(type)) && (cfg.getUrl() == null || cfg.getUrl().isBlank())) {
+            if ("streamableHttp".equals(type) && (cfg.getUrl() == null || cfg.getUrl().isBlank())) {
                 warnings.add(type + " transport requires url");
             }
         }
@@ -307,7 +307,7 @@ public final class MCPDiagnosticService {
             return "stdio";
         }
         if (cfg.getUrl() != null && !cfg.getUrl().isBlank()) {
-            return cfg.getUrl().replaceAll("/+$", "").endsWith("/sse") ? "sse" : "streamableHttp";
+            return "streamableHttp";
         }
         return "unknown";
     }

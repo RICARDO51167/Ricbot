@@ -70,6 +70,24 @@ public class MCPAdaptersTest {
     }
 
     @Test
+    void removedSseTransportReturnsMigrationGuidance() {
+        Config.MCPServerConfig cfg = new Config.MCPServerConfig();
+        cfg.setType("sse");
+        cfg.setUrl("https://example.test/sse");
+
+        MCPAdapters.MCPConnectReport report = MCPAdapters.connectMcpServersDetailed(
+                Map.of("legacy", cfg),
+                new ricbot.tool.api.ToolRegistry()
+        );
+
+        MCPAdapters.MCPServerLoadInfo info = report.servers().get("legacy");
+        assertNotNull(info);
+        assertEquals("FAILED", info.status());
+        assertTrue(info.lastError().contains("已删除"), info.lastError());
+        assertTrue(info.lastError().contains("streamableHttp"), info.lastError());
+    }
+
+    @Test
     void healthReport_returnsStructuredStatus() {
         MCPServerConnection ok = connectionWithSession(new StubSession(false));
         MCPServerConnection broken = connectionWithSession(new StubSession(true));

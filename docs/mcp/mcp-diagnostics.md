@@ -31,7 +31,7 @@ MCP server 配置在 `tools.mcpServers` 下：
 }
 ```
 
-支持的 transport 名称包括 `stdio`、`sse` 和 `streamableHttp`。如果 `type` 为空，Ricbot 会根据 `command` 推断为 `stdio`，并根据 `url` 推断 HTTP transport。
+支持的 transport 名称包括 `stdio` 和 `streamableHttp`。如果 `type` 为空，Ricbot 会根据 `command` 推断为 `stdio`，并根据 `url` 推断为 Streamable HTTP。旧 `sse` 配置会返回明确迁移提示，不会被静默忽略。
 
 ## 诊断字段
 

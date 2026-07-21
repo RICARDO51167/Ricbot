@@ -181,7 +181,7 @@ public class ToolRegistryViewerService {
             return "stdio";
         }
         if (cfg.getUrl() != null && !cfg.getUrl().isBlank()) {
-            return cfg.getUrl().replaceAll("/+$", "").endsWith("/sse") ? "sse" : "streamableHttp";
+            return "streamableHttp";
         }
         return "unknown";
     }

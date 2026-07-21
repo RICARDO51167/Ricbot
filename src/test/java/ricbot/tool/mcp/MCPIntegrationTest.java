@@ -107,37 +107,6 @@ public class MCPIntegrationTest {
         }
     }
 
-    @Test
-    void sse_toolsCall_andTimeout() throws Exception {
-        FakeSseMcpServer server = new FakeSseMcpServer();
-        server.start();
-
-        try {
-            ToolRegistry registry = new ToolRegistry();
-            Config.MCPServerConfig cfg = new Config.MCPServerConfig();
-            cfg.setType("sse");
-            cfg.setUrl(server.sseUrl());
-            cfg.setEnabledTools(List.of("*"));
-            cfg.setToolTimeout(1);
-
-            Map<String, MCPServerConnection> conns = MCPAdapters.connectMcpServers(Map.of("demo", cfg), registry);
-
-            Object out = registry.execute("mcp_demo_echo", Map.of("text", "hello"));
-            assertEquals("hello", String.valueOf(out));
-
-            Object timeout = registry.execute("mcp_demo_echo", Map.of("text", "x", "sleep_ms", 1500));
-            assertTrue(String.valueOf(timeout).contains("timed out"), String.valueOf(timeout));
-
-            conns.values().forEach(c -> {
-                try {
-                    c.close();
-                } catch (Exception ignored) {
-                }
-            });
-        } finally {
-            server.stop();
-        }
-    }
 
     @Test
     void streamableHttp_toolsList_toolsCall_andInferredTransport() throws Exception {
@@ -168,134 +137,14 @@ public class MCPIntegrationTest {
         }
     }
 
-    private static class FakeSseMcpServer {
-        private HttpServer server;
-        private int port;
-        private final AtomicReference<OutputStream> sseOut = new AtomicReference<>();
-        private volatile boolean running;
 
-        void start() throws Exception {
-            try {
-                server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-            } catch (SocketException e) {
-                Assumptions.assumeTrue(false, "当前环境不允许绑定本地端口: " + e.getMessage());
-                return;
-            }
-            running = true;
-            server.setExecutor(Executors.newFixedThreadPool(2));
+    private static Map<String, Object> handleCall(Map<String, Object> params) {
+        Map<String, Object> arguments = asObjectMap(params.get("arguments"));
+        return Map.of("content", List.of(String.valueOf(arguments.getOrDefault("text", ""))));
+    }
 
-            server.createContext("/sse", exchange -> {
-                exchange.getResponseHeaders().add("Content-Type", "text/event-stream; charset=utf-8");
-                exchange.sendResponseHeaders(200, 0);
-                OutputStream os = exchange.getResponseBody();
-                sseOut.set(os);
-
-                int p = exchange.getLocalAddress().getPort();
-                String endpoint = "http://127.0.0.1:" + p + "/rpc";
-                os.write(("event: endpoint\n").getBytes(StandardCharsets.UTF_8));
-                os.write(("data: " + endpoint + "\n\n").getBytes(StandardCharsets.UTF_8));
-                os.flush();
-
-                while (running) {
-                    try {
-                        Thread.sleep(100);
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                        break;
-                    }
-                }
-            });
-
-            server.createContext("/rpc", exchange -> {
-                try {
-                    byte[] body = exchange.getRequestBody().readAllBytes();
-                    Map<String, Object> req = MAPPER.readValue(body, new TypeReference<>() {});
-
-                    Object id = req.get("id");
-                    String method = String.valueOf(req.get("method"));
-                    Map<String, Object> params = asObjectMap(req.get("params"));
-
-                    Map<String, Object> result = switch (method) {
-                        case "initialize" -> Map.of("protocolVersion", "2024-11-05", "capabilities", Map.of());
-                        case "tools/list" -> Map.of("tools", List.of(Map.of(
-                                "name", "echo",
-                                "description", "Echo tool",
-                                "inputSchema", Map.of(
-                                        "type", "object",
-                                        "properties", Map.of(
-                                                "text", Map.of("type", "string"),
-                                                "sleep_ms", Map.of("type", "integer")
-                                        ),
-                                        "required", List.of("text")
-                                )
-                        )));
-                        case "tools/call" -> handleCall(params);
-                        case "resources/list" -> Map.of("resources", List.of());
-                        case "prompts/list" -> Map.of("prompts", List.of());
-                        case "resources/read" -> Map.of("contents", List.of());
-                        case "prompts/get" -> Map.of("messages", List.of());
-                        default -> Map.of();
-                    };
-
-                    Map<String, Object> resp = Map.of(
-                            "jsonrpc", "2.0",
-                            "id", id,
-                            "result", result
-                    );
-
-                    OutputStream os = sseOut.get();
-                    if (os != null) {
-                        os.write(("data: " + MAPPER.writeValueAsString(resp) + "\n\n").getBytes(StandardCharsets.UTF_8));
-                        os.flush();
-                    }
-
-                    exchange.sendResponseHeaders(200, -1);
-                    exchange.close();
-                } catch (Exception ignored) {
-                    exchange.sendResponseHeaders(500, -1);
-                    exchange.close();
-                }
-            });
-
-            server.start();
-            port = server.getAddress().getPort();
-        }
-
-        String sseUrl() {
-            return URI.create("http://127.0.0.1:" + port + "/sse").toString();
-        }
-
-        void stop() {
-            running = false;
-            if (server != null) {
-                server.stop(0);
-            }
-            OutputStream os = sseOut.get();
-            if (os != null) {
-                try {
-                    os.close();
-                } catch (Exception ignored) {
-                }
-            }
-        }
-
-        private static Map<String, Object> handleCall(Map<String, Object> params) {
-            Object argsObj = params.get("arguments");
-            Map<String, Object> args = asObjectMap(argsObj);
-            Object sleep = args.get("sleep_ms");
-            if (sleep instanceof Number n && n.longValue() > 0) {
-                try {
-                    Thread.sleep(n.longValue());
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                }
-            }
-            return Map.of("content", List.of(String.valueOf(args.getOrDefault("text", ""))));
-        }
-
-        private static Map<String, Object> asObjectMap(Object value) {
-            return ricbot.infra.common.JsonMapUtils.asObjectMap(value);
-        }
+    private static Map<String, Object> asObjectMap(Object value) {
+        return ricbot.infra.common.JsonMapUtils.asObjectMap(value);
     }
 
     private static class FakeStreamableHttpMcpServer {
@@ -324,7 +173,7 @@ public class MCPIntegrationTest {
                     }
 
                     String method = String.valueOf(req.get("method"));
-                    Map<String, Object> params = FakeSseMcpServer.asObjectMap(req.get("params"));
+                    Map<String, Object> params = asObjectMap(req.get("params"));
 
                     Map<String, Object> result = switch (method) {
                         case "initialize" -> Map.of("protocolVersion", "2024-11-05", "capabilities", Map.of());
@@ -337,7 +186,7 @@ public class MCPIntegrationTest {
                                         "required", List.of("text")
                                 )
                         )));
-                        case "tools/call" -> FakeSseMcpServer.handleCall(params);
+                        case "tools/call" -> handleCall(params);
                         case "resources/list" -> Map.of("resources", List.of());
                         case "prompts/list" -> Map.of("prompts", List.of());
                         default -> Map.of();

@@ -694,8 +694,10 @@ public final class MCPAdapters {
     private static MCPServerConnection connectTransport(String name, Config.MCPServerConfig cfg, String transportType) {
         return switch (transportType) {
             case "stdio" -> MCPTransportFactory.connectStdio(cfg);
-            case "sse" -> MCPTransportFactory.connectSse(cfg);
             case "streamableHttp" -> MCPTransportFactory.connectStreamableHttp(cfg);
+            case "sse" -> throw new IllegalArgumentException(
+                    "MCP SSE transport 已删除；请将 server type 改为 streamableHttp，并配置 Streamable HTTP endpoint"
+            );
             default -> {
                 log.warn("MCP 服务器 '{}': 未知的传输类型：'{}'", name, transportType);
                 yield null;
@@ -720,9 +722,7 @@ public final class MCPAdapters {
                 if (cfg.getCommand() != null && !cfg.getCommand().isBlank()) {
                     transportType = "stdio";
                 } else if (cfg.getUrl() != null && !cfg.getUrl().isBlank()) {
-                    transportType = cfg.getUrl().replaceAll("/+$", "").endsWith("/sse")
-                            ? "sse"
-                            : "streamableHttp";
+                    transportType = "streamableHttp";
                 } else {
                     log.warn("MCP 服务器 '{}': 未配置 command 或 url，已跳过", name);
                     return new ServerConnectResult(name, null, new MCPServerLoadInfo(

@@ -523,8 +523,8 @@ public class Config {
     }
     @Data
     public static class MCPServerConfig {
-        private String type = "stdio"; // stdio or sse
-        private String url; // for sse
+        private String type = "stdio"; // stdio or streamableHttp
+        private String url; // for streamableHttp
         private String command;
         private List<String> args = new ArrayList<>();
         private Map<String, String> env = new HashMap<>();

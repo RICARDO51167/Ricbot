@@ -222,9 +222,12 @@ public final class ConfigDoctorService {
         for (Map.Entry<String, Config.MCPServerConfig> entry : parsed.entrySet()) {
             Config.MCPServerConfig server = entry.getValue();
             String type = server != null ? server.getType() : null;
-            if (!isBlank(type) && !List.of("stdio", "sse", "streamableHttp").contains(type)) {
+            if ("sse".equals(type)) {
+                report.addWarning("MCP server '" + entry.getKey() + "' 使用已删除的 SSE transport。");
+                report.addSuggestedFix("将 MCP server type 改为 streamableHttp，并配置 Streamable HTTP endpoint。");
+            } else if (!isBlank(type) && !List.of("stdio", "streamableHttp").contains(type)) {
                 report.addWarning("MCP server '" + entry.getKey() + "' 使用未知 type：" + type);
-                report.addSuggestedFix("将 MCP server type 设置为 stdio、sse 或 streamableHttp。");
+                report.addSuggestedFix("将 MCP server type 设置为 stdio 或 streamableHttp。");
             }
         }
     }

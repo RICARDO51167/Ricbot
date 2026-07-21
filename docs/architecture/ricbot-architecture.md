@@ -63,7 +63,7 @@ Provider 层通过 OpenAI-compatible 与 Anthropic 两类适配器发起模型�
 `ToolRegistry` 统一管理内置工具、生成技能工具和 MCP 工具。MCP 层负责：
 
 - 解析 `tools.mcpServers`；
-- 连接 stdio / sse / streamableHttp server；
+- 连接 stdio / streamableHttp server；
 - 把 MCP tools/resources/prompts 包装为 Ricbot tools；
 - 提供只读 MCP diagnostics、schema snapshot 和启用解释。
 
@@ -158,7 +158,7 @@ serve
 - Provider：新增 `ProviderSpec` 和对应 `LLMProvider` 适配器。
 - Capability：在静态 resolver 中补启发式，或通过 `model_capabilities` 做本地 override。
 - Tool：实现 `Tool` 并注册到 `ToolRegistry`。
-- MCP：在 `tools.mcpServers` 中接入 stdio / sse / streamableHttp server。
+- MCP：在 `tools.mcpServers` 中接入 stdio / streamableHttp server。
 - Skills：通过受审阅文件人工维护和加载。
 - Channel：实现 `BaseChannel` 插件并接入 `ChannelManager`，不得反向依赖 Core Runtime。
 - Eval：新增 JSONL scenario，扩展 baseline 和 compare。
