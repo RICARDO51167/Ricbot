@@ -35,7 +35,7 @@ import ricbot.integration.api.RicbotApiServer;
 import ricbot.integration.mcp.MCPLoader;
 import ricbot.integration.llm.provider.ProviderRegistry; // 导入提供商注册表类
 import ricbot.integration.llm.provider.ProviderSpec; // 导入提供商规范类
-import ricbot.integration.channel.ChannelManager;
+import ricbot.integration.channel.WebSocketTransportAdapter;
 import ricbot.tool.api.BuiltinToolRegistrar;
 import ricbot.tool.api.ToolRegistry;
 import org.slf4j.Logger;
@@ -731,7 +731,7 @@ public final class CliCommands {
      */
     /**
      * 启动 Ricbot 服务模式。
-     * 该方法会初始化核心组件（AgentLoop, ChannelManager, ApiServer），
+     * 该方法会初始化核心组件（AgentLoop、WebSocket transport、ApiServer），
      * 并阻塞主线程以保持服务运行，直到接收到停止信号。
      *
      * @param args 命令行参数，支持 --config, --workspace
@@ -755,16 +755,15 @@ public final class CliCommands {
 
         // 创建 Agent 循环实例，负责处理核心逻辑
         AgentLoop agentLoop = BOOTSTRAPPER.createAgentLoop(resolvedConfig, bus, provider);
-        // 创建渠道管理器，负责管理通用输入渠道
-        ChannelManager channelManager = BOOTSTRAPPER.createChannelManager(resolvedConfig, bus);
+        // 创建唯一的 WebSocket transport adapter
+        WebSocketTransportAdapter websocketTransport = BOOTSTRAPPER.createWebSocketTransport(resolvedConfig, bus);
 
         System.out.println("正在启动 Ricbot 服务…");
         
         // 启动 Agent 循环，开始处理消息
         agentLoop.start();
         
-        // 启动所有已配置的通讯渠道
-        channelManager.startAll();
+        websocketTransport.start();
 
         // 启动 OpenAI 兼容 API 服务，允许外部通过标准 OpenAI API 格式调用 Ricbot
         Config.GatewayConfig gateway = resolvedConfig.getGateway();
@@ -794,7 +793,7 @@ public final class CliCommands {
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             System.out.println("\n正在关闭…");
             apiServer.stop(1); // 停止 API 服务器
-            channelManager.stopAll(); // 停止所有通讯渠道
+            websocketTransport.stop();
             agentLoop.stop(); // 停止 Agent 循环
         }));
 

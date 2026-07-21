@@ -4,8 +4,10 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
+import ricbot.domain.message.InboundMessage;
 import ricbot.domain.message.MessageBus;
 import ricbot.domain.message.OutboundMessage;
+import ricbot.integration.channel.event.ChannelEvent;
 import ricbot.integration.channel.event.CommandEvent;
 import ricbot.integration.channel.event.IncomingMessageEvent;
 
@@ -34,9 +36,10 @@ import java.util.concurrent.ConcurrentHashMap;
  * 这里为了不绑定特定第三方 Java WebSocket 库，先通过接口抽象掉 server/connection。
  */
 @Slf4j
-public class WebSocketChannel extends BaseChannel {
+public class WebSocketChannel {
 
     private static final ObjectMapper JSON = new ObjectMapper();
+    private static final int MAX_RECENT_EVENT_IDS = 5000;
 
     @Data
     public static class WebSocketConfig {
@@ -96,6 +99,10 @@ public class WebSocketChannel extends BaseChannel {
     }
 
     private final WebSocketConfig config;
+    private final MessageBus bus;
+    private final ArrayDeque<String> recentEventIds = new ArrayDeque<>();
+    private final Set<String> recentEventIdSet = new HashSet<>();
+    private volatile boolean running;
     private WsServer server;
 
     /**
@@ -113,16 +120,21 @@ public class WebSocketChannel extends BaseChannel {
     private final Map<String, Long> issuedTokens = new ConcurrentHashMap<>();
 
     public WebSocketChannel(Object config, MessageBus bus) {
-        super(config, bus);
-        this.name = "websocket";
-        this.displayName = "WebSocket";
         this.config = (config instanceof WebSocketConfig c) ? c : new WebSocketConfig();
+        this.bus = Objects.requireNonNull(bus, "bus");
+    }
+
+    public String getName() {
+        return "websocket";
+    }
+
+    public boolean isRunning() {
+        return running;
     }
 
     public void setServer(WsServer server) {
         this.server = server;
     }
-    @Override
     public void start() throws Exception {
         if (running) {
             return;
@@ -172,7 +184,6 @@ public class WebSocketChannel extends BaseChannel {
         }
     }
 
-    @Override
     public void stop() throws Exception {
         if (!running) {
             return;
@@ -208,7 +219,6 @@ public class WebSocketChannel extends BaseChannel {
         connection.sendText(JSON.writeValueAsString(payload));
     }
 
-    @Override
     public void sendDelta(String chatId, String delta, Map<String, Object> metadata) throws Exception {
         WsConnection connection = connections.get(chatId);
         if (connection == null) {
@@ -230,6 +240,34 @@ public class WebSocketChannel extends BaseChannel {
             return true;
         }
         return allow.contains(clientId);
+    }
+
+    private void publishEvent(ChannelEvent event) throws InterruptedException {
+        if (event == null || !acceptEvent(event.eventId())) {
+            return;
+        }
+        InboundMessage message = event.toInboundMessage();
+        if (message.getChannel() == null || message.getChannel().isBlank()) {
+            message.setChannel(getName());
+        }
+        if (message.getTimestamp() == null) {
+            message.setTimestamp(LocalDateTime.now());
+        }
+        bus.publishInbound(message);
+    }
+
+    private synchronized boolean acceptEvent(String eventId) {
+        if (eventId == null || eventId.isBlank()) {
+            return true;
+        }
+        if (!recentEventIdSet.add(eventId)) {
+            return false;
+        }
+        recentEventIds.addLast(eventId);
+        while (recentEventIds.size() > MAX_RECENT_EVENT_IDS) {
+            recentEventIdSet.remove(recentEventIds.removeFirst());
+        }
+        return true;
     }
 
     private void handleOpen(WsConnection connection, String pathWithQuery, Map<String, String> headers) {
@@ -541,8 +579,7 @@ public class WebSocketChannel extends BaseChannel {
     private record ParsedRequest(String path, Map<String, List<String>> query) {
     }
 
-    @Override
-    public List<String> getAllowFrom() {
-        return config.getAllowFrom();
+    private static boolean hasText(String value) {
+        return value != null && !value.isBlank();
     }
 }

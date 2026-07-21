@@ -302,6 +302,13 @@ public final class ConfigLoader {
             );
         }
 
+        Map<String, Object> channels = asMap(data.get("channels"));
+        if (channels.containsKey("transcription_provider") || channels.containsKey("transcriptionProvider")) {
+            throw new RemovedConfigException(
+                    "配置 channels.transcription_provider 已删除；WebSocket transport 只接收文本，请移除该配置。"
+            );
+        }
+
         // 获取 tools 节点
         Object toolsObj = data.get("tools");
         // 如果 tools 不是 Map 类型，直接返回原数据
@@ -461,11 +468,6 @@ public final class ConfigLoader {
                 channels.get("send_tool_hints"),
                 config.getChannels().isSendToolHints()
         ));
-        config.getChannels().setTranscriptionProvider(string(
-                channels.get("transcription_provider"),
-                config.getChannels().getTranscriptionProvider()
-        ));
-
         Map<String, Object> websocket = asMap(channels.get("websocket"));
         var wsch = config.getChannels().getWebsocket();
         wsch.setEnabled(booleanValue(websocket.get("enabled"), wsch.isEnabled()));
@@ -611,8 +613,6 @@ public final class ConfigLoader {
         Map<String, Object> channels = new LinkedHashMap<>();
         channels.put("send_progress", config.getChannels().isSendProgress());
         channels.put("send_tool_hints", config.getChannels().isSendToolHints());
-        channels.put("transcription_provider", config.getChannels().getTranscriptionProvider());
-
         Map<String, Object> websocket = new LinkedHashMap<>();
         websocket.put("enabled", config.getChannels().getWebsocket().isEnabled());
         websocket.put("host", config.getChannels().getWebsocket().getHost());

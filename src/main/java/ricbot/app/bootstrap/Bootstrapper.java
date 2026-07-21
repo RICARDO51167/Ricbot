@@ -10,7 +10,7 @@ import ricbot.infra.config.ConfigLoader;
 import ricbot.integration.llm.api.LLMProvider;
 import ricbot.integration.llm.provider.ProviderFactory;
 import ricbot.tool.pack.RuntimeToolPacks;
-import ricbot.integration.channel.ChannelManager;
+import ricbot.integration.channel.WebSocketTransportAdapter;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -98,7 +98,7 @@ public class Bootstrapper {
         return loop;
     }
 
-    public ChannelManager createChannelManager(Config config, MessageBus bus) {
-        return new ChannelManager(config, bus);
+    public WebSocketTransportAdapter createWebSocketTransport(Config config, MessageBus bus) {
+        return new WebSocketTransportAdapter(config, bus);
     }
 }

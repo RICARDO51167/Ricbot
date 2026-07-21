@@ -64,6 +64,26 @@ class ConfigLoaderTest {
     }
 
     @Test
+    void loadConfig_withRemovedTranscriptionConfigFailsWithMigrationMessage(@TempDir Path tempDir) throws Exception {
+        Path configPath = tempDir.resolve("legacy-transcription.json");
+        Files.writeString(configPath, """
+                {
+                  "channels": {
+                    "transcription_provider": "groq"
+                  }
+                }
+                """);
+
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> ConfigLoader.loadConfig(configPath)
+        );
+
+        assertTrue(error.getMessage().contains("channels.transcription_provider"));
+        assertTrue(error.getMessage().contains("已删除"));
+    }
+
+    @Test
     void saveConfig_withNullConfigWritesDefaultConfig(@TempDir Path tempDir) throws Exception {
         Path configPath = tempDir.resolve("saved-config.json");
 

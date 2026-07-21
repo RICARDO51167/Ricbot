@@ -5,7 +5,6 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -37,16 +36,12 @@ class ConfigTest {
     }
 
     @Test
-    void channelsConfig_getSectionAndIsEnabled_areCaseInsensitiveAndNullSafe() {
+    void channelsConfig_exposesOnlyTheWebSocketTransport() {
         Config.ChannelsConfig channels = new Config.ChannelsConfig();
         channels.getWebsocket().setEnabled(true);
 
-        assertSame(channels.getWebsocket(), channels.getSection(" WebSocket "));
-        assertTrue(channels.isEnabled("websocket"));
-        assertNull(channels.getSection(null));
-        assertNull(channels.getSection("   "));
-        assertFalse(channels.isEnabled(null));
-        assertFalse(channels.isEnabled("unknown"));
+        assertNotNull(channels.getWebsocket());
+        assertTrue(channels.getWebsocket().isEnabled());
     }
 
     @Test

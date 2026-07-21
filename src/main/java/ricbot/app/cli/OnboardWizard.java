@@ -129,7 +129,7 @@ public final class OnboardWizard {
      */
     private static void configureChannels(Scanner scanner, Config config) {
         showSectionHeader("Chat Channel（聊天渠道）", "配置渠道相关参数");
-        configureObject(scanner, config.getChannels(), Set.of("transcriptionProvider"));
+        configureObject(scanner, config.getChannels(), Set.of());
     }
 
     /**

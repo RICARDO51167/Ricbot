@@ -605,38 +605,9 @@ public class Config {
     public static class ChannelsConfig {
         private boolean sendProgress = true;
         private boolean sendToolHints = true;
-        private String transcriptionProvider = "groq";
         private int sendMaxRetries = 3;
 
         private WebSocketChannel.WebSocketConfig websocket = new WebSocketChannel.WebSocketConfig();
-
-        public Object getSection(String name) {
-            String key = canonicalChannelName(name);
-            if (key == null) {
-                return null;
-            }
-            return switch (key) {
-                case "websocket" -> websocket;
-                default -> null;
-            };
-        }
-
-        public boolean isEnabled(String name) {
-            Object section = getSection(name);
-            if (section instanceof WebSocketChannel.WebSocketConfig c) return c.isEnabled();
-            return false;
-        }
-
-        private static String canonicalChannelName(String name) {
-            if (name == null) {
-                return null;
-            }
-            String key = name.trim();
-            if (key.isBlank()) {
-                return null;
-            }
-            return key.toLowerCase(Locale.ROOT);
-        }
     }
 
     // =========================================================

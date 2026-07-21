@@ -160,7 +160,7 @@ serve
 - Tool：实现 `Tool` 并注册到 `ToolRegistry`。
 - MCP：在 `tools.mcpServers` 中接入 stdio / streamableHttp server。
 - Skills：通过受审阅文件人工维护和加载。
-- Channel：实现 `BaseChannel` 插件并接入 `ChannelManager`，不得反向依赖 Core Runtime。
+- Transport：当前只保留 `WebSocketTransportAdapter`；如需新增传输，先在应用边界证明真实需求，不在 Runtime 内恢复通用 Channel 插件框架。
 - Eval：新增 JSONL scenario，扩展 baseline 和 compare。
 - Execution：实现 `ExecutionBackend` 或 `RemoteExecutionClient`，通过能力探测显式选择；降级必须由调用方开启。
 - Storage：实现 `SharedStateStore` 接入 SQL、Redis 或对象存储，保留 CAS 版本语义。
