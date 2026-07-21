@@ -11,17 +11,16 @@ import java.util.Map;
 import java.util.Set;
 
 public class ConsoleMetricsService {
-    private final ConsoleEventStore store;
+    private final List<ConsoleEvent> events;
 
-    public ConsoleMetricsService(ConsoleEventStore store) {
-        this.store = store;
+    public ConsoleMetricsService(List<ConsoleEvent> events) {
+        this.events = events != null ? List.copyOf(events) : List.of();
     }
 
     public Map<String, Object> summary(ConsoleMetricsQuery query) {
         String sessionId = clean(query != null ? query.sessionId() : "");
         Instant since = parseInstant(query != null ? query.since() : "");
         Instant until = parseInstant(query != null ? query.until() : "");
-        List<ConsoleEvent> events = store != null ? store.listAll(50_000) : List.of();
         List<ConsoleEvent> filtered = events.stream()
                 .filter(event -> sessionId.isBlank() || sessionId.equals(event.sessionId()))
                 .filter(event -> within(event, since, until))

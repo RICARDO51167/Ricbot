@@ -42,6 +42,7 @@ class SharedPersistenceStoresTest {
 
         assertEquals(RunStatus.MODEL_RUNNING, first.load("session", "run-1").orElseThrow().status());
         assertEquals(2, first.latest("session").orElseThrow().lastSequence());
+        assertEquals(List.of("run-1"), first.runs("session").stream().map(RunState::runId).toList());
         RunFork fork = second.fork("session", "run-1", 2, "other", "child");
         assertEquals("other", fork.childSessionKey());
         assertEquals(RunStatus.CREATED, first.load("other", "child").orElseThrow().status());

@@ -50,6 +50,11 @@ public final class SharedRunJournalStore implements RunJournalStore {
 
     @Override
     public Optional<RunState> latest(String sessionKey) {
+        return runs(sessionKey).stream().findFirst();
+    }
+
+    @Override
+    public List<RunState> runs(String sessionKey) {
         String session = required(sessionKey, "sessionKey");
         Map<String, List<RunEvent>> byRun = new LinkedHashMap<>();
         for (RunEvent event : readSessionEvents(session)) {
@@ -57,7 +62,8 @@ public final class SharedRunJournalStore implements RunJournalStore {
         }
         return byRun.values().stream()
                 .map(events -> replay(sorted(events)).orElseThrow())
-                .max(Comparator.comparing(RunState::updatedAt));
+                .sorted(Comparator.comparing(RunState::updatedAt).reversed())
+                .toList();
     }
 
     @Override

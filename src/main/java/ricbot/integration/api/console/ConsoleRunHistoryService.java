@@ -8,17 +8,17 @@ import java.util.Locale;
 import java.util.Map;
 
 public class ConsoleRunHistoryService {
-    private final ConsoleEventStore store;
+    private final List<ConsoleEvent> events;
 
-    public ConsoleRunHistoryService(ConsoleEventStore store) {
-        this.store = store;
+    public ConsoleRunHistoryService(List<ConsoleEvent> events) {
+        this.events = events != null ? List.copyOf(events) : List.of();
     }
 
     public Map<String, Object> history(String sessionId, String statusFilter, String keyword, int limit) {
         int max = limit > 0 ? Math.min(limit, 200) : 50;
-        List<ConsoleEvent> events = store != null ? store.listBySession(sessionId, "", "", 10_000) : List.of();
         Map<String, RunAccumulator> runs = new LinkedHashMap<>();
         for (ConsoleEvent event : events) {
+            if (!clean(sessionId).isBlank() && !clean(sessionId).equals(event.sessionId())) continue;
             if (event.runId().isBlank()) {
                 continue;
             }

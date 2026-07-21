@@ -9,15 +9,15 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 public class ConsoleEventSearchService {
-    private final ConsoleEventStore store;
+    private final List<ConsoleEvent> events;
 
-    public ConsoleEventSearchService(ConsoleEventStore store) {
-        this.store = store;
+    public ConsoleEventSearchService(List<ConsoleEvent> events) {
+        this.events = events != null ? List.copyOf(events) : List.of();
     }
 
     public Map<String, Object> search(ConsoleEventSearchQuery query) {
         int limit = query != null && query.limit() > 0 ? Math.min(query.limit(), 500) : 100;
-        List<ConsoleEvent> all = store != null ? store.listAll(10_000) : List.of();
+        List<ConsoleEvent> all = events;
         Set<String> categories = csv(query != null ? query.category() : "");
         Set<String> statuses = csv(query != null ? query.status() : "");
         String sessionId = clean(query != null ? query.sessionId() : "");

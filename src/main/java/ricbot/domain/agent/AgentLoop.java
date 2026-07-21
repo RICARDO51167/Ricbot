@@ -1025,6 +1025,10 @@ public class AgentLoop {
         }
     }
 
+    public RunJournalStore getRunJournalStore() {
+        return runJournalStore;
+    }
+
     private void publishProcessingError(InboundMessage msg) {
         try {
             bus.publishOutbound(plainReply(msg, "抱歉，我遇到了一点错误。"));

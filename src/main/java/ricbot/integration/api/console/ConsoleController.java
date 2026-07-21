@@ -6,6 +6,8 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
 import ricbot.domain.agent.AgentRunController;
+import ricbot.domain.agent.FileRunJournalStore;
+import ricbot.domain.agent.RunJournalStore;
 import ricbot.domain.change.ChangeSetService;
 import ricbot.domain.change.GitChangeSet;
 import ricbot.domain.config.ConfigDoctorReport;
@@ -59,7 +61,6 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
-import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.function.LongSupplier;
@@ -72,7 +73,6 @@ public final class ConsoleController {
     private static final Pattern SAFE_ID = Pattern.compile("[A-Za-z0-9._-]+");
     private static final ConsolePostRateLimiter RATE_LIMITER = new ConsolePostRateLimiter(20, 10_000L, System::currentTimeMillis);
     private static final ConsoleRunRegistry RUN_REGISTRY = new ConsoleRunRegistry();
-    private static final Map<Path, ConsoleEventBus> EVENT_BUSES = new ConcurrentHashMap<>();
     private static final ExecutorService RUN_EXECUTOR = Executors.newCachedThreadPool(r -> {
         Thread thread = new Thread(r, "ricbot-console-run");
         thread.setDaemon(true);
@@ -410,7 +410,7 @@ public final class ConsoleController {
                     changeSet
             ));
         }
-        for (ConsoleEvent event : consoleEventBus(appContext).listBySession(sessionId, "", "", 200)) {
+        for (ConsoleEvent event : consoleProjection(appContext).eventsForSession(sessionId)) {
             events.add(event.toMap());
         }
         return new ConsoleTimelineAssembler().assemble(sessionId, events, categoryFilter, runIdFilter);
@@ -448,7 +448,7 @@ public final class ConsoleController {
     }
 
     private static Map<String, Object> runHistory(RicbotApiAppContext appContext, String sessionId, HttpExchange exchange) {
-        return new ConsoleRunHistoryService(consoleEventBus(appContext).store()).history(
+        return new ConsoleRunHistoryService(consoleProjection(appContext).eventsForSession(sessionId)).history(
                 sessionId,
                 queryParam(exchange, "status"),
                 queryParam(exchange, "keyword"),
@@ -468,7 +468,7 @@ public final class ConsoleController {
                 queryParam(exchange, "after"),
                 parsePositiveInt(queryParam(exchange, "limit"), 100)
         );
-        return new ConsoleEventSearchService(consoleEventBus(appContext).store()).search(query);
+        return new ConsoleEventSearchService(consoleProjection(appContext).allEvents(knownSessionIds(appContext))).search(query);
     }
 
     private static Map<String, Object> metricsSummary(RicbotApiAppContext appContext, HttpExchange exchange) {
@@ -477,7 +477,7 @@ public final class ConsoleController {
                 queryParam(exchange, "since"),
                 queryParam(exchange, "until")
         );
-        return new ConsoleMetricsService(consoleEventBus(appContext).store()).summary(query);
+        return new ConsoleMetricsService(consoleProjection(appContext).allEvents(knownSessionIds(appContext))).summary(query);
     }
 
     private static void streamSessionEvents(RicbotApiAppContext appContext, String sessionId, HttpExchange exchange) throws IOException {
@@ -494,19 +494,11 @@ public final class ConsoleController {
         exchange.sendResponseHeaders(200, 0);
 
         int ticks = 0;
-        ConsoleEventBus bus = consoleEventBus(appContext);
-        LinkedBlockingQueue<ConsoleEvent> queue = new LinkedBlockingQueue<>();
-        ConsoleEventBus.Listener listener = event -> {
-            if (eventMatchesCategory(event, category)) {
-                queue.offer(event);
-            }
-        };
         try (Writer writer = new OutputStreamWriter(exchange.getResponseBody(), StandardCharsets.UTF_8)) {
-            List<Map<String, Object>> replay = bus.listBySession(sessionId, category, cursor, 100).stream()
-                    .map(ConsoleEvent::toMap)
-                    .toList();
+            Map<String, Object> initial = sessionEvents(appContext, sessionId, cursor, category);
+            List<Map<String, Object>> replay = castMapList(initial.get("events"));
             if (!replay.isEmpty()) {
-                cursor = stringValue(replay.get(replay.size() - 1).get("id"));
+                cursor = stringValue(initial.get("nextCursor"));
                 writeTimelineBatch(writer, sessionId, replay, cursor);
                 writer.flush();
                 if (once) {
@@ -528,18 +520,18 @@ public final class ConsoleController {
                 return;
             }
 
-            bus.subscribe(sessionId, listener);
             while (!Thread.currentThread().isInterrupted() && ticks < maxTicks) {
-                ConsoleEvent event = null;
                 try {
-                    event = queue.poll(1000L, TimeUnit.MILLISECONDS);
+                    TimeUnit.SECONDS.sleep(1L);
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     break;
                 }
-                if (event != null) {
-                    cursor = event.id();
-                    writeTimelineBatch(writer, sessionId, List.of(event.toMap()), cursor);
+                Map<String, Object> update = sessionEvents(appContext, sessionId, cursor, category);
+                List<Map<String, Object>> events = castMapList(update.get("events"));
+                if (!events.isEmpty()) {
+                    cursor = stringValue(update.get("nextCursor"));
+                    writeTimelineBatch(writer, sessionId, events, cursor);
                 } else {
                     writeSseEvent(writer, "heartbeat", "", Map.of(
                             "sessionId", sessionId,
@@ -554,8 +546,6 @@ public final class ConsoleController {
             }
         } catch (IOException ignored) {
             // Client disconnected; closing the exchange body releases the streaming response resources.
-        } finally {
-            bus.unsubscribe(sessionId, listener);
         }
     }
 
@@ -563,15 +553,15 @@ public final class ConsoleController {
         Map<String, Object> body = readJsonObject(exchange);
         String input = stringValue(body.get("input"));
         if (input.isBlank()) {
-            consoleEventRecorder(appContext).recordAction(sessionId, "", "blank_input", "RUN", sessionId,
-                    "FAILED", operator(exchange, appContext), "Input cannot be blank",
-                    Map.of("sessionId", sessionId));
+            audit(appContext, "blank_input", "RUN", sessionId, "FAILED", operator(exchange, appContext),
+                    remoteAddress(exchange), exchange.getRequestHeaders().getFirst("User-Agent"),
+                    "Input cannot be blank", originWarnings(exchange), UUID.randomUUID().toString());
             return failedRun("blank_input", "Input cannot be blank");
         }
         if (!Boolean.TRUE.equals(runtime(appContext).get("modelConfigured"))) {
-            consoleEventRecorder(appContext).recordAction(sessionId, "", "model_not_configured", "RUN", sessionId,
-                    "FAILED", operator(exchange, appContext), "Model provider or API key is not configured",
-                    Map.of("sessionId", sessionId));
+            audit(appContext, "model_not_configured", "RUN", sessionId, "FAILED", operator(exchange, appContext),
+                    remoteAddress(exchange), exchange.getRequestHeaders().getFirst("User-Agent"),
+                    "Model provider or API key is not configured", originWarnings(exchange), UUID.randomUUID().toString());
             return failedRun("model_not_configured", "Model provider or API key is not configured");
         }
         if (appContext.getAgentLoop() == null) {
@@ -609,24 +599,14 @@ public final class ConsoleController {
         if (!record.markRunning()) {
             return;
         }
-        consoleEventRecorder(appContext).recordRunEvent(record.sessionId(), record.runId(), "run_started", "INFO",
-                "Console run started", Map.of("runId", record.runId(), "sessionId", record.sessionId()));
         try {
             appContext.getAgentLoop().processDirect(input, record.sessionId(), "console", "agent-console", metadata, List.of());
             record.markFinished();
-            consoleEventRecorder(appContext).recordRunEvent(record.sessionId(), record.runId(), "run_finished", "SUCCESS",
-                    "Console run finished", Map.of("runId", record.runId(), "sessionId", record.sessionId()));
         } catch (Exception e) {
             if (record.isCancelled()) {
                 return;
             }
             record.markFailed(e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName());
-            consoleEventRecorder(appContext).recordRunEvent(record.sessionId(), record.runId(), "run_failed", "ERROR",
-                    "Console run failed", Map.of(
-                            "runId", record.runId(),
-                            "sessionId", record.sessionId(),
-                            "error", e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()
-                    ));
         } finally {
             record.markExecutionComplete();
         }
@@ -669,21 +649,18 @@ public final class ConsoleController {
         }
     }
 
-    private static ConsoleEventBus consoleEventBus(RicbotApiAppContext appContext) {
-        Path workspace = appContext != null && appContext.getWorkspace() != null
-                ? appContext.getWorkspace().toAbsolutePath().normalize()
-                : Path.of(".").toAbsolutePath().normalize();
-        return EVENT_BUSES.computeIfAbsent(workspace, path -> new ConsoleEventBus(new JsonlConsoleEventStore(path)));
+    private static ConsoleProjectionService consoleProjection(RicbotApiAppContext appContext) {
+        RunJournalStore journal = appContext != null && appContext.getAgentLoop() != null
+                ? appContext.getAgentLoop().getRunJournalStore()
+                : new FileRunJournalStore(appContext.getWorkspace());
+        return new ConsoleProjectionService(appContext.getWorkspace(), journal);
     }
 
-    private static ConsoleEventRecorder consoleEventRecorder(RicbotApiAppContext appContext) {
-        return new ConsoleEventRecorder(consoleEventBus(appContext));
-    }
-
-    private static boolean eventMatchesCategory(ConsoleEvent event, String category) {
-        String safeCategory = clean(category).toLowerCase(Locale.ROOT);
-        return event != null
-                && (safeCategory.isBlank() || "all".equals(safeCategory) || safeCategory.equals(event.category()));
+    private static List<String> knownSessionIds(RicbotApiAppContext appContext) {
+        return sessionManager(appContext).listSessions().stream()
+                .map(row -> stringValue(row.get("key")))
+                .filter(value -> !value.isBlank())
+                .toList();
     }
 
     private static Map<String, Object> sessionSummary(Map<String, Object> raw) {
@@ -710,8 +687,6 @@ public final class ConsoleController {
                 .limit(20)
                 .map(GitChangeSet::toMap)
                 .toList();
-        consoleEventRecorder(appContext).recordAction("", "", "changeset_list_recent", "CHANGESET", "recent",
-                "SUCCESS", "console", "Recent ChangeSets listed", Map.of("count", items.size()));
         return Map.of("mode", "backend", "items", items);
     }
 
@@ -1396,8 +1371,6 @@ public final class ConsoleController {
         List<Map<String, Object>> items = service.listPending().stream()
                 .map(ConsoleController::approvalMap)
                 .toList();
-        consoleEventRecorder(appContext).recordAction("", "", "approval_list_pending", "APPROVAL", "pending",
-                "SUCCESS", "console", "Pending approvals listed", Map.of("count", items.size()));
         return Map.of("items", items);
     }
 
@@ -2163,36 +2136,12 @@ public final class ConsoleController {
                 safeWarnings,
                 requestId
         );
-        List<String> auditWarnings = new ConsoleActionAuditService(appContext.getWorkspace()).append(record);
-        try {
-            String runId = "";
-            String sessionId = "";
-            Map<String, Object> payload = new LinkedHashMap<>(record.toMap());
-            if ("RUN".equalsIgnoreCase(targetType)) {
-                ConsoleRunRecord run = RUN_REGISTRY.find(targetId);
-                if (run != null) {
-                    runId = run.runId();
-                    sessionId = run.sessionId();
-                    payload.put("run", run.toMap());
-                    payload.put("inputPreview", run.inputPreview());
-                }
-            }
-            payload.put("auditWarnings", auditWarnings);
-            consoleEventRecorder(appContext).recordAction(
-                    sessionId,
-                    runId,
-                    action,
-                    targetType,
-                    targetId,
-                    result,
-                    operator,
-                    message,
-                    payload
-            );
-        } catch (Exception ignored) {
-            // Console event recording is best-effort and must not affect the action response.
+        String sessionId = "";
+        if ("RUN".equalsIgnoreCase(targetType)) {
+            ConsoleRunRecord run = RUN_REGISTRY.find(targetId);
+            sessionId = run != null ? run.sessionId() : clean(targetId);
         }
-        return auditWarnings;
+        return new ConsoleActionAuditService(appContext.getWorkspace()).append(record, sessionId);
     }
 
     private static List<String> originWarnings(HttpExchange exchange) {
@@ -2371,14 +2320,6 @@ public final class ConsoleController {
                 session.setUpdatedAt(Instant.now());
                 manager.save(session);
             }
-            consoleEventRecorder(appContext).recordRunEvent(record.sessionId, record.runId, "run_cancelled", "CANCELLED",
-                    "Console run cancelled", Map.of(
-                            "runId", record.runId,
-                            "sessionId", record.sessionId,
-                            "reason", "console run cancelled",
-                            "previousStatus", previousStatus != null ? previousStatus : "",
-                            "currentStatus", "cancelled"
-                    ));
         } catch (Exception ignored) {
             // Cancel state is authoritative in the registry; timeline persistence is best-effort.
         }

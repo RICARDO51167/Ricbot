@@ -86,6 +86,28 @@ public final class FileRuntimeFactJournal {
         }
     }
 
+    public List<RuntimeFactEvent> allEvents(int limit) {
+        if (!Files.isDirectory(root)) return List.of();
+        int max = limit > 0 ? limit : 10_000;
+        try (Stream<Path> sessions = Files.list(root)) {
+            List<RuntimeFactEvent> result = new ArrayList<>();
+            for (Path session : sessions.filter(Files::isDirectory).toList()) {
+                Path events = session.resolve("events");
+                if (!Files.isDirectory(events)) continue;
+                try (Stream<Path> paths = Files.list(events)) {
+                    for (Path path : paths.filter(Files::isRegularFile).toList()) result.add(read(path));
+                }
+            }
+            return result.stream()
+                    .sorted(Comparator.comparing(RuntimeFactEvent::occurredAt)
+                            .thenComparing(RuntimeFactEvent::eventId))
+                    .limit(max)
+                    .toList();
+        } catch (Exception e) {
+            throw new IllegalStateException("failed to read runtime fact journal", e);
+        }
+    }
+
     private long nextSequence(Path counter) throws Exception {
         String stored = Files.isRegularFile(counter)
                 ? Files.readString(counter, StandardCharsets.UTF_8).trim()

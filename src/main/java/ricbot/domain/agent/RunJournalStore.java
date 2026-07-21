@@ -9,6 +9,9 @@ public interface RunJournalStore extends RunEventSink {
 
     Optional<RunState> latest(String sessionKey);
 
+    /** Materialized states for every Run in one session, ordered by most recently updated. */
+    List<RunState> runs(String sessionKey);
+
     List<RunEvent> events(String sessionKey, String runId, long afterSequence);
 
     Optional<RunState> stateAt(String sessionKey, String runId, long sequence);
@@ -46,6 +49,11 @@ public interface RunJournalStore extends RunEventSink {
         @Override
         public Optional<RunState> latest(String sessionKey) {
             return Optional.empty();
+        }
+
+        @Override
+        public List<RunState> runs(String sessionKey) {
+            return List.of();
         }
 
         @Override

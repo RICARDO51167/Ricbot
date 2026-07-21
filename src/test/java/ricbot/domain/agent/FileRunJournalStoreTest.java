@@ -78,6 +78,7 @@ class FileRunJournalStoreTest {
 
         assertEquals(List.of(2L, 3L), replay.stream().map(RunEvent::sequence).toList());
         assertEquals(RunStatus.COMPLETED, store.latest("cli:direct").orElseThrow().status());
+        assertEquals(List.of("run-1"), store.runs("cli:direct").stream().map(RunState::runId).toList());
         assertEquals(RunStatus.MODEL_RUNNING,
                 store.stateAt("cli:direct", "run-1", 2).orElseThrow().status());
         assertTrue(store.stateAt("cli:direct", "run-1", 4).isEmpty());

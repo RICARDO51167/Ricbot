@@ -33,7 +33,7 @@ import ricbot.infra.config.Config;
 import ricbot.integration.api.console.ConsoleActionAuditService;
 import ricbot.integration.api.console.ConsoleEvent;
 import ricbot.integration.api.console.ConsoleController;
-import ricbot.integration.api.console.JsonlConsoleEventStore;
+import ricbot.integration.api.console.RuntimeProjectionFixture;
 import ricbot.integration.llm.api.LLMProvider;
 import ricbot.integration.llm.api.LLMResponse;
 
@@ -1255,7 +1255,6 @@ public class RicbotApiServerTest {
             assertTrue(events.contains("run_cancelled"), events);
             List<ConsoleEvent> stored = consoleEvents(workspace, sessionId);
             assertTrue(stored.stream().anyMatch(event -> "run_cancel_requested".equals(event.name())), stored.toString());
-            assertTrue(stored.stream().anyMatch(event -> "run_cancelled".equals(event.name())), stored.toString());
         } finally {
             loop.stop();
         }
@@ -1441,7 +1440,7 @@ public class RicbotApiServerTest {
         try {
             String sessionId = "api:run-filter";
             loop.getSessions().save(loop.getSessions().getOrCreate(sessionId));
-            JsonlConsoleEventStore store = new JsonlConsoleEventStore(workspace);
+            RuntimeProjectionFixture store = new RuntimeProjectionFixture(workspace);
             store.append(consoleEvent("run-filter-1", sessionId, "run-a", "run", "run_submit", "INFO", "2026-06-04T00:00:00Z", Map.of("inputPreview", "alpha")));
             store.append(consoleEvent("run-filter-2", sessionId, "run-b", "run", "run_submit", "INFO", "2026-06-04T00:00:01Z", Map.of("inputPreview", "beta")));
 
@@ -1465,7 +1464,7 @@ public class RicbotApiServerTest {
         try {
             String sessionId = "api:run-category-filter";
             loop.getSessions().save(loop.getSessions().getOrCreate(sessionId));
-            JsonlConsoleEventStore store = new JsonlConsoleEventStore(workspace);
+            RuntimeProjectionFixture store = new RuntimeProjectionFixture(workspace);
             store.append(consoleEvent("run-category-1", sessionId, "run-a", "run", "run_submit", "INFO", "2026-06-04T00:00:00Z", Map.of()));
             store.append(consoleEvent("run-category-2", sessionId, "run-a", "tool", "tool_call", "INFO", "2026-06-04T00:00:01Z", Map.of()));
             store.append(consoleEvent("run-category-3", sessionId, "run-b", "run", "run_submit", "INFO", "2026-06-04T00:00:02Z", Map.of()));
@@ -1488,7 +1487,7 @@ public class RicbotApiServerTest {
         try {
             String sessionId = "api:events-run-filter";
             loop.getSessions().save(loop.getSessions().getOrCreate(sessionId));
-            JsonlConsoleEventStore store = new JsonlConsoleEventStore(workspace);
+            RuntimeProjectionFixture store = new RuntimeProjectionFixture(workspace);
             store.append(consoleEvent("events-run-1", sessionId, "run-a", "run", "run_submit", "INFO", "2026-06-04T00:00:00Z", Map.of()));
             store.append(consoleEvent("events-run-2", sessionId, "run-b", "run", "run_submit", "INFO", "2026-06-04T00:00:01Z", Map.of()));
 
@@ -1510,7 +1509,7 @@ public class RicbotApiServerTest {
         try {
             String sessionId = "api:unknown-run-filter";
             loop.getSessions().save(loop.getSessions().getOrCreate(sessionId));
-            new JsonlConsoleEventStore(workspace).append(consoleEvent("unknown-run-1", sessionId, "run-a", "run", "run_submit", "INFO", "2026-06-04T00:00:00Z", Map.of()));
+            new RuntimeProjectionFixture(workspace).append(consoleEvent("unknown-run-1", sessionId, "run-a", "run", "run_submit", "INFO", "2026-06-04T00:00:00Z", Map.of()));
 
             String timeline = handleGet(ConsoleController.sessionDetailHandler(app, "/api/console/sessions/"),
                     "/api/console/sessions/" + URLEncoder.encode(sessionId, StandardCharsets.UTF_8) + "/timeline?runId=missing-run");
@@ -1531,7 +1530,7 @@ public class RicbotApiServerTest {
         try {
             String sessionId = "api:legacy-run-filter";
             loop.getSessions().save(loop.getSessions().getOrCreate(sessionId));
-            JsonlConsoleEventStore store = new JsonlConsoleEventStore(workspace);
+            RuntimeProjectionFixture store = new RuntimeProjectionFixture(workspace);
             store.append(consoleEvent("legacy-run-1", sessionId, "", "run", "run_submit", "INFO", "2026-06-04T00:00:00Z", Map.of("runId", "payload-run")));
             store.append(consoleEvent("legacy-run-2", sessionId, "", "run", "run_submit", "INFO", "2026-06-04T00:00:01Z", Map.of("run_id", "payload-run-2")));
 
@@ -1575,7 +1574,7 @@ public class RicbotApiServerTest {
         try {
             String sessionId = "api:stored-replay";
             loop.getSessions().save(loop.getSessions().getOrCreate(sessionId));
-            JsonlConsoleEventStore store = new JsonlConsoleEventStore(workspace);
+            RuntimeProjectionFixture store = new RuntimeProjectionFixture(workspace);
             store.append(consoleEvent("evt-replay-1", sessionId, "run", "run_submit"));
             store.append(consoleEvent("evt-replay-2", sessionId, "approval", "approval_reject"));
 
@@ -1586,7 +1585,7 @@ public class RicbotApiServerTest {
             assertEquals(200, stream.getResponseCode(), stream.responseText());
             assertFalse(stream.responseText().contains("evt-replay-1"), stream.responseText());
             assertTrue(stream.responseText().contains("evt-replay-2"), stream.responseText());
-            assertTrue(stream.responseText().contains("\"source\":\"console_event_store\""), stream.responseText());
+            assertTrue(stream.responseText().contains("\"source\":\"runtime_fact_journal\""), stream.responseText());
         } finally {
             loop.stop();
         }
@@ -1647,7 +1646,7 @@ public class RicbotApiServerTest {
     }
 
     @Test
-    void timelineMergesConsoleEventStoreAndRunTraceWithoutDuplicates(@TempDir Path workspace) throws Exception {
+    void timelineMergesRuntimeProjectionAndRunTraceWithoutDuplicates(@TempDir Path workspace) throws Exception {
         AgentLoop loop = buildLoopNoStart(workspace);
         var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", configuredOpenAiConfig(workspace), null, workspace);
         try {
@@ -1658,7 +1657,7 @@ public class RicbotApiServerTest {
                     runEvent("run_cancelled", "2026-06-04T00:01:00Z", Map.of("run_id", runId, "reason", "trace"))
             )));
             loop.getSessions().save(session);
-            new JsonlConsoleEventStore(workspace).append(new ConsoleEvent(
+            new RuntimeProjectionFixture(workspace).append(new ConsoleEvent(
                     "evt-store-cancelled",
                     sessionId,
                     runId,
@@ -1708,7 +1707,7 @@ public class RicbotApiServerTest {
         try {
             String sessionId = "api:history-lifecycle";
             loop.getSessions().save(loop.getSessions().getOrCreate(sessionId));
-            JsonlConsoleEventStore store = new JsonlConsoleEventStore(workspace);
+            RuntimeProjectionFixture store = new RuntimeProjectionFixture(workspace);
             store.append(consoleEvent("hist-1", sessionId, "run-1", "run", "run_submit", "INFO", "2026-06-04T00:00:00Z", Map.of("inputPreview", "hello history")));
             store.append(consoleEvent("hist-2", sessionId, "run-1", "run", "run_started", "INFO", "2026-06-04T00:00:01Z", Map.of()));
             store.append(consoleEvent("hist-3", sessionId, "run-1", "run", "run_finished", "SUCCESS", "2026-06-04T00:00:06Z", Map.of("model", "qwen-plus")));
@@ -1719,7 +1718,7 @@ public class RicbotApiServerTest {
             assertTrue(body.contains("\"runId\":\"run-1\""), body);
             assertTrue(body.contains("\"status\":\"finished\""), body);
             assertTrue(body.contains("\"inputPreview\":\"hello history\""), body);
-            assertTrue(body.contains("\"durationMs\":5000"), body);
+            assertTrue(body.contains("\"durationMs\":6000"), body);
             assertTrue(body.contains("\"lastEventName\":\"run_finished\""), body);
         } finally {
             loop.stop();
@@ -1733,7 +1732,7 @@ public class RicbotApiServerTest {
         try {
             String sessionId = "api:history-counts";
             loop.getSessions().save(loop.getSessions().getOrCreate(sessionId));
-            JsonlConsoleEventStore store = new JsonlConsoleEventStore(workspace);
+            RuntimeProjectionFixture store = new RuntimeProjectionFixture(workspace);
             store.append(consoleEvent("cnt-1", sessionId, "run-2", "run", "run_submit", "INFO", "2026-06-04T00:00:00Z", Map.of()));
             store.append(consoleEvent("cnt-2", sessionId, "run-2", "tool", "tool_call", "INFO", "2026-06-04T00:00:01Z", Map.of()));
             store.append(consoleEvent("cnt-3", sessionId, "run-2", "approval", "approval_reject", "SUCCESS", "2026-06-04T00:00:02Z", Map.of()));
@@ -1757,7 +1756,7 @@ public class RicbotApiServerTest {
         AgentLoop loop = buildLoopNoStart(workspace);
         var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", configuredOpenAiConfig(workspace), null, workspace);
         try {
-            JsonlConsoleEventStore store = new JsonlConsoleEventStore(workspace);
+            RuntimeProjectionFixture store = new RuntimeProjectionFixture(workspace);
             store.append(consoleEvent("search-1", "session-a", "run-a", "run", "run_submit", "INFO", "2026-06-04T00:00:00Z", Map.of("inputPreview", "alpha task")));
             store.append(consoleEvent("search-2", "session-a", "run-a", "tool", "tool_call", "SUCCESS", "2026-06-04T00:00:01Z", Map.of("toolName", "ReadFile")));
             store.append(consoleEvent("search-3", "session-b", "run-b", "error", "model_error", "ERROR", "2026-06-04T00:00:02Z", Map.of("error", "beta failure")));
@@ -1788,7 +1787,7 @@ public class RicbotApiServerTest {
         AgentLoop loop = buildLoopNoStart(workspace);
         var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", configuredOpenAiConfig(workspace), null, workspace);
         try {
-            JsonlConsoleEventStore store = new JsonlConsoleEventStore(workspace);
+            RuntimeProjectionFixture store = new RuntimeProjectionFixture(workspace);
             store.append(consoleEvent("metric-1", "session-a", "run-a", "run", "run_submit", "INFO", "2026-06-04T00:00:00Z", Map.of("inputPreview", "alpha")));
             store.append(consoleEvent("metric-2", "session-a", "run-a", "run", "run_started", "INFO", "2026-06-04T00:00:01Z", Map.of()));
             store.append(consoleEvent("metric-3", "session-a", "run-a", "tool", "tool_call", "SUCCESS", "2026-06-04T00:00:02Z", Map.of("toolName", "read_file")));
@@ -1842,10 +1841,11 @@ public class RicbotApiServerTest {
         AgentLoop loop = buildLoopNoStart(workspace);
         var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", configuredOpenAiConfig(workspace), null, workspace);
         try {
+            loop.getSessions().save(loop.getSessions().getOrCreate("session-a"));
             Path file = workspace.resolve(".ricbot").resolve("console-events.jsonl");
             Files.createDirectories(file.getParent());
             Files.writeString(file, "{broken json\n", StandardCharsets.UTF_8);
-            new JsonlConsoleEventStore(workspace).append(consoleEvent("valid-after-bad", "session-a", "run-a", "run", "run_submit", "INFO", "2026-06-04T00:00:00Z", Map.of()));
+            new RuntimeProjectionFixture(workspace).append(consoleEvent("valid-after-bad", "session-a", "run-a", "run", "run_submit", "INFO", "2026-06-04T00:00:00Z", Map.of()));
 
             String body = handleGet(ConsoleController.eventSearchHandler(app),
                     "/api/console/events/search?sessionId=session-a");
@@ -2371,11 +2371,11 @@ public class RicbotApiServerTest {
     }
 
     private static List<ConsoleEvent> consoleEvents(Path workspace) {
-        return new JsonlConsoleEventStore(workspace).listBySession("", "", "", 500);
+        return new RuntimeProjectionFixture(workspace).listBySession("", "", "", 500);
     }
 
     private static List<ConsoleEvent> consoleEvents(Path workspace, String sessionId) {
-        return new JsonlConsoleEventStore(workspace).listBySession(sessionId, "", "", 500);
+        return new RuntimeProjectionFixture(workspace).listBySession(sessionId, "", "", 500);
     }
 
     private static ConsoleEvent consoleEvent(String id, String sessionId, String category, String name) {

@@ -32,7 +32,7 @@ public record ConsoleEvent(
         title = clean(title).isBlank() ? name : clean(title);
         summary = clean(summary);
         actor = clean(actor).isBlank() ? "system" : clean(actor);
-        source = clean(source).isBlank() ? "console_event_store" : clean(source);
+        source = clean(source).isBlank() ? "runtime_projection" : clean(source);
         payload = payload != null
                 ? java.util.Collections.unmodifiableMap(new LinkedHashMap<>(payload))
                 : Map.of();

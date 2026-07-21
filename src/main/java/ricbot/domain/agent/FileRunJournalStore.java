@@ -100,6 +100,23 @@ public final class FileRunJournalStore implements RunJournalStore {
     }
 
     @Override
+    public List<RunState> runs(String sessionKey) {
+        String session = requireText(sessionKey, "sessionKey");
+        Path sessionDirectory = sessionDirectory(session);
+        if (!Files.isDirectory(sessionDirectory)) return List.of();
+        try (Stream<Path> paths = Files.list(sessionDirectory)) {
+            return paths.filter(Files::isDirectory)
+                    .map(this::loadRunDirectory)
+                    .flatMap(Optional::stream)
+                    .filter(state -> session.equals(state.sessionKey()))
+                    .sorted(Comparator.comparing(RunState::updatedAt).reversed())
+                    .toList();
+        } catch (IOException e) {
+            throw failure("list runs", session, "all", e);
+        }
+    }
+
+    @Override
     public List<RunEvent> events(String sessionKey, String runId, long afterSequence) {
         String session = requireText(sessionKey, "sessionKey");
         String run = requireText(runId, "runId");
