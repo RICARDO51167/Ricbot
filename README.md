@@ -19,7 +19,7 @@ Ricbot 是一个面向长任务与多智能体协作的 Java 持久化 Agent Run
 - workspace diff 和 ChangeSet review 收口变更
 - trace viewer 复盘运行过程
 - 人工维护的 Skill 提供可复用执行规则
-- Console 汇总 config、trace、team、workspace、approval、eval、tools 和 MCP 状态
+- Console 只保留 Run Timeline、Checkpoint / Resume / Fork、Worker / Mailbox、Eval / Release 四个持久化 Runtime 视图
 
 端到端演示脚本见 [docs/demo/end-to-end-coding-agent.md](docs/demo/end-to-end-coding-agent.md)。
 
@@ -117,11 +117,11 @@ java -jar target/Ricbot-1.0-SNAPSHOT.jar serve \
 http://127.0.0.1:8000/console
 ```
 
-Console 默认使用中文 UI，Header 右侧可在“中文 / English”之间切换，选择会写入浏览器 `localStorage` 的 `ricbot_console_lang`。页面仍然是 ConsolePage.java 输出的静态 HTML + CSS + 原生 JS，没有引入 Vue/React/npm 构建，保持单 jar 可运行。
+Console 使用 Vue 构建，生产资源随 Jar 一起打包，仍保持单 Jar 运行。生产导航固定为 Run Timeline、Checkpoint / Resume / Fork、Worker / Mailbox、Eval / Release 四个页面；显式 Resume、Approve、Compensate 等写操作继续通过应用服务、鉴权、幂等键与审计事件执行。
 
-演示时从顶部 Demo Flow 讲起：Config Doctor 对应启动前诊断，Team Reports / Workspaces / Trace 对应 team run 后处理，Eval Runs 和 Release Check 对应确定性评测门禁，Tools / MCP 展示运行时工具面。没有真实 key 时 config doctor 可能是 `WARNING` 或 `ERROR`，但 fixed smoke eval 和 release-check 的本地 smoke 部分不会访问真实模型。
+演示时按四个页面讲解：Run Timeline 展示持久事件，Checkpoint 页面展示恢复入口，Worker 页面展示协作与 Mailbox，Eval / Release 页面展示确定性评测门禁。没有真实 key 时 config doctor 可能是 `WARNING` 或 `ERROR`，但 fixed smoke eval 和 release-check 的本地 smoke 部分不会访问真实模型。
 
-最终推荐演示路径：`config doctor -> release-check -> Console Demo Flow -> team run --worktree --verify -> workspace diff/change create -> trace/eval -> tools/MCP diagnostics`。完整讲稿见 [docs/demo/demo-script.md](docs/demo/demo-script.md)。
+最终推荐演示路径：`config doctor -> release-check -> team run --worktree --verify -> Run Timeline -> Checkpoint / Resume / Fork -> Worker / Mailbox -> Eval / Release`。完整讲稿见 [docs/demo/demo-script.md](docs/demo/demo-script.md)。
 
 本地 smoke 脚本：
 

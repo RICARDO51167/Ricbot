@@ -5,7 +5,7 @@ Ricbot 是一个面向长任务与多智能体协作的 Java 持久化 Agent Run
 ## Layers
 
 ```text
-CLI / API / Channel
+CLI / API / Transport
   -> AgentLoop / AgentRunner
   -> Provider / Capability
   -> ToolRegistry / MCP
@@ -15,13 +15,13 @@ CLI / API / Channel
   -> Console / Gateway
 ```
 
-### CLI / API / Channel
+### CLI / API / Transport
 
 入口层提供三类使用方式：
 
 - CLI：单次 agent、交互命令、team、eval、config doctor。
 - API：OpenAI-compatible `/v1/chat/completions`、sessions、MCP dashboard、health。
-- Channel：保留通用 WebSocket 输入适配器；具体业务渠道应作为 Core Runtime 之外的插件。
+- Transport：只保留 WebSocket 输入适配器；具体业务接入应在 Core Runtime 之外完成。
 
 这一层负责把外部输入标准化成 session、message 或 command，不直接承载模型推理策略。
 
