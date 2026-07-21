@@ -9,6 +9,10 @@ import ricbot.domain.trace.TraceEvent;
 import ricbot.domain.trace.TraceEventType;
 import ricbot.domain.trace.TraceStore;
 import ricbot.domain.workspace.WorkspaceSession;
+import ricbot.domain.worker.WorkerRuntime;
+import ricbot.domain.worker.WorkerSpec;
+import ricbot.domain.worker.WorkerState;
+import ricbot.domain.worker.WorkerStore;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -31,7 +35,9 @@ public class TeamEngine {
     private final TeamWorkerExecutor workerExecutor;
     private final StepAuditService stepAuditService;
     private final TeamTaskReportService taskReportService;
-    private final PersistentTeamRuntime teamRuntime;
+    private final WorkerRuntime workerRuntime;
+    /** Read-only compatibility source for pre-WorkerRuntime team data. */
+    private final PersistentTeamRuntime legacyTeamRuntime;
     private final Map<String, TeamSession> sessions = new LinkedHashMap<>();
     private final Map<String, TeamTask> tasks = new LinkedHashMap<>();
     private final Map<String, List<TeamEvent>> events = new LinkedHashMap<>();
@@ -47,14 +53,15 @@ public class TeamEngine {
         this.workerExecutor = new TeamWorkerExecutor(verificationService, new PolicyEngine(this.workspace));
         this.stepAuditService = new StepAuditService(this.workspace, traceStore);
         this.taskReportService = new TeamTaskReportService(stepAuditService);
-        this.teamRuntime = new PersistentTeamRuntime(this.workspace);
+        this.workerRuntime = new WorkerRuntime(this.workspace);
+        this.legacyTeamRuntime = new PersistentTeamRuntime(this.workspace);
         restoreKnownSessions();
     }
 
     public TeamSession createSession(String goal) {
         TeamSession session = new TeamSession(null, goal, TeamTaskState.PLANNING, List.of(), null, null);
         sessions.put(session.id(), session);
-        ensureWorker(session.id(), "leader", TeamRole.LEADER, "", Map.of("goal", session.goal()));
+        ensureWorker(session.id(), leaderWorkerId(session.id()), TeamRole.LEADER, "", Map.of("goal", session.goal()));
         TeamWhiteboard whiteboard = whiteboard(session.id());
         whiteboard.appendNote("Leader started team session.\n\nGoal: " + session.goal());
         store.saveSession(session);
@@ -66,9 +73,11 @@ public class TeamEngine {
         TeamSession session = requireSession(sessionId);
         TeamTask task = new TeamTask(null, session.id(), role, goal, TeamTaskState.CREATED, "", List.of(), null, "", null, null);
         tasks.put(task.id(), task);
-        PersistentWorkerSession worker = ensureWorker(
-                session.id(), workerId(task, role), role, "leader", Map.of("task_id", task.id(), "goal", task.goal()));
-        teamRuntime.send(session.id(), "leader", worker.workerId(), TeamMessageType.TASK, task.id(), Map.of(
+        WorkerStore.StoredWorker worker = ensureWorker(
+                session.id(), workerId(task, role), role, leaderWorkerId(session.id()),
+                Map.of("task_id", task.id(), "goal", task.goal()));
+        workerRuntime.send(leaderWorkerId(session.id()), worker.spec().workerId(), WorkerStore.MessageKind.TASK,
+                task.id(), Map.of(
                 "task_id", task.id(), "goal", task.goal(), "role", task.role().name()));
         refreshSessionTasks(session.id());
         whiteboard(session.id()).appendNote("Task created: " + task.id() + "\nRole: " + task.role() + "\nGoal: " + task.goal());
@@ -107,7 +116,7 @@ public class TeamEngine {
     public WorkerExecutionResult runWorker(String taskId, WorkerExecutionInput input) {
         TeamTask current = requireTask(taskId);
         WorkerExecutionInput merged = mergeWorkerInput(current, input);
-        PersistentWorkerSession worker = startWorker(current, current.role());
+        WorkerStore.StoredWorker worker = startWorker(current, current.role());
         traceWorkerLifecycle(TraceEventType.WORKER_STARTED, current, merged, null, "");
         try {
             startProducing(taskId);
@@ -137,7 +146,7 @@ public class TeamEngine {
     public WorkerExecutionResult runVerifier(String taskId, WorkerExecutionInput input) {
         TeamTask current = requireTask(taskId);
         WorkerExecutionInput merged = mergeWorkerInput(current, input, TeamRole.VERIFIER);
-        PersistentWorkerSession worker = startWorker(current, TeamRole.VERIFIER);
+        WorkerStore.StoredWorker worker = startWorker(current, TeamRole.VERIFIER);
         traceWorkerLifecycle(TraceEventType.VERIFIER_STARTED, current, merged, null, "");
         try {
             startVerifying(taskId);
@@ -157,64 +166,106 @@ public class TeamEngine {
     }
 
     /** Starts (or resumes) an independent durable worker attempt for a task. */
-    public PersistentWorkerSession startWorker(String taskId, TeamRole role) {
+    public WorkerStore.StoredWorker startWorker(String taskId, TeamRole role) {
         return startWorker(requireTask(taskId), role);
     }
 
-    public PersistentWorkerSession completeWorker(String workerId, String summary) {
-        PersistentWorkerSession worker = requireWorker(workerId);
-        PersistentWorkerSession completed = teamRuntime.transition(
-                worker.teamSessionId(), worker.workerId(), WorkerSessionStatus.COMPLETED, worker.currentTaskId());
+    public WorkerStore.StoredWorker completeWorker(String workerId, String summary) {
+        WorkerStore.StoredWorker worker = requireWorker(workerId);
+        workerRuntime.complete(worker.spec().workerId(), summary);
+        WorkerStore.StoredWorker completed = requireWorker(worker.spec().workerId());
         sendWorkerResult(completed, summary, "COMPLETED");
         return completed;
     }
 
-    public PersistentWorkerSession failWorker(String workerId, String error) {
-        PersistentWorkerSession worker = requireWorker(workerId);
+    public WorkerStore.StoredWorker failWorker(String workerId, String error) {
+        WorkerStore.StoredWorker worker = requireWorker(workerId);
         failWorker(worker, error);
-        return teamRuntime.worker(worker.teamSessionId(), worker.workerId()).orElseThrow();
+        return requireWorker(worker.spec().workerId());
     }
 
-    public List<PersistentWorkerSession> workers(String teamSessionId) {
+    public List<WorkerStore.StoredWorker> workers(String teamSessionId) {
         requireSession(teamSessionId);
-        return teamRuntime.workers(teamSessionId);
+        migrateLegacyWorkers(teamSessionId);
+        return workerRuntime.workers(teamSessionId);
     }
 
-    public List<PersistentWorkerSession> workersForTask(String taskId) {
+    public List<WorkerStore.StoredWorker> workersForTask(String taskId) {
         TeamTask task = requireTask(taskId);
-        return teamRuntime.workers(task.sessionId()).stream()
-                .filter(worker -> task.id().equals(String.valueOf(worker.metadata().get("task_id"))))
+        return workers(task.sessionId()).stream()
+                .filter(worker -> task.id().equals(String.valueOf(worker.spec().metadata().get("task_id"))))
                 .toList();
     }
 
-    public TeamMailboxMessage sendWorkerMessage(String teamSessionId, String fromWorkerId, String toWorkerId,
-                                                TeamMessageType type, String correlationId,
-                                                Map<String, Object> payload) {
+    public WorkerStore.MailboxMessage sendWorkerMessage(
+            String teamSessionId,
+            String fromWorkerId,
+            String toWorkerId,
+            WorkerStore.MessageKind type,
+            String correlationId,
+            Map<String, Object> payload
+    ) {
         requireSession(teamSessionId);
-        return teamRuntime.send(teamSessionId, fromWorkerId, toWorkerId, type, correlationId, payload);
+        requireWorkerInScope(teamSessionId, toWorkerId);
+        return workerRuntime.send(fromWorkerId, toWorkerId, type, correlationId, payload);
     }
 
-    public List<TeamMailboxMessage> workerInbox(String teamSessionId, String workerId,
-                                                long afterSequence, boolean includeAcknowledged) {
+    public List<WorkerStore.MailboxMessage> workerInbox(
+            String teamSessionId, String workerId, long afterSequence, boolean includeAcknowledged) {
         requireSession(teamSessionId);
-        return teamRuntime.inbox(teamSessionId, workerId, afterSequence, includeAcknowledged);
+        requireWorkerInScope(teamSessionId, workerId);
+        return workerRuntime.inbox(workerId, afterSequence, includeAcknowledged);
     }
 
     public void acknowledgeWorkerMessage(String teamSessionId, String workerId, String messageId) {
         requireSession(teamSessionId);
-        teamRuntime.acknowledge(teamSessionId, workerId, messageId);
+        requireWorkerInScope(teamSessionId, workerId);
+        workerRuntime.acknowledge(workerId, messageId);
     }
 
-    public PersistentTeamRuntime.JoinResult joinWorkers(String teamSessionId, List<String> workerIds) {
+    public WorkerJoinResult joinWorkers(String teamSessionId, List<String> workerIds) {
         requireSession(teamSessionId);
-        return teamRuntime.join(teamSessionId, workerIds);
+        Map<String, WorkerState.Status> statuses = new LinkedHashMap<>();
+        for (String workerId : workerIds != null ? workerIds : List.<String>of()) {
+            statuses.put(workerId, workerRuntime.worker(workerId)
+                    .filter(worker -> teamSessionId.equals(worker.spec().scopeId()))
+                    .map(worker -> worker.state().status())
+                    .orElse(WorkerState.Status.FAILED));
+        }
+        boolean complete = !statuses.isEmpty() && statuses.values().stream().allMatch(TeamEngine::settled);
+        boolean successful = complete
+                && statuses.values().stream().allMatch(status -> status == WorkerState.Status.COMPLETED);
+        return new WorkerJoinResult(Map.copyOf(statuses), complete, successful);
     }
 
-    public PersistentTeamRuntime.HandoffResult handoff(String teamSessionId, String sourceWorkerId,
-                                                       String targetWorkerId, String taskId,
-                                                       Map<String, Object> context) {
+    public WorkerHandoffResult handoff(
+            String teamSessionId,
+            String sourceWorkerId,
+            String targetWorkerId,
+            String taskId,
+            Map<String, Object> context
+    ) {
         requireSession(teamSessionId);
-        return teamRuntime.handoff(teamSessionId, sourceWorkerId, targetWorkerId, taskId, context);
+        WorkerStore.StoredWorker source = requireWorkerInScope(teamSessionId, sourceWorkerId);
+        workerRuntime.awaitMessage(source.spec().workerId(), "handoff: " + clean(taskId));
+        source = requireWorker(source.spec().workerId());
+
+        WorkerStore.StoredWorker target = requireWorkerInScope(teamSessionId, targetWorkerId);
+        if (target.state().status() == WorkerState.Status.CREATED) {
+            workerRuntime.prepare(target.spec().workerId());
+            target = requireWorker(target.spec().workerId());
+        }
+        if (target.state().status() == WorkerState.Status.READY
+                || target.state().status() == WorkerState.Status.WAITING) {
+            workerRuntime.start(target.spec().workerId(), taskId);
+            target = requireWorker(target.spec().workerId());
+        }
+        Map<String, Object> payload = new LinkedHashMap<>(context != null ? context : Map.of());
+        payload.put("task_id", clean(taskId));
+        payload.put("source_worker_id", sourceWorkerId);
+        WorkerStore.MailboxMessage message = workerRuntime.send(
+                sourceWorkerId, targetWorkerId, WorkerStore.MessageKind.HANDOFF, taskId, payload);
+        return new WorkerHandoffResult(source, target, message);
     }
 
     public PolicyAwareToolExecutor.PolicyToolResult executeToolAsRole(
@@ -1184,83 +1235,221 @@ public class TeamEngine {
         return slash >= 0 ? tail.substring(0, slash) : tail;
     }
 
-    private PersistentWorkerSession startWorker(TeamTask task, TeamRole role) {
+    private WorkerStore.StoredWorker startWorker(TeamTask task, TeamRole role) {
         TeamRole effectiveRole = role != null ? role : task.role();
-        ensureWorker(task.sessionId(), "leader", TeamRole.LEADER, "", Map.of("restored", true));
-        Optional<PersistentWorkerSession> reusable = teamRuntime.workers(task.sessionId()).stream()
-                .filter(worker -> effectiveRole == worker.role())
-                .filter(worker -> task.id().equals(String.valueOf(worker.metadata().get("task_id"))))
-                .filter(worker -> !worker.status().terminal())
+        String leaderId = leaderWorkerId(task.sessionId());
+        ensureWorker(task.sessionId(), leaderId, TeamRole.LEADER, "", Map.of("restored", true));
+        Optional<WorkerStore.StoredWorker> reusable = workers(task.sessionId()).stream()
+                .filter(worker -> effectiveRole.name().equals(worker.spec().role()))
+                .filter(worker -> task.id().equals(String.valueOf(worker.spec().metadata().get("task_id"))))
+                .filter(worker -> !settled(worker.state().status()))
                 .findFirst();
         String baseId = workerId(task, effectiveRole);
-        PersistentWorkerSession worker = reusable.orElseGet(() -> ensureWorker(
+        WorkerStore.StoredWorker worker = reusable.orElseGet(() -> ensureWorker(
                 task.sessionId(),
-                teamRuntime.worker(task.sessionId(), baseId).isEmpty()
+                workerRuntime.worker(baseId).isEmpty()
                         ? baseId
                         : baseId + "-" + UUID.randomUUID().toString().substring(0, 8),
                 effectiveRole,
-                "leader",
+                leaderId,
                 Map.of("task_id", task.id(), "goal", task.goal())
         ));
-        if (worker.status() == WorkerSessionStatus.CREATED || worker.status() == WorkerSessionStatus.PAUSED) {
-            worker = teamRuntime.transition(task.sessionId(), worker.workerId(), WorkerSessionStatus.RUNNING, task.id());
+        if (worker.state().status() == WorkerState.Status.CREATED) {
+            workerRuntime.prepare(worker.spec().workerId());
+            worker = requireWorker(worker.spec().workerId());
         }
-        teamRuntime.send(task.sessionId(), worker.workerId(), "leader", TeamMessageType.PROGRESS,
+        if (worker.state().status() == WorkerState.Status.READY
+                || worker.state().status() == WorkerState.Status.WAITING) {
+            workerRuntime.start(worker.spec().workerId(), task.id());
+            worker = requireWorker(worker.spec().workerId());
+        }
+        workerRuntime.send(worker.spec().workerId(), leaderId, WorkerStore.MessageKind.PROGRESS,
                 task.id(), Map.of("status", "RUNNING", "role", effectiveRole.name()));
         return worker;
     }
 
-    private void finishWorker(PersistentWorkerSession worker, String resultStatus, String summary) {
+    private void finishWorker(WorkerStore.StoredWorker worker, String resultStatus, String summary) {
         if (worker == null) return;
         if ("FAILED".equalsIgnoreCase(resultStatus)) {
             failWorker(worker, summary);
             return;
         }
-        PersistentWorkerSession completed = teamRuntime.transition(
-                worker.teamSessionId(), worker.workerId(), WorkerSessionStatus.COMPLETED, worker.currentTaskId());
+        workerRuntime.complete(worker.spec().workerId(), summary);
+        WorkerStore.StoredWorker completed = requireWorker(worker.spec().workerId());
         sendWorkerResult(completed, summary, "COMPLETED");
     }
 
-    private void failWorker(PersistentWorkerSession worker, String error) {
-        if (worker == null || worker.status().terminal()) return;
-        PersistentWorkerSession failed = teamRuntime.transition(
-                worker.teamSessionId(), worker.workerId(), WorkerSessionStatus.FAILED, worker.currentTaskId());
+    private void failWorker(WorkerStore.StoredWorker worker, String error) {
+        if (worker == null || settled(worker.state().status())) return;
+        workerRuntime.fail(worker.spec().workerId(), error);
+        WorkerStore.StoredWorker failed = requireWorker(worker.spec().workerId());
         sendWorkerResult(failed, error, "FAILED");
     }
 
-    private void sendWorkerResult(PersistentWorkerSession worker, String summary, String status) {
-        ensureWorker(worker.teamSessionId(), "leader", TeamRole.LEADER, "", Map.of("restored", true));
-        teamRuntime.send(worker.teamSessionId(), worker.workerId(), "leader", TeamMessageType.RESULT,
-                worker.currentTaskId(), Map.of(
-                        "task_id", worker.currentTaskId(),
+    private void sendWorkerResult(WorkerStore.StoredWorker worker, String summary, String status) {
+        String teamSessionId = worker.spec().scopeId();
+        String leaderId = leaderWorkerId(teamSessionId);
+        ensureWorker(teamSessionId, leaderId, TeamRole.LEADER, "", Map.of("restored", true));
+        workerRuntime.send(worker.spec().workerId(), leaderId, WorkerStore.MessageKind.RESULT,
+                worker.state().currentRunId(), Map.of(
+                        "task_id", worker.state().currentRunId(),
                         "status", status,
                         "summary", summary != null ? summary : ""
                 ));
     }
 
-    private PersistentWorkerSession ensureWorker(String teamSessionId, String workerId, TeamRole role,
-                                                  String parentWorkerId, Map<String, Object> metadata) {
-        Optional<PersistentWorkerSession> existing = teamRuntime.worker(teamSessionId, workerId);
+    private WorkerStore.StoredWorker ensureWorker(
+            String teamSessionId,
+            String workerId,
+            TeamRole role,
+            String parentWorkerId,
+            Map<String, Object> metadata
+    ) {
+        Optional<WorkerStore.StoredWorker> existing = workerRuntime.worker(workerId)
+                .filter(worker -> teamSessionId.equals(worker.spec().scopeId()));
         if (existing.isPresent()) return existing.orElseThrow();
-        try {
-            return teamRuntime.createWorker(teamSessionId, workerId, role, parentWorkerId, metadata);
-        } catch (IllegalStateException race) {
-            return teamRuntime.worker(teamSessionId, workerId).orElseThrow(() -> race);
-        }
+        WorkerSpec spec = WorkerSpec.create(
+                workerId,
+                teamSessionId,
+                (role != null ? role : TeamRole.DEVELOPER).name(),
+                String.valueOf((metadata != null ? metadata : Map.of()).getOrDefault("goal", "")),
+                parentWorkerId,
+                "team-worker:" + teamSessionId + ":" + workerId,
+                metadata
+        );
+        return workerRuntime.create(spec);
     }
 
-    private PersistentWorkerSession requireWorker(String workerId) {
+    private WorkerStore.StoredWorker requireWorker(String workerId) {
         String id = workerId != null ? workerId.trim() : "";
         if (id.isBlank()) throw new IllegalArgumentException("workerId is required");
-        return sessions.keySet().stream()
-                .map(sessionId -> teamRuntime.worker(sessionId, id))
-                .flatMap(Optional::stream)
-                .findFirst()
+        return workerRuntime.worker(id)
                 .orElseThrow(() -> new IllegalArgumentException("worker does not exist: " + id));
+    }
+
+    private WorkerStore.StoredWorker requireWorkerInScope(String teamSessionId, String workerId) {
+        WorkerStore.StoredWorker worker = requireWorker(workerId);
+        if (!teamSessionId.equals(worker.spec().scopeId())) {
+            throw new IllegalArgumentException("worker does not belong to team session: " + workerId);
+        }
+        return worker;
     }
 
     private static String workerId(TeamTask task, TeamRole role) {
         return role.name().toLowerCase(Locale.ROOT) + "-" + task.id();
+    }
+
+    private static String leaderWorkerId(String teamSessionId) {
+        return "leader-" + teamSessionId;
+    }
+
+    private void migrateLegacyWorkers(String teamSessionId) {
+        List<PersistentWorkerSession> legacyWorkers = legacyTeamRuntime.workers(teamSessionId);
+        for (PersistentWorkerSession legacy : legacyWorkers) {
+            String targetId = legacyWorkerId(teamSessionId, legacy.workerId());
+            if (workerRuntime.worker(targetId).isEmpty()) {
+                Map<String, Object> metadata = new LinkedHashMap<>(legacy.metadata());
+                metadata.put("legacy_worker_id", legacy.workerId());
+                WorkerSpec spec = new WorkerSpec(
+                        WorkerSpec.CURRENT_SCHEMA_VERSION,
+                        targetId,
+                        teamSessionId,
+                        legacy.role().name(),
+                        String.valueOf(metadata.getOrDefault("goal", "")),
+                        legacy.parentWorkerId().isBlank()
+                                ? ""
+                                : legacyWorkerId(teamSessionId, legacy.parentWorkerId()),
+                        "team-worker:" + teamSessionId + ":" + targetId,
+                        metadata,
+                        legacy.createdAt()
+                );
+                workerRuntime.create(spec);
+            }
+            advanceLegacyState(targetId, legacy);
+        }
+        migrateLegacyMailbox(teamSessionId, legacyWorkers);
+    }
+
+    private void migrateLegacyMailbox(String teamSessionId, List<PersistentWorkerSession> legacyWorkers) {
+        for (PersistentWorkerSession legacyWorker : legacyWorkers) {
+            String targetId = legacyWorkerId(teamSessionId, legacyWorker.workerId());
+            for (TeamMailboxMessage legacyMessage : legacyTeamRuntime.inbox(
+                    teamSessionId, legacyWorker.workerId(), 0, true)) {
+                boolean imported = workerRuntime.inbox(targetId, 0, true).stream()
+                        .anyMatch(message -> legacyMessage.messageId().equals(
+                                String.valueOf(message.payload().getOrDefault("legacy_message_id", ""))));
+                if (imported) continue;
+                Map<String, Object> payload = new LinkedHashMap<>(legacyMessage.payload());
+                payload.put("legacy_message_id", legacyMessage.messageId());
+                WorkerStore.MailboxMessage migrated = workerRuntime.send(
+                        legacyMessage.fromWorkerId().isBlank()
+                                ? ""
+                                : legacyWorkerId(teamSessionId, legacyMessage.fromWorkerId()),
+                        targetId,
+                        WorkerStore.MessageKind.valueOf(legacyMessage.type().name()),
+                        legacyMessage.correlationId(),
+                        payload
+                );
+                boolean wasAcknowledged = legacyTeamRuntime.inbox(
+                                teamSessionId, legacyWorker.workerId(), 0, false).stream()
+                        .noneMatch(message -> message.messageId().equals(legacyMessage.messageId()));
+                if (wasAcknowledged) workerRuntime.acknowledge(targetId, migrated.messageId());
+            }
+        }
+    }
+
+    private void advanceLegacyState(String workerId, PersistentWorkerSession legacy) {
+        WorkerState.Status current = requireWorker(workerId).state().status();
+        if (legacy.status() == WorkerSessionStatus.CREATED || settled(current)) return;
+        if (legacy.status() == WorkerSessionStatus.CANCELLED) {
+            workerRuntime.cancel(workerId, "migrated from legacy team runtime");
+            return;
+        }
+        if (current == WorkerState.Status.CREATED) {
+            workerRuntime.prepare(workerId);
+            current = WorkerState.Status.READY;
+        }
+        if (current == WorkerState.Status.READY) {
+            workerRuntime.start(workerId, legacy.currentTaskId());
+            current = WorkerState.Status.RUNNING;
+        }
+        if (legacy.status() == WorkerSessionStatus.PAUSED && current == WorkerState.Status.RUNNING) {
+            workerRuntime.awaitMessage(workerId, "migrated paused worker");
+        } else if (legacy.status() == WorkerSessionStatus.COMPLETED && current == WorkerState.Status.RUNNING) {
+            workerRuntime.complete(workerId, "migrated completed worker");
+        } else if (legacy.status() == WorkerSessionStatus.FAILED && current == WorkerState.Status.RUNNING) {
+            workerRuntime.fail(workerId, "migrated failed worker");
+        }
+    }
+
+    private static String legacyWorkerId(String teamSessionId, String workerId) {
+        if ("leader".equals(workerId)) return leaderWorkerId(teamSessionId);
+        return workerId + "-" + UUID.nameUUIDFromBytes((teamSessionId + "\u0000" + workerId)
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString().substring(0, 8);
+    }
+
+    private static boolean settled(WorkerState.Status status) {
+        return status == WorkerState.Status.COMPLETED
+                || status == WorkerState.Status.FAILED
+                || status == WorkerState.Status.CANCELLED;
+    }
+
+    private static String clean(String value) {
+        return value != null ? value.trim() : "";
+    }
+
+    public record WorkerJoinResult(
+            Map<String, WorkerState.Status> statuses,
+            boolean complete,
+            boolean successful
+    ) {
+    }
+
+    public record WorkerHandoffResult(
+            WorkerStore.StoredWorker source,
+            WorkerStore.StoredWorker target,
+            WorkerStore.MailboxMessage message
+    ) {
     }
 
     private TeamSession requireSession(String sessionId) {
@@ -1283,6 +1472,7 @@ public class TeamEngine {
         try {
             for (TeamSession session : store.listSessions()) {
                 rememberSession(session);
+                migrateLegacyWorkers(session.id());
                 events.put(session.id(), new ArrayList<>(store.loadEvents(session.id())));
             }
         } catch (Exception ignored) {

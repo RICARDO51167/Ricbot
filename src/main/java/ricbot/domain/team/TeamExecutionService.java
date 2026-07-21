@@ -6,6 +6,7 @@ import ricbot.domain.workspace.RuntimeArtifactFilter;
 import ricbot.domain.workspace.WorkspaceLifecycleService;
 import ricbot.domain.workspace.WorkspaceBackendType;
 import ricbot.domain.workspace.WorkspaceSession;
+import ricbot.domain.worker.WorkerStore;
 import ricbot.domain.workspace.WorkspaceSessionStore;
 import ricbot.infra.config.Config;
 import ricbot.tool.api.BuiltinToolRegistrar;
@@ -119,13 +120,13 @@ public class TeamExecutionService {
             return planned;
         }
 
-        PersistentWorkerSession workerSession = teamEngine.startWorker(task.id(), task.role());
+        WorkerStore.StoredWorker workerSession = teamEngine.startWorker(task.id(), task.role());
         teamEngine.startProducing(task.id());
         TeamWorkerResult workerResult;
         try {
             workerResult = workerRunner.run(task, workspaceSession, executionRoot);
         } catch (RuntimeException e) {
-            teamEngine.failWorker(workerSession.workerId(), e.getMessage());
+            teamEngine.failWorker(workerSession.spec().workerId(), e.getMessage());
             throw e;
         }
         WorkerExecutionResult worker = workerResult.toWorkerExecutionResult(task, executionRoot.toString(),
@@ -136,9 +137,9 @@ public class TeamExecutionService {
             teamEngine.recordAppliedChanges(task.id(), workerResult.changedFiles());
         }
         if (workerResult.status() == TeamWorkerStatus.FAILED) {
-            teamEngine.failWorker(workerSession.workerId(), worker.summary());
+            teamEngine.failWorker(workerSession.spec().workerId(), worker.summary());
         } else {
-            teamEngine.completeWorker(workerSession.workerId(), worker.summary());
+            teamEngine.completeWorker(workerSession.spec().workerId(), worker.summary());
         }
         recordAudit(task, workerResult.status() == TeamWorkerStatus.FAILED ? StepAuditEventType.STEP_FAILED : StepAuditEventType.STEP_TOOL_APPLIED,
                 "", teamEngine.findTask(task.id()).state().name(),

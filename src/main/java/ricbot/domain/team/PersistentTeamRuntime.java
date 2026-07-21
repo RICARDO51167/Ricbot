@@ -23,11 +23,12 @@ import java.util.UUID;
 import java.util.stream.Stream;
 
 /**
- * Multi-process durable worker registry and mailbox.
+ * Legacy Team-specific worker registry retained only for non-destructive migration.
  *
  * <p>Messages are immutable files, delivery acknowledgement is a separate
  * marker, and the team sequence is allocated under an OS file lock.</p>
  */
+@Deprecated
 public final class PersistentTeamRuntime {
     private static final ObjectMapper MAPPER = new ObjectMapper().findAndRegisterModules();
     private static final Object[] LOCKS = new Object[64];

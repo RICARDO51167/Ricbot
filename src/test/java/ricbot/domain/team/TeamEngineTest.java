@@ -8,6 +8,8 @@ import java.nio.file.Path;
 import java.util.List;
 import ricbot.domain.trace.TraceEventType;
 import ricbot.domain.trace.TraceStore;
+import ricbot.domain.worker.WorkerState;
+import ricbot.domain.worker.WorkerStore;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -22,21 +24,54 @@ class TeamEngineTest {
         TeamSession session = engine.createSession("durable team");
         TeamTask task = engine.createTask(session.id(), TeamRole.EXPLORER, "inspect persistence");
 
-        PersistentWorkerSession worker = engine.startWorker(task.id(), TeamRole.EXPLORER);
-        List<TeamMailboxMessage> assignment = engine.workerInbox(session.id(), worker.workerId(), 0, false);
-        assertEquals(TeamMessageType.TASK, assignment.get(0).type());
-        engine.acknowledgeWorkerMessage(session.id(), worker.workerId(), assignment.get(0).messageId());
-        engine.completeWorker(worker.workerId(), "inspection complete");
+        WorkerStore.StoredWorker worker = engine.startWorker(task.id(), TeamRole.EXPLORER);
+        List<WorkerStore.MailboxMessage> assignment = engine.workerInbox(
+                session.id(), worker.spec().workerId(), 0, false);
+        assertEquals(WorkerStore.MessageKind.TASK, assignment.get(0).kind());
+        engine.acknowledgeWorkerMessage(session.id(), worker.spec().workerId(), assignment.get(0).messageId());
+        engine.completeWorker(worker.spec().workerId(), "inspection complete");
 
         TeamEngine restarted = new TeamEngine(workspace);
-        PersistentWorkerSession restored = restarted.workersForTask(task.id()).stream()
-                .filter(value -> value.workerId().equals(worker.workerId()))
+        WorkerStore.StoredWorker restored = restarted.workersForTask(task.id()).stream()
+                .filter(value -> value.spec().workerId().equals(worker.spec().workerId()))
                 .findFirst().orElseThrow();
-        assertEquals(WorkerSessionStatus.COMPLETED, restored.status());
-        assertTrue(restarted.joinWorkers(session.id(), List.of(worker.workerId())).successful());
-        assertTrue(restarted.workerInbox(session.id(), "leader", 0, false).stream()
-                .anyMatch(message -> message.type() == TeamMessageType.RESULT
+        assertEquals(WorkerState.Status.COMPLETED, restored.state().status());
+        assertTrue(restarted.joinWorkers(session.id(), List.of(worker.spec().workerId())).successful());
+        String leaderId = restarted.workers(session.id()).stream()
+                .filter(value -> TeamRole.LEADER.name().equals(value.spec().role()))
+                .findFirst().orElseThrow().spec().workerId();
+        assertTrue(restarted.workerInbox(session.id(), leaderId, 0, false).stream()
+                .anyMatch(message -> message.kind() == WorkerStore.MessageKind.RESULT
                         && task.id().equals(message.correlationId())));
+        assertTrue(Files.isDirectory(workspace.resolve(".ricbot").resolve("worker-runtime")));
+    }
+
+    @Test
+    void migratesLegacyTeamWorkersWithoutDeletingLegacyData(@TempDir Path workspace) {
+        String teamId = "legacy-team";
+        new TeamSessionStore(workspace).saveSession(new TeamSession(
+                teamId, "restore legacy workers", TeamTaskState.PLANNING, List.of(), null, null));
+        PersistentTeamRuntime legacy = new PersistentTeamRuntime(workspace);
+        legacy.createWorker(teamId, "leader", TeamRole.LEADER, "", java.util.Map.of());
+        legacy.createWorker(teamId, "dev", TeamRole.DEVELOPER, "leader",
+                java.util.Map.of("task_id", "legacy-task"));
+        legacy.transition(teamId, "dev", WorkerSessionStatus.RUNNING, "legacy-task");
+        TeamMailboxMessage legacyAssignment = legacy.send(
+                teamId, "leader", "dev", TeamMessageType.TASK, "legacy-task", java.util.Map.of("goal", "restore"));
+        legacy.transition(teamId, "dev", WorkerSessionStatus.COMPLETED, "legacy-task");
+        Path legacyRoot = workspace.resolve(".ricbot").resolve("team-runtime");
+
+        TeamEngine migrated = new TeamEngine(workspace);
+        WorkerStore.StoredWorker restored = migrated.workers(teamId).stream()
+                .filter(worker -> "dev".equals(worker.spec().metadata().get("legacy_worker_id")))
+                .findFirst().orElseThrow();
+
+        assertEquals(WorkerState.Status.COMPLETED, restored.state().status());
+        assertEquals("legacy-task", restored.state().currentRunId());
+        assertTrue(migrated.workerInbox(teamId, restored.spec().workerId(), 0, false).stream()
+                .anyMatch(message -> legacyAssignment.messageId().equals(message.payload().get("legacy_message_id"))));
+        assertTrue(Files.isDirectory(legacyRoot));
+        assertTrue(Files.isDirectory(workspace.resolve(".ricbot").resolve("worker-runtime")));
     }
 
     @Test

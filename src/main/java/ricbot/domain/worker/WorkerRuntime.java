@@ -47,6 +47,13 @@ public final class WorkerRuntime {
         return store.list();
     }
 
+    public List<WorkerStore.StoredWorker> workers(String scopeId) {
+        String scope = required(scopeId, "scopeId");
+        return store.list().stream()
+                .filter(worker -> scope.equals(worker.spec().scopeId()))
+                .toList();
+    }
+
     public WorkerState transition(
             String workerId,
             WorkerState.Status status,
