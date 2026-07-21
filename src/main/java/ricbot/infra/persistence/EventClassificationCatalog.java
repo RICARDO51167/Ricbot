@@ -1,0 +1,203 @@
+package ricbot.infra.persistence;
+
+import ricbot.domain.agent.RunEventType;
+import ricbot.domain.team.StepAuditEventType;
+import ricbot.domain.team.TeamEvent;
+import ricbot.domain.trace.TraceEventType;
+
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.Map;
+
+/** Migration catalog that prevents diagnostic and projection data becoming a source of truth. */
+public final class EventClassificationCatalog {
+    public static final String RUN = "run";
+    public static final String TRACE = "trace";
+    public static final String TEAM = "team";
+    public static final String STEP_AUDIT = "step_audit";
+    public static final String EVIDENCE = "evidence";
+    public static final String CONSOLE = "console";
+
+    private static final Map<String, Classification> CATALOG = build();
+
+    private EventClassificationCatalog() {
+    }
+
+    public static Classification classification(String namespace, String type) {
+        String key = key(namespace, type);
+        Classification value = CATALOG.get(key);
+        if (value == null) throw new IllegalArgumentException("unclassified event data: " + key);
+        return value;
+    }
+
+    public static Map<String, Classification> entries() {
+        return CATALOG;
+    }
+
+    private static Map<String, Classification> build() {
+        Map<String, Classification> values = new LinkedHashMap<>();
+
+        durable(values, RUN,
+                RunEventType.RUN_STARTED,
+                RunEventType.RUN_FORKED,
+                RunEventType.CHECKPOINT_RESTORED,
+                RunEventType.MODEL_RESPONSE_RECEIVED,
+                RunEventType.MODEL_FAILED,
+                RunEventType.TOOL_CALL_STARTED,
+                RunEventType.TOOL_CALL_COMPLETED,
+                RunEventType.TOOL_CALL_FAILED,
+                RunEventType.TOOL_RETRY_STARTED,
+                RunEventType.TOOL_RETRY_COMPLETED,
+                RunEventType.TOOL_RETRY_FAILED,
+                RunEventType.RUN_PAUSED,
+                RunEventType.RUN_FINISHED);
+        diagnostic(values, RUN,
+                RunEventType.NODE_STARTED,
+                RunEventType.NODE_TRANSITIONED,
+                RunEventType.MODEL_REQUESTED,
+                RunEventType.TOOL_BATCH_COMPLETED);
+
+        diagnostic(values, TRACE,
+                TraceEventType.SESSION_STARTED,
+                TraceEventType.CONTEXT_BUILT,
+                TraceEventType.WORKER_STARTED,
+                TraceEventType.WORKER_FINISHED,
+                TraceEventType.WORKER_FAILED,
+                TraceEventType.VERIFIER_STARTED,
+                TraceEventType.VERIFIER_FINISHED,
+                TraceEventType.STEP_AUDIT_RECORDED,
+                TraceEventType.STEP_AUDIT_COMPACTED,
+                TraceEventType.STEP_AUDIT_LINKED,
+                TraceEventType.TASK_SUMMARY_CREATED,
+                TraceEventType.TEAM_EVENT);
+        durable(values, TRACE,
+                TraceEventType.APPROVAL_REQUESTED,
+                TraceEventType.APPROVAL_APPROVED,
+                TraceEventType.APPROVAL_REJECTED,
+                TraceEventType.SIDE_EFFECT_RESERVED,
+                TraceEventType.SIDE_EFFECT_REUSED,
+                TraceEventType.SIDE_EFFECT_RETRY_AUTHORIZED,
+                TraceEventType.SIDE_EFFECT_SUCCEEDED,
+                TraceEventType.SIDE_EFFECT_FAILED,
+                TraceEventType.SIDE_EFFECT_COMPENSATED,
+                TraceEventType.CHANGESET_CREATED,
+                TraceEventType.CHANGESET_APPROVED,
+                TraceEventType.CHANGESET_COMMIT_REQUESTED,
+                TraceEventType.CHANGESET_COMMITTED,
+                TraceEventType.CHANGESET_ROLLBACK_REQUESTED,
+                TraceEventType.CHANGESET_ROLLED_BACK,
+                TraceEventType.WORKSPACE_CREATED,
+                TraceEventType.WORKSPACE_SELECTED,
+                TraceEventType.WORKSPACE_CLEANED,
+                TraceEventType.CHANGESET_CREATED_FROM_WORKSPACE,
+                TraceEventType.POLICY_EVALUATED,
+                TraceEventType.POLICY_DENIED,
+                TraceEventType.POLICY_APPROVAL_REQUIRED,
+                TraceEventType.DEVELOPER_PLAN_CREATED,
+                TraceEventType.DEVELOPER_TOOL_APPROVAL_REQUIRED,
+                TraceEventType.DEVELOPER_TOOL_APPLIED,
+                TraceEventType.WORKSPACE_DIFF_REQUIRES_CHANGESET,
+                TraceEventType.IMPLEMENTATION_STEP_CREATED,
+                TraceEventType.IMPLEMENTATION_STEP_APPLIED,
+                TraceEventType.IMPLEMENTATION_STEP_REJECTED,
+                TraceEventType.IMPLEMENTATION_STEP_APPROVAL_REQUIRED,
+                TraceEventType.IMPLEMENTATION_STEP_FAILED,
+                TraceEventType.IMPLEMENTATION_STEP_BLOCKED,
+                TraceEventType.IMPLEMENTATION_STEP_GATE_CHECKED,
+                TraceEventType.IMPLEMENTATION_STEP_UPDATED,
+                TraceEventType.IMPLEMENTATION_STEP_READY,
+                TraceEventType.IMPLEMENTATION_STEP_VALIDATION_FAILED);
+        artifact(values, TRACE,
+                TraceEventType.DIFF_REVIEWED,
+                TraceEventType.VERIFICATION_RESULT,
+                TraceEventType.WORKSPACE_DIFFED,
+                TraceEventType.EVAL_RESULT);
+
+        put(values, TEAM, TeamEvent.TEAM_STARTED, Classification.DURABLE_FACT);
+        put(values, TEAM, TeamEvent.TASK_CREATED, Classification.DURABLE_FACT);
+        put(values, TEAM, TeamEvent.TASK_PRODUCING, Classification.DURABLE_FACT);
+        put(values, TEAM, TeamEvent.WORKER_RESULT_SUBMITTED, Classification.DURABLE_FACT);
+        put(values, TEAM, TeamEvent.VERIFICATION_STARTED, Classification.DURABLE_FACT);
+        put(values, TEAM, TeamEvent.VERIFICATION_PASSED, Classification.DURABLE_FACT);
+        put(values, TEAM, TeamEvent.VERIFICATION_REJECTED, Classification.DURABLE_FACT);
+        put(values, TEAM, TeamEvent.REVISION_REQUESTED, Classification.DURABLE_FACT);
+        put(values, TEAM, TeamEvent.HUMAN_NEEDED, Classification.DURABLE_FACT);
+        put(values, TEAM, TeamEvent.TASK_ABORTED, Classification.DURABLE_FACT);
+        put(values, TEAM, TeamEvent.TEAM_ARCHIVED, Classification.DURABLE_FACT);
+        put(values, TEAM, TeamEvent.TEAM_RESUMED, Classification.DURABLE_FACT);
+        put(values, TEAM, TeamEvent.ARTIFACT_RECORDED, Classification.DURABLE_FACT);
+
+        diagnostic(values, STEP_AUDIT,
+                StepAuditEventType.STEP_CREATED,
+                StepAuditEventType.STEP_UPDATED,
+                StepAuditEventType.STEP_READY,
+                StepAuditEventType.STEP_BLOCKED,
+                StepAuditEventType.STEP_APPLY_REQUESTED);
+        durable(values, STEP_AUDIT,
+                StepAuditEventType.STEP_APPROVAL_REQUIRED,
+                StepAuditEventType.STEP_APPROVED,
+                StepAuditEventType.STEP_TOOL_APPLIED,
+                StepAuditEventType.STEP_REJECTED,
+                StepAuditEventType.STEP_FAILED,
+                StepAuditEventType.STEP_CHANGESET_LINKED,
+                StepAuditEventType.STEP_VERIFIED);
+
+        put(values, EVIDENCE, "DiffEvidence", Classification.IMMUTABLE_ARTIFACT);
+        put(values, EVIDENCE, "ExecutedTestEvidence", Classification.IMMUTABLE_ARTIFACT);
+        put(values, EVIDENCE, "ApprovalEvidence", Classification.IMMUTABLE_ARTIFACT);
+        put(values, EVIDENCE, "VerificationEvidence", Classification.IMMUTABLE_ARTIFACT);
+
+        put(values, CONSOLE, "ConsoleEvent", Classification.READ_MODEL);
+        put(values, CONSOLE, "ConsoleMetrics", Classification.READ_MODEL);
+        put(values, CONSOLE, "ConsoleRunHistory", Classification.READ_MODEL);
+        put(values, CONSOLE, "ConsoleActionAudit", Classification.DURABLE_FACT);
+        return Collections.unmodifiableMap(values);
+    }
+
+    private static void durable(Map<String, Classification> values, String namespace, Enum<?>... types) {
+        putAll(values, namespace, Classification.DURABLE_FACT, types);
+    }
+
+    private static void artifact(Map<String, Classification> values, String namespace, Enum<?>... types) {
+        putAll(values, namespace, Classification.IMMUTABLE_ARTIFACT, types);
+    }
+
+    private static void diagnostic(Map<String, Classification> values, String namespace, Enum<?>... types) {
+        putAll(values, namespace, Classification.DIAGNOSTIC, types);
+    }
+
+    private static void putAll(
+            Map<String, Classification> values,
+            String namespace,
+            Classification classification,
+            Enum<?>... types
+    ) {
+        for (Enum<?> type : types) put(values, namespace, type.name(), classification);
+    }
+
+    private static void put(
+            Map<String, Classification> values,
+            String namespace,
+            String type,
+            Classification classification
+    ) {
+        String key = key(namespace, type);
+        if (values.putIfAbsent(key, classification) != null) {
+            throw new IllegalStateException("duplicate event classification: " + key);
+        }
+    }
+
+    private static String key(String namespace, String type) {
+        String group = namespace != null ? namespace.trim().toLowerCase(java.util.Locale.ROOT) : "";
+        String name = type != null ? type.trim() : "";
+        if (group.isBlank() || name.isBlank()) throw new IllegalArgumentException("namespace and type are required");
+        return group + ":" + name;
+    }
+
+    public enum Classification {
+        DURABLE_FACT,
+        IMMUTABLE_ARTIFACT,
+        READ_MODEL,
+        DIAGNOSTIC
+    }
+}
