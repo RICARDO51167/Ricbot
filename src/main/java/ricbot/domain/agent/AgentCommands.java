@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ricbot.application.team.TeamReportApplicationService;
 import ricbot.application.team.TeamSessionApplicationService;
+import ricbot.application.team.TeamTaskApplicationService;
 import ricbot.application.workspace.WorkspaceApplicationService;
 import ricbot.domain.change.ChangeSetRenderer;
 import ricbot.domain.change.ChangeSetService;
@@ -45,7 +46,6 @@ import ricbot.domain.team.StepGateResult;
 import ricbot.domain.team.StepUpdateRequest;
 import ricbot.domain.team.StepAuditEventType;
 import ricbot.domain.team.StepAuditRecord;
-import ricbot.domain.team.VerificationInput;
 import ricbot.domain.team.VerificationResult;
 import ricbot.domain.team.WorkerExecutionInput;
 import ricbot.domain.team.WorkerExecutionResult;
@@ -93,6 +93,7 @@ final class AgentCommands {
     private final WorkspaceApplicationService workspaceApplication;
     private final TeamSessionApplicationService teamSessions;
     private final TeamReportApplicationService teamReports;
+    private final TeamTaskApplicationService teamTasks;
 
     AgentCommands(
             SessionManager sessionManager,
@@ -159,6 +160,7 @@ final class AgentCommands {
         this.workspaceApplication = new WorkspaceApplicationService(this.workspace, this.sessionManager, this.traceStore);
         this.teamSessions = new TeamSessionApplicationService(this.sessionManager, this.teamEngine);
         this.teamReports = new TeamReportApplicationService(this.teamEngine, this.teamSessions);
+        this.teamTasks = new TeamTaskApplicationService(this.workspace, this.teamEngine, this.teamSessions);
     }
 
     void register(CommandRouter router) {
@@ -711,9 +713,8 @@ final class AgentCommands {
                 case "update-step" -> teamUpdateStep(ctx, afterCommand(args));
                 case "apply-step" -> teamApplyStep(ctx, afterCommand(args));
                 case "reject-step" -> teamRejectStep(ctx, afterCommand(args));
-                case "auto-verify" -> teamAutoVerify(ctx, afterCommand(args));
-                case "task" -> teamTask(ctx, afterCommand(args));
-                case "verify" -> teamVerify(ctx, afterCommand(args));
+                case "auto-verify", "task", "verify" -> completedReply(ctx,
+                        teamTasks.execute(session, action, afterCommand(args)));
                 default -> completedReply(ctx, "用法：/team start <goal>|status|list|resume <sessionId>|archive <sessionId>|suggest <goal>|suggest-current|run <task> [--worktree] [--verify]|task <role> <goal>|run-worker <taskId>|run-verifier <taskId>|worker-report <taskId>|report <taskId>|tool-call <taskId> <toolName> <jsonArgs>|plan-steps <taskId>|steps <taskId>|show-step <stepId>|next-step <taskId>|update-step <stepId> <jsonUpdate>|apply-step <stepId>|reject-step <stepId>|step-timeline <stepId>|task-timeline <taskId>|audit <taskId>|auto-verify <taskId>|verifier-report <taskId>|verify <taskId> pass|reject|needs-human <reason>|events|whiteboard|abort <taskId>");
             };
         } catch (IllegalArgumentException | IllegalStateException e) {
@@ -746,50 +747,6 @@ final class AgentCommands {
             }
         }
         return completedReply(ctx, renderTeamExecutionResult(result));
-    }
-
-    private CompletableFuture<OutboundMessage> teamTask(CommandRouter.CommandContext ctx, String rawArgs) {
-        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
-        String sessionId = requireActiveTeamSessionId(session);
-        String roleRaw = commandArg(rawArgs, 0);
-        TeamRole role = parseTeamRole(roleRaw);
-        String goal = afterCommand(rawArgs);
-        if (goal.isBlank()) {
-            throw new IllegalArgumentException("missing team task goal");
-        }
-        TeamTask task = teamEngine.createTask(sessionId, role, goal);
-        storeTeamContext(session, sessionId);
-        return completedReply(ctx, "team task created\n"
-                + "id: " + task.id() + "\n"
-                + "role: " + task.role() + "\n"
-                + "state: " + task.state() + "\n"
-                + "goal: " + task.goal() + "\n"
-                + "whiteboard: " + teamEngine.whiteboard(sessionId).relativeWhiteboardPath());
-    }
-
-    private CompletableFuture<OutboundMessage> teamVerify(CommandRouter.CommandContext ctx, String rawArgs) {
-        String[] parts = trim(rawArgs).split("\\s+", 3);
-        if (parts.length < 2 || parts[0].isBlank() || parts[1].isBlank()) {
-            throw new IllegalArgumentException("usage: /team verify <taskId> pass|reject|needs-human <reason>");
-        }
-        String taskId = parts[0];
-        String reason = parts.length >= 3 && !parts[2].isBlank() ? parts[2].trim() : "manual verifier result";
-        VerificationResult verification = switch (parts[1].toLowerCase(java.util.Locale.ROOT)) {
-            case "pass", "passed" -> VerificationResult.pass(reason);
-            case "reject", "rejected" -> VerificationResult.reject(reason);
-            case "needs-human", "needs_human", "human" -> VerificationResult.needsHuman(reason);
-            default -> throw new IllegalArgumentException("verification status must be pass, reject, or needs-human");
-        };
-        teamEngine.startVerifying(taskId);
-        TeamTask task = teamEngine.submitVerification(taskId, verification);
-        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
-        storeTeamContext(session, task.sessionId());
-        return completedReply(ctx, "team verification recorded\n"
-                + "taskId: " + task.id() + "\n"
-                + "state: " + task.state() + "\n"
-                + "status: " + task.verificationResult().status() + "\n"
-                + "reason: " + task.verificationResult().reason()
-                + (!task.revisionRequest().isBlank() ? "\nrevisionRequest: " + task.revisionRequest() : ""));
     }
 
     private CompletableFuture<OutboundMessage> teamRunWorker(CommandRouter.CommandContext ctx, String rawArgs) {
@@ -1130,55 +1087,6 @@ final class AgentCommands {
                 + "\n\nchangeset created\nid: " + changeSet.id() + "\n" + renderer.renderStatus(changeSet));
     }
 
-    private CompletableFuture<OutboundMessage> teamAutoVerify(CommandRouter.CommandContext ctx, String rawArgs) {
-        String taskId = commandArg(rawArgs, 0);
-        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
-        resolveActiveTeamSessionId(session);
-        TeamTask existing = teamEngine.findTask(taskId);
-        if (existing == null) {
-            throw new IllegalArgumentException("team task not found: " + taskId);
-        }
-        TaskSummaryService.TaskSummary summary = new TaskSummaryService().summarizeCurrentTask(session);
-        VerificationInput input = verificationInput(existing, summary, session);
-        TeamTask task = teamEngine.autoVerify(taskId, input);
-        storeTeamContext(session, task.sessionId());
-        VerificationResult result = task.verificationResult();
-        String changeHint = result.status() == VerificationResult.Status.PASS && new ChangeSetService(workspace).hasWorkingTreeChanges()
-                ? "\nchangeSetHint: working tree has changes; run /change create"
-                : "";
-        return completedReply(ctx, "team auto verification recorded\n"
-                + "taskId: " + task.id() + "\n"
-                + "state: " + task.state() + "\n"
-                + "status: " + result.status() + "\n"
-                + "riskLevel: " + result.riskLevel() + "\n"
-                + "reasons: " + renderListInline(result.reasons()) + "\n"
-                + "missingTests: " + renderListInline(result.missingTests()) + "\n"
-                + "requiredActions: " + renderListInline(result.requiredActions())
-                + changeHint);
-    }
-
-    private TeamRole parseTeamRole(String raw) {
-        try {
-            return TeamRole.valueOf(trim(raw).replace('-', '_').toUpperCase(java.util.Locale.ROOT));
-        } catch (Exception e) {
-            throw new IllegalArgumentException("unknown team role: " + raw);
-        }
-    }
-
-    private VerificationInput verificationInput(TeamTask task, TaskSummaryService.TaskSummary summary, Session session) {
-        return new VerificationInput(
-                task.id(),
-                task.goal(),
-                task.summary(),
-                summary.diffReviews(),
-                renderTaskSummaryForVerifier(summary),
-                summary.approvalRecords(),
-                summary.suggestedTests(),
-                summary.testCommands(),
-                teamEngine.whiteboard(task.sessionId()).readSummary()
-        );
-    }
-
     private WorkerExecutionInput workerExecutionInput(TeamTask task, Session session, boolean verifier) {
         TaskSummaryService.TaskSummary summary = new TaskSummaryService().summarizeCurrentTask(session);
         String workspacePath = activeWorkspacePath(session);
@@ -1209,6 +1117,14 @@ final class AgentCommands {
                 0d,
                 ""
         );
+    }
+
+    private TeamRole parseTeamRole(String raw) {
+        try {
+            return TeamRole.valueOf(trim(raw).replace('-', '_').toUpperCase(java.util.Locale.ROOT));
+        } catch (Exception e) {
+            throw new IllegalArgumentException("unknown team role: " + raw);
+        }
     }
 
     private String activeWorkspaceSessionId(Session session) {
