@@ -7,6 +7,7 @@ import ricbot.application.team.TeamRunApplicationService;
 import ricbot.application.team.TeamSessionApplicationService;
 import ricbot.application.team.TeamStepApplicationService;
 import ricbot.application.team.TeamTaskApplicationService;
+import ricbot.application.team.TeamToolApplicationService;
 import ricbot.application.team.TeamWorkerApplicationService;
 import ricbot.application.workspace.WorkspaceApplicationService;
 import ricbot.domain.change.ChangeSetRenderer;
@@ -95,6 +96,7 @@ final class AgentCommands {
     private final TeamStepApplicationService teamSteps;
     private final TeamRunApplicationService teamRuns;
     private final TeamWorkerApplicationService teamWorkers;
+    private final TeamToolApplicationService teamTools;
 
     AgentCommands(
             SessionManager sessionManager,
@@ -167,6 +169,8 @@ final class AgentCommands {
                 this.teamSessions, this.workspaceApplication);
         this.teamWorkers = new TeamWorkerApplicationService(this.workspace, this.sessionManager, this.teamEngine,
                 this.teamSessions, this.traceStore);
+        this.teamTools = new TeamToolApplicationService(this.workspace, this.sessionManager, this.teamEngine,
+                this.teamSessions, this.teamWorkers, this.toolRegistry, this.approvalService, this.traceStore);
     }
 
     void register(CommandRouter router) {
@@ -711,10 +715,10 @@ final class AgentCommands {
                         teamWorkers.execute(session, action, afterCommand(args)));
                 case "worker-report", "report", "verifier-report", "step-timeline", "task-timeline", "audit" ->
                         completedReply(ctx, teamReports.execute(session, action, afterCommand(args)));
-                case "tool-call" -> teamToolCall(ctx, afterCommand(args));
+                case "tool-call", "apply-step" -> completedReply(ctx,
+                        teamTools.execute(session, action, afterCommand(args)));
                 case "plan-steps", "steps", "show-step", "next-step", "update-step", "reject-step" ->
                         completedReply(ctx, teamSteps.execute(session, action, afterCommand(args)));
-                case "apply-step" -> teamApplyStep(ctx, afterCommand(args));
                 case "auto-verify", "task", "verify" -> completedReply(ctx,
                         teamTasks.execute(session, action, afterCommand(args)));
                 default -> completedReply(ctx, "用法：/team start <goal>|status|list|resume <sessionId>|archive <sessionId>|suggest <goal>|suggest-current|run <task> [--worktree] [--verify]|task <role> <goal>|run-worker <taskId>|run-verifier <taskId>|worker-report <taskId>|report <taskId>|tool-call <taskId> <toolName> <jsonArgs>|plan-steps <taskId>|steps <taskId>|show-step <stepId>|next-step <taskId>|update-step <stepId> <jsonUpdate>|apply-step <stepId>|reject-step <stepId>|step-timeline <stepId>|task-timeline <taskId>|audit <taskId>|auto-verify <taskId>|verifier-report <taskId>|verify <taskId> pass|reject|needs-human <reason>|events|whiteboard|abort <taskId>");
@@ -733,172 +737,6 @@ final class AgentCommands {
         }
     }
 
-    private CompletableFuture<OutboundMessage> teamToolCall(CommandRouter.CommandContext ctx, String rawArgs) {
-        String taskId = commandArg(rawArgs, 0);
-        String toolName = commandArg(rawArgs, 1);
-        String jsonArgs = afterNthArg(rawArgs, 2);
-        if (jsonArgs.isBlank()) {
-            throw new IllegalArgumentException("missing jsonArgs");
-        }
-        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
-        resolveActiveTeamSessionId(session);
-        TeamTask task = teamEngine.findTask(taskId);
-        if (task == null) {
-            throw new IllegalArgumentException("team task not found: " + taskId);
-        }
-        Map<String, Object> args = parseJsonArgs(jsonArgs);
-        WorkspaceSession workspaceSession = activeWorkspaceSession(session);
-        PolicyAwareToolExecutor executor = new PolicyAwareToolExecutor(
-                new PolicyEngine(workspace),
-                toolRegistry,
-                approvalService,
-                traceStore
-        );
-        PolicyAwareToolExecutor.PolicyToolResult result = teamEngine.executeToolAsRole(
-                task.id(),
-                executor,
-                args,
-                workspaceSession,
-                session.getKey(),
-                toolName
-        );
-        if (task.role() == TeamRole.DEVELOPER) {
-            session.getMetadata().put(SessionRuntimeKeys.DEVELOPER_TASK_ID_KEY, task.id());
-            sessionManager.save(session);
-            if (result.decision().requiresApproval()) {
-                traceEvent(session, TraceEventType.DEVELOPER_TOOL_APPROVAL_REQUIRED, "developer", "developer tool approval required", Map.of(
-                        "taskId", task.id(),
-                        "teamSessionId", task.sessionId(),
-                        "toolName", result.decision().toolName(),
-                        "requestId", result.approvalRequestId(),
-                        "workspaceSessionId", workspaceSession != null ? workspaceSession.id() : "",
-                        "workspacePath", workspaceSession != null ? workspaceSession.workspacePath() : workspace.toString()
-                ), task.sessionId(), "", result.approvalRequestId());
-            }
-        }
-        WorkerExecutionResult report = roleToolCallReport(task, result, workspaceSession);
-        teamEngine.recordRoleToolCall(task.id(), report);
-        storeTeamContext(session, task.sessionId());
-        return completedReply(ctx, renderPolicyToolResult(result, report));
-    }
-
-    private CompletableFuture<OutboundMessage> teamApplyStep(CommandRouter.CommandContext ctx, String rawArgs) {
-        PendingImplementationStep step = requireImplementationStep(commandArg(rawArgs, 0));
-        if (step.status() == ImplementationStepStatus.REJECTED || step.status() == ImplementationStepStatus.APPLIED) {
-            return completedReply(ctx, "implementation step not applicable\n" + renderImplementationStepDetail(step));
-        }
-        if (step.status() == ImplementationStepStatus.DRAFT) {
-            List<String> errors = new ImplementationStepGate().validateFields(step);
-            return completedReply(ctx, "implementation step is DRAFT; run /team update-step before apply-step\n"
-                    + "validationErrors: " + renderListInline(errors.isEmpty() ? step.validationErrors() : errors) + "\n\n"
-                    + renderImplementationStepDetail(step));
-        }
-        if (step.status() == ImplementationStepStatus.BLOCKED) {
-            return completedReply(ctx, "implementation step is BLOCKED\n" + renderImplementationStepDetail(step));
-        }
-        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
-        StepGateResult gate = teamEngine.checkImplementationStepGate(step.id(), stepGateContext(session, step));
-        traceImplementationStepGate(session, TraceEventType.IMPLEMENTATION_STEP_GATE_CHECKED, step, gate);
-        if (gate.blocked()) {
-            PendingImplementationStep blocked = teamEngine.blockImplementationStep(step.id(), gate);
-            storeTeamContext(session, blocked.teamSessionId());
-            traceImplementationStep(session, TraceEventType.IMPLEMENTATION_STEP_BLOCKED, blocked);
-            traceImplementationStepGate(session, TraceEventType.IMPLEMENTATION_STEP_BLOCKED, blocked, gate);
-            return completedReply(ctx, "implementation step blocked\n"
-                    + renderImplementationStepDetail(blocked)
-                    + "\n\n" + renderStepGate(gate));
-        }
-        return switch (step.type()) {
-            case READ, EDIT, WRITE, EXEC_TEST -> applyToolBackedStep(ctx, step);
-            case CREATE_CHANGESET -> applyCreateChangeSetStep(ctx, step);
-            case RUN_VERIFIER -> {
-                String result = teamWorkers.execute(session, "run-verifier", step.taskId());
-                PendingImplementationStep applied = teamEngine.applyImplementationStep(step.id());
-                storeTeamContext(session, applied.teamSessionId());
-                yield completedReply(ctx, result + "\n\nimplementation step applied\n" + renderImplementationStepDetail(applied));
-            }
-        };
-    }
-
-    private CompletableFuture<OutboundMessage> applyToolBackedStep(CommandRouter.CommandContext ctx, PendingImplementationStep step) {
-        if (step.status() == ImplementationStepStatus.DRAFT && (step.type() == ImplementationStepType.EDIT || step.type() == ImplementationStepType.WRITE)) {
-            PendingImplementationStep failed = teamEngine.failImplementationStep(step.id(), Map.of("reason", "draft step is missing executable edit/write arguments"));
-            return completedReply(ctx, "implementation step failed\n" + renderImplementationStepDetail(failed));
-        }
-        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
-        WorkspaceSession workspaceSession = activeWorkspaceSession(session);
-        Map<String, Object> args = stepArgs(step);
-        args.put("__implementation_step_id", step.id());
-        PolicyAwareToolExecutor executor = new PolicyAwareToolExecutor(new PolicyEngine(workspace), toolRegistry, approvalService, traceStore);
-        PolicyAwareToolExecutor.PolicyToolResult result = executor.execute(
-                step.role(),
-                toolNameForStep(step),
-                args,
-                workspaceSession,
-                session.getKey(),
-                step.teamSessionId(),
-                step.taskId()
-        );
-        PendingImplementationStep updated;
-        if (result.decision().denied()) {
-            updated = teamEngine.failImplementationStep(step.id(), result.decision().toMap());
-            traceImplementationStep(session, TraceEventType.IMPLEMENTATION_STEP_FAILED, updated);
-        } else if (result.decision().requiresApproval()) {
-            updated = teamEngine.markImplementationStepApprovalRequired(step.id(), result.decision().toMap());
-            teamEngine.recordStepAudit(new StepAuditRecord(null, updated.id(), updated.taskId(), updated.teamSessionId(),
-                    StepAuditEventType.STEP_APPROVAL_REQUIRED, step.status().name(), updated.status().name(),
-                    "Implementation step approval required.", result.approvalRequestId(), toolNameForStep(step), "",
-                    "", "", "", null, result.decision().toMap()));
-            traceImplementationStep(session, TraceEventType.IMPLEMENTATION_STEP_APPROVAL_REQUIRED, updated);
-        } else if (result.executed()) {
-            updated = teamEngine.applyImplementationStep(step.id());
-            teamEngine.recordStepAudit(new StepAuditRecord(null, updated.id(), updated.taskId(), updated.teamSessionId(),
-                    StepAuditEventType.STEP_TOOL_APPLIED, step.status().name(), updated.status().name(),
-                    "Implementation step tool applied.", "", toolNameForStep(step), result.resultSummary(),
-                    "", "", "", null, Map.of()));
-            traceImplementationStep(session, TraceEventType.IMPLEMENTATION_STEP_APPLIED, updated);
-        } else {
-            updated = teamEngine.failImplementationStep(step.id(), result.decision().toMap());
-            traceImplementationStep(session, TraceEventType.IMPLEMENTATION_STEP_FAILED, updated);
-        }
-        storeTeamContext(session, updated.teamSessionId());
-        return completedReply(ctx, "implementation step apply result\n"
-                + "policy decision: " + result.decision().decisionType() + "\n"
-                + "reasons: " + renderListInline(result.decision().reasons()) + "\n"
-                + (!result.approvalRequestId().isBlank() ? "approval requestId: " + result.approvalRequestId() + "\n" : "")
-                + "tool result: " + (result.resultSummary().isBlank() ? "none" : result.resultSummary()) + "\n\n"
-                + renderImplementationStepDetail(updated));
-    }
-
-    private CompletableFuture<OutboundMessage> applyCreateChangeSetStep(CommandRouter.CommandContext ctx, PendingImplementationStep step) {
-        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
-        ChangeSetService service = new ChangeSetService(workspace);
-        ChangeSetRenderer renderer = new ChangeSetRenderer();
-        WorkspaceSession activeWorkspace = activeWorkspaceSession(session);
-        GitChangeSet changeSet = activeWorkspace != null
-                ? service.createFromWorkspace(activeWorkspace.id(), Path.of(activeWorkspace.workspacePath()), ctx.getKey(), step.teamSessionId(), step.taskId())
-                : service.createFromWorkingTree(ctx.getKey(), step.teamSessionId(), step.taskId());
-        teamEngine.recordArtifact(step.teamSessionId(), new TeamArtifact(null, step.taskId(), ".changesets/" + changeSet.id() + "/changeset.json", "ChangeSet " + changeSet.id(), "changeset", null));
-        storeChangeSetContext(session, changeSet, renderer);
-        PendingImplementationStep applied = teamEngine.applyImplementationStep(step.id());
-        teamEngine.recordStepAudit(new StepAuditRecord(null, applied.id(), applied.taskId(), applied.teamSessionId(),
-                StepAuditEventType.STEP_CHANGESET_LINKED, step.status().name(), applied.status().name(),
-                "ChangeSet linked to implementation step.", "", "", "",
-                changeSet.id(), "", "", null, Map.of("changedFiles", changeSet.changedFiles())));
-        storeTeamContext(session, step.teamSessionId());
-        traceImplementationStep(session, TraceEventType.IMPLEMENTATION_STEP_APPLIED, applied);
-        traceEvent(session, activeWorkspace != null ? TraceEventType.CHANGESET_CREATED_FROM_WORKSPACE : TraceEventType.CHANGESET_CREATED, "change", "changeset created from implementation step", Map.of(
-                "stepId", step.id(),
-                "status", changeSet.status().name(),
-                "changedFiles", changeSet.changedFiles(),
-                "workspaceSessionId", changeSet.workspaceSessionId(),
-                "workspacePath", changeSet.workspacePath()
-        ), changeSet.teamSessionId(), changeSet.id(), "");
-        return completedReply(ctx, "implementation step applied\n"
-                + renderImplementationStepDetail(applied)
-                + "\n\nchangeset created\nid: " + changeSet.id() + "\n" + renderer.renderStatus(changeSet));
-    }
-
     private TeamRole parseTeamRole(String raw) {
         try {
             return TeamRole.valueOf(trim(raw).replace('-', '_').toUpperCase(java.util.Locale.ROOT));
@@ -911,83 +749,6 @@ final class AgentCommands {
         if (session == null || session.getMetadata() == null) return "";
         Object raw = session.getMetadata().get(SessionRuntimeKeys.ACTIVE_WORKSPACE_SESSION_ID_KEY);
         return raw != null ? String.valueOf(raw).trim() : "";
-    }
-
-    private WorkspaceBackend backendFor(WorkspaceSession session, WorkspaceSessionStore store) {
-        return session.type() == WorkspaceBackendType.GIT_WORKTREE
-                ? new GitWorktreeWorkspaceBackend(workspace, store)
-                : new LocalWorkspaceBackend(store);
-    }
-
-    private String activeWorkspacePath(Session session) {
-        String id = activeWorkspaceSessionId(session);
-        if (!id.isBlank()) {
-            try {
-                WorkspaceSession workspaceSession = new WorkspaceSessionStore(workspace).load(id);
-                if (workspaceSession != null && !workspaceSession.workspacePath().isBlank()) {
-                    return workspaceSession.workspacePath();
-                }
-            } catch (Exception ignored) {
-            }
-        }
-        return workspace.toString();
-    }
-
-    private WorkspaceSession activeWorkspaceSession(Session session) {
-        String id = activeWorkspaceSessionId(session);
-        if (id.isBlank()) {
-            return null;
-        }
-        try {
-            return new WorkspaceSessionStore(workspace).load(id);
-        } catch (Exception ignored) {
-            return null;
-        }
-    }
-
-    private boolean activeWorkspaceHasDiff(Session session) {
-        String id = activeWorkspaceSessionId(session);
-        if (id.isBlank()) {
-            return false;
-        }
-        try {
-            WorkspaceSessionStore store = new WorkspaceSessionStore(workspace);
-            ricbot.domain.workspace.WorkspaceSession workspaceSession = store.load(id);
-            if (workspaceSession == null) {
-                return false;
-            }
-            if (workspaceSession.type() == WorkspaceBackendType.GIT_WORKTREE) {
-                return !new WorkspaceLifecycleService(workspace).diff(id).changedFiles().isEmpty();
-            }
-            String diff = backendFor(workspaceSession, store).diff(id);
-            return diff != null && !diff.isBlank();
-        } catch (Exception ignored) {
-            return false;
-        }
-    }
-
-    private ImplementationStepGate.GateContext stepGateContext(Session session, PendingImplementationStep step) {
-        return new ImplementationStepGate.GateContext(
-                activeWorkspaceHasDiff(session) || new ChangeSetService(workspace).hasWorkingTreeChanges(),
-                changeSetExistsFor(step)
-        );
-    }
-
-    private boolean changeSetExistsFor(PendingImplementationStep step) {
-        try {
-            GitChangeSet latest = new ChangeSetService(workspace).latest();
-            if (latest == null) {
-                return false;
-            }
-            if (step == null) {
-                return true;
-            }
-            return step.teamSessionId().isBlank()
-                    || latest.teamSessionId().isBlank()
-                    || step.teamSessionId().equals(latest.teamSessionId());
-        } catch (Exception ignored) {
-            return false;
-        }
     }
 
     private WorkerExecutionResult roleToolCallReport(
