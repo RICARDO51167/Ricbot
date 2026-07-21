@@ -3,6 +3,7 @@ package ricbot.domain.agent;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ricbot.application.team.TeamReportApplicationService;
+import ricbot.application.team.TeamRunApplicationService;
 import ricbot.application.team.TeamSessionApplicationService;
 import ricbot.application.team.TeamStepApplicationService;
 import ricbot.application.team.TeamTaskApplicationService;
@@ -32,13 +33,10 @@ import ricbot.domain.security.PendingToolCall;
 import ricbot.domain.security.RiskAssessment;
 import ricbot.domain.team.TeamArtifact;
 import ricbot.domain.team.TeamEngine;
-import ricbot.domain.team.TeamExecutionService;
 import ricbot.domain.team.TeamRole;
 import ricbot.domain.team.TeamSession;
 import ricbot.domain.team.TeamTask;
-import ricbot.domain.team.TeamTaskReport;
 import ricbot.domain.team.TeamWorkerRunner;
-import ricbot.domain.team.VerifierOutputSanitizer;
 import ricbot.domain.team.ImplementationStepGate;
 import ricbot.domain.team.ImplementationStepStatus;
 import ricbot.domain.team.ImplementationStepType;
@@ -95,6 +93,7 @@ final class AgentCommands {
     private final TeamReportApplicationService teamReports;
     private final TeamTaskApplicationService teamTasks;
     private final TeamStepApplicationService teamSteps;
+    private final TeamRunApplicationService teamRuns;
 
     AgentCommands(
             SessionManager sessionManager,
@@ -163,6 +162,8 @@ final class AgentCommands {
         this.teamReports = new TeamReportApplicationService(this.teamEngine, this.teamSessions);
         this.teamTasks = new TeamTaskApplicationService(this.workspace, this.teamEngine, this.teamSessions);
         this.teamSteps = new TeamStepApplicationService(this.workspace, this.teamEngine, this.teamSessions, this.traceStore);
+        this.teamRuns = new TeamRunApplicationService(this.workspace, this.teamEngine, this.teamWorkerRunner,
+                this.teamSessions, this.workspaceApplication);
     }
 
     void register(CommandRouter router) {
@@ -702,7 +703,7 @@ final class AgentCommands {
                 case "start", "status", "list", "resume", "archive", "suggest", "suggest-current",
                         "events", "whiteboard", "abort" -> completedReply(ctx,
                         teamSessions.execute(session, action, afterCommand(args)));
-                case "run" -> teamRun(ctx, afterCommand(args));
+                case "run" -> completedReply(ctx, teamRuns.run(session, afterCommand(args)));
                 case "run-worker" -> teamRunWorker(ctx, afterCommand(args));
                 case "run-verifier" -> teamRunVerifier(ctx, afterCommand(args));
                 case "worker-report", "report", "verifier-report", "step-timeline", "task-timeline", "audit" ->
@@ -718,33 +719,6 @@ final class AgentCommands {
         } catch (IllegalArgumentException | IllegalStateException e) {
             return completedReply(ctx, "team error: " + e.getMessage());
         }
-    }
-
-    private CompletableFuture<OutboundMessage> teamRun(CommandRouter.CommandContext ctx, String rawArgs) {
-        String args = trim(rawArgs);
-        boolean useWorktree = containsFlag(args, "--worktree");
-        boolean verify = containsFlag(args, "--verify");
-        String taskValue = stripFlags(args, "--worktree", "--verify");
-        if (taskValue.isBlank()) {
-            throw new IllegalArgumentException("missing team run task");
-        }
-        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
-        String activeTeamId = resolveActiveTeamSessionId(session);
-        TeamExecutionService service = new TeamExecutionService(workspace, teamEngine, teamWorkerRunner);
-        TeamExecutionService.TeamExecutionResult result;
-        if (taskValue.startsWith("teamtask_") && !taskValue.contains(" ")) {
-            result = service.runTask(taskValue, new TeamExecutionService.TeamExecutionOptions(useWorktree, verify));
-        } else {
-            result = service.runUserTask(activeTeamId, taskValue, new TeamExecutionService.TeamExecutionOptions(useWorktree, verify));
-        }
-        storeTeamContext(session, result.teamSessionId());
-        if (!result.workspaceSessionId().isBlank()) {
-            WorkspaceSession workspaceSession = new WorkspaceSessionStore(workspace).load(result.workspaceSessionId());
-            if (workspaceSession != null) {
-                workspaceApplication.activate(session, workspaceSession);
-            }
-        }
-        return completedReply(ctx, renderTeamExecutionResult(result));
     }
 
     private CompletableFuture<OutboundMessage> teamRunWorker(CommandRouter.CommandContext ctx, String rawArgs) {
@@ -1249,125 +1223,6 @@ final class AgentCommands {
             throw new IllegalArgumentException("implementation step not found: " + stepId);
         }
         return step;
-    }
-
-    private String renderTeamExecutionResult(TeamExecutionService.TeamExecutionResult result) {
-        return "team execution\n"
-                + "taskId: " + result.taskId() + "\n"
-                + "teamSessionId: " + result.teamSessionId() + "\n"
-                + "workspaceSessionId: " + (result.workspaceSessionId().isBlank() ? "none" : result.workspaceSessionId()) + "\n"
-                + "workspacePath: " + result.workspacePath() + "\n"
-                + "workerStatus: " + (result.workerResult() != null ? result.workerResult().status() : "none") + "\n"
-                + "verifierStatus: " + (result.verificationResult() != null ? result.verificationResult().status() : "SKIPPED") + "\n"
-                + (result.verificationResult() != null ? "verifierReason: " + result.verificationResult().reason() + "\n" : "")
-                + executionVerifierDetails(result.report())
-                + "reportStatus: " + (result.report() != null ? result.report().status() : "UNKNOWN") + "\n"
-                + "reportHealth: " + (result.report() != null ? result.report().health() : "UNKNOWN") + "\n"
-                + "diffSummary: " + diffSummary(result.diff()) + "\n"
-                + workerDebugSummary(result.workerResult())
-                + verifierOutputSummary(result)
-                + "next: /team report " + result.taskId()
-                + (result.usedWorktree() ? " | /workspace diff " + result.workspaceSessionId() + " | /change create" : "");
-    }
-
-    private String verifierOutputSummary(TeamExecutionService.TeamExecutionResult result) {
-        if (result == null || result.verifierOutput().isBlank()) {
-            return "";
-        }
-        VerificationResult.Status status = result.verificationResult() != null
-                ? result.verificationResult().status()
-                : VerificationResult.Status.NEEDS_HUMAN;
-        String display = VerifierOutputSanitizer.display(result.verifierOutput(), status);
-        return display.isBlank() ? "" : "verifierOutput: " + abbreviate(display, 500) + "\n";
-    }
-
-    private String executionVerifierDetails(TeamTaskReport report) {
-        if (report == null) {
-            return "";
-        }
-        Map<String, Object> compact = report.compactSummary();
-        String source = stringValue(compact.get("structuredEvidenceSource"));
-        String command = stringValue(compact.get("verifierCommand"));
-        String changedFilesCount = stringValue(compact.get("changedFilesCount"));
-        StringBuilder sb = new StringBuilder();
-        if (!source.isBlank()) {
-            sb.append("structuredEvidence: ").append(source).append("\n");
-        }
-        if (!command.isBlank()) {
-            sb.append("verifierCommand: ").append(command).append("\n");
-        }
-        if (!changedFilesCount.isBlank()) {
-            sb.append("changedFilesCount: ").append(changedFilesCount).append("\n");
-        }
-        return sb.toString();
-    }
-
-    private String verifierReportDetails(Map<String, Object> compactSummary) {
-        if (compactSummary == null || compactSummary.isEmpty()) {
-            return "";
-        }
-        StringBuilder sb = new StringBuilder();
-        String reason = stringValue(compactSummary.get("verifierReason"));
-        String source = stringValue(compactSummary.get("structuredEvidenceSource"));
-        String command = stringValue(compactSummary.get("verifierCommand"));
-        String exitCode = stringValue(compactSummary.get("exitCode"));
-        String changedFilesCount = stringValue(compactSummary.get("changedFilesCount"));
-        if (!reason.isBlank()) {
-            sb.append("structured verifier decision: ").append(reason).append("\n");
-        }
-        if (!source.isBlank()) {
-            sb.append("structuredEvidence: ").append(source).append("\n");
-        }
-        if (!command.isBlank()) {
-            sb.append("verifierCommand: ").append(command).append("\n");
-        }
-        if (!exitCode.isBlank()) {
-            sb.append("verifierExitCode: ").append(exitCode).append("\n");
-        }
-        if (!changedFilesCount.isBlank()) {
-            sb.append("changedFilesCount: ").append(changedFilesCount).append("\n");
-        }
-        return sb.toString();
-    }
-
-    private String workerDebugSummary(WorkerExecutionResult worker) {
-        if (worker == null || worker.policySummary().isEmpty()) {
-            return "";
-        }
-        String toolCalls = worker.policySummary().stream()
-                .filter(line -> line.startsWith("debug:modelToolCalls="))
-                .map(line -> line.substring("debug:modelToolCalls=".length()).trim())
-                .findFirst()
-                .orElse("");
-        String changedFiles = worker.policySummary().stream()
-                .filter(line -> line.startsWith("debug:afterChangedFiles="))
-                .map(line -> line.substring("debug:afterChangedFiles=".length()).trim())
-                .findFirst()
-                .orElse(String.join(", ", worker.relatedFiles()));
-        List<String> warnings = worker.policySummary().stream()
-                .filter(line -> line.startsWith("warning:") || line.startsWith("reason:"))
-                .map(line -> abbreviate(line, 220))
-                .toList();
-        if (toolCalls.isBlank() && changedFiles.isBlank() && warnings.isEmpty()) {
-            return "";
-        }
-        StringBuilder sb = new StringBuilder("workerSummary:\n");
-        sb.append("toolCalls: ").append(toolCalls.isBlank() ? "none recorded" : toolCalls).append("\n");
-        if (!changedFiles.isBlank()) {
-            sb.append("changedFiles: ").append(changedFiles).append("\n");
-        }
-        for (String warning : warnings) {
-            sb.append(warning).append("\n");
-        }
-        return sb.toString();
-    }
-
-    private String diffSummary(String diff) {
-        if (diff == null || diff.isBlank()) {
-            return "none";
-        }
-        long lines = diff.lines().count();
-        return lines + " diff lines";
     }
 
     private String renderImplementationStepDetail(PendingImplementationStep step) {
