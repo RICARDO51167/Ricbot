@@ -1,19 +1,13 @@
 import { computed, markRaw, reactive } from 'vue';
 
-import ApprovalsPage from '@/pages/ApprovalsPage.vue';
-import ChangeSetsPage from '@/pages/ChangeSetsPage.vue';
 import ConsoleWorkbench from '@/pages/ConsoleWorkbench.vue';
-import DashboardPage from '@/pages/DashboardPage.vue';
-import EventsPage from '@/pages/EventsPage.vue';
-import RunsPage from '@/pages/RunsPage.vue';
-import SettingsPage from '@/pages/SettingsPage.vue';
-import WorkspacePage from '@/pages/WorkspacePage.vue';
-import type { MessageKey } from '@/stores/localeStore';
+import CheckpointsPage from '@/pages/RunsPage.vue';
+import ReleasePage from '@/pages/ReleasePage.vue';
+import WorkersPage from '@/pages/WorkersPage.vue';
 
 export interface ConsoleRoute {
   path: string;
   label: string;
-  labelKey: MessageKey;
   component: object;
 }
 
@@ -22,23 +16,26 @@ export type RouteQuery = Record<string, string | undefined>;
 const basePath = '/console';
 
 export const routes: ConsoleRoute[] = [
-  { path: '/console/workbench', label: 'Workbench', labelKey: 'nav.workbench', component: markRaw(ConsoleWorkbench) },
-  { path: '/console/workspace', label: 'Workspace', labelKey: 'nav.workspace', component: markRaw(WorkspacePage) },
-  { path: '/console/approvals', label: 'Approvals', labelKey: 'nav.approvals', component: markRaw(ApprovalsPage) },
-  { path: '/console/changesets', label: 'ChangeSets', labelKey: 'nav.changesets', component: markRaw(ChangeSetsPage) },
-  { path: '/console/runs', label: 'Runs', labelKey: 'nav.runs', component: markRaw(RunsPage) },
-  { path: '/console/events', label: 'Events', labelKey: 'nav.events', component: markRaw(EventsPage) },
-  { path: '/console/dashboard', label: 'Dashboard', labelKey: 'nav.dashboard', component: markRaw(DashboardPage) },
-  { path: '/console/settings', label: 'Settings', labelKey: 'nav.settings', component: markRaw(SettingsPage) },
+  { path: '/console/runs', label: 'Run Timeline', component: markRaw(ConsoleWorkbench) },
+  { path: '/console/checkpoints', label: 'Checkpoint / Resume / Fork', component: markRaw(CheckpointsPage) },
+  { path: '/console/workers', label: 'Worker / Mailbox', component: markRaw(WorkersPage) },
+  { path: '/console/release', label: 'Eval / Release', component: markRaw(ReleasePage) },
 ];
 
+// URL-only compatibility aliases. They are intentionally excluded from navigation and the production bundle's page graph.
+const legacyRoutes: ConsoleRoute[] = [
+  '/console/workbench', '/console/workspace', '/console/approvals', '/console/changesets',
+  '/console/events', '/console/dashboard', '/console/settings',
+].map((path) => ({ path, label: 'Legacy route', component: markRaw({}) }));
+const recognizedRoutes = [...routes, ...legacyRoutes];
+
 const routeState = reactive({
-  path: normalizePath(typeof window !== 'undefined' ? window.location.pathname : '/console/workbench'),
+  path: normalizePath(typeof window !== 'undefined' ? window.location.pathname : '/console/runs'),
   query: parseQuery(typeof window !== 'undefined' ? window.location.search : ''),
 });
 
 export const currentRoute = computed(() => {
-  const match = routes.find((route) => route.path === routeState.path) ?? routes[0];
+  const match = recognizedRoutes.find((route) => route.path === routeState.path) ?? routes[0];
   return {
     ...match,
     query: routeState.query,
@@ -52,7 +49,7 @@ export function initRouter() {
   }
   window.addEventListener('popstate', syncFromLocation);
   if (window.location.pathname === basePath || window.location.pathname === `${basePath}/`) {
-    replace('/console/workbench');
+    replace('/console/runs');
   }
 }
 
@@ -113,11 +110,11 @@ function syncFromLocation() {
 }
 
 function normalizePath(path: string) {
-  const cleanPath = path || '/console/workbench';
+  const cleanPath = path || '/console/runs';
   if (cleanPath === basePath || cleanPath === `${basePath}/`) {
-    return '/console/workbench';
+    return '/console/runs';
   }
-  return routes.some((route) => route.path === cleanPath) ? cleanPath : '/console/workbench';
+  return recognizedRoutes.some((route) => route.path === cleanPath) ? cleanPath : '/console/runs';
 }
 
 export function parseQuery(search: string): Record<string, string> {

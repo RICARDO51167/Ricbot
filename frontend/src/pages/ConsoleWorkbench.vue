@@ -74,7 +74,7 @@ async function applyWorkbenchQuery(query: Record<string, string>) {
 }
 
 function syncWorkbenchQuery() {
-  if (applyingQuery || currentRoute.value.path !== '/console/workbench') {
+  if (applyingQuery || !['/console/runs', '/console/workbench'].includes(currentRoute.value.path)) {
     return;
   }
   const next = {
@@ -84,7 +84,7 @@ function syncWorkbenchQuery() {
     category: sessionStore.timelineFilter === 'all' ? undefined : sessionStore.timelineFilter,
   };
   if (queryKey(next) !== queryKey(currentRoute.value.query)) {
-    replace('/console/workbench', next);
+    replace(currentRoute.value.path, next);
   }
 }
 

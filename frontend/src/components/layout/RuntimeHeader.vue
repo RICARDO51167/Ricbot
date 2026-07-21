@@ -1,7 +1,7 @@
 <template>
   <header class="runtime-header">
     <div>
-      <h1>{{ t(currentRoute.labelKey) }}</h1>
+      <h1>{{ currentRoute.label }}</h1>
       <p>{{ modeLabel }}</p>
     </div>
     <div class="runtime-header-metrics">

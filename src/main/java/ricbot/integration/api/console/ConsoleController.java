@@ -109,17 +109,7 @@ public final class ConsoleController {
         server.createContext("/console/api/workspace/tree", workspaceTreeHandler(appContext));
         server.createContext("/console/api/workspace/files/content", workspaceFileContentHandler(appContext));
         server.createContext("/console/api/workspace/search", workspaceSearchHandler(appContext));
-        server.createContext("/console/api/health", healthHandler(appContext));
-        server.createContext("/console/api/config-doctor", configDoctorHandler(appContext));
-        server.createContext("/console/api/traces", tracesHandler(appContext));
         server.createContext("/console/api/team-reports", teamReportsHandler(appContext));
-        server.createContext("/console/api/tools", toolsHandler(appContext));
-        server.createContext("/console/api/mcp/diagnostics", mcpDiagnosticsHandler(appContext));
-        server.createContext("/console/api/mcp", mcpHandler(appContext));
-        server.createContext("/console/api/workspaces/", workspaceActionsHandler(appContext));
-        server.createContext("/console/api/workspaces", workspacesHandler(appContext));
-        server.createContext("/console/api/approvals", approvalsHandler(appContext));
-        server.createContext("/console/api/actions", actionsHandler(appContext));
         server.createContext("/console/api/release-check", releaseCheckHandler(appContext));
         server.createContext("/console/api/evals", evalsHandler(appContext));
         server.createContext("/console", pageHandler(appContext));
@@ -2261,11 +2251,19 @@ public final class ConsoleController {
                 return;
             }
             String path = exchange.getRequestURI() != null ? exchange.getRequestURI().getPath() : "";
-            if (!"/console".equals(path) && !"/console/".equals(path)) {
+            if (!"/console".equals(path) && !"/console/".equals(path) && !path.startsWith("/console/")) {
                 RicbotApiServer.writeErrorJson(exchange, 404, "资源不存在", "not_found");
                 return;
             }
-            byte[] bytes = ConsolePage.html().getBytes(StandardCharsets.UTF_8);
+            byte[] bytes;
+            try (java.io.InputStream in = ConsoleController.class.getClassLoader()
+                    .getResourceAsStream("webui/index.html")) {
+                if (in == null) {
+                    RicbotApiServer.writeErrorJson(exchange, 404, "Console 前端尚未构建", "not_found");
+                    return;
+                }
+                bytes = in.readAllBytes();
+            }
             exchange.getResponseHeaders().set("Content-Type", "text/html; charset=utf-8");
             exchange.sendResponseHeaders(200, bytes.length);
             try (OutputStream os = exchange.getResponseBody()) {

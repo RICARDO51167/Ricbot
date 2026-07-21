@@ -56,6 +56,10 @@ public class RicbotWebUiHandler implements HttpHandler {
         if (path == null || path.isBlank() || "/".equals(path) || "/app".equals(path) || "/app/".equals(path)) {
             return INDEX_RESOURCE;
         }
+        if (path.startsWith("/assets/")) {
+            String relative = path.substring(1);
+            return relative.contains("..") ? null : "webui/" + relative;
+        }
         if (!path.startsWith("/app/")) {
             return null;
         }

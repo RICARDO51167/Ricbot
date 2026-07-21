@@ -70,7 +70,7 @@ watch(
 );
 
 async function applyRunsQuery(query: Record<string, string>) {
-  if (currentRoute.value.path !== '/console/runs') {
+  if (!['/console/checkpoints', '/console/runs'].includes(currentRoute.value.path)) {
     return;
   }
   applyingQuery = true;
@@ -88,7 +88,7 @@ async function applyRunsQuery(query: Record<string, string>) {
 }
 
 function syncRunsQuery() {
-  if (applyingQuery || currentRoute.value.path !== '/console/runs') {
+  if (applyingQuery || !['/console/checkpoints', '/console/runs'].includes(currentRoute.value.path)) {
     return;
   }
   const next = {
@@ -98,7 +98,7 @@ function syncRunsQuery() {
     runId: selectedHistoryRunId.value || undefined,
   };
   if (queryKey(next) !== queryKey(currentRoute.value.query)) {
-    replace('/console/runs', next);
+    replace(currentRoute.value.path, next);
   }
 }
 
@@ -106,7 +106,7 @@ function openSelectedRun() {
   if (!selectedRun.value) {
     return;
   }
-  navigate('/console/workbench', {
+  navigate('/console/runs', {
     sessionId: selectedRun.value.sessionId,
     runId: selectedRun.value.runId,
   });

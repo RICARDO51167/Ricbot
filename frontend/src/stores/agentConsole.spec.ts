@@ -77,8 +77,8 @@ describe('agent console stores', () => {
     window.history.replaceState({}, '', '/console');
     initRouter();
 
-    expect(currentRoute.value.path).toBe('/console/workbench');
-    expect(window.location.pathname).toBe('/console/workbench');
+    expect(currentRoute.value.path).toBe('/console/runs');
+    expect(window.location.pathname).toBe('/console/runs');
   });
 
   it('router_serializesAndRestoresQueryState', () => {
@@ -105,13 +105,13 @@ describe('agent console stores', () => {
   });
 
   it('mainNav_highlightsCurrentRoute', () => {
-    navigate('/console/events');
+    navigate('/console/workers');
 
     const wrapper = mount(MainNavSidebar);
     const active = wrapper.find('.main-nav-links a.active');
 
     expect(active.exists()).toBe(true);
-    expect(active.text()).toBe('事件');
+    expect(active.text()).toBe('Worker / Mailbox');
   });
 
   it('runtimeHeader_exposesQuickLanguageSelector', async () => {
@@ -1710,7 +1710,7 @@ diff --git a/src/B.java b/src/B.java
     expect(useHistoryStore().selectedHistoryRunId).toBe('run-route');
     await wrapper.find('.run-summary .el-button').trigger('click');
 
-    expect(currentRoute.value.path).toBe('/console/workbench');
+    expect(currentRoute.value.path).toBe('/console/runs');
     expect(currentRoute.value.query.sessionId).toBe('s-backend');
     expect(currentRoute.value.query.runId).toBe('run-route');
   });

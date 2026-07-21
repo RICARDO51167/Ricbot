@@ -5,6 +5,10 @@ import { defineConfig } from 'vite';
 
 export default defineConfig({
   plugins: [vue()],
+  build: {
+    outDir: '../src/main/resources/webui',
+    emptyOutDir: true,
+  },
   server: {
     proxy: {
       '/api': 'http://127.0.0.1:8000',
