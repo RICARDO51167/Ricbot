@@ -2,6 +2,7 @@ package ricbot.domain.agent;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import ricbot.application.team.TeamReportApplicationService;
 import ricbot.application.team.TeamSessionApplicationService;
 import ricbot.application.workspace.WorkspaceApplicationService;
 import ricbot.domain.change.ChangeSetRenderer;
@@ -91,6 +92,7 @@ final class AgentCommands {
     private final TraceStore traceStore;
     private final WorkspaceApplicationService workspaceApplication;
     private final TeamSessionApplicationService teamSessions;
+    private final TeamReportApplicationService teamReports;
 
     AgentCommands(
             SessionManager sessionManager,
@@ -156,6 +158,7 @@ final class AgentCommands {
         this.teamEngine = new TeamEngine(this.workspace, this.traceStore);
         this.workspaceApplication = new WorkspaceApplicationService(this.workspace, this.sessionManager, this.traceStore);
         this.teamSessions = new TeamSessionApplicationService(this.sessionManager, this.teamEngine);
+        this.teamReports = new TeamReportApplicationService(this.teamEngine, this.teamSessions);
     }
 
     void register(CommandRouter router) {
@@ -698,8 +701,8 @@ final class AgentCommands {
                 case "run" -> teamRun(ctx, afterCommand(args));
                 case "run-worker" -> teamRunWorker(ctx, afterCommand(args));
                 case "run-verifier" -> teamRunVerifier(ctx, afterCommand(args));
-                case "worker-report" -> teamWorkerReport(ctx, afterCommand(args));
-                case "report" -> teamTaskReport(ctx, afterCommand(args));
+                case "worker-report", "report", "verifier-report", "step-timeline", "task-timeline", "audit" ->
+                        completedReply(ctx, teamReports.execute(session, action, afterCommand(args)));
                 case "tool-call" -> teamToolCall(ctx, afterCommand(args));
                 case "plan-steps" -> teamPlanSteps(ctx, afterCommand(args));
                 case "steps" -> teamSteps(ctx, afterCommand(args));
@@ -708,10 +711,7 @@ final class AgentCommands {
                 case "update-step" -> teamUpdateStep(ctx, afterCommand(args));
                 case "apply-step" -> teamApplyStep(ctx, afterCommand(args));
                 case "reject-step" -> teamRejectStep(ctx, afterCommand(args));
-                case "step-timeline" -> teamStepTimeline(ctx, afterCommand(args));
-                case "task-timeline", "audit" -> teamTaskTimeline(ctx, afterCommand(args));
                 case "auto-verify" -> teamAutoVerify(ctx, afterCommand(args));
-                case "verifier-report" -> teamVerifierReport(ctx, afterCommand(args));
                 case "task" -> teamTask(ctx, afterCommand(args));
                 case "verify" -> teamVerify(ctx, afterCommand(args));
                 default -> completedReply(ctx, "用法：/team start <goal>|status|list|resume <sessionId>|archive <sessionId>|suggest <goal>|suggest-current|run <task> [--worktree] [--verify]|task <role> <goal>|run-worker <taskId>|run-verifier <taskId>|worker-report <taskId>|report <taskId>|tool-call <taskId> <toolName> <jsonArgs>|plan-steps <taskId>|steps <taskId>|show-step <stepId>|next-step <taskId>|update-step <stepId> <jsonUpdate>|apply-step <stepId>|reject-step <stepId>|step-timeline <stepId>|task-timeline <taskId>|audit <taskId>|auto-verify <taskId>|verifier-report <taskId>|verify <taskId> pass|reject|needs-human <reason>|events|whiteboard|abort <taskId>");
@@ -873,41 +873,6 @@ final class AgentCommands {
         return completedReply(ctx, "team verifier executed\n" + renderWorkerExecutionResult(result, updated) + workspaceSource + changeHint);
     }
 
-    private CompletableFuture<OutboundMessage> teamWorkerReport(CommandRouter.CommandContext ctx, String rawArgs) {
-        String taskId = commandArg(rawArgs, 0);
-        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
-        resolveActiveTeamSessionId(session);
-        List<WorkerExecutionResult> reports = teamEngine.workerReports(taskId);
-        if (reports.isEmpty()) {
-            return completedReply(ctx, "No worker report for task: " + taskId);
-        }
-        StringBuilder sb = new StringBuilder("team worker report\n");
-        for (WorkerExecutionResult result : reports) {
-            sb.append(renderWorkerExecutionResult(result, teamEngine.findTask(taskId))).append("\n\n");
-        }
-        return completedReply(ctx, sb.toString().trim());
-    }
-
-    private CompletableFuture<OutboundMessage> teamTaskReport(CommandRouter.CommandContext ctx, String rawArgs) {
-        String taskId = commandArg(rawArgs, 0);
-        TeamTask task = teamEngine.findTask(taskId);
-        if (task == null) {
-            rejectTeamSessionIdArgument(taskId, "/team report 需要 taskId，例如 teamtask_xxx。");
-            throw new IllegalArgumentException("team task not found: " + taskId);
-        }
-        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
-        storeTeamContext(session, task.sessionId());
-        TeamTaskReport report = teamEngine.taskReport(taskId);
-        if (teamReportFlags(rawArgs).contains("--json")) {
-            try {
-                return completedReply(ctx, MAPPER.writeValueAsString(report.toMap()));
-            } catch (Exception e) {
-                throw new IllegalStateException("failed to render team task report json: " + e.getMessage());
-            }
-        }
-        return completedReply(ctx, renderTeamTaskReport(report));
-    }
-
     private void rejectTeamSessionIdArgument(String value, String commandHint) {
         String id = value != null ? value.trim() : "";
         if (id.startsWith("team_") && !id.startsWith("teamtask_")) {
@@ -1045,34 +1010,6 @@ final class AgentCommands {
         storeTeamContext(session, rejected.teamSessionId());
         traceImplementationStep(session, TraceEventType.IMPLEMENTATION_STEP_REJECTED, rejected);
         return completedReply(ctx, "implementation step rejected\n" + renderImplementationStepDetail(rejected));
-    }
-
-    private CompletableFuture<OutboundMessage> teamStepTimeline(CommandRouter.CommandContext ctx, String rawArgs) {
-        String stepId = commandArg(rawArgs, 0);
-        PendingImplementationStep step = requireImplementationStep(stepId);
-        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
-        storeTeamContext(session, step.teamSessionId());
-        return completedReply(ctx, teamEngine.renderStepTimeline(stepId));
-    }
-
-    private CompletableFuture<OutboundMessage> teamTaskTimeline(CommandRouter.CommandContext ctx, String rawArgs) {
-        String taskId = commandArg(rawArgs, 0);
-        TeamTask task = teamEngine.findTask(taskId);
-        if (task == null) {
-            throw new IllegalArgumentException("team task not found: " + taskId);
-        }
-        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
-        storeTeamContext(session, task.sessionId());
-        List<String> flags = teamAuditFlags(rawArgs);
-        boolean compact = flags.contains("--compact");
-        boolean json = flags.contains("--json");
-        if (json && compact) {
-            return completedReply(ctx, teamEngine.renderJsonCompactTaskAudit(taskId));
-        }
-        if (json) {
-            return completedReply(ctx, teamEngine.renderJsonTaskAudit(taskId));
-        }
-        return completedReply(ctx, teamEngine.renderTaskAudit(taskId, compact));
     }
 
     private CompletableFuture<OutboundMessage> teamApplyStep(CommandRouter.CommandContext ctx, String rawArgs) {
@@ -1218,17 +1155,6 @@ final class AgentCommands {
                 + "missingTests: " + renderListInline(result.missingTests()) + "\n"
                 + "requiredActions: " + renderListInline(result.requiredActions())
                 + changeHint);
-    }
-
-    private CompletableFuture<OutboundMessage> teamVerifierReport(CommandRouter.CommandContext ctx, String rawArgs) {
-        String taskId = commandArg(rawArgs, 0);
-        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
-        resolveActiveTeamSessionId(session);
-        List<Map<String, Object>> reports = teamEngine.verificationReports(taskId);
-        if (reports.isEmpty()) {
-            return completedReply(ctx, "No verifier report for task: " + taskId);
-        }
-        return completedReply(ctx, renderVerifierReports(reports));
     }
 
     private TeamRole parseTeamRole(String raw) {
@@ -1514,26 +1440,6 @@ final class AgentCommands {
                     .append("\n");
         }
         return sb.toString().trim();
-    }
-
-    private String renderTeamTaskReport(TeamTaskReport report) {
-        return "team task report\n"
-                + "taskId: " + report.taskId() + "\n"
-                + "teamSessionId: " + (report.teamSessionId().isBlank() ? "none" : report.teamSessionId()) + "\n"
-                + "title: " + (report.title().isBlank() ? "none" : report.title()) + "\n"
-                + "status: " + report.status() + "\n"
-                + "health: " + report.health() + "\n"
-                + "progress: " + report.completedSteps() + "/" + report.totalSteps()
-                + " failed=" + report.failedSteps()
-                + " pending=" + report.pendingSteps() + "\n"
-                + "linkedAuditRecords: " + report.linkedAuditRecords() + "\n"
-                + "latestEvent: " + (report.latestEvent().isBlank() ? "none" : report.latestEvent()) + "\n"
-                + "latestChangeSet: " + (report.latestChangeSet().isBlank() ? "none" : report.latestChangeSet()) + "\n"
-                + "latestVerifier: " + (report.latestVerifier().isBlank() ? "none" : report.latestVerifier()) + "\n"
-                + verifierReportDetails(report.compactSummary())
-                + "durationMillis: " + report.durationMillis() + "\n"
-                + "warnings: " + renderListInline(report.warnings()) + "\n"
-                + "suggestedNextActions: " + renderListInline(report.suggestedNextActions());
     }
 
     private String renderTeamExecutionResult(TeamExecutionService.TeamExecutionResult result) {
@@ -1829,29 +1735,8 @@ final class AgentCommands {
                 + " executedTests=" + String.join(",", summary.testCommands());
     }
 
-    private String renderVerifierReports(List<Map<String, Object>> reports) {
-        StringBuilder sb = new StringBuilder("team verifier report\n");
-        for (Map<String, Object> report : reports) {
-            Map<?, ?> result = report.get("verificationResult") instanceof Map<?, ?> map ? map : Map.of();
-            sb.append("- taskId: ").append(report.getOrDefault("taskId", ""))
-                    .append("\n  status: ").append(mapValue(result, "status"))
-                    .append("\n  riskLevel: ").append(mapValue(result, "riskLevel"))
-                    .append("\n  reasons: ").append(renderRawList(result.get("reasons")))
-                    .append("\n  missingTests: ").append(renderRawList(result.get("missingTests")))
-                    .append("\n  requiredActions: ").append(renderRawList(result.get("requiredActions")))
-                    .append("\n  createdAt: ").append(report.getOrDefault("createdAt", ""))
-                    .append("\n");
-        }
-        return sb.toString().trim();
-    }
-
     private String renderListInline(List<String> values) {
         return values == null || values.isEmpty() ? "none" : String.join("; ", values);
-    }
-
-    private String mapValue(Map<?, ?> map, String key) {
-        Object value = map != null ? map.get(key) : null;
-        return value != null ? String.valueOf(value) : "";
     }
 
     private String stringArg(Map<String, Object> map, String key) {
@@ -1862,13 +1747,6 @@ final class AgentCommands {
     private List<String> changedFilesFromApprovedArgs(Map<String, Object> args) {
         String path = stringArg(args, "path");
         return path.isBlank() ? List.of() : List.of(path);
-    }
-
-    private String renderRawList(Object raw) {
-        if (raw instanceof List<?> list && !list.isEmpty()) {
-            return String.join("; ", list.stream().map(String::valueOf).toList());
-        }
-        return "none";
     }
 
     private String requireActiveTeamSessionId(Session session) {
@@ -2163,42 +2041,6 @@ final class AgentCommands {
             throw new IllegalArgumentException("missing id");
         }
         return parts[index];
-    }
-
-    private static List<String> teamAuditFlags(String args) {
-        String[] parts = trim(args).split("\\s+");
-        List<String> flags = new ArrayList<>();
-        for (int i = 1; i < parts.length; i++) {
-            String flag = parts[i].trim().toLowerCase(java.util.Locale.ROOT);
-            if (flag.isBlank()) {
-                continue;
-            }
-            if (!flag.equals("--compact") && !flag.equals("--json")) {
-                throw new IllegalArgumentException("unsupported audit flag: " + parts[i]);
-            }
-            if (!flags.contains(flag)) {
-                flags.add(flag);
-            }
-        }
-        return flags;
-    }
-
-    private static List<String> teamReportFlags(String args) {
-        String[] parts = trim(args).split("\\s+");
-        List<String> flags = new ArrayList<>();
-        for (int i = 1; i < parts.length; i++) {
-            String flag = parts[i].trim().toLowerCase(java.util.Locale.ROOT);
-            if (flag.isBlank()) {
-                continue;
-            }
-            if (!flag.equals("--json")) {
-                throw new IllegalArgumentException("unsupported report flag: " + parts[i]);
-            }
-            if (!flags.contains(flag)) {
-                flags.add(flag);
-            }
-        }
-        return flags;
     }
 
     private static boolean containsFlag(String args, String flag) {
