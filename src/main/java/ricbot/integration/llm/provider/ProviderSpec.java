@@ -21,8 +21,6 @@ public class ProviderSpec {
 
     private List<EnvExtra> envExtras = new ArrayList<>();
 
-    private boolean gateway = false;
-
     private boolean local = false;
 
     private String detectByKeyPrefix = "";
@@ -117,15 +115,6 @@ public class ProviderSpec {
 
     public ProviderSpec setEnvExtras(List<EnvExtra> envExtras) {
         this.envExtras = envExtras != null ? envExtras : new ArrayList<>();
-        return this;
-    }
-
-    public boolean isGateway() {
-        return gateway;
-    }
-
-    public ProviderSpec setGateway(boolean gateway) {
-        this.gateway = gateway;
         return this;
     }
 

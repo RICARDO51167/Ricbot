@@ -5,10 +5,7 @@ target/
 .kotlin
 
 ### IntelliJ IDEA ###
-.idea/modules.xml
-.idea/jarRepositories.xml
-.idea/compiler.xml
-.idea/libraries/
+.idea/
 *.iws
 *.iml
 *.ipr
@@ -39,10 +36,6 @@ build/
 .DS_Store
 
 ### Ricbot runtime / secrets ###
-workspace/
-!src/main/java/ricbot/domain/workspace/
-!src/main/java/ricbot/domain/workspace/**
-!src/test/java/ricbot/domain/workspace/
-!src/test/java/ricbot/domain/workspace/**
+/workspace/
 **/.ricbot/
 **/*.log

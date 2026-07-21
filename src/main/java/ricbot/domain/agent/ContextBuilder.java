@@ -31,28 +31,23 @@ public class ContextBuilder {
     private final Path workspace;
     // 时区字符串
     private final String timezone;
-    // 被禁用的技能列表
-    private final List<String> disabledSkills;
 
     /**
      * 构造函数，仅指定工作空间
      * @param workspace 工作空间路径
      */
     public ContextBuilder(Path workspace) {
-        this(workspace, null, null);
+        this(workspace, null);
     }
 
     /**
      * 全参构造函数
      * @param workspace 工作空间路径
      * @param timezone 时区
-     * @param disabledSkills 被禁用的技能列表
      */
-    public ContextBuilder(Path workspace, String timezone, List<String> disabledSkills) {
+    public ContextBuilder(Path workspace, String timezone) {
         this.workspace = workspace;
         this.timezone = timezone;
-        // 如果 disabledSkills 为 null，则初始化为空列表，避免后续空指针异常
-        this.disabledSkills = disabledSkills != null ? disabledSkills : new ArrayList<>();
     }
 
     /**
@@ -112,20 +107,6 @@ public class ContextBuilder {
             String currentRole,
             PromptContextBundle promptContext
     ) {
-        return buildMessages(history, currentMessage, media, channel, chatId, sessionSummary, "", currentRole, promptContext);
-    }
-
-    public List<Map<String, Object>> buildMessages(
-            List<Map<String, Object>> history,
-            String currentMessage,
-            List<String> media,
-            String channel,
-            String chatId,
-            String sessionSummary,
-            String skillsContext,
-            String currentRole,
-            PromptContextBundle promptContext
-    ) {
         // 初始化消息列表，用于存储最终发送给 LLM 的所有消息
         List<Map<String, Object>> messages = new ArrayList<>();
 
@@ -134,7 +115,7 @@ public class ContextBuilder {
 
         // 2. 构建系统提示词，并作为第一条消息加入列表
         // 系统提示词包含了身份定义、运行时上下文、会话摘要及结构化上下文
-        messages.add(systemMessage(buildSystemPrompt(sessionSummary, skillsContext, runtime, channel, promptContext)));
+        messages.add(systemMessage(buildSystemPrompt(sessionSummary, runtime, channel, promptContext)));
 
         // 3. 处理历史消息
         // 如果历史消息不为空，则进行清洗（去除非法或不完整的消息）后加入列表
@@ -316,7 +297,7 @@ public class ContextBuilder {
      * @param promptContext 提示词上下文 bundle，用于注入结构化上下文
      * @return 渲染后的系统提示词字符串
      */
-    private String buildSystemPrompt(String sessionSummary, String skillsContext, String runtimeContext, String channel, PromptContextBundle promptContext) {
+    private String buildSystemPrompt(String sessionSummary, String runtimeContext, String channel, PromptContextBundle promptContext) {
         // 初始化模板参数字典
         Map<String, Object> kwargs = new HashMap<>();
 
@@ -327,20 +308,11 @@ public class ContextBuilder {
         // 注入运行时上下文，如果为空则设为空字符串
         kwargs.put("runtime", runtimeContext != null ? runtimeContext : "");
 
-        // 平台策略当前未使用，设为空字符串
-        kwargs.put("platform_policy", "");
-
         // 注入渠道信息，如果为空则设为空字符串
         kwargs.put("channel", channel != null ? channel : "");
 
-        // 处理禁用的技能列表：如果列表为空或 null，则设为空字符串；否则用逗号连接各技能名称
-        kwargs.put("disabled_skills", (disabledSkills == null || disabledSkills.isEmpty()) ? "" : String.join(", ", disabledSkills));
-
         // 注入会话摘要，如果为 null 则设为空字符串
         kwargs.put("session_summary", (sessionSummary == null) ? "" : sessionSummary);
-
-        // 注入技能上下文，如果为 null 则设为空字符串
-        kwargs.put("skills_context", (skillsContext == null) ? "" : skillsContext);
 
         // 注入结构化上下文：如果 promptContext 不为空，则调用其 render 方法生成字符串，否则设为空字符串
         kwargs.put("structured_context", promptContext != null ? promptContext.render() : "");

@@ -11,16 +11,13 @@
   },
   "providers": {
     "openai": {
-      "api_key": "sk-ba3dc05a544b4914b3f2cca24bcdf45d",
+      "api_key": "${OPENAI_API_KEY}",
       "api_base": "https://dashscope.aliyuncs.com/compatible-mode/v1",
       "extra_headers": {}
     }
   },
   "tools": {
     "restrictToWorkspace": true,
-    "web": {
-      "enable": false
-    },
     "exec": {
       "enable": false,
       "timeout": 60,
@@ -33,7 +30,6 @@
       "docker_network_enabled": false,
       "path_append": "",
       "allowed_env_keys": []
-    },
-    "mcpServers": {}
+    }
   }
 }

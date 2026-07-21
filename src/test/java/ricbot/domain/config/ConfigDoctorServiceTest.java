@@ -22,9 +22,7 @@ class ConfigDoctorServiceTest {
                   "providers": {"openai": {"api_key": "sk-test"}},
                   "tools": {
                     "restrictToWorkspace": true,
-                    "web": {"enable": false},
-                    "exec": {"enable": false},
-                    "mcpServers": {}
+                    "exec": {"enable": false}
                   }
                 }
                 """.formatted(jsonPath(tempDir.resolve("workspace"))));
@@ -43,7 +41,7 @@ class ConfigDoctorServiceTest {
                 {
                   "agents": {"defaults": {"model": "gpt-4o-mini", "workspace": "%s"}},
                   "providers": {"openai": {"api_key": "${MISSING_OPENAI_KEY}"}},
-                  "tools": {"restrictToWorkspace": true, "web": {"enable": false}, "exec": {"enable": false}}
+                  "tools": {"restrictToWorkspace": true, "exec": {"enable": false}}
                 }
                 """.formatted(jsonPath(tempDir.resolve("workspace"))));
 
@@ -55,50 +53,12 @@ class ConfigDoctorServiceTest {
     }
 
     @Test
-    void apiPortDifferentFromGateway_reportsEffectiveDifference(@TempDir Path tempDir) throws Exception {
-        Path configPath = writeConfig(tempDir, """
-                {
-                  "agents": {"defaults": {"model": "gpt-4o-mini", "workspace": "%s"}},
-                  "providers": {"openai": {"api_key": "sk-test"}},
-                  "gateway": {"port": 8000},
-                  "api": {"port": 9000},
-                  "tools": {"restrictToWorkspace": true, "web": {"enable": false}, "exec": {"enable": false}}
-                }
-                """.formatted(jsonPath(tempDir.resolve("workspace"))));
-
-        ConfigDoctorReport report = doctor().diagnose(ConfigLoader.loadConfig(configPath), configPath);
-
-        assertEquals(9000, report.getEffectivePorts().get("actualApiPort"));
-        assertTrue(report.getWarnings().stream().anyMatch(s -> s.contains("gateway.port") && s.contains("api.port")), report.getWarnings().toString());
-    }
-
-    @Test
-    void webMaxChars_reportsIgnoredField(@TempDir Path tempDir) throws Exception {
-        Path configPath = writeConfig(tempDir, """
-                {
-                  "agents": {"defaults": {"model": "gpt-4o-mini", "workspace": "%s"}},
-                  "providers": {"openai": {"api_key": "sk-test"}},
-                  "tools": {
-                    "restrictToWorkspace": true,
-                    "web": {"enable": true, "max_chars": 1234},
-                    "exec": {"enable": false}
-                  }
-                }
-                """.formatted(jsonPath(tempDir.resolve("workspace"))));
-
-        ConfigDoctorReport report = doctor().diagnose(ConfigLoader.loadConfig(configPath), configPath);
-
-        assertEquals("WARNING", report.status());
-        assertTrue(report.getIgnoredFields().stream().anyMatch(s -> s.contains("tools.web.max_chars")), report.getIgnoredFields().toString());
-    }
-
-    @Test
     void restrictToWorkspaceFalse_reportsSecurityWarning(@TempDir Path tempDir) throws Exception {
         Path configPath = writeConfig(tempDir, """
                 {
                   "agents": {"defaults": {"model": "gpt-4o-mini", "workspace": "%s"}},
                   "providers": {"openai": {"api_key": "sk-test"}},
-                  "tools": {"restrictToWorkspace": false, "web": {"enable": false}, "exec": {"enable": false}}
+                  "tools": {"restrictToWorkspace": false, "exec": {"enable": false}}
                 }
                 """.formatted(jsonPath(tempDir.resolve("workspace"))));
 
@@ -113,7 +73,7 @@ class ConfigDoctorServiceTest {
                 {
                   "agents": {"defaults": {"model": "my-private-model", "workspace": "%s"}},
                   "providers": {"openai": {"api_key": "sk-test"}},
-                  "tools": {"restrictToWorkspace": true, "web": {"enable": false}, "exec": {"enable": false}}
+                  "tools": {"restrictToWorkspace": true, "exec": {"enable": false}}
                 }
                 """.formatted(jsonPath(tempDir.resolve("workspace"))));
 
@@ -136,7 +96,7 @@ class ConfigDoctorServiceTest {
                       "maxOutputTokens": 8192
                     }
                   },
-                  "tools": {"restrictToWorkspace": true, "web": {"enable": false}, "exec": {"enable": false}}
+                  "tools": {"restrictToWorkspace": true, "exec": {"enable": false}}
                 }
                 """.formatted(jsonPath(tempDir.resolve("workspace"))));
 
@@ -166,7 +126,7 @@ class ConfigDoctorServiceTest {
                       "apiMode": "openai-compatible"
                     }
                   },
-                  "tools": {"restrictToWorkspace": true, "web": {"enable": false}, "exec": {"enable": false}}
+                  "tools": {"restrictToWorkspace": true, "exec": {"enable": false}}
                 }
                 """.formatted(jsonPath(tempDir.resolve("workspace"))));
 
@@ -194,7 +154,7 @@ class ConfigDoctorServiceTest {
                       "contextWindowTokens": "bad"
                     }
                   },
-                  "tools": {"restrictToWorkspace": true, "web": {"enable": false}, "exec": {"enable": false}}
+                  "tools": {"restrictToWorkspace": true, "exec": {"enable": false}}
                 }
                 """.formatted(jsonPath(tempDir.resolve("workspace"))));
 
@@ -206,26 +166,6 @@ class ConfigDoctorServiceTest {
     }
 
     @Test
-    void unknownMcpType_reportsWarning(@TempDir Path tempDir) throws Exception {
-        Path configPath = writeConfig(tempDir, """
-                {
-                  "agents": {"defaults": {"model": "gpt-4o-mini", "workspace": "%s"}},
-                  "providers": {"openai": {"api_key": "sk-test"}},
-                  "tools": {
-                    "restrictToWorkspace": true,
-                    "web": {"enable": false},
-                    "exec": {"enable": false},
-                    "mcpServers": {"bad": {"type": "mystery", "command": "node"}}
-                  }
-                }
-                """.formatted(jsonPath(tempDir.resolve("workspace"))));
-
-        ConfigDoctorReport report = doctor().diagnose(ConfigLoader.loadConfig(configPath), configPath);
-
-        assertTrue(report.getWarnings().stream().anyMatch(s -> s.contains("未知 type")), report.getWarnings().toString());
-    }
-
-    @Test
     void sandboxEnabledWithoutSandboxCommand_reportsWarning(@TempDir Path tempDir) throws Exception {
         Path configPath = writeConfig(tempDir, """
                 {
@@ -233,7 +173,6 @@ class ConfigDoctorServiceTest {
                   "providers": {"openai": {"api_key": "sk-test"}},
                   "tools": {
                     "restrictToWorkspace": true,
-                    "web": {"enable": false},
                     "exec": {"enable": true, "sandbox": true}
                   }
                 }

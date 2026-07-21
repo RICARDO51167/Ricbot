@@ -14,8 +14,6 @@ import ricbot.tool.process.ExecTool;
 import ricbot.tool.api.Tool.ToolExecutionContext;
 import ricbot.tool.search.GlobTool;
 import ricbot.tool.search.GrepTool;
-import ricbot.domain.skill.SkillsLoader;
-import ricbot.tool.skill.ReadSkillTool;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -149,8 +147,8 @@ public class ToolRegistryTest {
         assertEquals(List.of("alpha", "mcp_demo_echo", "zeta"), registry.toolNames());
         List<Map<String, Object>> definitions = registry.getDefinitions();
         assertEquals("alpha", schemaName(definitions.get(0)));
-        assertEquals("zeta", schemaName(definitions.get(1)));
-        assertEquals("mcp_demo_echo", schemaName(definitions.get(2)));
+        assertEquals("mcp_demo_echo", schemaName(definitions.get(1)));
+        assertEquals("zeta", schemaName(definitions.get(2)));
     }
 
     @Test
@@ -304,66 +302,6 @@ public class ToolRegistryTest {
 
         assertFalse(String.valueOf(execResult).contains("需要审批后才能执行"), String.valueOf(execResult));
         assertTrue(Files.exists(workspace.resolve("direct-exec.txt")));
-    }
-
-    @Test
-    void readSkillTool_returnsFullSkillDocument(@TempDir Path workspace) throws Exception {
-        Path skillDir = workspace.resolve("skills").resolve("demo");
-        Files.createDirectories(skillDir);
-        Files.writeString(skillDir.resolve("SKILL.md"), """
-                ---
-                description: Demo skill
-                version: 1.2.3
-                permissions: read, write
-                tools: read_file, write_file
-                ---
-                Demo body.
-                """);
-
-        ToolRegistry registry = new ToolRegistry();
-        registry.register(new ReadSkillTool(new SkillsLoader(workspace, null, Set.of())));
-
-        Object out = registry.execute("read_skill", Map.of("name", "demo"));
-
-        assertTrue(String.valueOf(out).contains("# Skill: demo"), String.valueOf(out));
-        assertTrue(String.valueOf(out).contains("version: 1.2.3"), String.valueOf(out));
-        assertTrue(String.valueOf(out).contains("risk: elevated"), String.valueOf(out));
-        assertTrue(String.valueOf(out).contains("permissions: read, write"), String.valueOf(out));
-        assertTrue(String.valueOf(out).contains("Demo body."), String.valueOf(out));
-    }
-
-    @Test
-    void readSkillTool_supportsSectionAndChunkReads(@TempDir Path workspace) throws Exception {
-        Path skillDir = workspace.resolve("skills").resolve("demo");
-        Files.createDirectories(skillDir);
-        Files.writeString(skillDir.resolve("SKILL.md"), """
-                ---
-                description: Demo skill
-                ---
-                # Demo
-
-                Intro.
-
-                ## Usage
-
-                First line.
-                Second line.
-
-                ## Examples
-
-                Example body.
-                """);
-
-        ToolRegistry registry = new ToolRegistry();
-        registry.register(new ReadSkillTool(new SkillsLoader(workspace, null, Set.of())));
-
-        Object out = registry.execute("read_skill", Map.of("name", "demo", "section", "Usage", "max_chars", 18));
-        String text = String.valueOf(out);
-
-        assertTrue(text.contains("section: Usage"), text);
-        assertTrue(text.contains("truncated: true"), text);
-        assertTrue(text.contains("## Usage"), text);
-        assertFalse(text.contains("## Examples"), text);
     }
 
     @Test

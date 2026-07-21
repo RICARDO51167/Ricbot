@@ -1,19 +1,14 @@
 package ricbot.domain.agent;
 
-import ricbot.domain.skill.SkillsLoader;
-import ricbot.domain.skill.SkillRouter;
 import ricbot.tool.pack.RuntimeToolPacks;
 import ricbot.domain.memory.Consolidator;
 import ricbot.domain.memory.MemoryStore;
 import ricbot.domain.config.ProviderCapability;
 import ricbot.domain.config.ProviderCapabilityResolver;
-import ricbot.domain.note.NoteService;
-import ricbot.domain.rag.WorkspaceRagService;
 import ricbot.domain.security.ApprovalService;
 import ricbot.domain.trace.TraceStore;
 import ricbot.domain.hook.AgentHook;
 import ricbot.tool.api.ToolRegistry;
-import ricbot.integration.mcp.MCPLoader;
 import ricbot.integration.command.CommandRouter;
 import ricbot.domain.message.InboundMessage;
 import ricbot.domain.message.InboundMessages;
@@ -64,12 +59,8 @@ public class AgentLoop {
     /** 工具返回结果的最大字符数 */
     private final int maxToolResultChars;
 
-    /** Web 工具配置 */
-    private final Config.WebToolsConfig webConfig;
     /** 执行工具配置 */
     private final Config.ExecToolConfig execConfig;
-    /** MCP 服务器配置映射 */
-    private final Map<String, Object> mcpServers;
     /** 是否限制操作仅在工作空间内 */
     private final boolean restrictToWorkspace;
     /** 是否启用统一会话模式 */
@@ -104,10 +95,6 @@ public class AgentLoop {
     private final AutoCompact autoCompact;
     /** Spawn Worker 的 Run 调度服务；完成结果以持久 Mailbox 为准。 */
     private final SpawnWorkerService spawnWorkers;
-    /** 技能加载器，用于加载可用技能 */
-    private final SkillsLoader skillsLoader;
-    /** 技能路由器，用于根据上下文选择合适技能 */
-    private final SkillRouter skillRouter;
     /** 工具注册表，管理所有可用工具 */
     private final ToolRegistry tools;
     /** Agent 运行器，负责执行具体的 LLM 交互循环 */
@@ -122,8 +109,6 @@ public class AgentLoop {
     private final AgentExecutionService agentExecutionService;
     /** 持久化服务 */
     private final SessionPersistenceService sessionPersistenceService;
-    /** MCP 兼容加载器（统一 MCP 装配路径） */
-    private final MCPLoader mcpLoader;
     /** 命令路由器，统一 slash 命令入口 */
     private final CommandRouter commandRouter;
     /** 命令处理器 */
@@ -159,14 +144,11 @@ public class AgentLoop {
      * @param contextBlockLimit  上下文块限制
      * @param maxToolResultChars 工具结果最大字符数
      * @param providerRetryMode  提供者重试模式
-     * @param webConfig          Web 工具配置
      * @param execConfig         执行工具配置
-     * @param mcpServers         MCP 服务器配置
      * @param restrictToWorkspace 是否限制工作空间
      * @param sessionManager     会话管理器
      * @param timezone           时区
      * @param unifiedSession     是否统一会话
-     * @param disabledSkills     禁用的技能列表
      * @param sessionTtlMinutes  会话 TTL（分钟，<=0 表示禁用）
      */
     public AgentLoop(
@@ -179,19 +161,16 @@ public class AgentLoop {
             Integer contextBlockLimit,
             Integer maxToolResultChars,
             String providerRetryMode,
-            Config.WebToolsConfig webConfig,
             Config.ExecToolConfig execConfig,
-            Map<String, Object> mcpServers,
             boolean restrictToWorkspace,
             SessionManager sessionManager,
             String timezone,
             boolean unifiedSession,
-            List<String> disabledSkills,
             int sessionTtlMinutes
     ) {
         this(bus, provider, workspace, model, maxIterations, contextWindowTokens, contextBlockLimit,
-                maxToolResultChars, providerRetryMode, webConfig, execConfig, mcpServers,
-                restrictToWorkspace, sessionManager, timezone, unifiedSession, disabledSkills,
+                maxToolResultChars, providerRetryMode, execConfig,
+                restrictToWorkspace, sessionManager, timezone, unifiedSession,
                 sessionTtlMinutes, null);
     }
 
@@ -205,14 +184,11 @@ public class AgentLoop {
             Integer contextBlockLimit,
             Integer maxToolResultChars,
             String providerRetryMode,
-            Config.WebToolsConfig webConfig,
             Config.ExecToolConfig execConfig,
-            Map<String, Object> mcpServers,
             boolean restrictToWorkspace,
             SessionManager sessionManager,
             String timezone,
             boolean unifiedSession,
-            List<String> disabledSkills,
             int sessionTtlMinutes,
             AgentRuntimeCore suppliedCore
     ) {
@@ -231,9 +207,7 @@ public class AgentLoop {
         this.contextBlockLimit = contextBlockLimit;
         this.maxToolResultChars = maxToolResultChars != null ? maxToolResultChars : defaults.getMaxToolResultChars();
 
-        this.webConfig = webConfig != null ? webConfig : new Config.WebToolsConfig();
         this.execConfig = execConfig != null ? execConfig : new Config.ExecToolConfig();
-        this.mcpServers = mcpServers != null ? mcpServers : Collections.emptyMap();
         this.restrictToWorkspace = restrictToWorkspace;
         this.unifiedSession = unifiedSession;
         this.providerRetryMode = providerRetryMode != null && !providerRetryMode.isBlank()
@@ -250,8 +224,8 @@ public class AgentLoop {
 
         AgentRuntimeCore core = suppliedCore != null ? suppliedCore : AgentRuntimeCoreFactory.create(
                 this.provider, this.workspace, this.model, this.contextWindowTokens,
-                this.maxToolResultChars, this.webConfig, this.execConfig, this.restrictToWorkspace,
-                sessionManager, timezone, disabledSkills, this.sessionTtlMinutes);
+                this.maxToolResultChars, this.execConfig, this.restrictToWorkspace,
+                sessionManager, timezone, this.sessionTtlMinutes);
         this.contextBuilder = core.contextBuilder();
         this.sessionManager = core.persistence().sessionManager();
         this.runCheckpointStore = core.persistence().checkpointStore();
@@ -266,8 +240,6 @@ public class AgentLoop {
         this.sideEffectApplicationService = core.sideEffectApplicationService();
         this.autoCompact = core.autoCompact();
         this.spawnWorkers = core.spawnWorkers();
-        this.skillsLoader = core.skillsLoader();
-        this.skillRouter = core.skillRouter();
         this.tools = core.tools();
         this.runner = core.runner();
         ToolContextApplier toolContextApplier = new ToolContextInjector(this.tools);
@@ -284,17 +256,12 @@ public class AgentLoop {
                 this.memoryStore,
                 new ToolTraceSummarizer(),
                 this.contextWindowTokens,
-                new NoteService(this.workspace),
-                new WorkspaceRagService(this.workspace),
                 this.traceStore
         );
         this.agentContextService = new AgentContextService(
                 this.workspace,
                 this.contextBuilder,
                 this.memoryStore,
-                this.skillsLoader,
-                this.skillRouter,
-                this.tools,
                 this.hookFactory,
                 toolContextApplier,
                 this.extraHooks,
@@ -315,7 +282,6 @@ public class AgentLoop {
                 this.sideEffectStore
         );
         this.sessionPersistenceService = new SessionPersistenceService(this.sessionManager, this.maxToolResultChars, this.memoryStore);
-        this.mcpLoader = new MCPLoader(this.tools, this.mcpServers);
         this.commandRouter = new CommandRouter();
         this.agentCommands = new AgentCommands(
                 this.sessionManager,
@@ -350,7 +316,7 @@ public class AgentLoop {
         // 注册默认工具
         if (suppliedCore == null) {
             RuntimeToolPacks.registerAll(this.tools, this.workspace, this.restrictToWorkspace,
-                    this.execConfig, this.webConfig, this.approvalService, this.skillsLoader, this.spawnWorkers);
+                    this.execConfig, this.approvalService, this.spawnWorkers);
         }
         registerCommandRoutes();
     }
@@ -389,7 +355,7 @@ public class AgentLoop {
     /**
      * 启动 Agent 主循环。
      * <p>
-     * 该方法首先确保后台服务（如 MCP 加载等）已启动，
+     * 该方法首先确保后台服务已启动，
      * 然后使用 CAS 操作保证 Agent 主循环线程只被创建和启动一次。
      */
     public void start() {
@@ -462,19 +428,6 @@ public class AgentLoop {
         }
         // 标记 Agent 循环为运行状态
         this.running = true;
-        // 如果配置了 MCP 服务器且不为空，则异步加载 MCP 服务
-        if (mcpServers != null && !mcpServers.isEmpty()) {
-            executor.submit(() -> {
-                try {
-                    // 加载 MCP 服务
-                    mcpLoader.load();
-                } catch (Exception e) {
-                    // 记录 MCP 加载失败的错误日志
-                    log.error("MCP 加载失败", e);
-                }
-            });
-        }
-        
         // 如果设置了会话自动归档 TTL（大于 0），则调度定期执行自动归档扫描
         if (sessionTtlMinutes > 0) {
             // 每 1 分钟执行一次自动归档扫描，初始延迟为 1 分钟
@@ -492,7 +445,6 @@ public class AgentLoop {
         } catch (Exception e) {
             log.warn("关闭 Spawn Worker 服务失败", e);
         }
-        mcpLoader.close();
         telemetryRuntime.close();
         executor.shutdownNow();
         scheduler.shutdownNow();
@@ -505,8 +457,6 @@ public class AgentLoop {
     public ApprovalService getApprovalService() { return approvalService; }
     public SideEffectApplicationService getSideEffectApplicationService() { return sideEffectApplicationService; }
     public MessageBus getBus() { return bus; }
-
-    public MCPLoader getMcpLoader() { return mcpLoader; }
 
     public MemoryStore getMemoryStore() { return memoryStore; }
     public Consolidator getConsolidator() { return consolidator; }

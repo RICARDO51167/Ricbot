@@ -79,8 +79,27 @@ class ConfigLoaderTest {
                 () -> ConfigLoader.loadConfig(configPath)
         );
 
-        assertTrue(error.getMessage().contains("channels.transcription_provider"));
+        assertTrue(error.getMessage().contains("channels"));
         assertTrue(error.getMessage().contains("已删除"));
+    }
+
+    @Test
+    void loadConfig_withRemovedHttpServerConfigFailsWithMigrationMessage(@TempDir Path tempDir) throws Exception {
+        Path configPath = tempDir.resolve("removed-http.json");
+        Files.writeString(configPath, """
+                {
+                  "api": {"host": "127.0.0.1", "port": 8000},
+                  "gateway": {"port": 8000}
+                }
+                """);
+
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> ConfigLoader.loadConfig(configPath)
+        );
+
+        assertTrue(error.getMessage().contains("api/gateway"));
+        assertTrue(error.getMessage().contains("仅保留 CLI"));
     }
 
     @Test
@@ -116,12 +135,10 @@ class ConfigLoaderTest {
     void resolveConfigEnvVars_keepsMissingPlaceholdersButResolvesPresentOnes() {
         Config config = new Config();
         config.getProviders().getOpenai().setApiKey("${PATH}");
-        config.getChannels().getWebsocket().setToken("${DEFINITELY_MISSING_RICBOT_ENV}");
 
         Config resolved = ConfigLoader.resolveConfigEnvVars(config);
 
         assertNotEquals("${PATH}", resolved.getProviders().getOpenai().getApiKey());
-        assertEquals("${DEFINITELY_MISSING_RICBOT_ENV}", resolved.getChannels().getWebsocket().getToken());
     }
 
     @Test

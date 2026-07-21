@@ -9,9 +9,7 @@ import ricbot.tool.filesystem.EditFileTool;
 import ricbot.tool.filesystem.ListDirTool;
 import ricbot.tool.filesystem.ReadFileTool;
 import ricbot.tool.filesystem.WriteFileTool;
-import ricbot.tool.note.NoteTool;
 import ricbot.tool.process.ExecTool;
-import ricbot.tool.rag.RagTool;
 import ricbot.tool.search.GlobTool;
 import ricbot.tool.search.GrepTool;
 
@@ -33,7 +31,6 @@ public final class BuiltinToolRegistrar {
 
     public static void registerFileAndSearchTools(ToolRegistry registry, Path workspace, Path allowedDir, ApprovalService approvalService) {
         registerCoreFileAndSearchTools(registry, workspace, allowedDir, approvalService);
-        registerKnowledgeTools(registry, workspace);
     }
 
     public static void registerCoreFileAndSearchTools(
@@ -49,11 +46,6 @@ public final class BuiltinToolRegistrar {
         registry.register(new EditFileTool(workspace, allowedDir, riskAnalyzer, approvalService));
         registry.register(new GlobTool(workspace, allowedDir));
         registry.register(new GrepTool(workspace, allowedDir));
-    }
-
-    public static void registerKnowledgeTools(ToolRegistry registry, Path workspace) {
-        registry.register(new NoteTool(workspace));
-        registry.register(new RagTool(workspace));
     }
 
     public static void registerExecTool(

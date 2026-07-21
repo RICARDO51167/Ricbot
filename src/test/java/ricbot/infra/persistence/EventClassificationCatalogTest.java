@@ -18,7 +18,7 @@ class EventClassificationCatalogTest {
     }
 
     @Test
-    void keepsEvidenceImmutableAndConsoleEventsAsProjections() {
+    void keepsEvidenceImmutable() {
         assertEquals(EventClassificationCatalog.Classification.IMMUTABLE_ARTIFACT,
                 EventClassificationCatalog.classification(EventClassificationCatalog.EVIDENCE, "DiffEvidence"));
         assertEquals(EventClassificationCatalog.Classification.IMMUTABLE_ARTIFACT,
@@ -27,8 +27,6 @@ class EventClassificationCatalogTest {
                 EventClassificationCatalog.classification(EventClassificationCatalog.EVIDENCE, "ApprovalEvidence"));
         assertEquals(EventClassificationCatalog.Classification.IMMUTABLE_ARTIFACT,
                 EventClassificationCatalog.classification(EventClassificationCatalog.EVIDENCE, "VerificationEvidence"));
-        assertEquals(EventClassificationCatalog.Classification.READ_MODEL,
-                EventClassificationCatalog.classification(EventClassificationCatalog.CONSOLE, "ConsoleEvent"));
     }
 
     @Test

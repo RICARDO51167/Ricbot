@@ -10,7 +10,6 @@ import ricbot.infra.config.ConfigLoader;
 import ricbot.integration.llm.api.LLMProvider;
 import ricbot.integration.llm.provider.ProviderFactory;
 import ricbot.tool.pack.RuntimeToolPacks;
-import ricbot.integration.channel.WebSocketTransportAdapter;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -57,17 +56,15 @@ public class Bootstrapper {
                 model,
                 defaults.getContextWindowTokens(),
                 defaults.getMaxToolResultChars(),
-                config.getTools().getWeb(),
                 config.getTools().getExec(),
                 config.getTools().isRestrictToWorkspace(),
                 null,
                 defaults.getTimezone(),
-                defaults.getDisabledSkills(),
                 defaults.getSessionTtlMinutes()
         );
         RuntimeToolPacks.registerAll(core.tools(), config.getWorkspacePath(),
                 config.getTools().isRestrictToWorkspace(), config.getTools().getExec(),
-                config.getTools().getWeb(), core.approvalService(), core.skillsLoader(), core.spawnWorkers());
+                core.approvalService(), core.spawnWorkers());
 
         AgentLoop loop = new AgentLoop(
                 bus,
@@ -79,14 +76,11 @@ public class Bootstrapper {
                 defaults.getContextBlockLimit(),
                 defaults.getMaxToolResultChars(),
                 defaults.getProviderRetryMode(),
-                config.getTools().getWeb(),
                 config.getTools().getExec(),
-                config.getTools().getMcpServers(),
                 config.getTools().isRestrictToWorkspace(),
                 null,
                 defaults.getTimezone(),
                 defaults.isUnifiedSession(),
-                defaults.getDisabledSkills(),
                 defaults.getSessionTtlMinutes(),
                 core
         );
@@ -98,7 +92,4 @@ public class Bootstrapper {
         return loop;
     }
 
-    public WebSocketTransportAdapter createWebSocketTransport(Config config, MessageBus bus) {
-        return new WebSocketTransportAdapter(config, bus);
-    }
 }

@@ -297,17 +297,8 @@ final class AgentExecutionService {
                         }
                     }
                 });
-        Object controllerConsumer = requestMetadata != null ? requestMetadata.get("consoleRunControllerConsumer") : null;
-        if (controllerConsumer instanceof Consumer<?> consumer) {
-            @SuppressWarnings("unchecked")
-            Consumer<AgentRunController> typed = (Consumer<AgentRunController>) consumer;
-            spec.setRunControllerConsumer(typed);
-        }
         if (requestMetadata != null) {
             for (Map.Entry<String, Object> entry : requestMetadata.entrySet()) {
-                if ("consoleRunControllerConsumer".equals(entry.getKey())) {
-                    continue;
-                }
                 Object value = entry.getValue();
                 if (value == null || value instanceof String || value instanceof Number || value instanceof Boolean) {
                     spec.getMetadata().put(entry.getKey(), value);

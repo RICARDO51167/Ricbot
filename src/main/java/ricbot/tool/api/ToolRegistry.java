@@ -6,8 +6,6 @@ import ricbot.tool.filesystem.ReadFileTool;
 import ricbot.tool.process.ExecTool;
 import ricbot.tool.search.GlobTool;
 import ricbot.tool.search.GrepTool;
-import ricbot.tool.web.WebFetchTool;
-import ricbot.tool.web.WebSearchTool;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -42,21 +40,6 @@ public class ToolRegistry {
                             (String) params.get("file_glob"),
                             (Boolean) params.get("ignore_case"),
                             (Integer) params.get("max_results")
-                    )
-            ),
-            new LegacyToolExecutor<>(
-                    WebFetchTool.class,
-                    (tool, params) -> tool.execute(
-                            (String) params.get("url"),
-                            (String) params.get("extract_mode"),
-                            (Integer) params.get("max_chars")
-                    )
-            ),
-            new LegacyToolExecutor<>(
-                    WebSearchTool.class,
-                    (tool, params) -> tool.execute(
-                            (String) params.get("query"),
-                            (Integer) params.get("count")
                     )
             )
     );
@@ -128,11 +111,7 @@ public class ToolRegistry {
         return (name instanceof String s) ? s : "";
     }
 
-    /**
-     * 获取所有已注册工具的定义列表
-     * 结果将分为内置工具和 MCP 工具两类，并分别按名称排序后合并返回
-     * @return 工具定义列表
-     */
+    /** 获取所有已注册工具的定义列表。 */
     public List<Map<String, Object>> getDefinitions() {
         // 收集所有工具的原始定义
         List<Map<String, Object>> definitions = new ArrayList<>();
@@ -143,25 +122,8 @@ public class ToolRegistry {
             }
         }
 
-        // 分类存储内置工具和 MCP 工具
-        List<Map<String, Object>> builtins = new ArrayList<>();
-        List<Map<String, Object>> mcpTools = new ArrayList<>();
-
-        // 根据名称前缀进行分类
-        for (Map<String, Object> schema : definitions) {
-            String name = schemaName(schema);
-            if (name.startsWith("mcp_")) mcpTools.add(schema);
-            else builtins.add(schema);
-        }
-
-        // 分别对两类工具按名称进行排序
-        builtins.sort(Comparator.comparing(ToolRegistry::schemaName));
-        mcpTools.sort(Comparator.comparing(ToolRegistry::schemaName));
-
-        // 合并列表：先内置工具，后 MCP 工具
-        List<Map<String, Object>> out = new ArrayList<>(builtins);
-        out.addAll(mcpTools);
-        return out;
+        definitions.sort(Comparator.comparing(ToolRegistry::schemaName));
+        return definitions;
     }
 
     /**

@@ -15,7 +15,7 @@ public class ContextBuilderTest {
 
     @Test
     void buildMessages_dropsOrphanToolHistory(@TempDir Path workspace) {
-        ContextBuilder builder = new ContextBuilder(workspace, "UTC", List.of());
+        ContextBuilder builder = new ContextBuilder(workspace, "UTC");
 
         List<Map<String, Object>> history = List.of(
                 Map.of("role", "tool", "tool_call_id", "missing_call", "content", "orphan"),
@@ -48,7 +48,7 @@ public class ContextBuilderTest {
 
     @Test
     void buildMessages_inlinesLocalImageAsDataUrl(@TempDir Path workspace) throws Exception {
-        ContextBuilder builder = new ContextBuilder(workspace, "UTC", List.of());
+        ContextBuilder builder = new ContextBuilder(workspace, "UTC");
         Path image = workspace.resolve("tiny.png");
         Files.write(image, new byte[]{
                 (byte) 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,

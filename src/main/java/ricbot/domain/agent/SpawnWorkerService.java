@@ -2,7 +2,6 @@ package ricbot.domain.agent;
 
 import ricbot.domain.hook.AgentHook;
 import ricbot.domain.hook.AgentHookContext;
-import ricbot.domain.skill.SkillsLoader;
 import ricbot.domain.worker.WorkerRuntime;
 import ricbot.domain.worker.WorkerState;
 import ricbot.domain.worker.WorkerStore;
@@ -11,15 +10,11 @@ import ricbot.infra.template.PromptTemplates;
 import ricbot.integration.llm.api.LLMProvider;
 import ricbot.tool.api.BuiltinToolRegistrar;
 import ricbot.tool.api.ToolRegistry;
-import ricbot.tool.skill.ReadSkillTool;
-import ricbot.tool.web.WebFetchTool;
-import ricbot.tool.web.WebSearchTool;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -53,9 +48,7 @@ public final class SpawnWorkerService implements AutoCloseable {
     private final String model;
     private final int maxToolResultChars;
     private final Config.ExecToolConfig execConfig;
-    private final Config.WebToolsConfig webConfig;
     private final boolean restrictToWorkspace;
-    private final SkillsLoader skillsLoader;
     private final GraphRunService runner;
     private final WorkerRuntime workers;
     private final RunCheckpointStore checkpoints;
@@ -70,21 +63,16 @@ public final class SpawnWorkerService implements AutoCloseable {
             Path workspace,
             int maxToolResultChars,
             String model,
-            Config.WebToolsConfig webConfig,
             Config.ExecToolConfig execConfig,
-            boolean restrictToWorkspace,
-            List<String> disabledSkills
+            boolean restrictToWorkspace
     ) {
         if (provider == null) throw new IllegalArgumentException("provider is required");
         if (workspace == null) throw new IllegalArgumentException("workspace is required");
         this.workspace = workspace.toAbsolutePath().normalize();
         this.model = model != null && !model.isBlank() ? model : provider.getDefaultModel();
         this.maxToolResultChars = maxToolResultChars;
-        this.webConfig = webConfig != null ? webConfig : new Config.WebToolsConfig();
         this.execConfig = execConfig != null ? execConfig : new Config.ExecToolConfig();
         this.restrictToWorkspace = restrictToWorkspace;
-        this.skillsLoader = new SkillsLoader(this.workspace, null,
-                new HashSet<>(disabledSkills != null ? disabledSkills : List.of()));
         this.runner = new GraphRunService(provider);
         this.workers = new WorkerRuntime(this.workspace);
         this.checkpoints = new FileRunCheckpointStore(this.workspace);
@@ -310,14 +298,9 @@ public final class SpawnWorkerService implements AutoCloseable {
     private ToolRegistry buildWorkerTools() {
         ToolRegistry tools = new ToolRegistry();
         Path allowedDir = BuiltinToolRegistrar.allowedDir(workspace, restrictToWorkspace, execConfig);
-        tools.register(new ReadSkillTool(skillsLoader));
         BuiltinToolRegistrar.registerFileAndSearchTools(tools, workspace, allowedDir);
         if (execConfig.isEnable()) {
             BuiltinToolRegistrar.registerExecTool(tools, workspace, restrictToWorkspace, execConfig);
-        }
-        if (webConfig.isEnable()) {
-            tools.register(new WebFetchTool(webConfig.getMaxChars(), webConfig.getProxy()));
-            tools.register(new WebSearchTool(webConfig.getSearch(), webConfig.getProxy()));
         }
         return tools;
     }
@@ -420,8 +403,7 @@ public final class SpawnWorkerService implements AutoCloseable {
                 true,
                 Map.of(
                         "time_ctx", ContextBuilder.buildRuntimeContext(channel, chatId, null),
-                        "workspace", String.valueOf(workspace),
-                        "skills_summary", skillsLoader.buildSkillsSummary()
+                        "workspace", String.valueOf(workspace)
                 )
         );
     }

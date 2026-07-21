@@ -48,48 +48,19 @@ class ScriptFilesTest {
     }
 
     @Test
-    void mcpDocsAndModelCapabilityExample_existAndUseSafePlaceholders() throws Exception {
-        List<Path> docs = List.of(Path.of("docs", "mcp", "mcp-diagnostics.md"));
-        for (Path doc : docs) {
-            assertTrue(Files.isRegularFile(doc), doc.toString());
-            String content = Files.readString(doc);
-            assertFalse(content.contains("sk-"), doc.toString());
-            assertFalse(content.contains("Bearer "), doc.toString());
-            assertFalse(content.contains("api.openai.com"), doc.toString());
-        }
-        assertTrue(Files.readString(docs.get(0)).contains("GET /console/api/mcp/diagnostics"));
-
+    void modelCapabilityExample_existsAndUsesSafePlaceholders() throws Exception {
         List<Path> examples = List.of(Path.of("config", "examples", "model-capabilities.json"));
         for (Path example : examples) {
             assertTrue(Files.isRegularFile(example), example.toString());
             String content = Files.readString(example);
-            assertTrue(content.contains("\"api\""), example.toString());
-            assertTrue(content.contains("\"host\": \"127.0.0.1\""), example.toString());
-            assertTrue(content.contains("\"port\": 8000"), example.toString());
-            assertTrue(content.contains("\"bearer_token\": \"${RICBOT_API_BEARER_TOKEN}\""), example.toString());
+            assertTrue(content.contains("\"model_capabilities\""), example.toString());
+            assertTrue(content.contains("\"supportsToolCalling\""), example.toString());
+            assertTrue(content.contains("\"contextWindowTokens\""), example.toString());
+            assertFalse(content.contains("\"bearer_token\""), example.toString());
             assertFalse(content.contains("sk-"), example.toString());
             assertFalse(content.contains("Bearer "), example.toString());
             assertFalse(content.contains("api.openai.com"), example.toString());
         }
     }
 
-    @Test
-    void teamDemoDocsDocumentWorktreeVerifierLoop() throws Exception {
-        List<Path> docs = List.of(
-                Path.of("README.md"),
-                Path.of("docs", "demo", "end-to-end-coding-agent.md")
-        );
-        for (Path doc : docs) {
-            String content = Files.readString(doc);
-            assertTrue(content.contains("/team run 给 README 增加一个很小的说明性修正 --worktree --verify"), doc.toString());
-            assertTrue(content.contains("workerStatus=APPLIED"), doc.toString());
-            assertTrue(content.contains("verifierStatus=PASS"), doc.toString());
-            assertTrue(content.contains("reportHealth=HEALTHY"), doc.toString());
-            assertTrue(content.contains("changedFiles=README.md"), doc.toString());
-            assertTrue(content.contains("受限 AgentRun"), doc.toString());
-            assertTrue(content.contains("AgentRunner"), doc.toString());
-            assertFalse(content.contains("sk-"), doc.toString());
-            assertFalse(content.contains("Bearer "), doc.toString());
-        }
-    }
 }

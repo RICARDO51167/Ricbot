@@ -27,14 +27,14 @@ class EvalGoldenScenariosTest {
                     .setScenariosPath(Path.of("evals/golden.jsonl"))
                     .setOutputDir(Path.of("target", "eval-artifacts", "golden")));
 
-            assertEquals(15, summary.getTotal());
-            assertEquals(13, summary.getPassed(), "failures=" + summary.getFailuresByKind() + ", artifacts=" + summary.getArtifactDir());
+            assertEquals(12, summary.getTotal());
+            assertEquals(11, summary.getPassed(), "failures=" + summary.getFailuresByKind() + ", artifacts=" + summary.getArtifactDir());
             assertEquals(0, summary.getFailed(), "failures=" + summary.getFailuresByKind() + ", artifacts=" + summary.getArtifactDir());
-            assertEquals(1, summary.getSkipped());
+            assertEquals(0, summary.getSkipped());
             assertEquals(1, summary.getExpectedFailed());
             assertEquals(0, summary.getUnexpectedPassed());
-            assertEquals(25, summary.getTotalModelCalls());
-            assertEquals(10, summary.getTotalToolCalls());
+            assertEquals(21, summary.getTotalModelCalls());
+            assertEquals(8, summary.getTotalToolCalls());
             assertEquals(3, summary.getTotalWorkspaceChanges());
             assertTrue(summary.getDurationP50Ms() >= 0);
             assertTrue(summary.getDurationP95Ms() >= summary.getDurationP50Ms());
@@ -55,14 +55,11 @@ class EvalGoldenScenariosTest {
                 24,
                 4_000,
                 "none",
-                config.getTools().getWeb(),
                 config.getTools().getExec(),
-                config.getTools().getMcpServers(),
                 true,
                 null,
                 "UTC",
                 false,
-                List.of(),
                 0
         );
     }

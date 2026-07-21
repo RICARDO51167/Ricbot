@@ -32,12 +32,6 @@ public class EvalSmokeProvider extends LLMProvider {
         if (lastToolResultContains(messages, "错误：")) {
             return response("tool failed as expected");
         }
-        if (hasToolResult(messages, "mcp_demo_echo")) {
-            if (lastToolResultContains(messages, "timed out")) {
-                return response("mcp timeout handled");
-            }
-            return response("mcp echo returned deterministic mcp response");
-        }
         if (hasToolResult(messages, "write_file") && lower.contains("regression test file")
                 && lower.contains("parsertest.java")) {
             return response("done: parser regression test added");
@@ -84,12 +78,6 @@ public class EvalSmokeProvider extends LLMProvider {
         }
         if (lower.contains("read missing file")) {
             return toolCall("read_file", Map.of("path", "missing.txt"));
-        }
-        if (lower.contains("mcp echo timeout")) {
-            return toolCall("mcp_demo_echo", Map.of("text", "slow mcp response", "sleep_ms", 1500));
-        }
-        if (lower.contains("mcp echo deterministic")) {
-            return toolCall("mcp_demo_echo", Map.of("text", "deterministic mcp response"));
         }
         if (lower.contains("inspect src/main/java/demo/calculator.java")) {
             return toolCall("read_file", Map.of("path", "src/main/java/demo/Calculator.java"));

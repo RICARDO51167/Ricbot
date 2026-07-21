@@ -29,13 +29,8 @@ import ricbot.domain.config.ConfigDoctorService;
 import ricbot.infra.config.Config; // 导入配置类
 import ricbot.infra.config.ConfigLoader; // 导入配置加载器
 import ricbot.infra.config.RuntimePaths; // 导入运行时路径工具类
-import ricbot.domain.skill.SkillsLoader;
-import ricbot.integration.api.RicbotApiAppContext;
-import ricbot.integration.api.RicbotApiServer;
-import ricbot.integration.mcp.MCPLoader;
 import ricbot.integration.llm.provider.ProviderRegistry; // 导入提供商注册表类
 import ricbot.integration.llm.provider.ProviderSpec; // 导入提供商规范类
-import ricbot.integration.channel.WebSocketTransportAdapter;
 import ricbot.tool.api.BuiltinToolRegistrar;
 import ricbot.tool.api.ToolRegistry;
 import org.slf4j.Logger;
@@ -94,13 +89,11 @@ public final class CliCommands {
             case "--version", "-v" -> printVersion(); // 版本命令
             case "onboard" -> onboard(argv.subList(1, argv.size())); // onboarding 命令，传递剩余参数
             case "agent" -> agent(argv.subList(1, argv.size())); // agent 命令，传递剩余参数
-            case "serve" -> serve(argv.subList(1, argv.size())); // serve 命令，启动多渠道服务
             case "config" -> config(argv.subList(1, argv.size()));
             case "eval" -> eval(argv.subList(1, argv.size()));
             case "status" -> status(); // 状态命令
             case "provider" -> provider(argv.subList(1, argv.size())); // 提供商管理命令，传递剩余参数
             case "tools" -> tools(argv.subList(1, argv.size()));
-            case "skills" -> skills(argv.subList(1, argv.size()));
             default -> { // 未知命令
                 System.out.println("未知命令：" + cmd); // 打印未知命令提示
                 printHelp(); // 打印帮助信息
@@ -546,7 +539,6 @@ public final class CliCommands {
         if (result.shouldSave()) {
             Config finalConfig = result.config();
             ConfigLoader.saveConfig(finalConfig, resolvedConfigPath); // 保存配置到文件
-            onboardPlugins(resolvedConfigPath); // 初始化插件（占位方法）
 
             Path workspacePath = RuntimePaths.getWorkspacePath(finalConfig.getAgents().getDefaults().getWorkspace()); // 获取工作空间路径
             System.out.println("工作区：" + workspacePath); // 打印工作空间路径
@@ -556,20 +548,6 @@ public final class CliCommands {
         }
 
         System.out.println("已取消，配置未保存。");
-    }
-
-    /**
-     * 插件初始化占位方法。
-     * 对应 Python _onboard_plugins:
-     * 读取 config.json，把 discover_all() 发现的 channels default_config 注入。
-     * 这里先保留扩展点。
-     *
-     * @param configPath 配置文件路径
-     */
-    private static void onboardPlugins(Path configPath) {
-        // 对应 Python _onboard_plugins:
-        // 读取 config.json，把 discover_all() 发现的 channels default_config 注入。
-        // 这里先保留扩展点。
     }
 
     // =========================================================
@@ -723,87 +701,6 @@ public final class CliCommands {
         }
     }
 
-    /**
-     * 运行 Ricbot 服务模式，启动 HTTP API 与已配置的通用输入渠道。
-     *
-     * @param args 命令行参数，支持 --config, --workspace
-     * @throws Exception 执行过程中可能抛出的异常
-     */
-    /**
-     * 启动 Ricbot 服务模式。
-     * 该方法会初始化核心组件（AgentLoop、WebSocket transport、ApiServer），
-     * 并阻塞主线程以保持服务运行，直到接收到停止信号。
-     *
-     * @param args 命令行参数，支持 --config, --workspace
-     * @throws Exception 执行过程中可能抛出的异常
-     */
-    private static void serve(List<String> args) throws Exception {
-        // 从命令行参数中获取配置文件路径
-        String configPath = optionValue(args, "--config", "-c");
-        // 从命令行参数中获取工作空间路径
-        String workspace = optionValue(args, "--workspace", "-w");
-
-        // 加载运行时配置
-        Config config = loadRuntimeConfig(configPath, workspace);
-        // 解析配置中的环境变量，并打印生效的配置信息
-        Config resolvedConfig = resolveAndPrintEffectiveConfig(configPath, config);
-
-        // 创建消息总线实例
-        MessageBus bus = BOOTSTRAPPER.createBus();
-        // 创建 LLM 提供商实例
-        var provider = BOOTSTRAPPER.createProvider(resolvedConfig);
-
-        // 创建 Agent 循环实例，负责处理核心逻辑
-        AgentLoop agentLoop = BOOTSTRAPPER.createAgentLoop(resolvedConfig, bus, provider);
-        // 创建唯一的 WebSocket transport adapter
-        WebSocketTransportAdapter websocketTransport = BOOTSTRAPPER.createWebSocketTransport(resolvedConfig, bus);
-
-        System.out.println("正在启动 Ricbot 服务…");
-        
-        // 启动 Agent 循环，开始处理消息
-        agentLoop.start();
-        
-        websocketTransport.start();
-
-        // 启动 OpenAI 兼容 API 服务，允许外部通过标准 OpenAI API 格式调用 Ricbot
-        Config.GatewayConfig gateway = resolvedConfig.getGateway();
-        Config.ApiConfig apiConfig = resolvedConfig.getApi();
-        String apiHost = apiConfig.getHost();
-        int apiPort = apiConfig.getPort() > 0 ? apiConfig.getPort() : gateway.getPort();
-        long apiTimeoutMillis = Math.max(1L, Math.round(apiConfig.getTimeout() * 1000));
-        var apiServer = RicbotApiServer.createAndStart(
-                apiHost, // API 监听主机
-                apiPort, // API 服务端口
-                agentLoop, // Agent 循环实例，用于处理请求
-                resolvedConfig.getAgents().getDefaults().getModel(), // 默认使用的模型名称
-                apiTimeoutMillis, // 超时时间（毫秒）
-                apiConfig.getBearerToken(), // 可选的 Bearer token
-                resolvedConfig,
-                configPath != null && !configPath.isBlank() ? Path.of(configPath).toAbsolutePath().normalize() : ConfigLoader.getConfigPath()
-        );
-        System.out.println("OpenAI 兼容 API 服务已启动，监听：" + apiHost + ":" + apiPort);
-        System.out.println("Web Console 已启动：http://" + consoleDisplayHost(apiHost) + ":" + apiPort + "/console");
-        if (!RicbotApiAppContext.isLoopbackHost(apiHost)) {
-            System.out.println("警告：API 当前绑定非本地地址，Console 也会随同暴露；请确保已配置 api.bearer_token 且不要暴露到公网。");
-        }
-
-        System.out.println("Ricbot 正在运行，按 Ctrl+C 停止。");
-
-        // 注册 JVM 关闭钩子，确保在程序退出时优雅地关闭所有服务
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            System.out.println("\n正在关闭…");
-            apiServer.stop(1); // 停止 API 服务器
-            websocketTransport.stop();
-            agentLoop.stop(); // 停止 Agent 循环
-        }));
-
-        // 阻塞主线程，保持服务运行状态
-        // 使用无限循环配合睡眠，防止主线程退出导致 JVM 进程结束
-        while (true) {
-            Thread.sleep(1000);
-        }
-    }
-
     // =========================================================
     // status
     // =========================================================
@@ -820,42 +717,6 @@ public final class CliCommands {
         System.out.println("配置文件：" + configPath + (configPath.toFile().exists() ? " ✓" : " ✗")); // 打印配置状态
         System.out.println("工作区：" + workspace + (workspace.toFile().exists() ? " ✓" : " ✗")); // 打印工作空间状态
         System.out.println("模型：" + config.getAgents().getDefaults().getModel()); // 打印默认模型
-    }
-
-    private static void skills(List<String> args) {
-        String configPath = optionValue(args, "--config", "-c");
-        String workspaceOverride = optionValue(args, "--workspace", "-w");
-
-        Config config = loadRuntimeConfig(configPath, workspaceOverride);
-        Config resolved = config;
-        try {
-            resolved = ConfigLoader.resolveConfigEnvVars(config);
-        } catch (Exception ignored) {
-        }
-
-        Set<String> disabled = new HashSet<>();
-        try {
-            List<String> list = resolved.getAgents().getDefaults().getDisabledSkills();
-            if (list != null) {
-                disabled.addAll(list);
-            }
-        } catch (Exception ignored) {
-        }
-
-        SkillsLoader loader = new SkillsLoader(resolved.getWorkspacePath(), null, disabled);
-        List<Map<String, String>> rows = loader.listSkills(false);
-
-        System.out.println("ricbot skills");
-        if (rows.isEmpty()) {
-            System.out.println("（未发现任何技能）");
-            return;
-        }
-        for (Map<String, String> row : rows) {
-            String name = row.getOrDefault("name", "");
-            String source = row.getOrDefault("source", "");
-            boolean isDisabled = "true".equalsIgnoreCase(row.get("disabled"));
-            System.out.println("- " + name + (source.isBlank() ? "" : " (" + source + ")") + (isDisabled ? " [disabled]" : ""));
-        }
     }
 
     /**
@@ -894,17 +755,6 @@ public final class CliCommands {
         ToolRegistry registry = new ToolRegistry();
         BuiltinToolRegistrar.registerFileAndSearchTools(registry, workspace, allowedDir);
         BuiltinToolRegistrar.registerExecTool(registry, workspace, restrictToWorkspace, execConfig);
-
-        // 加载 MCP 工具（如有配置）
-        MCPLoader mcpLoader = null;
-        if (resolved.getTools().getMcpServers() != null && !resolved.getTools().getMcpServers().isEmpty()) {
-            try {
-                mcpLoader = new MCPLoader(registry, resolved.getTools().getMcpServers());
-                mcpLoader.load();
-            } catch (Exception e) {
-                System.out.println("MCP 工具加载失败：" + e.getMessage());
-            }
-        }
 
         // 打印标题
         System.out.println("ricbot 工具");
@@ -959,12 +809,6 @@ public final class CliCommands {
             System.out.println("  - " + tool.getName() + " — " + tool.getDescription() + (flags.isEmpty() ? "" : " " + flags));
         }
 
-        if (mcpLoader != null) {
-            try {
-                mcpLoader.close();
-            } catch (Exception ignored) {
-            }
-        }
     }
 
     // =========================================================
@@ -1099,7 +943,6 @@ public final class CliCommands {
     private static String renderConfigDoctorReport(ConfigDoctorReport report) {
         StringBuilder sb = new StringBuilder();
         Map<String, Object> map = report.toMap();
-        Map<String, Object> ports = castMap(map.get("effectivePorts"));
         Map<String, Object> tools = castMap(map.get("enabledTools"));
         Map<String, Object> capability = castMap(map.get("providerCapability"));
 
@@ -1113,16 +956,10 @@ public final class CliCommands {
         sb.append("  apiBase: ").append(report.getApiBase()).append("\n");
         sb.append("  apiKeyPresent: ").append(report.isApiKeyPresent()).append("\n");
         sb.append("  tools.enable: ").append(value(tools.get("toolsEnable"))).append(" (implicit)\n");
-        sb.append("  web.enable: ").append(value(tools.get("web"))).append("\n");
         sb.append("  exec.enable: ").append(value(tools.get("exec")))
                 .append(", sandbox=").append(value(tools.get("execSandbox"))).append("\n");
-        sb.append("  mcp.enable: ").append(value(tools.get("mcp"))).append("\n");
         sb.append("  restrictToWorkspace: ").append(value(tools.get("restrictToWorkspace"))).append("\n");
-        sb.append("  gateway.port: ").append(value(ports.get("gatewayPort"))).append("\n");
-        sb.append("  api.port: ").append(value(ports.get("apiPort"))).append("\n");
-        sb.append("  actual.listen: ").append(value(ports.get("actualApiHost")))
-                .append(":").append(value(ports.get("actualApiPort"))).append("\n");
-        sb.append("  api.timeout.seconds: ").append(value(ports.get("apiTimeoutSeconds"))).append("\n\n");
+        sb.append("\n");
 
         sb.append("provider capability\n");
         sb.append("  providerName: ").append(value(capability.get("providerName"))).append("\n");
@@ -1137,7 +974,6 @@ public final class CliCommands {
         sb.append("  maxOutputTokens: ").append(value(capability.get("maxOutputTokens"))).append("\n");
         sb.append("  apiMode: ").append(value(capability.get("apiMode"))).append("\n\n");
 
-        appendList(sb, "mcp servers", report.getMcpServers());
         appendList(sb, "errors", report.getErrors());
         appendList(sb, "warnings", report.getWarnings());
         appendList(sb, "ignored / reserved / partially-supported fields", report.getIgnoredFields());
@@ -1164,13 +1000,6 @@ public final class CliCommands {
 
     private static String value(Object value) {
         return value != null ? String.valueOf(value) : "";
-    }
-
-    private static String consoleDisplayHost(String apiHost) {
-        if (apiHost == null || apiHost.isBlank() || "0.0.0.0".equals(apiHost) || "::".equals(apiHost)) {
-            return "127.0.0.1";
-        }
-        return apiHost;
     }
 
     // =========================================================
@@ -1352,7 +1181,6 @@ public final class CliCommands {
         System.out.println("命令："); // 打印命令标题
         System.out.println("  onboard"); // 打印 onboard 命令
         System.out.println("  agent      交互模式运行 Agent，或处理单条消息");
-        System.out.println("  serve      启动多渠道服务（飞书、钉钉、企微等）");
         System.out.println("  config doctor  启动前诊断配置与 Provider capability");
         System.out.println("  eval       运行 JSONL 场景评测并生成 artifacts");
         System.out.println("  eval lint  静态检查 eval JSONL 场景");
@@ -1363,7 +1191,6 @@ public final class CliCommands {
         System.out.println("  status     显示 ricbot 状态");
         System.out.println("  provider"); // 打印 provider 命令
         System.out.println("  tools");
-        System.out.println("  skills");
     }
 
     /**

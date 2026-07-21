@@ -13,7 +13,7 @@ class ContextBuilderStructuredContextTest {
 
     @Test
     void buildMessages_rendersStructuredContextInFixedOrder(@TempDir Path workspace) {
-        ContextBuilder builder = new ContextBuilder(workspace, "UTC", List.of());
+        ContextBuilder builder = new ContextBuilder(workspace, "UTC");
         PromptContextBundle bundle = new PromptContextBundle();
         bundle.addItem("recent_history", "older relevant exchange");
         bundle.addItem("task_state", "goal: finish upgrade");
@@ -57,7 +57,7 @@ class ContextBuilderStructuredContextTest {
 
     @Test
     void buildMessages_appliesStructuredContextBudgets(@TempDir Path workspace) {
-        ContextBuilder builder = new ContextBuilder(workspace, "UTC", List.of());
+        ContextBuilder builder = new ContextBuilder(workspace, "UTC");
         PromptContextBundle bundle = new PromptContextBundle();
         for (int i = 0; i < 12; i++) {
             bundle.addItem("tool_trace", "trace-" + i + " " + "x".repeat(80));
@@ -115,27 +115,4 @@ class ContextBuilderStructuredContextTest {
         assertEquals(true, asMap.get("compressionApplied"));
     }
 
-    @Test
-    void buildMessages_rendersSkillsContextSeparatelyFromSessionSummary(@TempDir Path workspace) {
-        ContextBuilder builder = new ContextBuilder(workspace, "UTC", List.of());
-
-        List<Map<String, Object>> messages = builder.buildMessages(
-                List.of(),
-                "next",
-                null,
-                "cli",
-                "direct",
-                "archived session note",
-                "## Skill: demo\n\nDemo skill body",
-                "user",
-                new PromptContextBundle()
-        );
-
-        String system = String.valueOf(messages.get(0).get("content"));
-        assertTrue(system.contains("## Skills Context"));
-        assertTrue(system.contains("Demo skill body"));
-        assertTrue(system.contains("## Session Context"));
-        assertTrue(system.contains("archived session note"));
-        assertTrue(system.indexOf("## Skills Context") < system.indexOf("## Session Context"));
-    }
 }

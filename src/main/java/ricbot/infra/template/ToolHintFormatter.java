@@ -20,8 +20,6 @@ public final class ToolHintFormatter {
             "glob", new FormatSpec(List.of("pattern"), "glob \"%s\"", false, false),
             "grep", new FormatSpec(List.of("pattern"), "grep \"%s\"", false, false),
             "exec", new FormatSpec(List.of("command"), "$ %s", false, true),
-            "web_search", new FormatSpec(List.of("query"), "search \"%s\"", false, false),
-            "web_fetch", new FormatSpec(List.of("url"), "fetch %s", true, false),
             "list_dir", new FormatSpec(List.of("path"), "ls %s", true, false)
     );
 
@@ -44,8 +42,6 @@ public final class ToolHintFormatter {
             FormatSpec spec = TOOL_FORMATS.get(tc.getName());
             if (spec != null) {
                 formatted.add(formatKnown(tc, spec));
-            } else if (tc.getName() != null && tc.getName().startsWith("mcp_")) {
-                formatted.add(formatMcp(tc));
             } else {
                 formatted.add(formatFallback(tc));
             }
@@ -82,10 +78,6 @@ public final class ToolHintFormatter {
         }
 
         return spec.template.formatted(value);
-    }
-
-    private static String formatMcp(ToolCallRequest tc) {
-        return tc.getName().replaceFirst("^mcp_", "mcp:");
     }
 
     private static String formatFallback(ToolCallRequest tc) {

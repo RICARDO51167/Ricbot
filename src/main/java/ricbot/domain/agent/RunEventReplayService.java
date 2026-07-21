@@ -3,7 +3,7 @@ package ricbot.domain.agent;
 import java.util.List;
 import java.util.Optional;
 
-/** Cursor-based replay contract suitable for SSE/WebSocket reconnects. */
+/** Cursor-based replay contract suitable for reconnecting event consumers. */
 public final class RunEventReplayService {
     private final RunJournalStore journal;
 

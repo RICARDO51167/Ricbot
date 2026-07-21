@@ -198,7 +198,7 @@ class EvalHarnessTest {
         );
 
         assertEquals("pass", result.getStatus());
-        assertEquals(15, result.getTotalScenarios());
+        assertEquals(12, result.getTotalScenarios());
         assertEquals(0, result.getErrors());
         assertTrue(Files.exists(Path.of(result.getArtifactDir()).resolve("lint.json")));
         assertTrue(Files.readString(Path.of(result.getArtifactDir()).resolve("lint-report.md")).contains("No lint issues found."));
@@ -736,14 +736,11 @@ class EvalHarnessTest {
                 24,
                 4_000,
                 "none",
-                new Config.WebToolsConfig(),
                 execDisabled(),
-                Map.of(),
                 true,
                 null,
                 "UTC",
                 false,
-                List.of(),
                 0
         );
     }

@@ -21,7 +21,6 @@ final class WorkspaceDiff {
     private static final Set<String> SKIP_DIRS = Set.of(
             ".git",
             ".idea",
-            ".rag",
             ".ricbot",
             ".traces",
             "target",

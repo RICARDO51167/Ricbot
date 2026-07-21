@@ -3,8 +3,6 @@ package ricbot.domain.agent;
 import ricbot.domain.memory.Consolidator;
 import ricbot.domain.memory.MemoryStore;
 import ricbot.domain.security.ApprovalService;
-import ricbot.domain.skill.SkillRouter;
-import ricbot.domain.skill.SkillsLoader;
 import ricbot.domain.trace.TraceStore;
 import ricbot.infra.telemetry.OpenTelemetryRuntime;
 import ricbot.tool.api.ToolRegistry;
@@ -23,8 +21,6 @@ public record AgentRuntimeCore(
         SideEffectApplicationService sideEffectApplicationService,
         AutoCompact autoCompact,
         SpawnWorkerService spawnWorkers,
-        SkillsLoader skillsLoader,
-        SkillRouter skillRouter,
         ToolRegistry tools,
         GraphRunService runner
 ) {

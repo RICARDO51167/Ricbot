@@ -81,12 +81,9 @@ public class GraphRunService implements AutoCloseable {
     public AgentRunResult run(AgentRunSpec spec) throws Exception {
         Objects.requireNonNull(spec, "spec");
         RunState initialRunState = spec.getInitialRunState();
-        String metadataRunId = spec != null && spec.getMetadata() != null
-                ? String.valueOf(spec.getMetadata().getOrDefault("consoleRunId", "")).trim()
-                : "";
         String runId = initialRunState != null
                 ? initialRunState.runId()
-                : (!metadataRunId.isBlank() ? metadataRunId : UUID.randomUUID().toString());
+                : UUID.randomUUID().toString();
         int runAttempt = spec != null && spec.getMetadata() != null
                 ? nonNegativeInt(spec.getMetadata().get("retryCount"))
                 : 0;
@@ -157,9 +154,6 @@ public class GraphRunService implements AutoCloseable {
         AgentRunController controller = spec.getRunTimeout() != null
                 ? AgentRunController.withMaxTurnsAndTimeout(spec.getMaxIterations(), spec.getRunTimeout(), java.time.Clock.systemUTC())
                 : AgentRunController.withMaxTurns(spec.getMaxIterations());
-        if (spec.getRunControllerConsumer() != null) {
-            spec.getRunControllerConsumer().accept(controller);
-        }
         boolean cancelledRecorded = false;
         AgentNodeScheduler nodeScheduler;
 

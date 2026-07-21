@@ -24,19 +24,6 @@ class ExecutionBackendTest {
     }
 
     @Test
-    void remoteAdapterPreservesTransportNeutralContract(@TempDir Path workspace) throws Exception {
-        RemoteExecutionBackend backend = new RemoteExecutionBackend("e2b", request ->
-                new ExecutionResult(0, request.command(), "", false, false,
-                        Duration.ofMillis(2), "client", Map.of("sandbox", "s-1")), null);
-
-        ExecutionResult result = backend.execute(new ExecutionRequest(
-                "echo remote", workspace, Map.of(), Duration.ofSeconds(2), 4096));
-
-        assertEquals("remote:e2b", result.backend());
-        assertEquals("s-1", result.metadata().get("sandbox"));
-    }
-
-    @Test
     void fallbackMustBeExplicit() {
         ExecutionBackend unavailable = new ExecutionBackend() {
             public String name() { return "docker"; }

@@ -138,34 +138,6 @@ class AgentCommandsTest {
     }
 
     @Test
-    void summaryWriteNoteCommandWritesTaskNote(@TempDir Path workspace) throws Exception {
-        SessionManager sessionManager = new SessionManager(workspace);
-        MemoryStore memoryStore = new MemoryStore(workspace);
-        Session session = sessionManager.getOrCreate("cli:direct");
-        seedSummaryMetadata(session);
-
-        AgentCommands commands = new AgentCommands(
-                sessionManager,
-                "model",
-                workspace,
-                msg -> "cli:direct",
-                key -> List.<Future<?>>of(),
-                (key, reason) -> {}
-        );
-        CommandRouter router = new CommandRouter();
-        commands.register(router);
-
-        String written = router.dispatch(context("/summary --write-note", sessionManager)).get().getContent();
-        String path = lineValue(written, "path:");
-
-        assertTrue(written.contains("summary note written"), written);
-        assertTrue(path.startsWith("notes/tasks/"), written);
-        assertTrue(Files.exists(workspace.resolve(path)));
-        assertTrue(Files.readString(workspace.resolve(path)).contains("V3.4 note writing"));
-        assertTrue(Files.readString(workspace.resolve("notes").resolve("index.json")).contains("task-summary"));
-    }
-
-    @Test
     void teamCommandsOperateStateMachineAndExposeSummary(@TempDir Path workspace) throws Exception {
         SessionManager sessionManager = new SessionManager(workspace);
         MemoryStore memoryStore = new MemoryStore(workspace);

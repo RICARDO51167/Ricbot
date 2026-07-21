@@ -23,7 +23,7 @@ public class RoleToolPolicy {
     public static RoleToolPolicy defaultPolicy() {
         Map<TeamRole, RolePolicy> map = new EnumMap<>(TeamRole.class);
         map.put(TeamRole.EXPLORER, new RolePolicy(
-                List.of("read_file", "grep", "glob", "rag", "note", "workspace diff"),
+                List.of("read_file", "grep", "glob", "workspace diff"),
                 List.of(),
                 List.of("write", "edit", "exec", "commit", "rollback", "delete")
         ));
@@ -53,7 +53,7 @@ public class RoleToolPolicy {
                 List.of("write", "edit", "commit", "rollback", "delete")
         ));
         map.put(TeamRole.SYNTHESIZER, new RolePolicy(
-                List.of("read_file", "grep", "glob", "note", "summary"),
+                List.of("read_file", "grep", "glob", "summary"),
                 List.of(),
                 List.of("write", "edit", "exec", "commit", "rollback", "delete")
         ));

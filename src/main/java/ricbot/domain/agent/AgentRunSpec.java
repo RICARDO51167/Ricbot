@@ -65,9 +65,6 @@ public class AgentRunSpec {
     private Map<String, Object> metadata = new LinkedHashMap<>();
     // 适配层声明的允许工具名；实际限制由传入的 ToolRegistry 决定。
     private List<String> allowedTools = new ArrayList<>();
-    // 可选外部运行控制器监听器；Console 异步 run 用它取得本次真实 controller 以便取消。
-    private Consumer<AgentRunController> runControllerConsumer;
-
     /**
      * checkpoint 回调，用于保存中间状态
      */

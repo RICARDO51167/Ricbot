@@ -20,41 +20,34 @@ public final class ProviderRegistry {
                     .setDetectByBaseKeyword("openai.azure.com"),
 
             new ProviderSpec("openrouter", List.of("openrouter"), "OPENROUTER_API_KEY", "OpenRouter", "openai_compat")
-                    .setGateway(true)
                     .setDetectByKeyPrefix("sk-or-")
                     .setDetectByBaseKeyword("openrouter")
                     .setDefaultApiBase("https://openrouter.ai/api/v1")
                     .setSupportsPromptCaching(true),
 
             new ProviderSpec("aihubmix", List.of("aihubmix"), "OPENAI_API_KEY", "AiHubMix", "openai_compat")
-                    .setGateway(true)
                     .setDetectByBaseKeyword("aihubmix")
                     .setDefaultApiBase("https://aihubmix.com/v1")
                     .setStripModelPrefix(true),
 
             new ProviderSpec("siliconflow", List.of("siliconflow"), "OPENAI_API_KEY", "SiliconFlow", "openai_compat")
-                    .setGateway(true)
                     .setDetectByBaseKeyword("siliconflow")
                     .setDefaultApiBase("https://api.siliconflow.cn/v1"),
 
             new ProviderSpec("volcengine", List.of("volcengine", "volces", "ark"), "OPENAI_API_KEY", "VolcEngine", "openai_compat")
-                    .setGateway(true)
                     .setDetectByBaseKeyword("volces")
                     .setDefaultApiBase("https://ark.cn-beijing.volces.com/api/v3"),
 
             new ProviderSpec("volcengine_coding_plan", List.of("volcengine-plan"), "OPENAI_API_KEY", "VolcEngine Coding Plan", "openai_compat")
-                    .setGateway(true)
                     .setDefaultApiBase("https://ark.cn-beijing.volces.com/api/coding/v3")
                     .setStripModelPrefix(true),
 
             new ProviderSpec("byteplus", List.of("byteplus"), "OPENAI_API_KEY", "BytePlus", "openai_compat")
-                    .setGateway(true)
                     .setDetectByBaseKeyword("bytepluses")
                     .setDefaultApiBase("https://ark.ap-southeast.bytepluses.com/api/v3")
                     .setStripModelPrefix(true),
 
             new ProviderSpec("byteplus_coding_plan", List.of("byteplus-plan"), "OPENAI_API_KEY", "BytePlus Coding Plan", "openai_compat")
-                    .setGateway(true)
                     .setDefaultApiBase("https://ark.ap-southeast.bytepluses.com/api/coding/v3")
                     .setStripModelPrefix(true),
 

@@ -9,16 +9,12 @@
 你的工作区路径：{{ workspace_path }}
 - 长期记忆：{{ workspace_path }}/memory/MEMORY.md（已审批结构化记忆的只读投影）
 - 历史日志：{{ workspace_path }}/memory/history.jsonl（仅追加的 JSONL；搜索优先用内置 `grep`）
-- 自定义技能：{{ workspace_path }}/skills/{skill-name}/SKILL.md
 
 ## 格式提示
 当前对话渠道：{{ channel }}。输出尽量简洁，避免大标题与表格。
 
 ## Structured Context
 {{ structured_context }}
-
-## Skills Context
-{{ skills_context }}
 
 ## Session Context
 {{ session_summary }}

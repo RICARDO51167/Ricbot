@@ -17,8 +17,6 @@ import ricbot.domain.change.PendingChangeAction;
 import ricbot.domain.message.InboundMessage;
 import ricbot.domain.message.OutboundMessage;
 import ricbot.domain.message.OutboundMessages;
-import ricbot.domain.note.NoteService;
-import ricbot.domain.note.TaskNoteWriter;
 import ricbot.domain.policy.PolicyDecision;
 import ricbot.domain.policy.PolicyDecisionType;
 import ricbot.domain.policy.PolicyEngine;
@@ -276,20 +274,7 @@ final class AgentCommands {
                 "commitHash", summary.commitHash(),
                 "rollbackStatus", summary.rollbackStatus()
         ), "", "", "");
-        String rendered = new TaskNoteWriter(null).renderMarkdown(summary);
-        String args = trim(ctx.getArgs());
-        if (!args.contains("--write-note")) {
-            return completedReply(ctx, rendered);
-        }
-
-        String category = optionValue(args, "--category", "tasks");
-        TaskNoteWriter writer = new TaskNoteWriter(new NoteService(workspace));
-        TaskNoteWriter.WriteResult result = writer.write(summary, category);
-        return completedReply(ctx, "summary note written\n"
-                + "id: " + result.noteId() + "\n"
-                + "path: " + result.path() + "\n"
-                + "category: " + result.category() + "\n\n"
-                + rendered);
+        return completedReply(ctx, new TaskSummaryRenderer().render(summary));
     }
 
     private CompletableFuture<OutboundMessage> trace(CommandRouter.CommandContext ctx) {

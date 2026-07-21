@@ -6,7 +6,7 @@ PROJECT_ROOT="$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)"
 cd "$PROJECT_ROOT"
 
 echo "== Ricbot smoke: targeted tests =="
-sh ./mvnw -q -Dtest='ricbot.integration.api.*Test,ricbot.domain.eval.*Test,ricbot.domain.config.*Test' test
+sh ./mvnw -q -Dtest='ricbot.domain.eval.*Test,ricbot.domain.config.*Test' test
 
 echo "== Ricbot smoke: package =="
 sh ./mvnw -q -DskipTests package

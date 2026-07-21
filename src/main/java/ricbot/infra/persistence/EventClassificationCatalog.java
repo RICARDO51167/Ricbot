@@ -16,7 +16,6 @@ public final class EventClassificationCatalog {
     public static final String TEAM = "team";
     public static final String STEP_AUDIT = "step_audit";
     public static final String EVIDENCE = "evidence";
-    public static final String CONSOLE = "console";
 
     private static final Map<String, Classification> CATALOG = build();
 
@@ -147,10 +146,6 @@ public final class EventClassificationCatalog {
         put(values, EVIDENCE, "ApprovalEvidence", Classification.IMMUTABLE_ARTIFACT);
         put(values, EVIDENCE, "VerificationEvidence", Classification.IMMUTABLE_ARTIFACT);
 
-        put(values, CONSOLE, "ConsoleEvent", Classification.READ_MODEL);
-        put(values, CONSOLE, "ConsoleMetrics", Classification.READ_MODEL);
-        put(values, CONSOLE, "ConsoleRunHistory", Classification.READ_MODEL);
-        put(values, CONSOLE, "ConsoleActionAudit", Classification.DURABLE_FACT);
         return Collections.unmodifiableMap(values);
     }
 

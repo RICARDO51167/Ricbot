@@ -1,6 +1,17 @@
 # Ricbot
 
-Ricbot 是一个面向长任务与多智能体协作的 Java 持久化 Agent Runtime。它围绕持久执行、精确恢复、副作用安全、Worker 协作、工作区隔离和评测验证组织能力，并提供 CLI、OpenAI-compatible API 与通用 WebSocket 输入适配器。
+Ricbot 是一个面向长任务与多智能体协作的 CLI-first Java Agent Runtime。核心能力是持久执行、精确恢复、副作用安全、Worker 协作和隔离工作区；唯一对外入口是 CLI。
+
+## 核心能力
+
+- Agent Graph：节点注册、条件路由、暂停、cursor 恢复。
+- Durable Run：Journal、Checkpoint、状态重建、事件补发与 Run Fork。
+- Side Effect Safety：幂等 reservation、一次性审批、失败关闭、重试授权和补偿。
+- Multi-Agent：持久 Worker、Mailbox、Ack、Join、Handoff、Cancel、Recover。
+- Workspace Isolation：Local workspace、受管 Git worktree、Diff、ChangeSet 和 Verification。
+- Memory：结构化长期记忆、显式审批、Tenant 隔离和共享 CAS 存储。
+- Execution：Local 与 Docker 后端；Docker 默认断网，不允许静默回退。
+- Eval：deterministic smoke、matrix、baseline、compare、replay 和发布门禁。
 
 ## 核心闭环
 
@@ -10,126 +21,23 @@ Ricbot 是一个面向长任务与多智能体协作的 Java 持久化 Agent Run
   -> /workspace diff <taskId>
   -> /change create <taskId>
   -> /trace show <taskId>
-  -> /console
 ```
 
-这个闭环覆盖：
+Worker 在受管 worktree 中通过受限 AgentRun 执行，Verifier 检查结果，ChangeSet 作为人工审阅边界。Ricbot 不会自动把未审阅修改合并或提交到主工作区。
 
-- team task 在受管 worktree 中执行与验证
-- workspace diff 和 ChangeSet review 收口变更
-- trace viewer 复盘运行过程
-- 人工维护的 Skill 提供可复用执行规则
-- Console 只保留 Run Timeline、Checkpoint / Resume / Fork、Worker / Mailbox、Eval / Release 四个持久化 Runtime 视图
-
-端到端演示脚本见 [docs/demo/end-to-end-coding-agent.md](docs/demo/end-to-end-coding-agent.md)。
-
-Demo / Interview 材料见 [docs/demo/demo-script.md](docs/demo/demo-script.md)、[docs/architecture/ricbot-architecture.md](docs/architecture/ricbot-architecture.md)、[docs/interview/project-pitch.md](docs/interview/project-pitch.md) 和 [docs/resume/ricbot-bullets.md](docs/resume/ricbot-bullets.md)。
-
-## Team Worktree Demo
-
-```text
-/team run 给 README 增加一个很小的说明性修正 --worktree --verify
-/team report <taskId>
-/workspace diff <taskId>
-/change create <taskId>
-/trace show <taskId>
-```
-
-预期关键信号：
-
-- workerStatus=APPLIED
-- verifierStatus=PASS
-- reportHealth=HEALTHY
-- changedFiles=README.md
-- trace 能看到 STEP_TOOL_APPLIED、STEP_VERIFIED、STEP_CHANGESET_LINKED，以及 verifier evidence 的 command/exitCode/changedFiles count
-
-这个 worker 是受限 AgentRun，不是新 Agent 框架；它复用 AgentRunner 和 ToolRegistry，只暴露文件类工具，在受管 git worktree 中改文件。变更通过 workspace diff 和 ChangeSet 审查收口，不会自动 merge 或 commit。
-
-## Quickstart
-
-前后端本地开发启动细节见 [docs/frontend-backend-startup.md](docs/frontend-backend-startup.md)。
-
-环境要求：
+## 环境要求
 
 - JDK 17+
-- Maven wrapper 使用仓库内 `./mvnw`
-- 可选：配置真实模型 API key；smoke eval 不需要真实模型或外网
+- 仓库内 Maven Wrapper
+- 可选的模型 API Key；固定 Smoke Eval 不需要外网或真实模型
 
-快速验证：
+## 构建与验证
 
 ```bash
 sh ./mvnw -q test
 sh ./mvnw -q -DskipTests package
-```
-
-启动前诊断配置：
-
-```bash
-java -jar target/Ricbot-1.0-SNAPSHOT.jar config doctor \
-  -c config/ricbot.config.json
-```
-
-运行固定 smoke eval：
-
-```bash
-java -jar target/Ricbot-1.0-SNAPSHOT.jar eval smoke \
-  --scenarios evals/golden.jsonl \
-  --workspace target/eval-smoke-workspace \
-  --out target/eval-smoke-artifacts
-```
-
-启动 API 和 Console：
-
-```bash
-java -jar target/Ricbot-1.0-SNAPSHOT.jar serve \
-  -c config/ricbot.config.json
-```
-
-打开：
-
-```text
-http://127.0.0.1:8000/console
-```
-
-## 5 分钟演示路径
-
-先生成发布门禁报告，供 Console 展示：
-
-```bash
-sh scripts/release-check.sh
-```
-
-再做一次配置诊断：
-
-```bash
-java -jar target/Ricbot-1.0-SNAPSHOT.jar config doctor \
-  -c config/ricbot.config.json
-```
-
-启动服务并打开 Console：
-
-```bash
-java -jar target/Ricbot-1.0-SNAPSHOT.jar serve \
-  -c config/ricbot.config.json
-```
-
-```text
-http://127.0.0.1:8000/console
-```
-
-Console 使用 Vue 构建，生产资源随 Jar 一起打包，仍保持单 Jar 运行。生产导航固定为 Run Timeline、Checkpoint / Resume / Fork、Worker / Mailbox、Eval / Release 四个页面；显式 Resume、Approve、Compensate 等写操作继续通过应用服务、鉴权、幂等键与审计事件执行。
-
-演示时按四个页面讲解：Run Timeline 展示持久事件，Checkpoint 页面展示恢复入口，Worker 页面展示协作与 Mailbox，Eval / Release 页面展示确定性评测门禁。没有真实 key 时 config doctor 可能是 `WARNING` 或 `ERROR`，但 fixed smoke eval 和 release-check 的本地 smoke 部分不会访问真实模型。
-
-最终推荐演示路径：`config doctor -> release-check -> team run --worktree --verify -> Run Timeline -> Checkpoint / Resume / Fork -> Worker / Mailbox -> Eval / Release`。完整讲稿见 [docs/demo/demo-script.md](docs/demo/demo-script.md)。
-
-本地 smoke 脚本：
-
-```bash
 sh scripts/smoke.sh
 ```
-
-该脚本只运行快速测试、打包、config doctor 和固定 smoke eval，不会访问真实模型。
 
 发布门禁：
 
@@ -137,154 +45,88 @@ sh scripts/smoke.sh
 sh scripts/release-check.sh
 ```
 
-`release-check.sh` 会顺序执行全量测试、打包、config doctor、固定 smoke eval，并在存在 baseline 时执行 eval compare。baseline 固定读取 `.ricbot/eval-baselines/golden`，报告写入 `target/release-check-report.md`。
+门禁依次执行测试、打包、Config Doctor、固定 Smoke Eval，并在 baseline 存在时执行 compare。报告写入 `target/release-check-report.md`。
 
-结果规则：
-
-- `PASS`：测试、打包、fixed smoke eval 通过，且 compare 无 pass -> fail 回归
-- `WARNING`：核心门禁通过，但 config doctor 报告缺本地 key，或没有 eval baseline 可比较
-- `FAIL`：测试/打包/smoke eval 失败，或 eval compare 发现 pass -> fail 回归；fail -> pass 会作为 improvement 记录，不阻断
-
-config doctor 缺少真实 API key 只作为诊断 warning，不会阻断 release-check；fixed smoke eval 使用确定性 provider，不需要真实 key。CI 中可直接调用 `sh scripts/release-check.sh`，再上传 `target/release-check-report.md`。
-
-baseline 管理：
+## 配置诊断
 
 ```bash
-sh scripts/eval-baseline.sh create
-sh scripts/eval-baseline.sh show
-sh scripts/eval-baseline.sh create --force
+java -jar target/Ricbot-1.0-SNAPSHOT.jar config doctor \
+  -c config/ricbot.config.json
 ```
 
-`create` 使用固定 `evals/golden.jsonl` 和 deterministic smoke provider，不访问真实模型、外网或真实 API key；baseline 已存在时默认拒绝覆盖，需要显式 `--force`。
+Config Doctor 检查 workspace、Provider、模型能力、API Key、执行后端和未生效配置，并对敏感字段脱敏。
 
-## Provider Capability Override
+## CLI
 
-Ricbot 默认通过静态/启发式规则推断模型能力。对于 OpenAI-compatible 中转、私有模型、代理网关或同名模型能力不一致的部署，可以用顶层 `model_capabilities` 声明覆盖：
-
-```json
-{
-  "agents": {
-    "defaults": {
-      "model": "qwen-plus"
-    }
-  },
-  "model_capabilities": {
-    "qwen-plus": {
-      "supportsToolCalling": true,
-      "supportsStreaming": true,
-      "supportsVision": false,
-      "supportsJsonMode": true,
-      "supportsReasoningEffort": false,
-      "contextWindowTokens": 131072,
-      "maxOutputTokens": 8192,
-      "apiMode": "openai-compatible"
-    }
-  }
-}
-```
-
-本轮选择顶层 `model_capabilities`，因为当前配置模型已经以 `agents.defaults.model` 为核心入口，`ProviderCapabilityResolver` 集中负责 provider/model 能力合并；顶层结构实现面小，也避免把各 provider 配置改成新的嵌套弱类型。需要区分 provider 时，可以把 key 写成 `provider/model`，例如 `dashscope/qwen-plus`。
-
-合并规则：先读取静态/启发式 capability，再应用用户 override；只覆盖显式配置的字段，未配置字段保持原推断。布尔能力支持 `true`、`false` 和 `"UNKNOWN"` 三态；`contextWindowTokens`、`maxOutputTokens` 必须是正数，否则会被忽略并由 config doctor 给出 warning。
-
-Config Doctor 会在 provider capability 中展示 `source`：`STATIC`、`HEURISTIC`、`USER_OVERRIDE` 或 `MIXED`。Override 是用户声明，不是在线探测；错误声明可能导致运行时主动降级，或把不支持的能力暴露给 provider 后触发调用错误。完整示例见 [config/examples/model-capabilities.json](config/examples/model-capabilities.json)。
-
-## Console 能力总览
-
-Console 默认跟随 `serve` 启动，建议只绑定 `127.0.0.1`。
-
-只读看板：
-
-- Config Doctor：配置文件、workspace、provider 推断、API key 是否解析、未生效字段和 suggested fixes
-- Trace Viewer：latest trace / timeline / run events
-- Team Reports：team session 和 task report
-- Workspaces：workspace session、受管 worktree 状态
-- Eval Runs：读取 `workspace/.ricbot/evals` 下已有 artifact
-- Tools / MCP：当前 ToolRegistry、`mcp_*` 工具、MCP server 状态
-- Console Actions：最近 Console 写操作审计
-
-人工确认型写操作：
-
-- Approval：`approve`、`reject`
-- Workspace：受管 active `GIT_WORKTREE` 的 `change-create`、`discard`
-- Eval：固定 `Run Smoke Eval`
-
-Console safety 细节见 [docs/security/console-safety.md](docs/security/console-safety.md)。
-
-## 常用命令
-
-CLI 单次调用：
+单次 Agent 调用：
 
 ```bash
 java -jar target/Ricbot-1.0-SNAPSHOT.jar agent \
-  -c config/ricbot.config.json \
-  -m "帮我总结这个仓库"
+  --message "分析当前仓库并给出修改建议" \
+  --session demo
 ```
 
 交互模式：
 
 ```bash
-java -jar target/Ricbot-1.0-SNAPSHOT.jar agent \
-  -c config/ricbot.config.json
+java -jar target/Ricbot-1.0-SNAPSHOT.jar agent
 ```
 
-团队执行：
+主要命令包括：
 
 ```text
-/team run 修复某个小问题 --worktree --verify
+/team run <task> --worktree --verify
 /team report <taskId>
 /workspace diff <taskId>
 /change create <taskId>
 /trace show <taskId>
 ```
 
-评测：
+CLI 能力边界：
+
+| 操作 | 当前入口 | 覆盖情况 |
+|---|---|---|
+| 创建 | 普通消息、`/new`、`/team start`、`/team run`、`/workspace create` | 已覆盖 |
+| 恢复 | 同一 Session 自动从 Checkpoint 恢复；`/team resume <sessionId>` 恢复 Team | 部分覆盖；没有显式 Run resume/fork 命令 |
+| 审批 | `/approve <requestId>`、`/reject <requestId>`、`/change approve` | 已覆盖 |
+| Worker 协作 | `/team run`、`task`、`run-worker`、`run-verifier`、`report`、`verify` | 工作流已覆盖；Mailbox/Ack/Join/Handoff/Recover 没有独立 CLI 命令 |
+| Memory | Agent 上下文自动召回已审批 Memory | 仅运行时使用；没有查询、写入或治理命令 |
+| Eval | `eval`、`lint`、`smoke`、`matrix`、`compare`、`replay` | 已覆盖 |
+
+Run Fork、Worker 底层协作原语和 Memory 管理目前是领域能力，不应被描述为可直接操作的 CLI 命令。
+
+## Eval
 
 ```bash
-java -jar target/Ricbot-1.0-SNAPSHOT.jar eval lint --scenarios evals/golden.jsonl
-java -jar target/Ricbot-1.0-SNAPSHOT.jar eval smoke --scenarios evals/golden.jsonl
+java -jar target/Ricbot-1.0-SNAPSHOT.jar eval lint \
+  --scenarios evals/golden.jsonl
+
+java -jar target/Ricbot-1.0-SNAPSHOT.jar eval smoke \
+  --scenarios evals/golden.jsonl \
+  --workspace target/eval-smoke-workspace \
+  --out target/eval-smoke-artifacts
+
+java -jar target/Ricbot-1.0-SNAPSHOT.jar eval matrix \
+  --spec config/examples/eval-matrix.json
 ```
+
+固定 Smoke 使用 deterministic Provider，不访问真实模型。Matrix 聚合通过率、长轨迹覆盖、P50/P95、Token、工具调用、失败类型和估算成本。
 
 ## 安全边界
 
-- Console POST 复用 bearer auth；如果配置了 `api.bearer_token`，未鉴权请求会被拒绝
-- Console POST 做 Origin/Referer 检查；非本机 Console origin 会被拒绝
-- Console POST 有轻量内存 rate limit
-- Console 写操作会审计到 `workspace/.ricbot/console-actions.jsonl`
-- Console API 和 audit 会对 api_key/token/secret/password/authorization/bearer/cookie 等敏感字段脱敏
-- File/exec/web 工具仍受 workspace 限制、SSRF 防护、审批和风险策略约束
-- 不要把 Console 暴露到公网；如果绑定 `0.0.0.0`，必须配置 bearer token
+- 未知副作用保持 Fail-Closed。
+- 幂等键不能跨 Session、Tool 或参数复用。
+- 文件、命令和网络工具受 workspace、审批与风险策略限制。
+- Docker 默认断网，后端失败不会静默回退到 Local。
+- Worktree 修改通过 Diff 与 ChangeSet 收口。
+- Memory 只召回已审批内容；租户数据相互隔离。
+- Trace、Telemetry 和报告是投影，不能覆盖 Journal 中的执行事实。
 
-## 当前限制
+## 文档
 
-- Console 不支持任意 eval；只支持固定 golden smoke eval
-- Console 不支持 team run、eval compare、eval replay
-- Console 不支持 git merge 或 git commit
-- Console MCP Hub 当前只读，不支持 reload/reconnect/启停 server，也不能调用工具
-- Provider capability 默认是静态/启发式，也支持 `model_capabilities` 用户覆盖；只有最终结果明确为 `false` 的能力才触发运行时降级，`UNKNOWN` 不阻断
-- OpenAI-compatible 聚合网关和本地模型的 capability 可能需要用户通过 provider/model 配置显式修正
+- [架构与边界](docs/architecture/ricbot-architecture.md)
+- 各有效目录内的 `README.md`：说明目录职责、子目录和直接文件；空目录、生成目录、IDE 元数据与 `.git` 不生成说明。
 
-## 文档地图
+## License
 
-- [CHANGELOG.md](CHANGELOG.md)：V4.15-V5.0 能力演进
-- [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md)：Demo release 发布前检查清单
-- [docs/architecture/ricbot-architecture.md](docs/architecture/ricbot-architecture.md)：Ricbot 分层架构与扩展点
-- [docs/demo/demo-script.md](docs/demo/demo-script.md)：5-8 分钟演示讲稿
-- [docs/interview/project-pitch.md](docs/interview/project-pitch.md)：面试项目 pitch 和追问回答
-- [docs/resume/ricbot-bullets.md](docs/resume/ricbot-bullets.md)：简历 bullet 多版本
-- [docs/demo/end-to-end-coding-agent.md](docs/demo/end-to-end-coding-agent.md)：端到端演示
-- [docs/security/console-safety.md](docs/security/console-safety.md)：Console 安全边界
-- [docs/mcp/mcp-diagnostics.md](docs/mcp/mcp-diagnostics.md)：MCP 配置诊断、工具启用解释和 schema snapshot
-- [examples/context_engineering_flow.md](examples/context_engineering_flow.md)
-- [examples/approval_and_diffreview.md](examples/approval_and_diffreview.md)
-
-## License / Contributing
-
-当前仓库未声明正式开源 License。用于公开发布前，请先补充明确 License。
-
-贡献建议：
-
-- 先跑 `sh scripts/smoke.sh`
-- 涉及 Console 写操作时补充 audit/auth/origin/rate-limit 测试
-- 涉及工具或文件系统时补充安全边界测试
-- 涉及 README 的长篇说明优先放入 `docs/`
+仓库当前未声明正式开源 License。公开发布前需要补充明确的 License。

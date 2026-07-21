@@ -73,7 +73,7 @@ public class CommandRiskAnalyzer {
             reasons.add("delete-like tool");
             return RiskAssessment.of(CommandRiskLevel.HIGH, reasons, "", tool, paths);
         }
-        if ("write_file".equals(lower) || "edit_file".equals(lower) || "notebook_edit".equals(lower)) {
+        if ("write_file".equals(lower) || "edit_file".equals(lower)) {
             reasons.add("file modification tool");
             return RiskAssessment.of(CommandRiskLevel.MEDIUM, reasons, "", tool, paths);
         }

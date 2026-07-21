@@ -51,9 +51,6 @@ public class AgentLoopToolCallTest {
                 return new LLMResponse().setContent("unexpected").setFinishReason("stop");
             }
         };
-
-        Config.WebToolsConfig web = new Config.WebToolsConfig();
-        web.setEnable(false);
         Config.ExecToolConfig exec = new Config.ExecToolConfig();
         exec.setEnable(false);
         AgentLoop loop = new AgentLoop(
@@ -65,16 +62,10 @@ public class AgentLoopToolCallTest {
                 200000,
                 50,
                 10_000,
-                "standard",
-                web,
-                exec,
-                Map.of(),
-                true,
+                "standard",exec,true,
                 sessions,
                 "UTC",
-                false,
-                List.of(),
-                0
+                false,0
         );
 
         String sessionKey = "cli:direct";
@@ -116,16 +107,10 @@ public class AgentLoopToolCallTest {
                 200000,
                 50,
                 10_000,
-                "standard",
-                web,
-                exec,
-                Map.of(),
-                true,
+                "standard",exec,true,
                 sessions,
                 "UTC",
-                false,
-                List.of(),
-                0
+                false,0
         );
 
         String sessionKey2 = "cli:direct2";
@@ -166,9 +151,6 @@ public class AgentLoopToolCallTest {
                 return new LLMResponse().setContent("second").setFinishReason("stop");
             }
         };
-
-        Config.WebToolsConfig web = new Config.WebToolsConfig();
-        web.setEnable(false);
         Config.ExecToolConfig exec = new Config.ExecToolConfig();
         exec.setEnable(false);
         AgentLoop loop = new AgentLoop(
@@ -180,16 +162,10 @@ public class AgentLoopToolCallTest {
                 200000,
                 50,
                 10_000,
-                "standard",
-                web,
-                exec,
-                Map.of(),
-                true,
+                "standard",exec,true,
                 sessions,
                 "UTC",
-                false,
-                List.of(),
-                0
+                false,0
         );
 
         String sessionKey = "cli:direct";
@@ -217,9 +193,6 @@ public class AgentLoopToolCallTest {
                 return new LLMResponse().setContent("done").setFinishReason("stop");
             }
         };
-
-        Config.WebToolsConfig web = new Config.WebToolsConfig();
-        web.setEnable(false);
         Config.ExecToolConfig exec = new Config.ExecToolConfig();
         exec.setEnable(false);
         AgentLoop loop = new AgentLoop(
@@ -231,16 +204,10 @@ public class AgentLoopToolCallTest {
                 200000,
                 50,
                 10_000,
-                "standard",
-                web,
-                exec,
-                Map.of(),
-                true,
+                "standard",exec,true,
                 sessions,
                 "UTC",
-                false,
-                List.of(),
-                0
+                false,0
         );
 
         String sessionKey = "cli:direct";
@@ -271,9 +238,6 @@ public class AgentLoopToolCallTest {
                 return new LLMResponse().setContent("done").setFinishReason("stop");
             }
         };
-
-        Config.WebToolsConfig web = new Config.WebToolsConfig();
-        web.setEnable(false);
         Config.ExecToolConfig exec = new Config.ExecToolConfig();
         exec.setEnable(false);
         AgentLoop loop = new AgentLoop(
@@ -285,16 +249,10 @@ public class AgentLoopToolCallTest {
                 200000,
                 50,
                 10_000,
-                "standard",
-                web,
-                exec,
-                Map.of(),
-                true,
+                "standard",exec,true,
                 sessions,
                 "UTC",
-                false,
-                List.of(),
-                0
+                false,0
         );
 
         String sessionKey = "cli:direct";

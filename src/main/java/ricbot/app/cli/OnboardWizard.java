@@ -70,13 +70,11 @@ public final class OnboardWizard {
             // 打印主菜单选项
             System.out.println("你想配置哪一项？");
             System.out.println("1. LLM Provider（模型提供商）");
-            System.out.println("2. Chat Channel（聊天渠道）");
-            System.out.println("3. Agent Settings（代理设置）");
-            System.out.println("4. Gateway（网关）");
-            System.out.println("5. Tools（工具）");
-            System.out.println("6. 查看配置汇总");
-            System.out.println("7. 保存并退出");
-            System.out.println("8. 不保存直接退出");
+            System.out.println("2. Agent Settings（代理设置）");
+            System.out.println("3. Tools（工具）");
+            System.out.println("4. 查看配置汇总");
+            System.out.println("5. 保存并退出");
+            System.out.println("6. 不保存直接退出");
             System.out.print("> ");
 
             // 安全地读取一行用户输入
@@ -96,15 +94,13 @@ public final class OnboardWizard {
             // 根据用户输入执行相应操作
             switch (answer.trim()) {
                 case "1" -> configureProviders(scanner, config); // 配置 LLM 提供商
-                case "2" -> configureChannels(scanner, config); // 配置聊天渠道
-                case "3" -> configureGeneralSettings(scanner, config.getAgents(), "代理设置"); // 配置代理设置
-                case "4" -> configureGeneralSettings(scanner, config.getGateway(), "网关"); // 配置网关
-                case "5" -> configureGeneralSettings(scanner, config.getTools(), "工具"); // 配置工具
-                case "6" -> showSummary(config); // 显示配置汇总
-                case "7" -> {
+                case "2" -> configureGeneralSettings(scanner, config.getAgents(), "代理设置"); // 配置代理设置
+                case "3" -> configureGeneralSettings(scanner, config.getTools(), "工具"); // 配置工具
+                case "4" -> showSummary(config); // 显示配置汇总
+                case "5" -> {
                     return new OnboardResult(config, true); // 保存并退出
                 }
-                case "8" -> {
+                case "6" -> {
                     return new OnboardResult(originalConfig, false); // 不保存直接退出
                 }
                 default -> System.out.println("未知选项"); // 处理无效输入
@@ -122,14 +118,6 @@ public final class OnboardWizard {
     private static void configureProviders(Scanner scanner, Config config) {
         showSectionHeader("LLM Provider（模型提供商）", "配置 provider 相关参数");
         configureObject(scanner, config.getProviders(), Set.of());
-    }
-
-    /**
-     * 配置聊天渠道
-     */
-    private static void configureChannels(Scanner scanner, Config config) {
-        showSectionHeader("Chat Channel（聊天渠道）", "配置渠道相关参数");
-        configureObject(scanner, config.getChannels(), Set.of());
     }
 
     /**

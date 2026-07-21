@@ -112,11 +112,9 @@ class SpawnWorkerServiceTest {
     }
 
     private static SpawnWorkerService service(LLMProvider provider, Path workspace) {
-        Config.WebToolsConfig web = new Config.WebToolsConfig();
-        web.setEnable(false);
         Config.ExecToolConfig exec = new Config.ExecToolConfig();
         exec.setEnable(false);
-        return new SpawnWorkerService(provider, workspace, 10_000, "gpt-test", web, exec, true, List.of());
+        return new SpawnWorkerService(provider, workspace, 10_000, "gpt-test", exec, true);
     }
 
     private static LLMProvider providerReturning(String content, AtomicInteger calls) {

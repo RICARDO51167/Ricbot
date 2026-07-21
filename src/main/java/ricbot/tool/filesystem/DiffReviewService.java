@@ -179,12 +179,6 @@ public class DiffReviewService {
         if (normalized.contains("ricbot/domain/memory/")) {
             out.add("./mvnw -q -Dtest='ricbot.domain.memory.*Test' test");
         }
-        if (normalized.contains("ricbot/domain/rag/")) {
-            out.add("./mvnw -q -Dtest='ricbot.domain.rag.*Test' test");
-        }
-        if (normalized.contains("ricbot/domain/note/")) {
-            out.add("./mvnw -q -Dtest='ricbot.domain.note.*Test' test");
-        }
         if (normalized.contains("ricbot/tool/filesystem/")) {
             out.add("./mvnw -q -Dtest='ricbot.tool.filesystem.*Test' test");
         }
@@ -214,12 +208,6 @@ public class DiffReviewService {
         }
         if (normalized.contains("ricbot/domain/memory/")) {
             out.add("domain.memory");
-        }
-        if (normalized.contains("ricbot/domain/rag/")) {
-            out.add("domain.rag");
-        }
-        if (normalized.contains("ricbot/domain/note/")) {
-            out.add("domain.note");
         }
         if (normalized.contains("ricbot/tool/filesystem/")) {
             out.add("tool.filesystem");

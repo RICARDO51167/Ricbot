@@ -3,7 +3,6 @@ package ricbot.infra.config;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
-import ricbot.infra.security.NetworkSecurity;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -130,8 +129,6 @@ public final class ConfigLoader {
             }
         }
 
-        // 应用 SSRF 白名单配置到网络安全模块
-        applySsrfWhitelist(config);
         return config;
     }
 
@@ -301,12 +298,16 @@ public final class ConfigLoader {
                     "配置 agents.defaults.dream 已删除；请移除该配置。长期记忆改为显式候选审批，长会话压缩仍由 Runtime 管理。"
             );
         }
+        if (defaults.containsKey("disabled_skills")) {
+            throw new RemovedConfigException("配置 agents.defaults.disabled_skills 已删除；Skill 系统已移除，请删除该字段。");
+        }
 
         Map<String, Object> channels = asMap(data.get("channels"));
-        if (channels.containsKey("transcription_provider") || channels.containsKey("transcriptionProvider")) {
-            throw new RemovedConfigException(
-                    "配置 channels.transcription_provider 已删除；WebSocket transport 只接收文本，请移除该配置。"
-            );
+        if (!channels.isEmpty()) {
+            throw new RemovedConfigException("配置 channels 已删除；运行时仅保留 CLI，请删除该节点。");
+        }
+        if (data.containsKey("api") || data.containsKey("gateway")) {
+            throw new RemovedConfigException("配置 api/gateway 已删除；HTTP Server 已移除，运行时仅保留 CLI。");
         }
 
         // 获取 tools 节点
@@ -317,6 +318,12 @@ public final class ConfigLoader {
         }
 
         Map<String, Object> tools = asMap(rawTools);
+        if (tools.containsKey("web")) {
+            throw new RemovedConfigException("配置 tools.web 已删除；Web Search/Fetch 工具已移除，请删除该节点。");
+        }
+        if (tools.containsKey("mcp") || tools.containsKey("mcpServers") || tools.containsKey("mcp_servers")) {
+            throw new RemovedConfigException("MCP 配置已删除；请移除 tools.mcp/tools.mcpServers/tools.mcp_servers。");
+        }
         data.put("tools", tools);
         // 获取 tools.exec 节点
         Object execObj = tools.get("exec");
@@ -331,20 +338,6 @@ public final class ConfigLoader {
             }
         }
         return data;
-    }
-
-    /**
-     * 应用 SSRF 白名单配置到网络安全模块。
-     *
-     * @param config 配置对象
-     */
-    private static void applySsrfWhitelist(Config config) {
-        // 如果配置或 tools 为空，则跳过
-        if (config == null || config.getTools() == null) {
-            return;
-        }
-        // 配置网络安全的 SSRF 白名单
-        NetworkSecurity.configureSsrfWhitelist(config.getTools().getSsrfWhitelist());
     }
 
     // =========================================================
@@ -387,7 +380,6 @@ public final class ConfigLoader {
         ad.setProviderRetryMode(string(defaults.get("provider_retry_mode"), ad.getProviderRetryMode()));
         ad.setTimezone(string(defaults.get("timezone"), ad.getTimezone()));
         ad.setUnifiedSession(booleanValue(defaults.get("unified_session"), ad.isUnifiedSession()));
-        ad.setDisabledSkills(stringList(defaults.get("disabled_skills")));
         ad.setSessionTtlMinutes(intValue(defaults.get("session_ttl_minutes"), ad.getSessionTtlMinutes()));
 
         // --- 处理 providers 部分 ---
@@ -421,27 +413,6 @@ public final class ConfigLoader {
                 tools.get("restrictToWorkspace"),
                 config.getTools().isRestrictToWorkspace()
         ));
-        // 设置 SSRF 白名单
-        config.getTools().setSsrfWhitelist(stringList(tools.get("ssrf_whitelist")));
-        // 设置 MCP 服务器配置
-        config.getTools().setMcpServers(asMap(
-                tools.containsKey("mcp_servers") ? tools.get("mcp_servers") : tools.get("mcpServers")
-        ));
-
-        // 处理 web 工具配置
-        Map<String, Object> web = asMap(tools.get("web"));
-        Config.WebToolsConfig wc = config.getTools().getWeb();
-        wc.setEnable(booleanValue(web.get("enable"), wc.isEnable()));
-        wc.setProxy(string(web.get("proxy"), wc.getProxy()));
-
-        // 处理 web search 配置
-        Map<String, Object> webSearch = asMap(web.get("search"));
-        Config.WebSearchConfig wsc = wc.getSearch();
-        wsc.setProvider(string(webSearch.get("provider"), wsc.getProvider()));
-        wsc.setApiKey(string(webSearch.get("api_key"), wsc.getApiKey()));
-        wsc.setBaseUrl(string(webSearch.get("base_url"), wsc.getBaseUrl()));
-        wsc.setMaxResults(intValue(webSearch.get("max_results"), wsc.getMaxResults()));
-        wsc.setTimeout(intValue(webSearch.get("timeout"), wsc.getTimeout()));
 
         // 处理 exec 工具配置
         Map<String, Object> exec = asMap(tools.get("exec"));
@@ -457,49 +428,6 @@ public final class ConfigLoader {
         ec.setDockerNetworkEnabled(booleanValue(exec.get("docker_network_enabled"), ec.isDockerNetworkEnabled()));
         ec.setPathAppend(string(exec.get("path_append"), ec.getPathAppend()));
         ec.setAllowedEnvKeys(stringList(exec.get("allowed_env_keys")));
-
-        // --- 处理 channels 部分 ---
-        Map<String, Object> channels = asMap(data.get("channels"));
-        config.getChannels().setSendProgress(booleanValue(
-                channels.get("send_progress"),
-                config.getChannels().isSendProgress()
-        ));
-        config.getChannels().setSendToolHints(booleanValue(
-                channels.get("send_tool_hints"),
-                config.getChannels().isSendToolHints()
-        ));
-        Map<String, Object> websocket = asMap(channels.get("websocket"));
-        var wsch = config.getChannels().getWebsocket();
-        wsch.setEnabled(booleanValue(websocket.get("enabled"), wsch.isEnabled()));
-        wsch.setHost(string(websocket.get("host"), wsch.getHost()));
-        wsch.setPort(intValue(websocket.get("port"), wsch.getPort()));
-        wsch.setPath(string(websocket.get("path"), wsch.getPath()));
-        wsch.setToken(string(websocket.get("token"), wsch.getToken()));
-        wsch.setTokenIssuePath(string(websocket.get("token_issue_path"), string(websocket.get("tokenIssuePath"), wsch.getTokenIssuePath())));
-        wsch.setTokenIssueSecret(string(websocket.get("token_issue_secret"), string(websocket.get("tokenIssueSecret"), wsch.getTokenIssueSecret())));
-        wsch.setTokenTtlS(intValue(websocket.get("token_ttl_s"), intValue(websocket.get("tokenTtlS"), wsch.getTokenTtlS())));
-        wsch.setWebsocketRequiresToken(booleanValue(
-                websocket.get("websocket_requires_token"),
-                booleanValue(websocket.get("websocketRequiresToken"), wsch.isWebsocketRequiresToken())
-        ));
-        wsch.setAllowFrom(stringList(websocket.containsKey("allow_from") ? websocket.get("allow_from") : websocket.get("allowFrom")));
-        wsch.setStreaming(booleanValue(websocket.get("streaming"), wsch.isStreaming()));
-        wsch.setMaxMessageBytes(intValue(websocket.get("max_message_bytes"), intValue(websocket.get("maxMessageBytes"), wsch.getMaxMessageBytes())));
-        wsch.setPingIntervalS(doubleValue(websocket.get("ping_interval_s"), doubleValue(websocket.get("pingIntervalS"), wsch.getPingIntervalS())));
-        wsch.setPingTimeoutS(doubleValue(websocket.get("ping_timeout_s"), doubleValue(websocket.get("pingTimeoutS"), wsch.getPingTimeoutS())));
-        wsch.setSslCertfile(string(websocket.get("ssl_certfile"), string(websocket.get("sslCertfile"), wsch.getSslCertfile())));
-        wsch.setSslKeyfile(string(websocket.get("ssl_keyfile"), string(websocket.get("sslKeyfile"), wsch.getSslKeyfile())));
-
-        // --- 处理 gateway 部分 ---
-        Map<String, Object> gateway = asMap(data.get("gateway"));
-        config.getGateway().setPort(intValue(gateway.get("port"), config.getGateway().getPort()));
-
-        // --- 处理 api 部分 ---
-        Map<String, Object> api = asMap(data.get("api"));
-        config.getApi().setHost(string(api.get("host"), config.getApi().getHost()));
-        config.getApi().setPort(intValue(api.get("port"), config.getApi().getPort()));
-        config.getApi().setTimeout(doubleValue(api.get("timeout"), config.getApi().getTimeout()));
-        config.getApi().setBearerToken(string(api.get("bearer_token"), string(api.get("bearerToken"), config.getApi().getBearerToken())));
 
         return config;
     }
@@ -532,7 +460,6 @@ public final class ConfigLoader {
         defaults.put("provider_retry_mode", ad.getProviderRetryMode());
         defaults.put("timezone", ad.getTimezone());
         defaults.put("unified_session", ad.isUnifiedSession());
-        defaults.put("disabled_skills", ad.getDisabledSkills());
         defaults.put("session_ttl_minutes", ad.getSessionTtlMinutes());
 
         agents.put("defaults", defaults);
@@ -573,21 +500,6 @@ public final class ConfigLoader {
         // --- 构建 tools 部分 ---
         Map<String, Object> tools = new LinkedHashMap<>();
         
-        // 构建 web 配置
-        Map<String, Object> web = new LinkedHashMap<>();
-        web.put("enable", config.getTools().getWeb().isEnable());
-        web.put("proxy", config.getTools().getWeb().getProxy());
-        
-        // 构建 web search 配置
-        Map<String, Object> webSearch = new LinkedHashMap<>();
-        webSearch.put("provider", config.getTools().getWeb().getSearch().getProvider());
-        webSearch.put("api_key", config.getTools().getWeb().getSearch().getApiKey());
-        webSearch.put("base_url", config.getTools().getWeb().getSearch().getBaseUrl());
-        webSearch.put("max_results", config.getTools().getWeb().getSearch().getMaxResults());
-        webSearch.put("timeout", config.getTools().getWeb().getSearch().getTimeout());
-        web.put("search", webSearch);
-        tools.put("web", web);
-
         // 构建 exec 配置
         Map<String, Object> exec = new LinkedHashMap<>();
         exec.put("enable", config.getTools().getExec().isEnable());
@@ -605,48 +517,7 @@ public final class ConfigLoader {
 
         // 设置 tools 的其他属性
         tools.put("restrictToWorkspace", config.getTools().isRestrictToWorkspace());
-        tools.put("ssrf_whitelist", config.getTools().getSsrfWhitelist());
-        tools.put("mcp_servers", config.getTools().getMcpServers());
         root.put("tools", tools);
-
-        // --- 构建 channels 部分 ---
-        Map<String, Object> channels = new LinkedHashMap<>();
-        channels.put("send_progress", config.getChannels().isSendProgress());
-        channels.put("send_tool_hints", config.getChannels().isSendToolHints());
-        Map<String, Object> websocket = new LinkedHashMap<>();
-        websocket.put("enabled", config.getChannels().getWebsocket().isEnabled());
-        websocket.put("host", config.getChannels().getWebsocket().getHost());
-        websocket.put("port", config.getChannels().getWebsocket().getPort());
-        websocket.put("path", config.getChannels().getWebsocket().getPath());
-        websocket.put("token", config.getChannels().getWebsocket().getToken());
-        websocket.put("token_issue_path", config.getChannels().getWebsocket().getTokenIssuePath());
-        websocket.put("token_issue_secret", config.getChannels().getWebsocket().getTokenIssueSecret());
-        websocket.put("token_ttl_s", config.getChannels().getWebsocket().getTokenTtlS());
-        websocket.put("websocket_requires_token", config.getChannels().getWebsocket().isWebsocketRequiresToken());
-        websocket.put("allow_from", config.getChannels().getWebsocket().getAllowFrom());
-        websocket.put("streaming", config.getChannels().getWebsocket().isStreaming());
-        websocket.put("max_message_bytes", config.getChannels().getWebsocket().getMaxMessageBytes());
-        websocket.put("ping_interval_s", config.getChannels().getWebsocket().getPingIntervalS());
-        websocket.put("ping_timeout_s", config.getChannels().getWebsocket().getPingTimeoutS());
-        websocket.put("ssl_certfile", config.getChannels().getWebsocket().getSslCertfile());
-        websocket.put("ssl_keyfile", config.getChannels().getWebsocket().getSslKeyfile());
-        channels.put("websocket", websocket);
-
-        root.put("channels", channels);
-
-        // --- 构建 gateway 部分 ---
-        Map<String, Object> gateway = new LinkedHashMap<>();
-        gateway.put("port", config.getGateway().getPort());
-        
-        root.put("gateway", gateway);
-
-        // --- 构建 api 部分 ---
-        Map<String, Object> api = new LinkedHashMap<>();
-        api.put("host", config.getApi().getHost());
-        api.put("port", config.getApi().getPort());
-        api.put("timeout", config.getApi().getTimeout());
-        api.put("bearer_token", config.getApi().getBearerToken());
-        root.put("api", api);
 
         return root;
     }

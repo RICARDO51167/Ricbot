@@ -45,7 +45,6 @@ class CliCommandsTest {
 
         assertTrue(out.contains("\"status\":\"OK\""), out);
         assertTrue(out.contains("\"providerCapability\""), out);
-        assertTrue(out.contains("\"effectivePorts\""), out);
     }
 
     private static Path writeConfig(Path tempDir) throws Exception {
@@ -56,9 +55,7 @@ class CliCommandsTest {
                   "providers": {"openai": {"api_key": "sk-test"}},
                   "tools": {
                     "restrictToWorkspace": true,
-                    "web": {"enable": false},
-                    "exec": {"enable": false},
-                    "mcpServers": {}
+                    "exec": {"enable": false}
                   }
                 }
                 """.formatted(tempDir.resolve("workspace").toAbsolutePath().normalize()));

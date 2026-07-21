@@ -6,7 +6,6 @@ import ricbot.infra.config.Config;
 import ricbot.infra.config.ConfigLoader;
 import ricbot.integration.llm.provider.ProviderRegistry;
 import ricbot.integration.llm.provider.ProviderSpec;
-import ricbot.integration.mcp.MCPAdapters;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -58,9 +57,7 @@ public final class ConfigDoctorService {
         report.setInferredProvider(providerName);
         report.setApiBase(apiBase != null ? apiBase : "");
         report.setApiKeyPresent(!isBlank(apiKey) && !looksLikePlaceholder(apiKey));
-        report.setEffectivePorts(effectivePorts(resolvedConfig));
         report.setEnabledTools(enabledTools(resolvedConfig));
-        report.setMcpServers(mcpServers(resolvedConfig));
         ProviderCapability providerCapability = capabilityResolver.resolve(resolvedConfig, providerName, model);
         report.setProviderCapability(providerCapability);
 
@@ -71,10 +68,8 @@ public final class ConfigDoctorService {
 
         diagnoseEnvironmentPlaceholders(rawJson, report);
         diagnoseProvider(rawConfig, resolvedConfig, providerName, spec, model, apiBase, apiKey, report);
-        diagnosePorts(resolvedConfig, rawJson, report);
         diagnoseTools(resolvedConfig, rawJson, report);
         diagnoseModelCapabilityOverrides(rawJson, resolvedConfig, providerName, model, providerCapability, report);
-        diagnoseMcp(resolvedConfig, report);
         return report;
     }
 
@@ -140,32 +135,12 @@ public final class ConfigDoctorService {
         }
     }
 
-    private void diagnosePorts(Config config, Map<String, Object> rawJson, ConfigDoctorReport report) {
-        int gatewayPort = config.getGateway().getPort();
-        int apiPort = config.getApi().getPort();
-        int actualPort = apiPort > 0 ? apiPort : gatewayPort;
-        if (apiPort > 0 && gatewayPort > 0 && apiPort != gatewayPort) {
-            report.addWarning("gateway.port 与 api.port 不同：serve 实际监听 api.port=" + actualPort + "，gateway.port=" + gatewayPort + " 仅作为兼容回退端口。");
-            report.addSuggestedFix("如果希望减少混淆，请让 gateway.port 与 api.port 保持一致，或只配置 api.port。");
-        }
-        if (hasPath(rawJson, "api", "host")) {
-            report.addSuggestedFix("api.host 已接入 serve；绑定公网地址时请同时配置 api.bearer_token。");
-        }
-    }
-
     private void diagnoseTools(Config config, Map<String, Object> rawJson, ConfigDoctorReport report) {
         Config.ToolsConfig tools = config.getTools();
         if (tools == null) {
             return;
         }
         Config.ExecToolConfig exec = tools.getExec();
-        Config.WebToolsConfig web = tools.getWeb();
-
-        if (hasPath(rawJson, "tools", "web", "max_chars") || hasPath(rawJson, "tools", "web", "maxChars")) {
-            report.addIgnoredField("tools.web.max_chars: 配置模型存在，但 ConfigLoader 当前未从 JSON 映射到运行时 WebToolsConfig.maxChars。");
-            report.addWarning("tools.web.max_chars 当前不会改变 web_fetch 默认截断长度。");
-            report.addSuggestedFix("暂时在 web_fetch 调用参数中传 max_chars，或等待后续版本接线 ConfigLoader。");
-        }
 
         if (exec != null && exec.isEnable() && exec.isSandbox()
                 && !commandChecker.commandExists("sandbox-exec")
@@ -179,57 +154,6 @@ public final class ConfigDoctorService {
             report.addSuggestedFix("除非明确需要跨目录操作，建议设置 tools.restrictToWorkspace=true。");
         }
 
-        if (web != null && web.isEnable()) {
-            diagnoseWebSearch(web.getSearch(), report);
-        }
-    }
-
-    private void diagnoseWebSearch(Config.WebSearchConfig search, ConfigDoctorReport report) {
-        if (search == null) {
-            return;
-        }
-        String provider = !isBlank(search.getProvider()) ? search.getProvider().trim().toLowerCase(Locale.ROOT) : "duckduckgo";
-        switch (provider) {
-            case "brave" -> warnMissingSearchKey(provider, "BRAVE_API_KEY", search.getApiKey(), report);
-            case "tavily" -> warnMissingSearchKey(provider, "TAVILY_API_KEY", search.getApiKey(), report);
-            case "jina" -> warnMissingSearchKey(provider, "JINA_API_KEY", search.getApiKey(), report);
-            case "kagi" -> warnMissingSearchKey(provider, "KAGI_API_KEY", search.getApiKey(), report);
-            case "searxng" -> {
-                if (isBlank(search.getBaseUrl()) && isBlank(envLookup.get("SEARXNG_BASE_URL"))) {
-                    report.addWarning("tools.web.search.provider=searxng，但缺少 base_url/SEARXNG_BASE_URL；运行时会回退 DuckDuckGo。");
-                    report.addSuggestedFix("配置 tools.web.search.base_url 或环境变量 SEARXNG_BASE_URL。");
-                }
-            }
-            case "duckduckgo" -> {
-            }
-            default -> {
-                report.addWarning("未知 web search provider：" + provider);
-                report.addSuggestedFix("将 tools.web.search.provider 设置为 duckduckgo/tavily/searxng/jina/brave/kagi 之一。");
-            }
-        }
-    }
-
-    private void warnMissingSearchKey(String provider, String envName, String configuredKey, ConfigDoctorReport report) {
-        if (isBlank(configuredKey) && isBlank(envLookup.get(envName))) {
-            report.addWarning("tools.web.search.provider=" + provider + "，但缺少 api_key/" + envName + "；运行时会回退 DuckDuckGo。");
-            report.addSuggestedFix("配置 tools.web.search.api_key 或环境变量 " + envName + "。");
-        }
-    }
-
-    private void diagnoseMcp(Config config, ConfigDoctorReport report) {
-        Map<String, Object> raw = config.getTools() != null ? config.getTools().getMcpServers() : Map.of();
-        Map<String, Config.MCPServerConfig> parsed = MCPAdapters.parseMcpServers(raw);
-        for (Map.Entry<String, Config.MCPServerConfig> entry : parsed.entrySet()) {
-            Config.MCPServerConfig server = entry.getValue();
-            String type = server != null ? server.getType() : null;
-            if ("sse".equals(type)) {
-                report.addWarning("MCP server '" + entry.getKey() + "' 使用已删除的 SSE transport。");
-                report.addSuggestedFix("将 MCP server type 改为 streamableHttp，并配置 Streamable HTTP endpoint。");
-            } else if (!isBlank(type) && !List.of("stdio", "streamableHttp").contains(type)) {
-                report.addWarning("MCP server '" + entry.getKey() + "' 使用未知 type：" + type);
-                report.addSuggestedFix("将 MCP server type 设置为 stdio 或 streamableHttp。");
-            }
-        }
     }
 
     private void diagnoseModelCapabilityOverrides(
@@ -288,52 +212,15 @@ public final class ConfigDoctorService {
         }
     }
 
-    private Map<String, Object> effectivePorts(Config config) {
-        Map<String, Object> ports = new LinkedHashMap<>();
-        Config.GatewayConfig gateway = config.getGateway();
-        Config.ApiConfig api = config.getApi();
-        int gatewayPort = gateway != null ? gateway.getPort() : 0;
-        int apiPort = api != null ? api.getPort() : 0;
-        String apiHost = api != null ? api.getHost() : "";
-        double apiTimeout = api != null ? api.getTimeout() : 0.0;
-        ports.put("gatewayPort", gatewayPort);
-        ports.put("apiPort", apiPort);
-        ports.put("actualApiHost", apiHost);
-        ports.put("actualApiPort", apiPort > 0 ? apiPort : gatewayPort);
-        ports.put("apiTimeoutSeconds", apiTimeout);
-        return ports;
-    }
-
     private Map<String, Object> enabledTools(Config config) {
         Map<String, Object> tools = new LinkedHashMap<>();
         Config.ToolsConfig tc = config.getTools();
-        Config.WebToolsConfig web = tc != null ? tc.getWeb() : null;
         Config.ExecToolConfig exec = tc != null ? tc.getExec() : null;
-        Map<String, Object> mcp = tc != null ? tc.getMcpServers() : Map.of();
         tools.put("toolsEnable", true);
-        tools.put("web", web != null && web.isEnable());
         tools.put("exec", exec != null && exec.isEnable());
         tools.put("execSandbox", exec != null && exec.isSandbox());
-        tools.put("mcp", mcp != null && !mcp.isEmpty());
         tools.put("restrictToWorkspace", tc != null && tc.isRestrictToWorkspace());
         return tools;
-    }
-
-    private List<Map<String, Object>> mcpServers(Config config) {
-        Map<String, Object> raw = config.getTools() != null ? config.getTools().getMcpServers() : Map.of();
-        Map<String, Config.MCPServerConfig> parsed = MCPAdapters.parseMcpServers(raw);
-        List<Map<String, Object>> servers = new ArrayList<>();
-        for (Map.Entry<String, Config.MCPServerConfig> entry : parsed.entrySet()) {
-            Config.MCPServerConfig cfg = entry.getValue();
-            Map<String, Object> row = new LinkedHashMap<>();
-            row.put("name", entry.getKey());
-            row.put("type", cfg != null ? cfg.getType() : "");
-            row.put("command", cfg != null ? cfg.getCommand() : "");
-            row.put("url", cfg != null ? cfg.getUrl() : "");
-            row.put("enabledTools", cfg != null ? cfg.getEnabledTools() : List.of());
-            servers.add(row);
-        }
-        return servers;
     }
 
     private List<EnvReference> findEnvReferences(Object value) {

@@ -12,12 +12,11 @@ class RuntimeBoundaryTest {
     private static final Path MAIN = Path.of("src/main/java").toAbsolutePath().normalize();
 
     @Test
-    void domainDoesNotDependOnCliConsoleOrTransportAdapters() throws Exception {
+    void domainDoesNotDependOnCliOrTransportAdapters() throws Exception {
         assertNoImports(
                 MAIN.resolve("ricbot/domain"),
                 List.of(
                         "import ricbot.app.cli",
-                        "import ricbot.integration.api.console",
                         "import ricbot.integration.channel"
                 )
         );
@@ -44,6 +43,12 @@ class RuntimeBoundaryTest {
                 "ricbot/integration/channel/BaseChannel.java",
                 "ricbot/integration/channel/ChannelManager.java",
                 "ricbot/integration/channel/ChannelRegistry.java",
+                "ricbot/integration/api/RicbotApiAppContext.java",
+                "ricbot/integration/api/RicbotApiServer.java",
+                "ricbot/integration/api/RicbotApiSupport.java",
+                "ricbot/integration/api/RuntimeConstants.java",
+                "ricbot/integration/api/console/ConsoleController.java",
+                "ricbot/integration/api/RicbotWebUiHandler.java",
                 "ricbot/integration/llm/azure/AzureOpenAIProvider.java"
         )) {
             assertFalse(Files.exists(MAIN.resolve(removed)), "removed runtime type returned: " + removed);

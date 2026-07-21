@@ -15,7 +15,7 @@ import java.util.Set;
 
 final class WorkspaceSnapshot {
     private static final int MAX_FILES = 5_000;
-    private static final Set<String> SKIP_DIRS = Set.of(".git", "target", ".idea", ".rag");
+    private static final Set<String> SKIP_DIRS = Set.of(".git", "target", ".idea");
     private static final Set<String> SKIP_ROOT_FILES = Set.of("notes/index.json");
 
     private WorkspaceSnapshot() {

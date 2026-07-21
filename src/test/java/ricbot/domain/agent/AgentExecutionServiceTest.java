@@ -230,42 +230,6 @@ class AgentExecutionServiceTest {
         assertSame(callback, runner.specs().get(0).getCheckpointCallback());
     }
 
-    @Test
-    void executeInteractive_consoleRetryUsesDistinctJournalAttempt(@TempDir Path workspace) throws Exception {
-        ToolRegistry tools = new ToolRegistry();
-        tools.register(tool("echo", "ok"));
-        AtomicInteger calls = new AtomicInteger();
-        FileRunJournalStore journalStore = new FileRunJournalStore(workspace);
-        AgentExecutionService service = new AgentExecutionService(
-                new AgentRunner(loopThenDoneProvider(calls, "echo")),
-                tools,
-                workspace,
-                "test-model",
-                1,
-                4000,
-                "standard",
-                8000,
-                24,
-                null,
-                journalStore
-        );
-        AgentRequestContext request = requestContext(null);
-        request.message().getMetadata().put("consoleRunId", "console-run-1");
-        List<Map<String, Object>> checkpoints = new ArrayList<>();
-
-        ExecutionOutcome outcome = service.executeInteractive(request, checkpoints::add);
-
-        assertEquals("done", outcome.finalContent());
-        assertEquals(RunStatus.PAUSED, journalStore.load("cli:direct", "console-run-1").orElseThrow().status());
-        assertEquals(
-                RunStatus.COMPLETED,
-                journalStore.load("cli:direct", "console-run-1:attempt:1").orElseThrow().status()
-        );
-        Map<String, Object> lastCheckpoint = checkpoints.get(checkpoints.size() - 1);
-        assertEquals("console-run-1", lastCheckpoint.get("run_id"));
-        assertEquals("console-run-1:attempt:1", lastCheckpoint.get("journal_run_id"));
-    }
-
     private AgentRequestContext requestContext(AgentHook hook) {
         InboundMessage msg = new InboundMessage("cli", "user", "direct", "hello");
         Session session = new Session("cli:direct");

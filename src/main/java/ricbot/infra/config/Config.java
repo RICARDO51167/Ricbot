@@ -4,7 +4,6 @@ package ricbot.infra.config;
 import lombok.*;
 import ricbot.integration.llm.provider.ProviderRegistry;
 import ricbot.integration.llm.provider.ProviderSpec;
-import ricbot.integration.channel.WebSocketChannel;
 
 import java.nio.file.Path;
 import java.util.*;
@@ -20,12 +19,11 @@ import java.util.function.Function;
  * 3. 提供 workspace / api_base / provider config 访问方法
  *
  * 设计说明（重要）：
- * - 这是一个“巨型配置类”：agent/provider/tool/mcp/channel/gateway/api 等都在此文件中。
+ * - 这是一个“巨型配置类”：agent/provider/tool 等都在此文件中。
  *   这种写法对“快速跑起来/单文件查配置”很友好，但长期维护会面临可读性差、模块边界模糊、修改冲击面大等问题。
  * - 部分字段属于“接口先长出来，主链实现未完全接入”的状态：调用方不要默认认为所有配置都已生效。
- *   例如 ToolsConfig.mcpServers 仍是弱类型 Map；
- *   ExecToolConfig 的 sandbox 暴露为 String 属于兼容历史接口的折中。
- * - ProvidersConfig/ChannelsConfig 采用“静态枚举式字段”，扩展新 provider/channel 往往需要改这个类与相关 switch/asMap。
+ *   例如 ExecToolConfig 的 sandbox 暴露为 String 属于兼容历史接口的折中。
+ * - ProvidersConfig 采用“静态枚举式字段”，扩展新 provider 往往需要改这个类与相关 switch/asMap。
  *   这比动态注册式配置更直观，但扩展性较弱。
  */
 @Data
@@ -37,12 +35,6 @@ public class Config {
     private ProvidersConfig providers = new ProvidersConfig();
     /** 工具配置 */
     private ToolsConfig tools = new ToolsConfig();
-    /** 渠道配置 */
-    private ChannelsConfig channels = new ChannelsConfig();
-    /** 网关配置 */
-    private GatewayConfig gateway = new GatewayConfig();
-    /** API 配置 */
-    private ApiConfig api = new ApiConfig();
     /** 用户声明的模型能力覆盖，不做在线探测。 */
     private Map<String, ModelCapabilityOverride> modelCapabilities = new LinkedHashMap<>();
 
@@ -53,9 +45,6 @@ public class Config {
         this.tools = tools != null ? tools : new ToolsConfig();
     }
 
-    public void setApi(ApiConfig api) {
-        this.api = api != null ? api : new ApiConfig();
-    }
 
     public void setModelCapabilities(Map<String, ModelCapabilityOverride> modelCapabilities) {
         this.modelCapabilities = modelCapabilities != null ? modelCapabilities : new LinkedHashMap<>();
@@ -258,11 +247,7 @@ public class Config {
         private String providerRetryMode = "standard";
         private String timezone = "UTC";
         private boolean unifiedSession = false;
-        private List<String> disabledSkills = new ArrayList<>();
         private int sessionTtlMinutes = 0;
-        public void setDisabledSkills(List<String> disabledSkills) {
-            this.disabledSkills = disabledSkills != null ? disabledSkills : new ArrayList<>();
-        }
     }
 
     // =========================================================
@@ -495,74 +480,12 @@ public class Config {
     // =========================================================
     @Data
     public static class ToolsConfig {
-        /**
-         * 注意：mcpServers 仍是弱类型 Map<String, Object>，解析由 MCPAdapters 承担。
-         * 这意味着配置表达能力更灵活，但编译期约束弱、易传错结构、错误更晚暴露。
-         */
-        private WebToolsConfig web = new WebToolsConfig();
         private ExecToolConfig exec = new ExecToolConfig();
         private boolean restrictToWorkspace = false;
-        private List<String> ssrfWhitelist = new ArrayList<>();
-        private Map<String, Object> mcpServers = new LinkedHashMap<>();
-
-        public void setWeb(WebToolsConfig web) {
-            this.web = web != null ? web : new WebToolsConfig();
-        }
 
         public void setExec(ExecToolConfig exec) {
             this.exec = exec != null ? exec : new ExecToolConfig();
         }
-
-        public void setSsrfWhitelist(List<String> ssrfWhitelist) {
-            this.ssrfWhitelist = ssrfWhitelist != null ? ssrfWhitelist : new ArrayList<>();
-        }
-
-        public void setMcpServers(Map<String, Object> mcpServers) {
-            this.mcpServers = mcpServers != null ? mcpServers : new LinkedHashMap<>();
-        }
-    }
-    @Data
-    public static class MCPServerConfig {
-        private String type = "stdio"; // stdio or streamableHttp
-        private String url; // for streamableHttp
-        private String command;
-        private List<String> args = new ArrayList<>();
-        private Map<String, String> env = new HashMap<>();
-        private List<String> enabledTools = new ArrayList<>();
-        private int toolTimeout = 60;
-
-        public void setArgs(List<String> args) {
-            this.args = args != null ? args : new ArrayList<>();
-        }
-
-        public void setEnv(Map<String, String> env) {
-            this.env = env != null ? env : new HashMap<>();
-        }
-
-        public void setEnabledTools(List<String> enabledTools) {
-            this.enabledTools = enabledTools != null ? enabledTools : new ArrayList<>();
-        }
-    }
-
-    @Data
-    public static class WebToolsConfig {
-        private boolean enable = true;
-        private String proxy;
-        private int maxChars = 50000;
-        private WebSearchConfig search = new WebSearchConfig();
-
-        public void setSearch(WebSearchConfig search) {
-            this.search = search != null ? search : new WebSearchConfig();
-        }
-    }
-
-    @Data
-    public static class WebSearchConfig {
-        private String provider = "duckduckgo";
-        private String apiKey;
-        private String baseUrl;
-        private int maxResults = 5;
-        private int timeout = 10;
 
     }
 
@@ -597,41 +520,4 @@ public class Config {
         }
     }
 
-    // =========================================================
-    // Channels
-    // =========================================================
-
-    @Data
-    public static class ChannelsConfig {
-        private boolean sendProgress = true;
-        private boolean sendToolHints = true;
-        private int sendMaxRetries = 3;
-
-        private WebSocketChannel.WebSocketConfig websocket = new WebSocketChannel.WebSocketConfig();
-    }
-
-    // =========================================================
-    // Gateway / API
-    // =========================================================
-
-    @Data
-    public static class GatewayConfig {
-        private int port = 8000;
-    }
-
-    @Getter
-    @Setter
-    public static class ApiConfig {
-        /**
-         * API 配置当前为薄壳字段集合。host/port/timeout 的默认值更偏开发环境本地部署。
-         */
-        private String host = "127.0.0.1";
-        private int port = 0;
-        private double timeout = 120.0;
-        private String bearerToken = "";
-
-        public void setBearerToken(String bearerToken) {
-            this.bearerToken = bearerToken != null ? bearerToken : "";
-        }
-    }
 }

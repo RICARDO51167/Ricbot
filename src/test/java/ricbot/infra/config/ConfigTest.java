@@ -36,22 +36,9 @@ class ConfigTest {
     }
 
     @Test
-    void channelsConfig_exposesOnlyTheWebSocketTransport() {
-        Config.ChannelsConfig channels = new Config.ChannelsConfig();
-        channels.getWebsocket().setEnabled(true);
-
-        assertNotNull(channels.getWebsocket());
-        assertTrue(channels.getWebsocket().isEnabled());
-    }
-
-    @Test
     void nullSafeLeafConfigSetters_keepDefaultsUsable() {
         Config.ProviderConfig provider = new Config.ProviderConfig();
         provider.setExtraHeaders(null);
         assertNotNull(provider.getExtraHeaders());
-
-        Config.ApiConfig api = new Config.ApiConfig();
-        api.setBearerToken(null);
-        assertEquals("", api.getBearerToken());
     }
 }

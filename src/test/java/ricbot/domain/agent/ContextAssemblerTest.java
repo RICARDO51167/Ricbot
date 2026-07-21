@@ -6,19 +6,15 @@ import ricbot.domain.memory.MemoryEntry;
 import ricbot.domain.memory.MemoryStore;
 import ricbot.domain.message.InboundMessage;
 import ricbot.domain.session.Session;
-import ricbot.domain.skill.SkillRouter;
-import ricbot.domain.skill.SkillsLoader;
 import ricbot.domain.workspace.WorkspaceBackendType;
 import ricbot.domain.workspace.WorkspaceSession;
 import ricbot.domain.workspace.WorkspaceSessionStatus;
 import ricbot.domain.workspace.WorkspaceSessionStore;
-import ricbot.tool.api.ToolRegistry;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -102,14 +98,6 @@ class ContextAssemblerTest {
 
     @Test
     void buildBundle_preservesContextTrace(@TempDir Path workspace) throws Exception {
-        Files.createDirectories(workspace.resolve("skills").resolve("demo"));
-        Files.writeString(workspace.resolve("skills").resolve("demo").resolve("SKILL.md"), """
-                ---
-                description: Demo skill.
-                keywords: demo
-                ---
-                Demo skill body
-                """);
         MemoryStore memoryStore = new MemoryStore(workspace);
 
         ContextAssembler.AssembledContext assembled = assembler(workspace, memoryStore)
@@ -119,18 +107,13 @@ class ContextAssemblerTest {
         assertEquals("cli:direct", assembled.contextTrace().get("session_key"));
         assertTrue(assembled.contextTrace().containsKey("prompt_context_budget"));
         assertTrue(assembled.contextTrace().containsKey("context_quality"));
-        assertTrue(assembled.contextTrace().containsKey("skills"));
+        assertTrue(assembled.contextTrace().containsKey("combined_context_chars"));
     }
 
     private static ContextAssembler assembler(Path workspace, MemoryStore memoryStore) {
-        SkillsLoader skillsLoader = new SkillsLoader(workspace, null, Set.of());
-        ToolRegistry tools = new ToolRegistry();
         return new ContextAssembler(
                 workspace,
-                new ContextBuilder(workspace, "UTC", List.of()),
-                skillsLoader,
-                new SkillRouter(skillsLoader, 3, 12_000),
-                tools,
+                new ContextBuilder(workspace, "UTC"),
                 new ContextSelectionService(memoryStore, new ToolTraceSummarizer())
         );
     }

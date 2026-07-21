@@ -1,9 +1,5 @@
 package ricbot.domain.memory;
 
-import ricbot.domain.retrieval.EmbeddingProvider;
-import ricbot.domain.retrieval.HashingEmbeddingProvider;
-import ricbot.domain.retrieval.HybridScoring;
-
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -14,28 +10,17 @@ import java.util.Locale;
 import java.util.Set;
 
 public final class MemoryRetriever {
-    private final EmbeddingProvider embeddingProvider;
-
-    public MemoryRetriever() { this(new HashingEmbeddingProvider()); }
-    public MemoryRetriever(EmbeddingProvider embeddingProvider) {
-        this.embeddingProvider = embeddingProvider != null ? embeddingProvider : new HashingEmbeddingProvider();
-    }
-
     public List<ScoredMemory> score(List<MemoryEntry> entries, String query, String taskGoal) {
         List<MemoryEntry> source = entries != null ? entries : List.of();
         String combined = (query != null ? query : "") + "\n" + (taskGoal != null ? taskGoal : "");
         Set<String> queryTokens = tokenize(combined);
-        double[] queryEmbedding = embeddingProvider.embed(combined);
         List<ScoredMemory> out = new ArrayList<>();
         for (MemoryEntry entry : source) {
             if (entry == null || !entry.isRecallable()) {
                 continue;
             }
             double lexical = queryTokens.isEmpty() ? 0.15d : weightedRecallScore(queryTokens, entry);
-            double semantic = Math.max(0d, HybridScoring.cosine(queryEmbedding, embeddingProvider.embed(
-                    entry.getSummary() + "\n" + entry.getDetails() + "\n"
-                            + String.join(" ", entry.getTags()) + "\n" + String.join(" ", entry.getAliases()))));
-            double relevance = (lexical * 0.68d) + (semantic * 0.32d);
+            double relevance = lexical;
             double importance = (entry.getImportance() * 0.7d) + (entry.getConfidence() * 0.3d);
             double recency = recencyScore(entry);
             double access = accessScore(entry);

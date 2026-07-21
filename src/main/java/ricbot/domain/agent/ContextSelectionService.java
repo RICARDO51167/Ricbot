@@ -5,9 +5,6 @@ import org.slf4j.LoggerFactory;
 import ricbot.domain.memory.MemoryEntry;
 import ricbot.domain.memory.MemoryRetriever;
 import ricbot.domain.memory.MemoryStore;
-import ricbot.domain.note.NoteEntry;
-import ricbot.domain.note.NoteService;
-import ricbot.domain.rag.WorkspaceRagService;
 import ricbot.domain.trace.TraceEvent;
 import ricbot.domain.trace.TraceEventType;
 import ricbot.domain.trace.TraceStore;
@@ -38,8 +35,6 @@ final class ContextSelectionService {
     // 工具调用轨迹摘要器，用于生成工具调用的简要描述
     private final ToolTraceSummarizer toolTraceSummarizer;
     private final int contextWindowTokens;
-    private final NoteService noteService;
-    private final WorkspaceRagService ragService;
     private final TraceStore traceStore;
 
     /**
@@ -53,32 +48,18 @@ final class ContextSelectionService {
     }
 
     ContextSelectionService(MemoryStore memoryStore, ToolTraceSummarizer toolTraceSummarizer, int contextWindowTokens) {
-        this(memoryStore, toolTraceSummarizer, contextWindowTokens, null, null);
+        this(memoryStore, toolTraceSummarizer, contextWindowTokens, null);
     }
 
     ContextSelectionService(
             MemoryStore memoryStore,
             ToolTraceSummarizer toolTraceSummarizer,
             int contextWindowTokens,
-            NoteService noteService,
-            WorkspaceRagService ragService
-    ) {
-        this(memoryStore, toolTraceSummarizer, contextWindowTokens, noteService, ragService, null);
-    }
-
-    ContextSelectionService(
-            MemoryStore memoryStore,
-            ToolTraceSummarizer toolTraceSummarizer,
-            int contextWindowTokens,
-            NoteService noteService,
-            WorkspaceRagService ragService,
             TraceStore traceStore
     ) {
         this.memoryStore = memoryStore;
         this.toolTraceSummarizer = toolTraceSummarizer;
         this.contextWindowTokens = contextWindowTokens;
-        this.noteService = noteService;
-        this.ragService = ragService;
         this.traceStore = traceStore;
     }
 
@@ -151,8 +132,6 @@ final class ContextSelectionService {
             bundle.addItem("recent_history", archived);
         }
 
-        addProjectNotes(bundle, currentMessage, taskState);
-        addWorkspaceKnowledge(bundle, currentMessage, taskState);
         addWorkspaceSessionContext(bundle, preparedInputs.workspaceContext());
         addTeamContext(bundle, preparedInputs.teamContext());
 
@@ -313,28 +292,6 @@ final class ContextSelectionService {
         );
     }
 
-    private void addProjectNotes(PromptContextBundle bundle, String currentMessage, TaskState taskState) {
-        if (noteService == null) {
-            return;
-        }
-        String query = currentMessage + "\n" + (taskState != null ? taskState.goal() : "");
-        try {
-            for (NoteService.SearchResult result : noteService.search(query, 4)) {
-                NoteEntry entry = result.entry();
-                String rendered = entry.path()
-                        + " [" + entry.category() + "/" + entry.type() + "] "
-                        + entry.title()
-                        + (result.snippet() != null && !result.snippet().isBlank()
-                        ? " — " + result.snippet().replace("\n", " ")
-                        : "");
-                double relevance = normalizeRelevance(result.score(), 5.0d);
-                bundle.addItem("project_notes", rendered, relevance,
-                        ContextSource.of("note", entry.id(), entry.path(), entry.title(), relevance));
-            }
-        } catch (Exception ignored) {
-        }
-    }
-
     private void recordContextBuilt(PromptContextBundle bundle, String sessionId, String currentMessage) {
         if (traceStore == null || bundle == null) {
             return;
@@ -378,35 +335,6 @@ final class ContextSelectionService {
         } catch (Exception e) {
             log.warn("skip context trace write", e);
         }
-    }
-
-    private void addWorkspaceKnowledge(PromptContextBundle bundle, String currentMessage, TaskState taskState) {
-        if (ragService == null) {
-            return;
-        }
-        String query = currentMessage + "\n" + (taskState != null ? taskState.goal() : "");
-        try {
-            for (WorkspaceRagService.SearchResult result : ragService.searchProjectKnowledge(query, 5)) {
-                WorkspaceRagService.FileChunk chunk = result.chunk();
-                String rendered = chunk.path()
-                        + ":" + chunk.startLine() + "-" + chunk.endLine()
-                        + " [" + chunk.kind() + "]"
-                        + (result.snippet() != null && !result.snippet().isBlank()
-                        ? " — " + result.snippet().replace("\n", " ")
-                        : "");
-                double relevance = normalizeRelevance(result.score(), 8.0d);
-                bundle.addItem("workspace_knowledge", rendered, relevance,
-                        ContextSource.of("rag", chunk.id(), chunk.path(), chunk.path() + ":" + chunk.startLine(), relevance));
-            }
-        } catch (Exception ignored) {
-        }
-    }
-
-    private double normalizeRelevance(double score, double maxExpected) {
-        if (maxExpected <= 0d) {
-            return 0d;
-        }
-        return Math.max(0d, Math.min(1d, score / maxExpected));
     }
 
     private List<String> relatedFiles(String currentMessage, List<Map<String, Object>> toolTrace) {

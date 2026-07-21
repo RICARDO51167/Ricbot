@@ -47,10 +47,6 @@ public class AgentLoopTest {
                 return new LLMResponse().setContent("pong").setFinishReason("stop");
             }
         };
-
-        // 配置 Web 工具，设置为禁用状态
-        Config.WebToolsConfig web = new Config.WebToolsConfig();
-        web.setEnable(false);
         // 配置执行工具，设置为禁用状态
         Config.ExecToolConfig exec = new Config.ExecToolConfig();
         exec.setEnable(false);
@@ -65,14 +61,11 @@ public class AgentLoopTest {
                 50,                 // 上下文块限制
                 10_000,             // 最大工具结果字符数
                 "standard",         // 重试模式
-                web,                // Web 工具配置
                 exec,               // 执行工具配置
-                Map.of(),           // MCP 服务器
                 true,               // 限制在工作空间
                 sessionManager,     // 会话管理器
                 "UTC",              // 时区
                 false,              // 统一会话
-                List.of(),          // 禁用技能
                 0                   // 会话 TTL
         );
 
@@ -132,9 +125,6 @@ public class AgentLoopTest {
                 return new LLMResponse().setContent("pong").setFinishReason("stop");
             }
         };
-
-        Config.WebToolsConfig web = new Config.WebToolsConfig();
-        web.setEnable(false);
         Config.ExecToolConfig exec = new Config.ExecToolConfig();
         exec.setEnable(false);
         AgentLoop loop = new AgentLoop(
@@ -146,16 +136,10 @@ public class AgentLoopTest {
                 2000,
                 50,
                 10_000,
-                "standard",
-                web,
-                exec,
-                Map.of(),
-                true,
+                "standard",exec,true,
                 sessionManager,
                 "UTC",
-                false,
-                List.of(),
-                0
+                false,0
         );
 
         OutboundMessage help = loop.processDirect("/help", "cli:direct");

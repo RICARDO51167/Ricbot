@@ -36,8 +36,6 @@ public class TeamEngine {
     private final StepAuditService stepAuditService;
     private final TeamTaskReportService taskReportService;
     private final WorkerRuntime workerRuntime;
-    /** Read-only compatibility source for pre-WorkerRuntime team data. */
-    private final PersistentTeamRuntime legacyTeamRuntime;
     private final Map<String, TeamSession> sessions = new LinkedHashMap<>();
     private final Map<String, TeamTask> tasks = new LinkedHashMap<>();
     private final Map<String, List<TeamEvent>> events = new LinkedHashMap<>();
@@ -54,7 +52,6 @@ public class TeamEngine {
         this.stepAuditService = new StepAuditService(this.workspace);
         this.taskReportService = new TeamTaskReportService(stepAuditService);
         this.workerRuntime = new WorkerRuntime(this.workspace);
-        this.legacyTeamRuntime = new PersistentTeamRuntime(this.workspace);
         restoreKnownSessions();
     }
 
@@ -186,7 +183,6 @@ public class TeamEngine {
 
     public List<WorkerStore.StoredWorker> workers(String teamSessionId) {
         requireSession(teamSessionId);
-        migrateLegacyWorkers(teamSessionId);
         return workerRuntime.workers(teamSessionId);
     }
 
@@ -1372,91 +1368,6 @@ public class TeamEngine {
         return "leader-" + teamSessionId;
     }
 
-    private void migrateLegacyWorkers(String teamSessionId) {
-        List<PersistentWorkerSession> legacyWorkers = legacyTeamRuntime.workers(teamSessionId);
-        for (PersistentWorkerSession legacy : legacyWorkers) {
-            String targetId = legacyWorkerId(teamSessionId, legacy.workerId());
-            if (workerRuntime.worker(targetId).isEmpty()) {
-                Map<String, Object> metadata = new LinkedHashMap<>(legacy.metadata());
-                metadata.put("legacy_worker_id", legacy.workerId());
-                WorkerSpec spec = new WorkerSpec(
-                        WorkerSpec.CURRENT_SCHEMA_VERSION,
-                        targetId,
-                        teamSessionId,
-                        legacy.role().name(),
-                        String.valueOf(metadata.getOrDefault("goal", "")),
-                        legacy.parentWorkerId().isBlank()
-                                ? ""
-                                : legacyWorkerId(teamSessionId, legacy.parentWorkerId()),
-                        "team-worker:" + teamSessionId + ":" + targetId,
-                        metadata,
-                        legacy.createdAt()
-                );
-                workerRuntime.create(spec);
-            }
-            advanceLegacyState(targetId, legacy);
-        }
-        migrateLegacyMailbox(teamSessionId, legacyWorkers);
-    }
-
-    private void migrateLegacyMailbox(String teamSessionId, List<PersistentWorkerSession> legacyWorkers) {
-        for (PersistentWorkerSession legacyWorker : legacyWorkers) {
-            String targetId = legacyWorkerId(teamSessionId, legacyWorker.workerId());
-            for (TeamMailboxMessage legacyMessage : legacyTeamRuntime.inbox(
-                    teamSessionId, legacyWorker.workerId(), 0, true)) {
-                boolean imported = workerRuntime.inbox(targetId, 0, true).stream()
-                        .anyMatch(message -> legacyMessage.messageId().equals(
-                                String.valueOf(message.payload().getOrDefault("legacy_message_id", ""))));
-                if (imported) continue;
-                Map<String, Object> payload = new LinkedHashMap<>(legacyMessage.payload());
-                payload.put("legacy_message_id", legacyMessage.messageId());
-                WorkerStore.MailboxMessage migrated = workerRuntime.send(
-                        legacyMessage.fromWorkerId().isBlank()
-                                ? ""
-                                : legacyWorkerId(teamSessionId, legacyMessage.fromWorkerId()),
-                        targetId,
-                        WorkerStore.MessageKind.valueOf(legacyMessage.type().name()),
-                        legacyMessage.correlationId(),
-                        payload
-                );
-                boolean wasAcknowledged = legacyTeamRuntime.inbox(
-                                teamSessionId, legacyWorker.workerId(), 0, false).stream()
-                        .noneMatch(message -> message.messageId().equals(legacyMessage.messageId()));
-                if (wasAcknowledged) workerRuntime.acknowledge(targetId, migrated.messageId());
-            }
-        }
-    }
-
-    private void advanceLegacyState(String workerId, PersistentWorkerSession legacy) {
-        WorkerState.Status current = requireWorker(workerId).state().status();
-        if (legacy.status() == WorkerSessionStatus.CREATED || settled(current)) return;
-        if (legacy.status() == WorkerSessionStatus.CANCELLED) {
-            workerRuntime.cancel(workerId, "migrated from legacy team runtime");
-            return;
-        }
-        if (current == WorkerState.Status.CREATED) {
-            workerRuntime.prepare(workerId);
-            current = WorkerState.Status.READY;
-        }
-        if (current == WorkerState.Status.READY) {
-            workerRuntime.start(workerId, legacy.currentTaskId());
-            current = WorkerState.Status.RUNNING;
-        }
-        if (legacy.status() == WorkerSessionStatus.PAUSED && current == WorkerState.Status.RUNNING) {
-            workerRuntime.awaitMessage(workerId, "migrated paused worker");
-        } else if (legacy.status() == WorkerSessionStatus.COMPLETED && current == WorkerState.Status.RUNNING) {
-            workerRuntime.complete(workerId, "migrated completed worker");
-        } else if (legacy.status() == WorkerSessionStatus.FAILED && current == WorkerState.Status.RUNNING) {
-            workerRuntime.fail(workerId, "migrated failed worker");
-        }
-    }
-
-    private static String legacyWorkerId(String teamSessionId, String workerId) {
-        if ("leader".equals(workerId)) return leaderWorkerId(teamSessionId);
-        return workerId + "-" + UUID.nameUUIDFromBytes((teamSessionId + "\u0000" + workerId)
-                .getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString().substring(0, 8);
-    }
-
     private static boolean settled(WorkerState.Status status) {
         return status == WorkerState.Status.COMPLETED
                 || status == WorkerState.Status.FAILED
@@ -1501,7 +1412,6 @@ public class TeamEngine {
         try {
             for (TeamSession session : store.listSessions()) {
                 rememberSession(session);
-                migrateLegacyWorkers(session.id());
                 events.put(session.id(), new ArrayList<>(store.loadEvents(session.id())));
             }
         } catch (Exception ignored) {

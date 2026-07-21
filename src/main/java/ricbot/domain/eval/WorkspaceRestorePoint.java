@@ -15,7 +15,6 @@ final class WorkspaceRestorePoint implements AutoCloseable {
     private static final Set<String> SKIP_DIRS = Set.of(
             ".git",
             ".idea",
-            ".rag",
             ".ricbot",
             "target",
             "sessions",

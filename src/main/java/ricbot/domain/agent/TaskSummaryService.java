@@ -235,7 +235,7 @@ public final class TaskSummaryService {
         List<String> out = new ArrayList<>();
         for (Map<String, Object> trace : toolTrace != null ? toolTrace : List.<Map<String, Object>>of()) {
             String tool = string(trace.get("tool_name"));
-            if (!tool.equals("write_file") && !tool.equals("edit_file") && !tool.equals("notebook_edit") && !tool.equals("note")) {
+            if (!tool.equals("write_file") && !tool.equals("edit_file")) {
                 continue;
             }
             addPathLike(out, string(trace.get("arguments_summary")));

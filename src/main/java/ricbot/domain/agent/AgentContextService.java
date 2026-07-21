@@ -4,9 +4,6 @@ import ricbot.domain.hook.AgentHook;
 import ricbot.domain.memory.MemoryStore;
 import ricbot.domain.message.InboundMessage;
 import ricbot.domain.session.Session;
-import ricbot.domain.skill.SkillRouter;
-import ricbot.domain.skill.SkillsLoader;
-import ricbot.tool.api.ToolRegistry;
 
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
@@ -19,16 +16,12 @@ import java.util.Map;
  * @param workspace               工作空间路径
  * @param contextBuilder          上下文构建器
  * @param memoryStore             内存存储
- * @param skillsLoader            技能加载器
- * @param skillRouter             技能路由器
- * @param tools                   工具注册表
  * @param hookFactory             代理钩子工厂
  * @param toolContextApplier      工具上下文应用器
  * @param globalHooks             全局钩子列表
  * @param contextSelectionService 上下文选择服务
  */
 record AgentContextService(Path workspace, ContextBuilder contextBuilder, MemoryStore memoryStore,
-                           SkillsLoader skillsLoader, SkillRouter skillRouter, ToolRegistry tools,
                            AgentHookFactory hookFactory, ToolContextApplier toolContextApplier,
                            List<AgentHook> globalHooks, ContextSelectionService contextSelectionService) {
 
@@ -53,9 +46,6 @@ record AgentContextService(Path workspace, ContextBuilder contextBuilder, Memory
         ContextAssembler.AssembledContext assembled = new ContextAssembler(
                 workspace,
                 contextBuilder,
-                skillsLoader,
-                skillRouter,
-                tools,
                 contextSelectionService
         ).buildInteractiveContext(
                 msg,

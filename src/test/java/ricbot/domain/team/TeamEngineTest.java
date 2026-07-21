@@ -47,34 +47,6 @@ class TeamEngineTest {
     }
 
     @Test
-    void migratesLegacyTeamWorkersWithoutDeletingLegacyData(@TempDir Path workspace) {
-        String teamId = "legacy-team";
-        new TeamSessionStore(workspace).saveSession(new TeamSession(
-                teamId, "restore legacy workers", TeamTaskState.PLANNING, List.of(), null, null));
-        PersistentTeamRuntime legacy = new PersistentTeamRuntime(workspace);
-        legacy.createWorker(teamId, "leader", TeamRole.LEADER, "", java.util.Map.of());
-        legacy.createWorker(teamId, "dev", TeamRole.DEVELOPER, "leader",
-                java.util.Map.of("task_id", "legacy-task"));
-        legacy.transition(teamId, "dev", WorkerSessionStatus.RUNNING, "legacy-task");
-        TeamMailboxMessage legacyAssignment = legacy.send(
-                teamId, "leader", "dev", TeamMessageType.TASK, "legacy-task", java.util.Map.of("goal", "restore"));
-        legacy.transition(teamId, "dev", WorkerSessionStatus.COMPLETED, "legacy-task");
-        Path legacyRoot = workspace.resolve(".ricbot").resolve("team-runtime");
-
-        TeamEngine migrated = new TeamEngine(workspace);
-        WorkerStore.StoredWorker restored = migrated.workers(teamId).stream()
-                .filter(worker -> "dev".equals(worker.spec().metadata().get("legacy_worker_id")))
-                .findFirst().orElseThrow();
-
-        assertEquals(WorkerState.Status.COMPLETED, restored.state().status());
-        assertEquals("legacy-task", restored.state().currentRunId());
-        assertTrue(migrated.workerInbox(teamId, restored.spec().workerId(), 0, false).stream()
-                .anyMatch(message -> legacyAssignment.messageId().equals(message.payload().get("legacy_message_id"))));
-        assertTrue(Files.isDirectory(legacyRoot));
-        assertTrue(Files.isDirectory(workspace.resolve(".ricbot").resolve("worker-runtime")));
-    }
-
-    @Test
     void createSessionAndTaskWritesInitialState(@TempDir Path workspace) {
         TeamEngine engine = new TeamEngine(workspace);
 

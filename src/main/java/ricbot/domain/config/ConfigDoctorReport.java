@@ -12,9 +12,7 @@ public final class ConfigDoctorReport {
     private String inferredProvider;
     private String apiBase;
     private boolean apiKeyPresent;
-    private Map<String, Object> effectivePorts = new LinkedHashMap<>();
     private Map<String, Object> enabledTools = new LinkedHashMap<>();
-    private List<Map<String, Object>> mcpServers = new ArrayList<>();
     private final List<String> errors = new ArrayList<>();
     private final List<String> warnings = new ArrayList<>();
     private final List<String> ignoredFields = new ArrayList<>();
@@ -40,9 +38,7 @@ public final class ConfigDoctorReport {
         map.put("inferredProvider", inferredProvider);
         map.put("apiBase", apiBase);
         map.put("apiKeyPresent", apiKeyPresent);
-        map.put("effectivePorts", effectivePorts);
         map.put("enabledTools", enabledTools);
-        map.put("mcpServers", mcpServers);
         map.put("errors", errors);
         map.put("warnings", warnings);
         map.put("ignoredFields", ignoredFields);
@@ -121,28 +117,12 @@ public final class ConfigDoctorReport {
         this.apiKeyPresent = apiKeyPresent;
     }
 
-    public Map<String, Object> getEffectivePorts() {
-        return effectivePorts;
-    }
-
-    public void setEffectivePorts(Map<String, Object> effectivePorts) {
-        this.effectivePorts = effectivePorts != null ? effectivePorts : new LinkedHashMap<>();
-    }
-
     public Map<String, Object> getEnabledTools() {
         return enabledTools;
     }
 
     public void setEnabledTools(Map<String, Object> enabledTools) {
         this.enabledTools = enabledTools != null ? enabledTools : new LinkedHashMap<>();
-    }
-
-    public List<Map<String, Object>> getMcpServers() {
-        return mcpServers;
-    }
-
-    public void setMcpServers(List<Map<String, Object>> mcpServers) {
-        this.mcpServers = mcpServers != null ? mcpServers : new ArrayList<>();
     }
 
     public List<String> getErrors() {
