@@ -55,7 +55,7 @@ public final class ProviderCapabilityResolver {
             vision = FALSE;
             jsonMode = FALSE;
             reasoningEffort = FALSE;
-        } else if ("openai_compat".equalsIgnoreCase(backend) || "azure_openai".equalsIgnoreCase(backend)) {
+        } else if ("openai_compat".equalsIgnoreCase(backend)) {
             if (looksKnownOpenAiCompatibleChatModel(lowerModel, resolvedProvider)) {
                 toolCalling = TRUE;
                 streaming = TRUE;

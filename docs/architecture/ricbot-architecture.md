@@ -49,7 +49,7 @@ CLI / API / Channel
 
 ### Provider / Capability
 
-Provider 层通过 OpenAI-compatible、Anthropic、Azure OpenAI 等适配器发起模型调用。Capability 层不做在线探测，而是通过静态/启发式规则和用户 `model_capabilities` override 生成最终能力结果。
+Provider 层通过 OpenAI-compatible 与 Anthropic 两类适配器发起模型调用；Azure OpenAI 使用其 v1-compatible 端点、`api_base` 与 `extra_headers` 接入统一兼容适配器。Capability 层不做在线探测，而是通过静态/启发式规则和用户 `model_capabilities` override 生成最终能力结果。
 
 运行时只消费最终 `ProviderCapability`：
 

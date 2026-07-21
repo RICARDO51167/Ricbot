@@ -3,7 +3,6 @@ package ricbot.integration.llm.provider;
 import ricbot.infra.config.Config;
 import ricbot.integration.llm.anthropic.AnthropicProvider;
 import ricbot.integration.llm.api.LLMProvider;
-import ricbot.integration.llm.azure.AzureOpenAIProvider;
 import ricbot.integration.llm.openai.OpenAICompatProvider;
 
 import java.util.Map;
@@ -40,7 +39,6 @@ public final class ProviderFactory {
         return switch (backend) {
             case "openai_compat" -> buildOpenAICompatProvider(spec, model, apiKey, apiBase, extraHeaders);
             case "anthropic" -> new AnthropicProvider(apiKey, apiBase, model, extraHeaders);
-            case "azure_openai" -> new AzureOpenAIProvider(apiKey, apiBase, model);
             default -> throw new IllegalStateException(
                     "暂不支持的 Provider 后端：'" + backend + "'"
             );

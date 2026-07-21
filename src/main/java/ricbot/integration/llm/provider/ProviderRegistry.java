@@ -15,8 +15,9 @@ public final class ProviderRegistry {
             new ProviderSpec("custom", List.of(), "", "自定义", "openai_compat")
                     .setDirect(true),
 
-            new ProviderSpec("azure_openai", List.of("azure", "azure-openai"), "", "Azure OpenAI", "azure_openai")
-                    .setDirect(true),
+            new ProviderSpec("azure_openai", List.of("azure", "azure-openai"), "", "Azure OpenAI (v1 compatible)", "openai_compat")
+                    .setDirect(true)
+                    .setDetectByBaseKeyword("openai.azure.com"),
 
             new ProviderSpec("openrouter", List.of("openrouter"), "OPENROUTER_API_KEY", "OpenRouter", "openai_compat")
                     .setGateway(true)
