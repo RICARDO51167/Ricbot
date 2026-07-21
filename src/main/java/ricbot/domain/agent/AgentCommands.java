@@ -1,6 +1,5 @@
 package ricbot.domain.agent;
 
-import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ricbot.application.team.TeamReportApplicationService;
 import ricbot.application.team.TeamRunApplicationService;
@@ -22,7 +21,6 @@ import ricbot.domain.note.NoteService;
 import ricbot.domain.note.TaskNoteWriter;
 import ricbot.domain.policy.PolicyDecision;
 import ricbot.domain.policy.PolicyDecisionType;
-import ricbot.domain.policy.PolicyAwareToolExecutor;
 import ricbot.domain.policy.PolicyEngine;
 import ricbot.domain.policy.PolicyRenderer;
 import ricbot.domain.session.Session;
@@ -39,11 +37,7 @@ import ricbot.domain.team.TeamRole;
 import ricbot.domain.team.TeamSession;
 import ricbot.domain.team.TeamTask;
 import ricbot.domain.team.TeamWorkerRunner;
-import ricbot.domain.team.ImplementationStepGate;
-import ricbot.domain.team.ImplementationStepStatus;
-import ricbot.domain.team.ImplementationStepType;
 import ricbot.domain.team.PendingImplementationStep;
-import ricbot.domain.team.StepGateResult;
 import ricbot.domain.team.StepAuditEventType;
 import ricbot.domain.team.StepAuditRecord;
 import ricbot.domain.team.VerificationResult;
@@ -54,10 +48,6 @@ import ricbot.domain.trace.TraceRenderer;
 import ricbot.domain.trace.TraceStore;
 import ricbot.domain.trace.TraceTimeline;
 import ricbot.domain.trace.TraceViewerService;
-import ricbot.domain.workspace.GitWorktreeWorkspaceBackend;
-import ricbot.domain.workspace.LocalWorkspaceBackend;
-import ricbot.domain.workspace.WorkspaceBackend;
-import ricbot.domain.workspace.WorkspaceBackendType;
 import ricbot.domain.workspace.WorkspaceLifecycleService;
 import ricbot.domain.workspace.WorkspaceSession;
 import ricbot.domain.workspace.WorkspaceSessionStore;
@@ -75,8 +65,6 @@ import java.util.function.Function;
 
 final class AgentCommands {
     private static final ObjectMapper MAPPER = new ObjectMapper().findAndRegisterModules();
-    private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {
-    };
 
     private final SessionManager sessionManager;
     private final String model;
@@ -751,183 +739,6 @@ final class AgentCommands {
         return raw != null ? String.valueOf(raw).trim() : "";
     }
 
-    private WorkerExecutionResult roleToolCallReport(
-            TeamTask task,
-            PolicyAwareToolExecutor.PolicyToolResult result,
-            WorkspaceSession workspaceSession
-    ) {
-        PolicyDecision decision = result.decision();
-        String workspacePath = workspaceSession != null && !workspaceSession.workspacePath().isBlank()
-                ? workspaceSession.workspacePath()
-                : workspace.toString();
-        List<String> findings = new java.util.ArrayList<>();
-        findings.add("tool=" + decision.toolName());
-        findings.add("decision=" + decision.decisionType());
-        if (result.executed()) {
-            findings.add("tool result=" + abbreviate(result.resultSummary(), 240));
-        }
-        List<String> risks = new java.util.ArrayList<>();
-        if (decision.denied()) {
-            risks.add("policy denied tool execution");
-        }
-        if (decision.requiresApproval()) {
-            risks.add("approval required before execution");
-        }
-        if (task.role() == TeamRole.DEVELOPER && workspaceSession == null) {
-            risks.add("local workspace warning: create a worktree with /workspace create --mode worktree before editing shared code");
-        }
-        String changeSetRecommendation = task.role() == TeamRole.DEVELOPER
-                ? "After approved edit/write tool calls, run /change create, then /team run-verifier " + task.id() + ", then /summary."
-                : "";
-        List<String> nextActions = task.role() == TeamRole.DEVELOPER
-                ? List.of("/change create", "/team run-verifier " + task.id(), "/summary")
-                : List.of();
-        List<String> policySummary = List.of(
-                "role=" + decision.role(),
-                "tool=" + decision.toolName(),
-                "decision=" + decision.decisionType(),
-                "requiresApproval=" + decision.requiresApproval(),
-                "denied=" + decision.denied(),
-                "requestId=" + result.approvalRequestId(),
-                "reasons=" + String.join(",", decision.reasons())
-        );
-        String status = decision.denied()
-                ? "DENIED"
-                : decision.requiresApproval()
-                ? "APPROVAL_REQUIRED"
-                : result.executed() ? "EXECUTED" : "SKIPPED";
-        return new WorkerExecutionResult(
-                task.id(),
-                task.sessionId(),
-                task.role(),
-                task.goal(),
-                workspacePath,
-                teamEngine.whiteboard(task.sessionId()).readSummary(),
-                List.of(),
-                List.of(),
-                "Policy-gated role tool-call " + decision.toolName() + " -> " + decision.decisionType(),
-                findings,
-                risks,
-                List.of(),
-                List.of(new TeamArtifact(
-                        null,
-                        task.id(),
-                        ".team/" + task.sessionId() + "/workers.jsonl",
-                        "Policy-gated tool call for " + task.id(),
-                        "role_tool_call",
-                        null
-                )),
-                policySummary,
-                List.of(),
-                decision.requiresApproval() ? List.of(decision.toolName() + " requires approval requestId=" + result.approvalRequestId()) : List.of(),
-                nextActions,
-                changeSetRecommendation,
-                result.executed() ? 0.72d : 0.45d,
-                status,
-                null
-        );
-    }
-
-    private String renderPolicyToolResult(PolicyAwareToolExecutor.PolicyToolResult result, WorkerExecutionResult report) {
-        PolicyDecision decision = result.decision();
-        return "team role tool-call\n"
-                + "taskId: " + report.taskId() + "\n"
-                + "role: " + decision.role() + "\n"
-                + "toolName: " + decision.toolName() + "\n"
-                + "workspacePath: " + report.workspacePath() + "\n"
-                + "policy decision: " + decision.decisionType() + "\n"
-                + "reasons: " + renderListInline(decision.reasons()) + "\n"
-                + "requiresApproval: " + decision.requiresApproval() + "\n"
-                + "denied: " + decision.denied() + "\n"
-                + (!result.approvalRequestId().isBlank() ? "approval requestId: " + result.approvalRequestId() + "\n" : "")
-                + "tool result: " + (result.resultSummary().isBlank() ? "none" : result.resultSummary()) + "\n"
-                + (report.risks().stream().anyMatch(risk -> risk.startsWith("local workspace warning"))
-                ? "warning: local workspace is active; consider /workspace create --mode worktree <goal>\n"
-                : "")
-                + (!report.changeSetRecommendation().isBlank() ? "next: " + report.changeSetRecommendation() + "\n" : "")
-                + "status: " + report.status();
-    }
-
-    private PendingImplementationStep requireImplementationStep(String stepId) {
-        PendingImplementationStep step = teamEngine.findImplementationStep(stepId);
-        if (step == null) {
-            throw new IllegalArgumentException("implementation step not found: " + stepId);
-        }
-        return step;
-    }
-
-    private String renderImplementationStepDetail(PendingImplementationStep step) {
-        return "implementation step\n"
-                + "id: " + step.id() + "\n"
-                + "taskId: " + step.taskId() + "\n"
-                + "teamSessionId: " + step.teamSessionId() + "\n"
-                + "role: " + step.role() + "\n"
-                + "type: " + step.type() + "\n"
-                + "status: " + step.status() + "\n"
-                + "targetPath: " + (step.targetPath().isBlank() ? "none" : step.targetPath()) + "\n"
-                + "command: " + (step.command().isBlank() ? "none" : step.command()) + "\n"
-                + "oldText: " + (step.oldText().isBlank() ? "none" : abbreviate(step.oldText(), 120)) + "\n"
-                + "newText: " + (step.newText().isBlank() ? "none" : abbreviate(step.newText(), 120)) + "\n"
-                + "riskLevel: " + step.riskLevel() + "\n"
-                + "requiresApproval: " + step.requiresApproval() + "\n"
-                + "orderIndex: " + step.orderIndex() + "\n"
-                + "dependsOn: " + (step.dependsOnStepIds().isEmpty() ? "none" : String.join(", ", step.dependsOnStepIds())) + "\n"
-                + "unblocks: " + (step.unblocksStepIds().isEmpty() ? "none" : String.join(", ", step.unblocksStepIds())) + "\n"
-                + "blockedBy: " + (step.blockedBy().isEmpty() ? "none" : String.join(", ", step.blockedBy())) + "\n"
-                + "blockedReason: " + (step.blockedReason().isBlank() ? "none" : step.blockedReason()) + "\n"
-                + "qualityGate: " + (step.qualityGate().isBlank() ? "none" : step.qualityGate()) + "\n"
-                + "requiredBeforeApply: " + (step.requiredBeforeApply().isEmpty() ? "none" : String.join("; ", step.requiredBeforeApply())) + "\n"
-                + "validationErrors: " + (step.validationErrors().isEmpty() ? "none" : String.join("; ", step.validationErrors())) + "\n"
-                + "lastUpdatedBy: " + (step.lastUpdatedBy().isBlank() ? "none" : step.lastUpdatedBy()) + "\n"
-                + "updateReason: " + (step.updateReason().isBlank() ? "none" : step.updateReason()) + "\n"
-                + "reason: " + step.reason();
-    }
-
-    private String renderStepGate(StepGateResult gate) {
-        if (gate == null) {
-            return "gate: unknown";
-        }
-        return "gate: " + (gate.allowed() ? "ALLOW" : "BLOCKED") + "\n"
-                + "reasons: " + renderListInline(gate.reasons()) + "\n"
-                + "requiredActions: " + renderListInline(gate.requiredActions()) + "\n"
-                + "nextSuggestedCommand: " + (gate.nextSuggestedCommand().isBlank() ? "none" : gate.nextSuggestedCommand());
-    }
-
-    private String toolNameForStep(PendingImplementationStep step) {
-        return switch (step.type()) {
-            case READ -> "read_file";
-            case EDIT -> "edit_file";
-            case WRITE -> "write_file";
-            case EXEC_TEST -> "exec";
-            default -> throw new IllegalArgumentException("step is not tool-backed: " + step.type());
-        };
-    }
-
-    private Map<String, Object> stepArgs(PendingImplementationStep step) {
-        Map<String, Object> args = new java.util.LinkedHashMap<>();
-        switch (step.type()) {
-            case READ -> {
-                args.put("path", step.targetPath());
-                args.put("offset", 1);
-                args.put("limit", 200);
-            }
-            case EDIT -> {
-                args.put("path", step.targetPath());
-                args.put("old_text", step.oldText());
-                args.put("new_text", step.newText());
-                args.put("replace_all", false);
-            }
-            case WRITE -> {
-                args.put("path", step.targetPath());
-                args.put("content", step.newText());
-            }
-            case EXEC_TEST -> args.put("command", step.command());
-            default -> {
-            }
-        }
-        return args;
-    }
-
     private void traceImplementationStep(Session session, TraceEventType type, PendingImplementationStep step) {
         if (step == null) {
             return;
@@ -950,22 +761,6 @@ final class AgentCommands {
         traceEvent(session, type, "team", "implementation step lifecycle", payload, step.teamSessionId(), "", "");
     }
 
-    private void traceImplementationStepGate(Session session, TraceEventType type, PendingImplementationStep step, StepGateResult gate) {
-        if (step == null || gate == null) {
-            return;
-        }
-        traceEvent(session, type, "team", "implementation step gate", Map.of(
-                "stepId", step.id(),
-                "taskId", step.taskId(),
-                "teamSessionId", step.teamSessionId(),
-                "type", step.type().name(),
-                "status", step.status().name(),
-                "reasons", gate.reasons(),
-                "requiredActions", gate.requiredActions(),
-                "nextSuggestedCommand", gate.nextSuggestedCommand()
-        ), step.teamSessionId(), "", "");
-    }
-
     private void tracePolicy(Session session, PolicyDecision decision) {
         if (decision == null) {
             return;
@@ -986,10 +781,6 @@ final class AgentCommands {
         ), "", "", "");
     }
 
-    private String renderListInline(List<String> values) {
-        return values == null || values.isEmpty() ? "none" : String.join("; ", values);
-    }
-
     private String stringArg(Map<String, Object> map, String key) {
         Object value = map != null ? map.get(key) : null;
         return value != null ? String.valueOf(value).trim() : "";
@@ -998,10 +789,6 @@ final class AgentCommands {
     private List<String> changedFilesFromApprovedArgs(Map<String, Object> args) {
         String path = stringArg(args, "path");
         return path.isBlank() ? List.of() : List.of(path);
-    }
-
-    private String requireActiveTeamSessionId(Session session) {
-        return teamSessions.requireActiveSessionId(session);
     }
 
     private String resolveActiveTeamSessionId(Session session) {
@@ -1267,14 +1054,6 @@ final class AgentCommands {
             return end > start ? value.substring(start + 1, end).trim() : value.substring(start + 1).trim();
         }
         return value.substring(start).trim();
-    }
-
-    private static Map<String, Object> parseJsonArgs(String raw) {
-        try {
-            return MAPPER.readValue(raw, MAP_TYPE);
-        } catch (Exception e) {
-            throw new IllegalArgumentException("jsonArgs must be a JSON object: " + e.getMessage());
-        }
     }
 
     private static String abbreviate(String value, int maxChars) {
