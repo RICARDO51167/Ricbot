@@ -289,8 +289,8 @@ public class RicbotApiServerTest {
         handler.handle(index);
         assertEquals(200, index.getResponseCode(), index.responseText());
         assertTrue(index.getResponseHeaders().getFirst("Content-Type").startsWith("text/html"), index.getResponseHeaders().toString());
-        assertTrue(index.responseText().contains("<title>Ricbot</title>"), index.responseText());
-        assertTrue(index.responseText().contains("/v1/chat/completions"), index.responseText());
+        assertTrue(index.responseText().contains("<title>Ricbot Agent Console</title>"), index.responseText());
+        assertTrue(index.responseText().contains("/assets/index-"), index.responseText());
 
         TestExchange missing = getExchange("/missing.js");
         handler.handle(missing);
@@ -410,13 +410,8 @@ public class RicbotApiServerTest {
             ConsoleController.pageHandler(app).handle(consoleExchange);
             assertEquals(200, consoleExchange.getResponseCode(), consoleExchange.responseText());
             String console = consoleExchange.responseText();
-            assertTrue(console.contains("Ricbot 控制台"), console);
-            assertTrue(console.contains("中文"), console);
-            assertTrue(console.contains("English"), console);
-            assertTrue(console.contains("ricbot_console_lang"), console);
-            assertTrue(console.contains("演示流程"), console);
-            assertTrue(console.contains("/console/api/config-doctor"), console);
-            assertTrue(console.contains("/console/api/release-check"), console);
+            assertTrue(console.contains("<title>Ricbot Agent Console</title>"), console);
+            assertTrue(console.contains("/assets/index-"), console);
 
             String health = handleGet(ConsoleController.healthHandler(app), "/console/api/health");
             assertTrue(health.contains("\"status\":\"ok\""), health);
