@@ -443,7 +443,7 @@ public class SkillRouterTest {
         Files.writeString(skillsDir.resolve("generated").resolve("filesystem-safety-rule.md"), """
                 ---
                 name: filesystem-safety-rule
-                source: experience
+                source: manual
                 priority: 70
                 keywords:
                   - filesystem-safety

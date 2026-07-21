@@ -89,7 +89,6 @@ class ImplementationStepGateTest {
                 "",
                 List.of("README.md"),
                 List.of(),
-                List.of(),
                 "Developer Plan created",
                 List.of(),
                 List.of(),

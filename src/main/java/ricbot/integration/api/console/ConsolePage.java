@@ -305,13 +305,11 @@ final class ConsolePage {
                     <section class="span-12" id="demo-flow-card"></section>
                     <section class="span-4" id="health-card"></section>
                     <section class="span-4" id="config-card"></section>
-                    <section class="span-4" id="experience-card"></section>
                     <section class="span-8" id="trace-card"></section>
                     <section class="span-4" id="workspace-card"></section>
                     <section class="span-4" id="tools-card"></section>
                     <section class="span-4" id="mcp-card"></section>
                     <section class="span-6" id="team-card"></section>
-                    <section class="span-6" id="experience-list-card"></section>
                     <section class="span-12" id="approval-card"></section>
                     <section class="span-12" id="action-card"></section>
                     <section class="span-12" id="release-check-card"></section>
@@ -326,7 +324,6 @@ final class ConsolePage {
                       tools: "/console/api/tools",
                       mcp: "/console/api/mcp",
                       workspaces: "/console/api/workspaces",
-                      experiences: "/console/api/experiences",
                       approvals: "/console/api/approvals",
                       actions: "/console/api/actions",
                       releaseCheck: "/console/api/release-check",
@@ -347,13 +344,11 @@ final class ConsolePage {
                         demoFlow: "演示流程",
                         health: "健康状态",
                         configDoctor: "配置诊断",
-                        experience: "经验治理",
                         latestTrace: "最新轨迹",
                         workspaces: "工作区",
                         tools: "工具",
                         mcp: "MCP 服务",
                         teamReports: "任务报告",
-                        experienceItems: "经验记录",
                         approvals: "审批",
                         consoleActions: "控制台操作",
                         releaseCheck: "发布检查",
@@ -363,7 +358,6 @@ final class ConsolePage {
                         verify: "确认",
                         reject: "拒绝",
                         approve: "批准",
-                        promoteSkill: "晋升技能",
                         runSmokeEval: "运行冒烟评测",
                         detail: "详情",
                         bind: "监听",
@@ -377,8 +371,6 @@ final class ConsolePage {
                         noParameters: "无参数",
                         allTools: "全部工具",
                         loadedMcpTools: "个已加载 MCP 工具",
-                        candidatesVerifiedLoaded: "候选 / 已确认已加载",
-                        storeTotals: "存储总计",
                         baseline: "baseline",
                         compare: "compare",
                         completed: "完成",
@@ -386,23 +378,20 @@ final class ConsolePage {
                         noTrace: "暂无执行轨迹。运行一次 team 任务后可在这里查看时间线。",
                         noWorkspaces: "暂无工作区。运行 /team run --worktree 后会创建受管工作区。",
                         noEvalRuns: "暂无评测记录。可以运行固定 smoke eval 后查看结果。",
-                        noExperience: "暂无经验记录。",
                         noTools: "暂无工具信息。",
                         noMcp: "暂无 MCP 服务配置。",
                         noTeamReports: "暂无任务报告。运行 /team run 后可在这里查看演示报告。",
                         noApprovals: "暂无待审批项。工具或变更审批会在这里等待人工确认。",
-                        noActions: "暂无控制台操作。经验、审批、工作区和冒烟评测操作会在这里审计。",
+                        noActions: "暂无控制台操作。审批、工作区和冒烟评测操作会在这里审计。",
                         noReleaseCheck: "暂无 release-check 报告。运行",
                         noFailingCases: "暂无失败用例",
                         manifest: "manifest",
                         workspaceActionError: "工作区操作",
-                        experienceActionError: "经验操作",
                         approvalActionError: "审批操作",
                         evalDetailError: "评测详情",
                         runSmokeConfirm: "运行固定 golden smoke eval？",
                         discardConfirm: "丢弃受管工作区 {id}？",
                         changeCreateConfirm: "从工作区 {id} 创建变更集？",
-                        experienceConfirm: "{label}经验 {id}？",
                         approvalConfirm: "{label}审批 {id}？",
                         flowConfigDoctor: "配置诊断",
                         flowTeamRun: "隔离执行任务",
@@ -410,8 +399,6 @@ final class ConsolePage {
                         flowWorkspaceDiff: "工作区变更",
                         flowChangeCreate: "创建变更集",
                         flowTraceShow: "执行轨迹",
-                        flowExperienceVerify: "经验确认",
-                        flowPromoteSkill: "晋升技能",
                         flowFixedSmokeEval: "固定冒烟评测",
                         flowReleaseCheck: "发布检查",
                         status_OK: "正常",
@@ -442,13 +429,11 @@ final class ConsolePage {
                         demoFlow: "Demo Flow",
                         health: "Health",
                         configDoctor: "Config Doctor",
-                        experience: "Experience",
                         latestTrace: "Latest Trace",
                         workspaces: "Workspaces",
                         tools: "Tools",
                         mcp: "MCP",
                         teamReports: "Team Reports",
-                        experienceItems: "Experience Items",
                         approvals: "Approvals",
                         consoleActions: "Console Actions",
                         releaseCheck: "Release Check",
@@ -458,7 +443,6 @@ final class ConsolePage {
                         verify: "Verify",
                         reject: "Reject",
                         approve: "Approve",
-                        promoteSkill: "Promote Skill",
                         runSmokeEval: "Run Smoke Eval",
                         detail: "Detail",
                         bind: "bind",
@@ -472,8 +456,6 @@ final class ConsolePage {
                         noParameters: "no parameters",
                         allTools: "all tools",
                         loadedMcpTools: "loaded MCP tools",
-                        candidatesVerifiedLoaded: "candidates / verified loaded",
-                        storeTotals: "store totals",
                         baseline: "baseline",
                         compare: "compare",
                         completed: "completed",
@@ -481,23 +463,20 @@ final class ConsolePage {
                         noTrace: "No trace found. Run a team task, then come back here for the timeline.",
                         noWorkspaces: "No workspaces yet. Run /team run with --worktree to create a managed workspace.",
                         noEvalRuns: "No eval runs yet. Use Run Smoke Eval or sh scripts/release-check.sh to create deterministic artifacts.",
-                        noExperience: "No experience items yet. Verified lessons and generated skills will appear here.",
                         noTools: "No tools loaded",
                         noMcp: "No MCP servers configured",
                         noTeamReports: "No team reports yet. After /team run, reports appear here for demo review.",
                         noApprovals: "No pending approvals. Tool or change approvals will wait here for human review.",
-                        noActions: "No console actions yet. Experience, approval, workspace, and smoke eval actions are audited here.",
+                        noActions: "No console actions yet. Approval, workspace, and smoke eval actions are audited here.",
                         noReleaseCheck: "No release-check report yet. Run",
                         noFailingCases: "No failing cases",
                         manifest: "manifest",
                         workspaceActionError: "workspace action",
-                        experienceActionError: "experience action",
                         approvalActionError: "approval action",
                         evalDetailError: "eval detail",
                         runSmokeConfirm: "Run fixed golden smoke eval?",
                         discardConfirm: "Discard managed workspace {id}?",
                         changeCreateConfirm: "Create ChangeSet from workspace {id}?",
-                        experienceConfirm: "{label} experience {id}?",
                         approvalConfirm: "{label} approval {id}?",
                         flowConfigDoctor: "config doctor",
                         flowTeamRun: "team run --worktree --verify",
@@ -505,8 +484,6 @@ final class ConsolePage {
                         flowWorkspaceDiff: "workspace diff",
                         flowChangeCreate: "change create",
                         flowTraceShow: "trace show",
-                        flowExperienceVerify: "experience verify",
-                        flowPromoteSkill: "promote skill",
                         flowFixedSmokeEval: "fixed smoke eval",
                         flowReleaseCheck: "release-check",
                         status_OK: "OK",
@@ -841,63 +818,6 @@ final class ConsolePage {
                       `;
                     }
 
-                    function renderExperiences(data) {
-                      const stats = data.stats || {};
-                      const candidates = data.candidates || [];
-                      const verified = data.verified || [];
-                      document.getElementById("experience-card").innerHTML = `
-                        ${sectionHead(t("experience"), formatCountLabel("candidates", stats.candidates || 0), "experiences")}
-                        <div class="value">${esc(candidates.length)} / ${esc(verified.length)}</div>
-                        <div class="sub">${esc(t("candidatesVerifiedLoaded"))}</div>
-                        <div class="sub">${esc(t("storeTotals"))}: ${esc(formatCountLabel("candidates", stats.candidates || 0))} · ${esc(formatCountLabel("verified", stats.verified || 0))}</div>
-                      `;
-                      const rows = [...candidates.map(x => ({...x, bucket: "candidate"})), ...verified.map(x => ({...x, bucket: "verified"}))];
-                      document.getElementById("experience-list-card").innerHTML = `
-                        ${sectionHead(t("experienceItems"), formatCountLabel("shown", rows.length), "experiences")}
-                        ${rows.length === 0 ? empty(t("noExperience")) : `
-                          <div class="list">${rows.slice(0, 10).map(item => `
-                            <div class="item">
-                              <div class="row">
-                                <div>
-                                  <div class="title">${esc(item.title || item.id)}</div>
-                                  <div class="kv"><span>${esc(item.bucket)}</span><span>${esc(item.type)}</span><span>${esc(item.confidence)}</span></div>
-                                </div>
-                                <div>
-                                  ${item.status === "CANDIDATE" || item.bucket === "candidate" ? `<button type="button" data-exp-action="verify" data-exp-id="${esc(item.id)}">${esc(t("verify"))}</button> <button type="button" data-exp-action="reject" data-exp-id="${esc(item.id)}">${esc(t("reject"))}</button>` : ""}
-                                  ${item.status === "VERIFIED" || item.bucket === "verified" ? `<button type="button" data-exp-action="promote-skill" data-exp-id="${esc(item.id)}">${esc(t("promoteSkill"))}</button>` : ""}
-                                </div>
-                              </div>
-                              <div class="sub">${esc(item.whenToApply || item.content)}</div>
-                            </div>
-                          `).join("")}</div>
-                        `}
-                      `;
-                      document.querySelectorAll("[data-exp-action]").forEach(button => {
-                        button.addEventListener("click", () => runExperienceAction(
-                          button,
-                          button.getAttribute("data-exp-id"),
-                          button.getAttribute("data-exp-action")
-                        ));
-                      });
-                    }
-
-                    async function runExperienceAction(button, id, action) {
-                      const label = action === "promote-skill" ? t("promoteSkill") : action === "verify" ? t("verify") : t("reject");
-                      if (!confirm(t("experienceConfirm").replace("{label}", label).replace("{id}", id))) return;
-                      const restore = setBusy(button, t("processing"));
-                      try {
-                        await postJson(`/console/api/experiences/${encodeURIComponent(id)}/${action}`);
-                        appState.experiences = await getJson("experiences");
-                        renderExperiences(appState.experiences);
-                        appState.actions = await getJson("actions");
-                        renderActions(appState.actions);
-                      } catch (error) {
-                        document.getElementById("experience-list-card").innerHTML = errorCard(t("experienceActionError"), error);
-                      } finally {
-                        restore();
-                      }
-                    }
-
                     function renderApprovals(data) {
                       const items = data.items || [];
                       document.getElementById("approval-card").innerHTML = `
@@ -1056,13 +976,11 @@ final class ConsolePage {
                         [t("flowWorkspaceDiff"), "/workspace diff <taskId>", t("workspaces"), formatCountLabel("workspaces", localCount(state.workspaces, ["items", "length"]))],
                         [t("flowChangeCreate"), "/change create <taskId>", t("workspaces"), formatCountLabel("workspaces", localCount(state.workspaces, ["items", "length"]))],
                         [t("flowTraceShow"), "/trace show <taskId>", t("latestTrace"), formatCountLabel("events", localCount(state.traces, ["latest", "events", "length"]))],
-                        [t("flowExperienceVerify"), "/experience verify <id>", t("experienceItems"), formatCountLabel("candidates", localCount(state.experiences, ["candidates", "length"]))],
-                        [t("flowPromoteSkill"), "/experience promote-skill <id>", t("experienceItems"), formatCountLabel("verified", localCount(state.experiences, ["verified", "length"]))],
                         [t("flowFixedSmokeEval"), "java -jar target/Ricbot-1.0-SNAPSHOT.jar eval smoke --scenarios evals/golden.jsonl", t("evalRuns"), formatCountLabel("evalRuns", localCount(state.evals, ["items", "length"]))],
                         [t("flowReleaseCheck"), "sh scripts/release-check.sh", t("releaseCheck"), formatStatus(state.releaseCheck?.finalStatus || (state.releaseCheck?.exists ? "found" : "empty"))]
                       ];
                       document.getElementById("demo-flow-card").innerHTML = `
-                        ${sectionHead(t("demoFlow"), formatCountLabel("steps", 10), null)}
+                        ${sectionHead(t("demoFlow"), formatCountLabel("steps", 8), null)}
                         <div class="demo-flow">
                           ${steps.map((step, index) => `
                             <div class="step">
@@ -1116,7 +1034,6 @@ final class ConsolePage {
                       tools: "tools-card",
                       mcp: "mcp-card",
                       workspaces: "workspace-card",
-                      experiences: "experience-card",
                       approvals: "approval-card",
                       actions: "action-card",
                       releaseCheck: "release-check-card",
@@ -1131,7 +1048,6 @@ final class ConsolePage {
                       tools: renderTools,
                       mcp: renderMcp,
                       workspaces: renderWorkspaces,
-                      experiences: renderExperiences,
                       approvals: renderApprovals,
                       actions: renderActions,
                       releaseCheck: renderReleaseCheck,
@@ -1146,7 +1062,6 @@ final class ConsolePage {
                         ["tools", renderTools],
                         ["mcp", renderMcp],
                         ["teams", renderTeams],
-                        ["experiences", renderExperiences],
                         ["approvals", renderApprovals],
                         ["actions", renderActions],
                         ["releaseCheck", renderReleaseCheck],
@@ -1165,7 +1080,6 @@ final class ConsolePage {
                     async function load() {
                       Object.values(cards).forEach(id => document.getElementById(id).innerHTML = loading(t("loading")));
                       document.getElementById("demo-flow-card").innerHTML = loading(t("loadingDemoFlow"));
-                      document.getElementById("experience-list-card").innerHTML = loading(t("loading"));
                       for (const [name, render] of jobs) {
                         try {
                           const data = await getJson(name);
@@ -1173,9 +1087,6 @@ final class ConsolePage {
                           render(data);
                         } catch (error) {
                           document.getElementById(cards[name]).innerHTML = errorCard(t(name) || name, error);
-                          if (name === "experiences") {
-                            document.getElementById("experience-list-card").innerHTML = errorCard(t("experienceItems"), error);
-                          }
                         }
                       }
                       renderDemoFlow(appState);

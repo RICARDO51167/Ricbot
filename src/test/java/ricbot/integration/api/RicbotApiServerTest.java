@@ -12,11 +12,6 @@ import ricbot.domain.agent.AgentLoop;
 import ricbot.domain.agent.SessionRuntimeKeys;
 import ricbot.domain.change.ChangeSetService;
 import ricbot.domain.change.GitChangeSet;
-import ricbot.domain.experience.ExperienceEntry;
-import ricbot.domain.experience.ExperienceSkillPromoter;
-import ricbot.domain.experience.ExperienceStatus;
-import ricbot.domain.experience.ExperienceStore;
-import ricbot.domain.experience.ExperienceType;
 import ricbot.domain.hook.AgentHook;
 import ricbot.domain.message.MessageBus;
 import ricbot.domain.message.OutboundMessage;
@@ -476,10 +471,6 @@ public class RicbotApiServerTest {
             assertFalse(mcpDiagnostics.contains("secret-token-value"), mcpDiagnostics);
             assertFalse(mcpDiagnostics.contains("secret-env-token"), mcpDiagnostics);
             assertFalse(mcp.contains("visible-value"), mcp);
-
-            String experiences = handleGet(ConsoleController.experiencesHandler(app), "/console/api/experiences");
-            assertTrue(experiences.contains("\"candidates\""), experiences);
-            assertTrue(experiences.contains("\"verified\""), experiences);
 
             String releaseCheck = handleGet(ConsoleController.releaseCheckHandler(app), "/console/api/release-check");
             assertTrue(releaseCheck.contains("\"reportPath\":\"target/release-check-report.md\""), releaseCheck);
@@ -1991,65 +1982,6 @@ public class RicbotApiServerTest {
     }
 
     @Test
-    void consoleExperienceActions_updateCandidatesAndPromoteVerifiedSkill(@TempDir Path workspace) throws Exception {
-        AgentLoop loop = buildLoop(workspace);
-        Config config = new Config();
-        config.getAgents().getDefaults().setWorkspace(workspace.toString());
-        var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", config, null, workspace);
-        ExperienceStore store = new ExperienceStore(workspace);
-
-        try {
-            ExperienceEntry verifyCandidate = store.addCandidate(experience("Verify Me"));
-            TestExchange verify = postExchangeRaw("/console/api/experiences/" + verifyCandidate.id() + "/verify", "");
-            ConsoleController.experienceActionsHandler(app).handle(verify);
-            assertEquals(200, verify.getResponseCode(), verify.responseText());
-            assertTrue(verify.responseText().contains("\"action\":\"experience.verify\""), verify.responseText());
-            assertTrue(verify.responseText().contains("Origin/Referer header missing"), verify.responseText());
-            assertEquals(ExperienceStatus.VERIFIED, store.find(verifyCandidate.id()).status());
-
-            TestExchange verifyAgain = postExchangeRaw("/console/api/experiences/" + verifyCandidate.id() + "/verify", "");
-            ConsoleController.experienceActionsHandler(app).handle(verifyAgain);
-            assertEquals(409, verifyAgain.getResponseCode(), verifyAgain.responseText());
-            String auditsAfterConflict = handleGet(ConsoleController.actionsHandler(app), "/console/api/actions");
-            assertTrue(auditsAfterConflict.contains("\"action\":\"experience.verify\""), auditsAfterConflict);
-            assertTrue(auditsAfterConflict.contains("\"result\":\"SUCCESS\""), auditsAfterConflict);
-            assertTrue(auditsAfterConflict.contains("\"result\":\"CONFLICT\""), auditsAfterConflict);
-
-            ExperienceEntry rejectCandidate = store.addCandidate(experience("Reject Me"));
-            TestExchange reject = postExchangeRaw("/console/api/experiences/" + rejectCandidate.id() + "/reject", "");
-            ConsoleController.experienceActionsHandler(app).handle(reject);
-            assertEquals(200, reject.getResponseCode(), reject.responseText());
-            assertEquals(ExperienceStatus.REJECTED, store.find(rejectCandidate.id()).status());
-
-            ExperienceEntry skillCandidate = store.addCandidate(experience("Skill Me"));
-            TestExchange promoteCandidate = postExchangeRaw("/console/api/experiences/" + skillCandidate.id() + "/promote-skill", "");
-            ConsoleController.experienceActionsHandler(app).handle(promoteCandidate);
-            assertEquals(409, promoteCandidate.getResponseCode(), promoteCandidate.responseText());
-
-            ExperienceEntry verified = store.verify(skillCandidate.id());
-            TestExchange promote = postExchangeRaw("/console/api/experiences/" + verified.id() + "/promote-skill", "");
-            ConsoleController.experienceActionsHandler(app).handle(promote);
-            assertEquals(200, promote.getResponseCode(), promote.responseText());
-            assertTrue(promote.responseText().contains("\"action\":\"experience.promoteSkill\""), promote.responseText());
-            assertTrue(promote.responseText().contains("\"skillName\""), promote.responseText());
-            assertTrue(Files.exists(workspace.resolve("skills").resolve("generated")));
-            Path generatedSkill = Files.list(workspace.resolve("skills").resolve("generated")).findFirst().orElseThrow();
-            Files.writeString(generatedSkill, "sentinel");
-            TestExchange promoteAgain = postExchangeRaw("/console/api/experiences/" + verified.id() + "/promote-skill", "");
-            ConsoleController.experienceActionsHandler(app).handle(promoteAgain);
-            assertEquals(200, promoteAgain.getResponseCode(), promoteAgain.responseText());
-            assertTrue(promoteAgain.responseText().contains("\"alreadyExists\":true"), promoteAgain.responseText());
-            assertEquals("sentinel", Files.readString(generatedSkill));
-
-            TestExchange getWrite = getExchange("/console/api/experiences/" + verified.id() + "/reject");
-            ConsoleController.experienceActionsHandler(app).handle(getWrite);
-            assertEquals(405, getWrite.getResponseCode(), getWrite.responseText());
-        } finally {
-            loop.stop();
-        }
-    }
-
-    @Test
     void consoleApprovalActions_listApproveRejectAndRedactSensitiveArgs(@TempDir Path workspace) throws Exception {
         AgentLoop loop = buildLoop(workspace);
         Config config = new Config();
@@ -2197,18 +2129,23 @@ public class RicbotApiServerTest {
         AgentLoop loop = buildLoop(workspace);
         Config config = new Config();
         var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "console-token", config, null, workspace);
-        ExperienceEntry candidate = new ExperienceStore(workspace).addCandidate(experience("Auth Me"));
+        ApprovalRequest request = loop.getApprovalService().createRequest(
+                RiskAssessment.of(CommandRiskLevel.MEDIUM, List.of("auth test"), "", "write_file", List.of("auth.txt")),
+                "write_file",
+                Map.of("path", "auth.txt", "content", "ok\n"),
+                "auth-session"
+        );
 
         try {
-            TestExchange unauthorized = postExchangeRaw("/console/api/experiences/" + candidate.id() + "/verify", "");
-            ConsoleController.experienceActionsHandler(app).handle(unauthorized);
+            TestExchange unauthorized = postExchangeRaw("/console/api/approvals/" + request.requestId() + "/approve", "");
+            ConsoleController.approvalsHandler(app).handle(unauthorized);
             assertEquals(401, unauthorized.getResponseCode(), unauthorized.responseText());
             assertTrue(new ConsoleActionAuditService(workspace).recent(5).stream()
-                    .anyMatch(record -> "UNAUTHORIZED".equals(record.result()) && "experience.verify".equals(record.action())));
+                    .anyMatch(record -> "UNAUTHORIZED".equals(record.result()) && "approval.approve".equals(record.action())));
 
-            TestExchange authorized = postExchangeRaw("/console/api/experiences/" + candidate.id() + "/verify", "");
+            TestExchange authorized = postExchangeRaw("/console/api/approvals/" + request.requestId() + "/approve", "");
             authorized.getRequestHeaders().set("Authorization", "Bearer console-token");
-            ConsoleController.experienceActionsHandler(app).handle(authorized);
+            ConsoleController.approvalsHandler(app).handle(authorized);
             assertEquals(200, authorized.getResponseCode(), authorized.responseText());
         } finally {
             loop.stop();
@@ -2220,20 +2157,25 @@ public class RicbotApiServerTest {
         AgentLoop loop = buildLoop(workspace);
         Config config = new Config();
         var app = new RicbotApiAppContext(loop, "gpt-4o-mini", 20_000, "127.0.0.1", "", config, null, workspace);
-        ExperienceEntry candidate = new ExperienceStore(workspace).addCandidate(experience("Origin Me"));
+        ApprovalRequest request = loop.getApprovalService().createRequest(
+                RiskAssessment.of(CommandRiskLevel.MEDIUM, List.of("origin test"), "", "write_file", List.of("origin.txt")),
+                "write_file",
+                Map.of("path", "origin.txt", "content", "ok\n"),
+                "origin-session"
+        );
 
         try {
-            TestExchange invalidOrigin = postExchangeRaw("/console/api/experiences/" + candidate.id() + "/verify", "");
+            TestExchange invalidOrigin = postExchangeRaw("/console/api/approvals/" + request.requestId() + "/approve", "");
             invalidOrigin.getRequestHeaders().set("Origin", "https://evil.example");
-            ConsoleController.experienceActionsHandler(app).handle(invalidOrigin);
+            ConsoleController.approvalsHandler(app).handle(invalidOrigin);
             assertEquals(403, invalidOrigin.getResponseCode(), invalidOrigin.responseText());
-            assertEquals(ExperienceStatus.CANDIDATE, new ExperienceStore(workspace).find(candidate.id()).status());
+            assertEquals(ApprovalRequest.ApprovalStatus.PENDING, loop.getApprovalService().find(request.requestId()).status());
             assertTrue(new ConsoleActionAuditService(workspace).recent(5).stream()
                     .anyMatch(record -> "UNAUTHORIZED".equals(record.result()) && record.message().contains("Origin")));
 
-            TestExchange validOrigin = postExchangeRaw("/console/api/experiences/" + candidate.id() + "/verify", "");
+            TestExchange validOrigin = postExchangeRaw("/console/api/approvals/" + request.requestId() + "/approve", "");
             validOrigin.getRequestHeaders().set("Origin", "http://127.0.0.1:8080");
-            ConsoleController.experienceActionsHandler(app).handle(validOrigin);
+            ConsoleController.approvalsHandler(app).handle(validOrigin);
             assertEquals(200, validOrigin.getResponseCode(), validOrigin.responseText());
 
             TestExchange chatExchange = postExchange("/v1/chat/completions", Map.of(
@@ -2419,21 +2361,6 @@ public class RicbotApiServerTest {
         metadata.put("taskId", taskId);
         metadata.put("teamSessionId", "team_console");
         return store.save(created.withMetadata(metadata));
-    }
-
-    private static ExperienceEntry experience(String title) {
-        return ExperienceEntry.candidate(
-                ExperienceType.PROJECT_CONVENTION,
-                title,
-                "Use the project convention carefully.",
-                "When a similar project convention appears.",
-                "test evidence",
-                "test",
-                title,
-                List.of("README.md"),
-                List.of("sh ./mvnw -q test"),
-                0.8d
-        );
     }
 
     private static String handleGet(com.sun.net.httpserver.HttpHandler handler, String path) throws Exception {

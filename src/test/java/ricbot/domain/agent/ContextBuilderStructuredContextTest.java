@@ -22,7 +22,6 @@ class ContextBuilderStructuredContextTest {
         bundle.addItem("memory_recall", "project uses Java 17");
         bundle.addItem("project_notes", "notes/project/decisions.md: use GSSC");
         bundle.addItem("workspace_knowledge", "src/main/java/App.java:1-20");
-        bundle.addItem("verified_experience", "TEST_POLICY | Run focused tests");
         bundle.addItem("team_context", "session=team_1 | state=VERIFYING | goal=finish upgrade");
         bundle.addItem("subagent_summaries", "PLANNER task=subtask_1 summary=Plan focused tests");
         bundle.addItem("tool_trace", "grep: ok | result=found files");
@@ -45,7 +44,6 @@ class ContextBuilderStructuredContextTest {
         assertTrue(system.contains("## memory_recall"));
         assertTrue(system.contains("## project_notes"));
         assertTrue(system.contains("## workspace_knowledge"));
-        assertTrue(system.contains("## verified_experience"));
         assertTrue(system.contains("## team_context"));
         assertTrue(system.contains("## subagent_summaries"));
         assertTrue(system.contains("## tool_trace"));
@@ -53,8 +51,7 @@ class ContextBuilderStructuredContextTest {
         assertTrue(system.indexOf("## task_state") < system.indexOf("## user_profile"));
         assertTrue(system.indexOf("## memory_recall") < system.indexOf("## project_notes"));
         assertTrue(system.indexOf("## project_notes") < system.indexOf("## workspace_knowledge"));
-        assertTrue(system.indexOf("## workspace_knowledge") < system.indexOf("## verified_experience"));
-        assertTrue(system.indexOf("## verified_experience") < system.indexOf("## team_context"));
+        assertTrue(system.indexOf("## workspace_knowledge") < system.indexOf("## team_context"));
         assertTrue(system.indexOf("## team_context") < system.indexOf("## subagent_summaries"));
         assertTrue(system.indexOf("## subagent_summaries") < system.indexOf("## tool_trace"));
         assertTrue(system.contains("grep: ok | result=found files"));

@@ -46,8 +46,7 @@ class SubAgentOrchestratorTest {
                         false,
                         false
                 ),
-                summary(),
-                List.of("experience/verified.jsonl:exp_1")
+                summary()
         );
 
         assertEquals(SubAgentRole.PLANNER, planner.role());

@@ -66,7 +66,6 @@ public record TeamWorkerResult(
                 workspacePath,
                 whiteboardSummary,
                 changedFiles,
-                List.of(),
                 List.of("mode=team-worker"),
                 !summary.isBlank() ? summary : status.name(),
                 findings,

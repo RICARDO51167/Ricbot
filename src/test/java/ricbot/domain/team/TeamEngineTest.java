@@ -385,7 +385,6 @@ class TeamEngineTest {
                 List.of(),
                 suggestedTests,
                 executedTests,
-                List.of(),
                 "whiteboard summary"
         );
     }
@@ -404,7 +403,6 @@ class TeamEngineTest {
                 workspacePath,
                 "TaskSummary contains verification context",
                 List.of("src/main/java/ricbot/domain/team/TeamEngine.java"),
-                List.of(),
                 executedTests,
                 "Implemented safe change.",
                 findings,

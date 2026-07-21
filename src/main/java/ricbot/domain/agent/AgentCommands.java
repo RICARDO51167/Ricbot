@@ -8,13 +8,6 @@ import ricbot.domain.change.GitChangeSet;
 import ricbot.domain.change.GitChangeSetStatus;
 import ricbot.domain.change.PendingChangeAction;
 import ricbot.domain.memory.MemoryStore;
-import ricbot.domain.experience.ExperienceEntry;
-import ricbot.domain.experience.ExperienceExtractor;
-import ricbot.domain.experience.ExperienceOutcome;
-import ricbot.domain.experience.ExperiencePromoter;
-import ricbot.domain.experience.ExperienceRenderer;
-import ricbot.domain.experience.ExperienceSkillPromoter;
-import ricbot.domain.experience.ExperienceStore;
 import ricbot.domain.message.InboundMessage;
 import ricbot.domain.message.OutboundMessage;
 import ricbot.domain.message.OutboundMessages;
@@ -183,8 +176,6 @@ final class AgentCommands {
         router.prefix("/context ", this::context);
         router.exact("/summary", this::summary);
         router.prefix("/summary ", this::summary);
-        router.exact("/experience", this::experience);
-        router.prefix("/experience ", this::experience);
         router.exact("/subagent", this::subagent);
         router.prefix("/subagent ", this::subagent);
         router.exact("/change", this::change);
@@ -306,81 +297,6 @@ final class AgentCommands {
                 + "path: " + result.path() + "\n"
                 + "category: " + result.category() + "\n\n"
                 + rendered);
-    }
-
-    private CompletableFuture<OutboundMessage> experience(CommandRouter.CommandContext ctx) {
-        String args = trim(ctx.getArgs());
-        String action = args.isBlank() ? "list" : args.split("\\s+")[0].toLowerCase();
-        ExperienceStore store = new ExperienceStore(workspace);
-        ExperienceRenderer renderer = new ExperienceRenderer(store);
-        try {
-            return switch (action) {
-                case "extract" -> experienceExtract(ctx, store, renderer);
-                case "list" -> completedReply(ctx, renderer.renderList(store.listCandidates()));
-                case "show" -> completedReply(ctx, renderer.renderDetail(store.find(commandArg(args, 1))));
-                case "verify" -> completedReply(ctx, "experience verified\n"
-                        + renderer.renderDetail(store.verify(commandArg(args, 1))));
-                case "reject" -> completedReply(ctx, "experience rejected\n"
-                        + renderer.renderDetail(store.reject(commandArg(args, 1))));
-                case "feedback" -> completedReply(ctx, "experience feedback recorded\n"
-                        + renderer.renderDetail(store.feedback(commandArg(args, 1), parseOutcome(commandArg(args, 2)))));
-                case "usage" -> completedReply(ctx, renderer.renderUsage(store.listUsage(commandArg(args, 1))));
-                case "stale" -> completedReply(ctx, renderer.renderStale(store.listStaleVerified()));
-                case "archive" -> completedReply(ctx, "experience archived\n"
-                        + renderer.renderDetail(store.archive(commandArg(args, 1))));
-                case "promote" -> completedReply(ctx, "experience promoted\n"
-                        + renderer.renderDetail(new ExperiencePromoter(new NoteService(workspace), store).promote(commandArg(args, 1))));
-                case "promote-skill" -> completedReply(ctx, renderExperienceSkillPromotion(
-                        new ExperienceSkillPromoter(workspace, store).promote(commandArg(args, 1), args.contains("--force"))));
-                case "demote" -> completedReply(ctx, "experience demoted\n"
-                        + renderer.renderDetail(store.demote(commandArg(args, 1))));
-                case "restore" -> completedReply(ctx, "experience restored\n"
-                        + renderer.renderDetail(store.restore(commandArg(args, 1))));
-                case "stats" -> completedReply(ctx, renderer.renderStats(store.stats()));
-                case "review" -> completedReply(ctx, renderer.renderReview(store.review(20)));
-                default -> completedReply(ctx, "用法：/experience extract|list|show <id>|verify <id>|reject <id>|feedback <id> success|failure|neutral|usage <id>|stale|archive <id>|promote <id>|promote-skill <id>|demote <id>|restore <id>|stats|review");
-            };
-        } catch (IllegalArgumentException | IllegalStateException e) {
-            return completedReply(ctx, "experience error: " + e.getMessage());
-        }
-    }
-
-    private CompletableFuture<OutboundMessage> experienceExtract(
-            CommandRouter.CommandContext ctx,
-            ExperienceStore store,
-            ExperienceRenderer renderer
-    ) {
-        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
-        TaskSummaryService.TaskSummary summary = new TaskSummaryService().summarizeCurrentTask(session);
-        List<ExperienceEntry> extracted = new ExperienceExtractor().extract(summary);
-        List<ExperienceEntry> stored = new java.util.ArrayList<>();
-        for (ExperienceEntry entry : extracted) {
-            stored.add(store.addCandidate(entry));
-        }
-        return completedReply(ctx, "experience extracted: " + stored.size()
-                + "\nfile: " + workspace.relativize(store.candidatesFile())
-                + "\n\n" + renderer.renderList(stored));
-    }
-
-    private String renderExperienceSkillPromotion(ExperienceSkillPromoter.PromotionResult result) {
-        String relativePath;
-        try {
-            relativePath = workspace.relativize(result.skillPath().toAbsolutePath().normalize()).toString();
-        } catch (Exception e) {
-            relativePath = result.skillPath().toString();
-        }
-        if (result.alreadyExists()) {
-            return "experience skill already exists\n"
-                    + "sourceExperienceId: " + result.sourceExperienceId() + "\n"
-                    + "skillName: " + result.skillName() + "\n"
-                    + "path: " + relativePath + "\n"
-                    + "hint: rerun with --force to overwrite";
-        }
-        return "experience skill promoted\n"
-                + "sourceExperienceId: " + result.sourceExperienceId() + "\n"
-                + "skillName: " + result.skillName() + "\n"
-                + "path: " + relativePath + "\n"
-                + "created: " + result.created();
     }
 
     private CompletableFuture<OutboundMessage> trace(CommandRouter.CommandContext ctx) {
@@ -1068,7 +984,7 @@ final class AgentCommands {
     ) {
         Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
         TaskSummaryService.TaskSummary summary = new TaskSummaryService().summarizeCurrentTask(session);
-        SubAgentTask task = orchestrator.createReviewerTask(null, summary, verifiedExperienceSources(session));
+        SubAgentTask task = orchestrator.createReviewerTask(null, summary);
         List<String> findings = !summary.diffReviews().isEmpty()
                 ? summary.diffReviews()
                 : List.of("No DiffReview recorded yet; review current summary and tool trace first.");
@@ -1442,7 +1358,6 @@ final class AgentCommands {
                     List.of(),
                     List.of("active workspace diff"),
                     List.of("Run /change create for active workspace changes before accepting verification."),
-                    List.of(),
                     false,
                     0.72d,
                     null
@@ -1894,7 +1809,6 @@ final class AgentCommands {
                 summary.approvalRecords(),
                 summary.suggestedTests(),
                 summary.testCommands(),
-                verifiedExperienceSources(session),
                 teamEngine.whiteboard(task.sessionId()).readSummary()
         );
     }
@@ -1920,7 +1834,6 @@ final class AgentCommands {
                 workspacePath,
                 teamEngine.whiteboard(task.sessionId()).readSummary() + "\n" + renderTaskSummaryForVerifier(summary),
                 summary.changedFiles(),
-                verifiedExperienceSources(session),
                 summary.testCommands(),
                 !task.summary().isBlank() ? task.summary() : summary.goal(),
                 findings,
@@ -2074,7 +1987,6 @@ final class AgentCommands {
                 task.goal(),
                 workspacePath,
                 teamEngine.whiteboard(task.sessionId()).readSummary(),
-                List.of(),
                 List.of(),
                 List.of(),
                 "Policy-gated role tool-call " + decision.toolName() + " -> " + decision.decisionType(),
@@ -2582,15 +2494,6 @@ final class AgentCommands {
         sessionManager.save(session);
     }
 
-    private ExperienceOutcome parseOutcome(String raw) {
-        String value = raw != null ? raw.trim().toUpperCase(java.util.Locale.ROOT) : "";
-        try {
-            return ExperienceOutcome.valueOf(value);
-        } catch (Exception e) {
-            throw new IllegalArgumentException("feedback outcome must be success, failure, or neutral");
-        }
-    }
-
     private CompletableFuture<OutboundMessage> approve(CommandRouter.CommandContext ctx) {
         String requestId = trim(ctx.getArgs()).split("\\s+")[0];
         ApprovalApplicationService.ApprovalActionResult approvalResult;
@@ -2677,7 +2580,6 @@ final class AgentCommands {
                 task.goal(),
                 workspacePath,
                 teamEngine.whiteboard(task.sessionId()).readSummary(),
-                List.of(),
                 List.of(),
                 List.of(),
                 "Developer approved tool applied: " + pendingToolCall.toolName(),
@@ -2814,12 +2716,6 @@ final class AgentCommands {
         }
         String prefix = rendered.startsWith("暂无 context trace") ? "ricbot context\n\ntop sources" : rendered;
         return prefix + "\npolicy\n- role_tool_policy path=" + source + " label=active policy source";
-    }
-
-    private List<String> verifiedExperienceSources(Session session) {
-        return contextSourcePaths(session).stream()
-                .filter(path -> path.contains("experience/verified.jsonl"))
-                .toList();
     }
 
     private CompletableFuture<OutboundMessage> completedReply(CommandRouter.CommandContext ctx, String content) {

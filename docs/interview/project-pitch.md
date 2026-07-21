@@ -16,7 +16,7 @@ Ricbot 的出发点是：很多 Agent demo 能跑一次，但很难解释为什�
 
 复杂任务通过 Team 模块执行，可以开启 `--worktree --verify`。它会在受管 git worktree 里让 worker 执行，再由 verifier 验证，最后通过 Workspace diff 和 ChangeSet 收口给人审阅，避免 Agent 直接污染主工作区。
 
-可观测性上，Config Doctor 解释 provider、API key、tools、MCP 和 capability；Trace Viewer 展示模型请求、工具调用和运行事件；Console 把 config、team、workspace、trace、experience、eval、release-check、tools/MCP 聚合起来。评测上，用 deterministic smoke provider 跑 golden scenarios，并用 baseline compare 抓 pass -> fail 回归。
+可观测性上，Config Doctor 解释 provider、API key、tools、MCP 和 capability；Trace Viewer 展示模型请求、工具调用和运行事件；Console 把 config、team、workspace、trace、eval、release-check、tools/MCP 聚合起来。评测上，用 deterministic smoke provider 跑 golden scenarios，并用 baseline compare 抓 pass -> fail 回归。
 
 我还加了 Provider Capability Override 和 MCP Diagnostics，解决 OpenAI-compatible 中转、私有模型和 MCP 工具暴露不透明的问题。整体来说，Ricbot 展示的是一个 Agent Platform 的工程化骨架。
 
@@ -26,9 +26,9 @@ Ricbot 的出发点是：很多 Agent demo 能跑一次，但很难解释为什�
 
 **Task**: 我想做一个能在面试、演示和开源主页上讲清楚的 Agent Runtime，证明自己能把 Agent 从原型推进到工程化系统。
 
-**Action**: 我用 Java 17 构建了 Ricbot。核心包括 AgentLoop/AgentRunner、ToolRegistry/MCP、Provider Capability、Team worktree、Workspace/ChangeSet、Experience to Skill、Eval baseline、release-check、Console 和企业 IM webhook。每个模块都围绕“可诊断、可回放、可治理”设计。
+**Action**: 我用 Java 17 构建了 Ricbot。核心包括持久 Run/Journal、ToolRegistry/MCP、Provider Capability、Team worktree、Workspace/ChangeSet、人工 Skill、Eval baseline、release-check、Console 和通用 WebSocket。每个模块都围绕“可恢复、可诊断、可治理”设计。
 
-**Result**: 最终形成了完整闭环：`config doctor -> team run --worktree --verify -> workspace diff -> change create -> trace -> experience -> eval smoke -> release-check -> console`。这个项目可以用 5-8 分钟演示，也能拆成后端架构、AI Infra、Agent safety、MCP diagnostics 等面试话题。
+**Result**: 最终形成了完整闭环：`config doctor -> team run --worktree --verify -> workspace diff -> change create -> trace -> eval smoke -> release-check -> console`。这个项目可以用 5-8 分钟演示，也能拆成后端架构、AI Infra、Agent safety、MCP diagnostics 等面试话题。
 
 ## Interview Follow-Ups
 

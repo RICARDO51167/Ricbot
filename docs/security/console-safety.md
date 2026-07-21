@@ -12,7 +12,6 @@ Ricbot Console 是本地运维与演示面板。默认建议只监听 `127.0.0.1
 - `GET /console/api/traces`
 - `GET /console/api/team-reports`
 - `GET /console/api/workspaces`
-- `GET /console/api/experiences`
 - `GET /console/api/approvals`
 - `GET /console/api/actions`
 - `GET /console/api/evals`
@@ -26,9 +25,6 @@ Tools/MCP 看板只读取当前 `ToolRegistry`、MCP server config 摘要和 `MC
 
 当前只开放低风险、人工确认型写操作：
 
-- `POST /console/api/experiences/<id>/verify`
-- `POST /console/api/experiences/<id>/reject`
-- `POST /console/api/experiences/<id>/promote-skill`
 - `POST /console/api/approvals/<id>/approve`
 - `POST /console/api/approvals/<id>/reject`
 - `POST /console/api/workspaces/<id>/change-create`
@@ -110,7 +106,7 @@ MCP 看板不会输出真实 env 值；非敏感 env 只显示 `[SET]`，敏感 
 Console 当前不支持：
 
 - 任意工具调用
-- 任意 eval / eval learn / eval compare / eval replay
+- 任意 eval / eval compare / eval replay
 - team run
 - shell exec
 - MCP reload/reconnect/start/stop

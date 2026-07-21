@@ -10,7 +10,6 @@ public record WorkerExecutionInput(
         String workspacePath,
         String whiteboardSummary,
         List<String> relatedFiles,
-        List<String> verifiedExperience,
         List<String> constraints,
         String summary,
         List<String> findings,
@@ -28,7 +27,6 @@ public record WorkerExecutionInput(
         workspacePath = clean(workspacePath);
         whiteboardSummary = clean(whiteboardSummary);
         relatedFiles = copy(relatedFiles);
-        verifiedExperience = copy(verifiedExperience);
         constraints = copy(constraints);
         summary = clean(summary);
         findings = copy(findings);
@@ -47,7 +45,6 @@ public record WorkerExecutionInput(
                 task != null ? task.goal() : "",
                 workspacePath,
                 whiteboardSummary,
-                List.of(),
                 List.of(),
                 List.of(),
                 "",

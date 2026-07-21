@@ -6,7 +6,6 @@ import ricbot.tool.web.WebFetchTool;
 import ricbot.tool.web.WebSearchTool;
 import ricbot.domain.memory.Consolidator;
 import ricbot.domain.memory.MemoryStore;
-import ricbot.domain.experience.ExperienceStore;
 import ricbot.domain.config.ProviderCapability;
 import ricbot.domain.config.ProviderCapabilityResolver;
 import ricbot.domain.note.NoteService;
@@ -305,7 +304,6 @@ public class AgentLoop {
                 this.contextWindowTokens,
                 new NoteService(this.workspace),
                 new WorkspaceRagService(this.workspace),
-                new ExperienceStore(this.workspace),
                 this.traceStore
         );
         this.agentContextService = new AgentContextService(

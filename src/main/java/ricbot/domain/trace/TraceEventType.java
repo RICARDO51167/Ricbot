@@ -3,7 +3,6 @@ package ricbot.domain.trace;
 public enum TraceEventType {
     SESSION_STARTED,
     CONTEXT_BUILT,
-    EXPERIENCE_HIT,
     APPROVAL_REQUESTED,
     APPROVAL_APPROVED,
     APPROVAL_REJECTED,

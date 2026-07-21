@@ -20,15 +20,12 @@ import ricbot.domain.eval.EvalLintResult;
 import ricbot.domain.eval.EvalScenarioLinter;
 import ricbot.domain.eval.EvalSmokeProvider;
 import ricbot.domain.eval.EvalSmokeRuntime;
-import ricbot.domain.eval.EvalExperienceExtractor;
 import ricbot.domain.eval.EvalCaseResult;
 import ricbot.domain.eval.EvalMatrixRunner;
 import ricbot.domain.eval.EvalMatrixSpec;
 import ricbot.domain.eval.EvalModelTarget;
 import ricbot.domain.config.ConfigDoctorReport;
 import ricbot.domain.config.ConfigDoctorService;
-import ricbot.domain.experience.ExperienceEntry;
-import ricbot.domain.experience.ExperienceStore;
 import ricbot.infra.config.Config; // 导入配置类
 import ricbot.infra.config.ConfigLoader; // 导入配置加载器
 import ricbot.infra.config.RuntimePaths; // 导入运行时路径工具类
@@ -157,11 +154,6 @@ public final class CliCommands {
             evalReplay(args.subList(1, args.size()));
             return;
         }
-        if (!args.isEmpty() && "learn".equals(args.get(0))) {
-            evalLearn(args.subList(1, args.size()));
-            return;
-        }
-
         String scenarios = optionValue(args, "--scenarios", "-s");
         String out = optionValue(args, "--out", "-o");
         String configPath = optionValue(args, "--config", "-c");
@@ -478,63 +470,6 @@ public final class CliCommands {
         if (summary.getFailed() > 0) {
             System.exit(2);
         }
-    }
-
-    private static void evalLearn(List<String> args) throws Exception {
-        String run = optionValue(args, "--run", null);
-        boolean includeXfail = hasFlag(args, "--include-xfail");
-        boolean includeSkipped = hasFlag(args, "--include-skipped");
-        if (run == null || run.isBlank()) {
-            System.out.println("用法：ricbot eval learn --run path/to/eval-run-dir [--workspace dir] [--config path] [--include-xfail] [--include-skipped]");
-            return;
-        }
-
-        Path workspace = evalLearnWorkspace(args);
-        ExperienceStore store = new ExperienceStore(workspace);
-        List<ExperienceEntry> extracted = new EvalExperienceExtractor().extract(
-                Path.of(run),
-                includeXfail,
-                includeSkipped
-        );
-        List<ExperienceEntry> added = new ArrayList<>();
-        List<ExperienceEntry> duplicates = new ArrayList<>();
-        for (ExperienceEntry entry : extracted) {
-            ExperienceEntry stored = store.addCandidate(entry);
-            if (stored.id().equals(entry.id())) {
-                added.add(stored);
-            } else {
-                duplicates.add(stored);
-            }
-        }
-
-        System.out.println("ricbot eval learn");
-        System.out.println("run: " + Path.of(run).toAbsolutePath().normalize());
-        System.out.println("workspace: " + workspace);
-        System.out.println("candidates_generated: " + extracted.size());
-        System.out.println("added: " + added.size());
-        System.out.println("skipped_duplicate: " + duplicates.size());
-        for (ExperienceEntry entry : added) {
-            System.out.println("- " + entry.id()
-                    + " [" + entry.type() + "] "
-                    + entry.title()
-                    + " sourceRef=" + entry.sourceRef());
-        }
-        for (ExperienceEntry entry : duplicates) {
-            System.out.println("- skipped duplicate " + entry.id()
-                    + " [" + entry.type() + "] "
-                    + entry.title()
-                    + " sourceRef=" + entry.sourceRef());
-        }
-        System.out.println("candidates_file: " + store.candidatesFile());
-    }
-
-    private static Path evalLearnWorkspace(List<String> args) {
-        String workspace = optionValue(args, "--workspace", "-w");
-        if (workspace != null && !workspace.isBlank()) {
-            return Path.of(workspace).toAbsolutePath().normalize();
-        }
-        String configPath = optionValue(args, "--config", "-c");
-        return loadRuntimeConfig(configPath, null).getWorkspacePath();
     }
 
     private static boolean isSmokeReplay(String runDir, String casePath) {
@@ -1426,7 +1361,6 @@ public final class CliCommands {
         System.out.println("  eval replay  离线回放 eval case/run artifact");
         System.out.println("  eval compare 对比两个 eval run 并识别回归");
         System.out.println("  eval matrix 对多个真实 provider/model 重复评测成本、延迟与长轨迹");
-        System.out.println("  eval learn  从失败 eval artifact 生成 candidate experience");
         System.out.println("  status     显示 ricbot 状态");
         System.out.println("  provider"); // 打印 provider 命令
         System.out.println("  tools");

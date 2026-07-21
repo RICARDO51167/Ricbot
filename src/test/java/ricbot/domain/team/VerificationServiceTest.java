@@ -298,7 +298,6 @@ class VerificationServiceTest {
                 List.of(),
                 suggestedTests,
                 executedTests,
-                List.of(),
                 "whiteboard summary"
         );
     }
@@ -317,7 +316,6 @@ class VerificationServiceTest {
                 "TaskSummary contains verification context",
                 List.of(),
                 suggestedTests,
-                List.of(),
                 List.of(),
                 "whiteboard summary",
                 evidence

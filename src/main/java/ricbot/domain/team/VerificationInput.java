@@ -11,7 +11,6 @@ public record VerificationInput(
         List<String> approvalRecords,
         List<String> suggestedTests,
         List<String> executedTests,
-        List<String> verifiedExperience,
         String teamWhiteboardSummary,
         VerificationEvidence evidence
 ) {
@@ -24,7 +23,6 @@ public record VerificationInput(
         approvalRecords = copy(approvalRecords);
         suggestedTests = copy(suggestedTests);
         executedTests = copy(executedTests);
-        verifiedExperience = copy(verifiedExperience);
         teamWhiteboardSummary = clean(teamWhiteboardSummary);
     }
 
@@ -37,11 +35,10 @@ public record VerificationInput(
             List<String> approvalRecords,
             List<String> suggestedTests,
             List<String> executedTests,
-            List<String> verifiedExperience,
             String teamWhiteboardSummary
     ) {
         this(taskId, taskGoal, workerSummary, diffReviews, taskSummary, approvalRecords, suggestedTests, executedTests,
-                verifiedExperience, teamWhiteboardSummary, null);
+                teamWhiteboardSummary, null);
     }
 
     public static VerificationInput ofTask(TeamTask task) {
@@ -51,7 +48,6 @@ public record VerificationInput(
                 task != null ? task.summary() : "",
                 List.of(),
                 "",
-                List.of(),
                 List.of(),
                 List.of(),
                 List.of(),

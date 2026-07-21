@@ -9,7 +9,7 @@ CLI / API / Channel
   -> AgentLoop / AgentRunner
   -> Provider / Capability
   -> ToolRegistry / MCP
-  -> Context / Memory / Experience
+  -> Context / Memory / Skills
   -> Team / Workspace / ChangeSet
   -> Eval / Release Gate
   -> Console / Gateway
@@ -67,14 +67,13 @@ Provider 层通过 OpenAI-compatible、Anthropic、Azure OpenAI 等适配器发�
 - 把 MCP tools/resources/prompts 包装为 Ricbot tools；
 - 提供只读 MCP diagnostics、schema snapshot 和启用解释。
 
-### Context / Memory / Experience
+### Context / Memory / Skills
 
-Context 层负责把 session、workspace、skills、memory 和 policy 组合成模型上下文。Memory 与 Experience 层负责：
+Context 层负责把 session、workspace、skills、memory 和 policy 组合成模型上下文：
 
-- 抽取候选经验；
-- 人工验证或拒绝；
-- 将 verified experience promote 成 generated skill；
-- 避免未经验证的经验污染上下文。
+- 只召回已审批的结构化长期记忆；
+- 由人工维护 Skill，不从运行结果自动晋升；
+- 避免模型推断和低置信度内容污染上下文。
 
 RAG 使用词法与向量信号混合排序，embedding provider 可替换，离线默认使用 deterministic feature hashing，也可显式接入 OpenAI-compatible embeddings。向量按 model 和 chunk fingerprint 持久化，tenant-specific index 使用散列目录隔离。`TenantMemoryService` 在共享 CAS store 上隔离租户，并管理 working、episodic、semantic、perceptual 分层和晋升。
 
@@ -99,7 +98,7 @@ Eval 层提供 deterministic smoke provider、golden scenarios、baseline 管理
 
 ### Console / Gateway
 
-Console 是本地只读优先的运行态观测面，展示 Config Doctor、Trace、Team Reports、Workspaces、Experience、Eval Runs、Release Check、Tools/MCP 和 Console Actions。Gateway 承载本地 API、Console 和企业 IM webhook 入站。
+Console 是本地只读优先的运行态观测面，展示 Config Doctor、Trace、Team Reports、Workspaces、Eval Runs、Release Check、Tools/MCP 和 Console Actions。Gateway 承载本地 API、Console 和通用 WebSocket 入站。
 
 ## Core Call Chain
 
@@ -114,7 +113,7 @@ CliCommands
   -> AgentRunner.run
   -> LLMProvider.chat/chatStream
   -> ToolRegistry.execute
-  -> TraceStore / SessionPersistence / Experience extraction
+  -> TraceStore / SessionPersistence / Memory candidates
 ```
 
 典型 team worktree 调用链：
@@ -160,7 +159,7 @@ serve
 - Capability：在静态 resolver 中补启发式，或通过 `model_capabilities` 做本地 override。
 - Tool：实现 `Tool` 并注册到 `ToolRegistry`。
 - MCP：在 `tools.mcpServers` 中接入 stdio / sse / streamableHttp server。
-- Skills：把 verified experience promote 为 generated skill，或手写 skill。
+- Skills：通过受审阅文件人工维护和加载。
 - Channel：实现 `BaseChannel` 插件并接入 `ChannelManager`，不得反向依赖 Core Runtime。
 - Eval：新增 JSONL scenario，扩展 baseline 和 compare。
 - Execution：实现 `ExecutionBackend` 或 `RemoteExecutionClient`，通过能力探测显式选择；降级必须由调用方开启。

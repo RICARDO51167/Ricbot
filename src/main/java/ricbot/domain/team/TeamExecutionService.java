@@ -74,7 +74,6 @@ public class TeamExecutionService {
                 executionRoot.toString(),
                 teamEngine.whiteboard(task.sessionId()).readSummary(),
                 List.of(),
-                List.of(),
                 List.of("workspaceRoot=" + executionRoot),
                 "",
                 List.of("executionRoot=" + executionRoot),
@@ -186,7 +185,6 @@ public class TeamExecutionService {
                 List.of(),
                 List.of(command),
                 List.of(command),
-                List.of(),
                 "",
                 evidence
         );

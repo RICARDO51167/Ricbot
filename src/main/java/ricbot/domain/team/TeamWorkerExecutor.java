@@ -31,7 +31,7 @@ public class TeamWorkerExecutor {
     public WorkerExecutionResult execute(WorkerExecutionInput input) {
         WorkerExecutionInput safe = input != null
                 ? input
-                : new WorkerExecutionInput("", "", TeamRole.EXPLORER, "", "", "", List.of(), List.of(), List.of(), "", List.of(), List.of(), List.of(), List.of(), 0d, "");
+                : new WorkerExecutionInput("", "", TeamRole.EXPLORER, "", "", "", List.of(), List.of(), "", List.of(), List.of(), List.of(), List.of(), 0d, "");
         return switch (safe.role()) {
             case EXPLORER -> explore(safe);
             case VERIFIER -> verifyInternal(safe);
@@ -41,7 +41,7 @@ public class TeamWorkerExecutor {
     }
 
     public WorkerExecutionResult verify(WorkerExecutionInput input) {
-        return verifyInternal(input != null ? input : new WorkerExecutionInput("", "", TeamRole.VERIFIER, "", "", "", List.of(), List.of(), List.of(), "", List.of(), List.of(), List.of(), List.of(), 0d, ""));
+        return verifyInternal(input != null ? input : new WorkerExecutionInput("", "", TeamRole.VERIFIER, "", "", "", List.of(), List.of(), "", List.of(), List.of(), List.of(), List.of(), 0d, ""));
     }
 
     public PolicyAwareToolExecutor.PolicyToolResult executeToolAsRole(
@@ -68,9 +68,6 @@ public class TeamWorkerExecutor {
             findings.add("Related files: " + String.join(", ", input.relatedFiles()));
         } else {
             findings.add("No explicit related files were provided.");
-        }
-        if (!input.verifiedExperience().isEmpty()) {
-            findings.add("Verified experience available: " + String.join("; ", input.verifiedExperience().stream().limit(3).toList()));
         }
         if (!input.whiteboardSummary().isBlank()) {
             findings.add("Whiteboard context: " + abbreviate(input.whiteboardSummary(), 260));
@@ -103,7 +100,6 @@ public class TeamWorkerExecutor {
                 List.of(),
                 input.suggestedTests(),
                 input.constraints(),
-                input.verifiedExperience(),
                 input.whiteboardSummary()
         );
         VerificationResult verification = verificationService.verify(verificationInput);
@@ -185,7 +181,6 @@ public class TeamWorkerExecutor {
                 input.workspacePath(),
                 input.whiteboardSummary(),
                 targetFiles,
-                input.verifiedExperience(),
                 input.constraints(),
                 "Developer Plan created; no file changes were executed.",
                 findings,
@@ -229,7 +224,6 @@ public class TeamWorkerExecutor {
                 input.workspacePath(),
                 input.whiteboardSummary(),
                 input.relatedFiles(),
-                input.verifiedExperience(),
                 input.constraints(),
                 summary,
                 findings,

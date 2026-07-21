@@ -23,7 +23,6 @@ final class PromptContextBundle {
             "memory_recall",    // 记忆召回
             "project_notes",    // 项目笔记
             "workspace_knowledge", // 工作区知识库
-            "verified_experience", // 已验证经验
             "workspace_session", // active workspace session
             "team_context", // TeamEngine 协作状态
             "subagent_summaries", // 子代理摘要
@@ -405,7 +404,6 @@ final class PromptContextBundle {
         out.put("memory_recall", new SectionBudget(8, 2_000));
         out.put("project_notes", new SectionBudget(5, 1_600));
         out.put("workspace_knowledge", new SectionBudget(5, 2_400));
-        out.put("verified_experience", new SectionBudget(3, 800));
         out.put("team_context", new SectionBudget(3, 1_000));
         out.put("subagent_summaries", new SectionBudget(3, 900));
         out.put("tool_trace", new SectionBudget(4, 1_200));

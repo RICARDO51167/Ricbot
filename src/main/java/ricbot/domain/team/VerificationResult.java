@@ -18,7 +18,6 @@ public record VerificationResult(
         List<String> missingTests,
         List<String> suspiciousChanges,
         List<String> requiredActions,
-        List<String> suggestedExperienceActions,
         boolean humanApprovalRequired,
         double confidence,
         String createdAt
@@ -39,7 +38,6 @@ public record VerificationResult(
         missingTests = missingTests != null ? List.copyOf(nonBlank(missingTests)) : List.of();
         suspiciousChanges = suspiciousChanges != null ? List.copyOf(nonBlank(suspiciousChanges)) : List.of();
         requiredActions = requiredActions != null ? List.copyOf(nonBlank(requiredActions)) : List.of();
-        suggestedExperienceActions = suggestedExperienceActions != null ? List.copyOf(nonBlank(suggestedExperienceActions)) : List.of();
         confidence = Math.max(0d, Math.min(1d, confidence));
         createdAt = createdAt != null && !createdAt.isBlank() ? createdAt : Instant.now().toString();
     }
@@ -59,7 +57,6 @@ public record VerificationResult(
                 suggestedTests,
                 CommandRiskLevel.LOW,
                 reason != null && !reason.isBlank() ? List.of(reason) : List.of(),
-                List.of(),
                 List.of(),
                 List.of(),
                 List.of(),
@@ -92,7 +89,6 @@ public record VerificationResult(
         out.put("missingTests", missingTests);
         out.put("suspiciousChanges", suspiciousChanges);
         out.put("requiredActions", requiredActions);
-        out.put("suggestedExperienceActions", suggestedExperienceActions);
         out.put("humanApprovalRequired", humanApprovalRequired);
         out.put("confidence", confidence);
         out.put("createdAt", createdAt);
@@ -113,7 +109,6 @@ public record VerificationResult(
                 stringList(raw.get("missingTests")),
                 stringList(raw.get("suspiciousChanges")),
                 stringList(raw.get("requiredActions")),
-                stringList(raw.get("suggestedExperienceActions")),
                 bool(raw.get("humanApprovalRequired")),
                 number(raw.get("confidence"), 0.5d),
                 string(raw.get("createdAt"))

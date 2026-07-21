@@ -5,6 +5,7 @@
 - Runtime Core 收敛为 CLI、OpenAI-compatible API 与通用 WebSocket 输入，不再内置具体企业通信适配器。
 - 删除内置定时任务工具、持久调度器与后台心跳服务；外部调度器通过显式输入或 Resume 接口唤醒任务。
 - 删除后台记忆自学习、整文件改写与 Git restore 链路；保留结构化 Memory、显式候选审批和长会话压缩。
+- 删除 Experience 自学习闭环、Eval 抽取、自动 Skill 晋升及 Console/命令入口；可复用规则改由人工维护 Skill。
 
 ## V5.4 - Provider Capability Override
 

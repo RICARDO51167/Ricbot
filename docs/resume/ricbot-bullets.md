@@ -2,14 +2,14 @@
 
 ## 简历 2 条版
 
-- 设计并实现 Java 17 Agent Runtime，将 OpenAI-compatible API、工具调用、MCP、Team worktree、ChangeSet、Trace、Experience、Eval Gate 和本地 Console 串成可观测、可回放、可治理的 Agent 工程闭环。
+- 设计并实现 Java 17 持久化 Agent Runtime，将 OpenAI-compatible API、工具调用、MCP、Team worktree、ChangeSet、Journal/Trace、Eval Gate 和本地 Console 串成可恢复、可观测、可治理的工程闭环。
 - 构建 Agent 安全与发布门禁体系：Provider Capability 降级、workspace/SSRF/审批边界、Console auth/audit、deterministic smoke eval、baseline compare 和 `release-check` 报告。
 
 ## 简历 3 条版
 
 - 从 0 到 1 实现 Java Agent Runtime，支持 CLI、OpenAI-compatible API、企业 IM webhook、本地 Console、AgentLoop/AgentRunner 和 ToolRegistry/MCP 扩展。
 - 设计 Team/Workspace/ChangeSet 流程，将 Agent 编码任务隔离到受管 git worktree，并通过 verifier、diff、ChangeSet 和 trace 支持人工审阅。
-- 建立 Agent 可观测与质量门禁：Config Doctor、Provider Capability Override、MCP Diagnostics、Experience to Skill、deterministic eval、baseline compare 和 release-check。
+- 建立 Agent 可观测与质量门禁：Config Doctor、Provider Capability Override、MCP Diagnostics、deterministic eval、baseline compare 和 release-check。
 
 ## 简历 5 条版
 
@@ -27,7 +27,7 @@
 
 ## English Version
 
-- Built Ricbot, a Java 17 Agent Runtime that integrates model providers, tool execution, MCP, team-based task execution, managed worktrees, experience learning, eval gates, and a local observability Console.
+- Built Ricbot, a Java 17 persistent Agent Runtime that integrates model providers, tool execution, MCP, team-based task execution, managed worktrees, recovery, eval gates, and a local observability Console.
 - Designed governance boundaries for coding agents, including workspace isolation, ChangeSet review, trace replay, provider capability fallback, Console auth/audit, and deterministic release checks.
 - Implemented MCP diagnostics and provider capability overrides to make tool exposure and model capability decisions explainable in OpenAI-compatible and private-model deployments.
 
@@ -39,6 +39,6 @@
 
 ## Agent / AI Infra 方向版
 
-- 构建面向 Coding Agent 的 AI Infra runtime，覆盖 AgentLoop、tool calling、context/memory、experience-to-skill、provider capability fallback 和 deterministic eval。
+- 构建面向 Coding Agent 的 AI Infra runtime，覆盖持久 Run、tool calling、context/memory、人工 Skill、provider capability fallback 和 deterministic eval。
 - 设计 Team worktree + verifier + ChangeSet 的 Agent 编码闭环，让模型生成的变更可隔离、可审阅、可回放。
 - 增强 MCP 和 OpenAI-compatible 生态可观测性：MCP diagnostics 解释工具暴露，Provider Capability Override 解决私有模型/中转网关能力不一致。

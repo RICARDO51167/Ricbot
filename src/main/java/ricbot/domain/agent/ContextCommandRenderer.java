@@ -11,7 +11,6 @@ final class ContextCommandRenderer {
             "memory_recall",
             "project_notes",
             "workspace_knowledge",
-            "verified_experience",
             "workspace_session",
             "team_context",
             "subagent_summaries",
@@ -85,19 +84,11 @@ final class ContextCommandRenderer {
                     if (!label.isBlank()) {
                         sb.append(" label=").append(label);
                     }
-                    String experienceType = string(row.get("experience_type"));
                     String subagentRole = string(row.get("subagent_role"));
                     String status = string(row.get("status"));
                     String sourceRef = string(row.get("sourceRef"));
-                    String effectiveConfidence = string(row.get("effectiveConfidence"));
                     String confidence = string(row.get("confidence"));
-                    String successCount = string(row.get("successCount"));
-                    String failureCount = string(row.get("failureCount"));
-                    String lastUsedAt = string(row.get("lastUsedAt"));
                     String reason = string(row.get("reason"));
-                    if (!experienceType.isBlank()) {
-                        sb.append(" experience_type=").append(experienceType);
-                    }
                     if (!subagentRole.isBlank()) {
                         sb.append(" subagent_role=").append(subagentRole);
                     }
@@ -109,18 +100,6 @@ final class ContextCommandRenderer {
                     }
                     if (!confidence.isBlank()) {
                         sb.append(" confidence=").append(confidence);
-                    }
-                    if (!effectiveConfidence.isBlank()) {
-                        sb.append(" effectiveConfidence=").append(effectiveConfidence);
-                    }
-                    if (!successCount.isBlank()) {
-                        sb.append(" successCount=").append(successCount);
-                    }
-                    if (!failureCount.isBlank()) {
-                        sb.append(" failureCount=").append(failureCount);
-                    }
-                    if (!lastUsedAt.isBlank()) {
-                        sb.append(" lastUsedAt=").append(lastUsedAt);
                     }
                     if (!reason.isBlank()) {
                         sb.append(" reason=").append(reason);

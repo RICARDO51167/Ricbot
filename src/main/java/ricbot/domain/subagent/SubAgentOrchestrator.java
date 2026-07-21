@@ -69,15 +69,13 @@ public class SubAgentOrchestrator {
 
     public SubAgentTask createReviewerTask(
             DiffReview diffReview,
-            TaskSummaryService.TaskSummary taskSummary,
-            List<String> verifiedExperience
+            TaskSummaryService.TaskSummary taskSummary
     ) {
         List<String> files = diffReview != null ? diffReview.changedFiles()
                 : taskSummary != null ? taskSummary.changedFiles()
                 : List.of();
         String input = "diffReview: " + (diffReview != null ? diffReview.summary() : "(none)")
-                + "\ntaskSummary: " + (taskSummary != null ? taskSummary.toMap() : Map.of())
-                + "\nverifiedExperience: " + join(verifiedExperience);
+                + "\ntaskSummary: " + (taskSummary != null ? taskSummary.toMap() : Map.of());
         return new SubAgentTask(
                 null,
                 SubAgentRole.REVIEWER,

@@ -24,6 +24,8 @@ public class AgentLoopTest {
     @Test
     // 端到端测试：验证从 CLI 输入到会话持久化的完整流程
     void endToEnd_cliToSessionPersistence(@TempDir Path workspace) throws Exception {
+        Path legacyExperience = Files.createDirectories(workspace.resolve("experience")).resolve("verified.jsonl");
+        Files.writeString(legacyExperience, "{\"legacy\":true}\n");
         // 创建消息总线，用于组件间通信
         MessageBus bus = new MessageBus();
         // 创建会话管理器，指定工作空间路径
@@ -77,6 +79,7 @@ public class AgentLoopTest {
         // 使用 start() 启动 AgentLoop 及必要的后台组件
         loop.start();
         try {
+            assertEquals("{\"legacy\":true}\n", Files.readString(legacyExperience));
             assertTrue(Thread.getAllStackTraces().keySet().stream()
                     .map(Thread::getName)
                     .map(String::toLowerCase)
@@ -161,6 +164,10 @@ public class AgentLoopTest {
 
         OutboundMessage removedDreamCommand = loop.processDirect("/dream", "cli:direct");
         assertTrue(removedDreamCommand.getContent().contains("command error: unknown command"));
+        assertEquals(0, modelCalls.get());
+
+        OutboundMessage removedExperienceCommand = loop.processDirect("/experience", "cli:direct");
+        assertTrue(removedExperienceCommand.getContent().contains("command error: unknown command"));
         assertEquals(0, modelCalls.get());
 
         OutboundMessage missingReport = loop.processDirect("/team report teamtask_missing", "cli:direct");

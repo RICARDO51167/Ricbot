@@ -99,7 +99,6 @@ class ImplementationPlanServiceTest {
                 "",
                 files,
                 List.of(),
-                List.of(),
                 "Developer Plan created",
                 List.of(),
                 List.of(),

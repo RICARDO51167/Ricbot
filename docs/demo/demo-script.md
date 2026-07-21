@@ -113,7 +113,7 @@ java -jar target/Ricbot-1.0-SNAPSHOT.jar agent \
 
 > Agent 可以写代码，但不能默认直接污染主工作区；worktree 和 ChangeSet 是人的审阅边界。
 
-## 4:30-5:40 Trace / Eval / Experience
+## 4:30-5:40 Trace / Eval
 
 Trace：
 
@@ -140,20 +140,6 @@ java -jar target/Ricbot-1.0-SNAPSHOT.jar eval smoke \
 - Agent 评测看最终行为，不只看单元函数。
 - deterministic provider 让 smoke eval 在无 key 环境也稳定。
 - baseline compare 检查回归。
-
-Experience：
-
-```text
-/experience list
-/experience verify <id>
-/experience promote-skill <id>
-```
-
-讲解点：
-
-- 经验先进入 candidate。
-- 人工 verify 后才可 promote。
-- generated skill 再进入后续上下文召回。
 
 ## 5:40-6:40 Tools / MCP Diagnostics
 

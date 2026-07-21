@@ -249,7 +249,6 @@ public class TeamEngine {
                 whiteboard(task.sessionId()).readSummary(),
                 List.of(),
                 List.of(),
-                List.of(),
                 "Role tool-call produced no result.",
                 List.of(),
                 List.of("missing tool-call result"),
@@ -329,7 +328,6 @@ public class TeamEngine {
                 base.approvalRecords(),
                 base.suggestedTests(),
                 base.executedTests(),
-                base.verifiedExperience(),
                 !base.teamWhiteboardSummary().isBlank() ? base.teamWhiteboardSummary() : whiteboard(current.sessionId()).readSummary()
         );
         startVerifying(taskId);
@@ -1028,7 +1026,6 @@ public class TeamEngine {
                 !safe.workspacePath().isBlank() ? safe.workspacePath() : workspace.toString(),
                 !safe.whiteboardSummary().isBlank() ? safe.whiteboardSummary() : whiteboard(task.sessionId()).readSummary(),
                 safe.relatedFiles(),
-                safe.verifiedExperience(),
                 safe.constraints(),
                 !safe.summary().isBlank() ? safe.summary() : task.summary(),
                 safe.findings(),
@@ -1050,7 +1047,6 @@ public class TeamEngine {
                 List.of(),
                 input.suggestedTests(),
                 input.constraints(),
-                input.verifiedExperience(),
                 input.whiteboardSummary()
         );
     }
@@ -1328,9 +1324,6 @@ public class TeamEngine {
         }
         if (!result.requiredActions().isEmpty()) {
             parts.add("requiredActions=" + String.join("; ", result.requiredActions()));
-        }
-        if (!result.suggestedExperienceActions().isEmpty()) {
-            parts.add("suggestedExperienceActions=" + String.join("; ", result.suggestedExperienceActions()));
         }
         return String.join(" | ", parts);
     }

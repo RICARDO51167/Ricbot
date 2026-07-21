@@ -9,7 +9,7 @@ import java.util.Locale;
 public class VerificationService {
 
     public VerificationResult verify(VerificationInput input) {
-        VerificationInput safe = input != null ? input : new VerificationInput("", "", "", List.of(), "", List.of(), List.of(), List.of(), List.of(), "");
+        VerificationInput safe = input != null ? input : new VerificationInput("", "", "", List.of(), "", List.of(), List.of(), List.of(), "");
         if (safe.evidence() != null && !safe.evidence().isEmpty()) {
             return verifyStructured(safe);
         }
@@ -17,7 +17,6 @@ public class VerificationService {
         List<String> suspiciousChanges = suspiciousChanges(safe);
         List<String> missingTests = missingTests(safe.suggestedTests(), safe.executedTests());
         List<String> requiredActions = new ArrayList<>();
-        List<String> experienceActions = new ArrayList<>();
         boolean pendingApproval = containsAny(safe.approvalRecords(), "pending", "blocked", "risklevel=blocked", "risklevel=high", "需要审批", "approval_");
         boolean unresolvedBlocker = hasUnresolvedBlocker(safe.taskSummary())
                 || hasUnresolvedBlocker(safe.teamWhiteboardSummary());
@@ -57,13 +56,6 @@ public class VerificationService {
             reasons.add("test deletion requires human gate");
             requiredActions.add("Confirm test deletion is intentional and covered by replacement tests.");
         }
-        if (!safe.verifiedExperience().isEmpty() && !missingTests.isEmpty()) {
-            experienceActions.add("Candidate experience: missing verified test policy coverage for " + String.join("; ", missingTests));
-        }
-        if (!reasons.isEmpty()) {
-            experienceActions.add("Do not auto-write experience; use /experience extract after summary review if this lesson is reusable.");
-        }
-
         VerificationResult.Status status;
         CommandRiskLevel riskLevel;
         boolean humanApprovalRequired = false;
@@ -101,7 +93,6 @@ public class VerificationService {
                 missingTests,
                 suspiciousChanges,
                 requiredActions,
-                experienceActions,
                 humanApprovalRequired,
                 confidence,
                 null
@@ -114,14 +105,13 @@ public class VerificationService {
         List<String> missingTests = new ArrayList<>();
         List<String> suspiciousChanges = new ArrayList<>();
         List<String> requiredActions = new ArrayList<>();
-        List<String> experienceActions = new ArrayList<>();
 
         for (ApprovalEvidence approval : evidence.approvals()) {
             if (ApprovalEvidence.REJECTED.equalsIgnoreCase(approval.status())) {
                 reasons.add("rejected approval");
                 requiredActions.add("Resolve rejected approval before accepting the task.");
                 return structuredResult(VerificationResult.Status.REJECT, input, reasons, missingTests, suspiciousChanges,
-                        requiredActions, experienceActions, true, risk(approval.riskLevel()), 0.72d);
+                        requiredActions, true, risk(approval.riskLevel()), 0.72d);
             }
         }
         for (ApprovalEvidence approval : evidence.approvals()) {
@@ -129,7 +119,7 @@ public class VerificationService {
                 reasons.add("pending approval");
                 requiredActions.add("Resolve pending approval before accepting the task.");
                 return structuredResult(VerificationResult.Status.NEEDS_HUMAN, input, reasons, missingTests, suspiciousChanges,
-                        requiredActions, experienceActions, true, risk(approval.riskLevel()), 0.66d);
+                        requiredActions, true, risk(approval.riskLevel()), 0.66d);
             }
         }
         for (ApprovalEvidence approval : evidence.approvals()) {
@@ -137,7 +127,7 @@ public class VerificationService {
                 reasons.add("pending approval");
                 requiredActions.add("High-risk approval must be approved before accepting the task.");
                 return structuredResult(VerificationResult.Status.NEEDS_HUMAN, input, reasons, missingTests, suspiciousChanges,
-                        requiredActions, experienceActions, true, risk(approval.riskLevel()), 0.66d);
+                        requiredActions, true, risk(approval.riskLevel()), 0.66d);
             }
         }
 
@@ -152,7 +142,7 @@ public class VerificationService {
                     missingTests.add(test.command());
                 }
                 return structuredResult(VerificationResult.Status.REJECT, input, reasons, missingTests, suspiciousChanges,
-                        requiredActions, experienceActions, false, CommandRiskLevel.MEDIUM, 0.74d);
+                        requiredActions, false, CommandRiskLevel.MEDIUM, 0.74d);
             }
         }
 
@@ -165,7 +155,7 @@ public class VerificationService {
         if (!missingTests.isEmpty()) {
             requiredActions.add("Run missing suggested tests: " + String.join("; ", missingTests));
             return structuredResult(VerificationResult.Status.NEEDS_HUMAN, input, reasons, missingTests, suspiciousChanges,
-                    requiredActions, experienceActions, true, CommandRiskLevel.MEDIUM, 0.66d);
+                    requiredActions, true, CommandRiskLevel.MEDIUM, 0.66d);
         }
 
         for (DiffEvidence diff : evidence.changedFiles()) {
@@ -174,28 +164,28 @@ public class VerificationService {
                 suspiciousChanges.add(diff.path());
                 requiredActions.add("Request human review for high-risk changes.");
                 return structuredResult(VerificationResult.Status.NEEDS_HUMAN, input, reasons, missingTests, suspiciousChanges,
-                        requiredActions, experienceActions, true, CommandRiskLevel.HIGH, 0.66d);
+                        requiredActions, true, CommandRiskLevel.HIGH, 0.66d);
             }
             if (diff.securitySensitive()) {
                 reasons.add("security sensitive diff");
                 suspiciousChanges.add(diff.path());
                 requiredActions.add("Request human review for security-sensitive changes.");
                 return structuredResult(VerificationResult.Status.NEEDS_HUMAN, input, reasons, missingTests, suspiciousChanges,
-                        requiredActions, experienceActions, true, CommandRiskLevel.HIGH, 0.66d);
+                        requiredActions, true, CommandRiskLevel.HIGH, 0.66d);
             }
             if (diff.testDeleted()) {
                 reasons.add("test deletion detected");
                 suspiciousChanges.add(diff.path());
                 requiredActions.add("Confirm test deletion is intentional and covered by replacement tests.");
                 return structuredResult(VerificationResult.Status.NEEDS_HUMAN, input, reasons, missingTests, suspiciousChanges,
-                        requiredActions, experienceActions, true, CommandRiskLevel.HIGH, 0.66d);
+                        requiredActions, true, CommandRiskLevel.HIGH, 0.66d);
             }
         }
         if (!evidence.changedFiles().isEmpty() && evidence.changedFiles().stream().allMatch(DiffEvidence::runtimeArtifact)) {
             reasons.add("only runtime artifacts changed");
             requiredActions.add("Provide non-runtime user change evidence before accepting the task.");
             return structuredResult(VerificationResult.Status.NEEDS_HUMAN, input, reasons, missingTests, suspiciousChanges,
-                    requiredActions, experienceActions, true, CommandRiskLevel.LOW, 0.62d);
+                    requiredActions, true, CommandRiskLevel.LOW, 0.62d);
         }
 
         reasons.add("structured evidence passed");
@@ -203,7 +193,7 @@ public class VerificationService {
             reasons.add("text/evidence conflict");
         }
         return structuredResult(VerificationResult.Status.PASS, input, reasons, missingTests, suspiciousChanges,
-                requiredActions, experienceActions, false, CommandRiskLevel.LOW, 0.82d);
+                requiredActions, false, CommandRiskLevel.LOW, 0.82d);
     }
 
     private VerificationResult structuredResult(
@@ -213,7 +203,6 @@ public class VerificationService {
             List<String> missingTests,
             List<String> suspiciousChanges,
             List<String> requiredActions,
-            List<String> experienceActions,
             boolean humanApprovalRequired,
             CommandRiskLevel riskLevel,
             double confidence
@@ -234,7 +223,6 @@ public class VerificationService {
                 missingTests,
                 suspiciousChanges,
                 requiredActions,
-                experienceActions,
                 humanApprovalRequired,
                 confidence,
                 null

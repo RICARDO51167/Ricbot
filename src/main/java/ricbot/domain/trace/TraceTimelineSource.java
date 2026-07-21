@@ -5,6 +5,5 @@ public enum TraceTimelineSource {
     STEP_AUDIT,
     TEAM_REPORT,
     WORKSPACE,
-    CHANGESET,
-    EXPERIENCE
+    CHANGESET
 }

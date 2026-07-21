@@ -10,8 +10,6 @@ Ricbot 是一个面向长任务与多智能体协作的 Java 持久化 Agent Run
   -> /workspace diff <taskId>
   -> /change create <taskId>
   -> /trace show <taskId>
-  -> /experience verify <id>
-  -> /experience promote-skill <id>
   -> /console
 ```
 
@@ -20,8 +18,8 @@ Ricbot 是一个面向长任务与多智能体协作的 Java 持久化 Agent Run
 - team task 在受管 worktree 中执行与验证
 - workspace diff 和 ChangeSet review 收口变更
 - trace viewer 复盘运行过程
-- verified experience 转成 generated skill
-- Console 汇总 config、trace、team、workspace、experience、approval、eval、tools 和 MCP 状态
+- 人工维护的 Skill 提供可复用执行规则
+- Console 汇总 config、trace、team、workspace、approval、eval、tools 和 MCP 状态
 
 端到端演示脚本见 [docs/demo/end-to-end-coding-agent.md](docs/demo/end-to-end-coding-agent.md)。
 
@@ -121,9 +119,9 @@ http://127.0.0.1:8000/console
 
 Console 默认使用中文 UI，Header 右侧可在“中文 / English”之间切换，选择会写入浏览器 `localStorage` 的 `ricbot_console_lang`。页面仍然是 ConsolePage.java 输出的静态 HTML + CSS + 原生 JS，没有引入 Vue/React/npm 构建，保持单 jar 可运行。
 
-演示时从顶部 Demo Flow 讲起：Config Doctor 对应启动前诊断，Team Reports / Workspaces / Trace 对应 team run 后处理，Experience 对应经验治理，Eval Runs 和 Release Check 对应确定性评测门禁，Tools / MCP 展示运行时工具面。没有真实 key 时 config doctor 可能是 `WARNING` 或 `ERROR`，但 fixed smoke eval 和 release-check 的本地 smoke 部分不会访问真实模型。
+演示时从顶部 Demo Flow 讲起：Config Doctor 对应启动前诊断，Team Reports / Workspaces / Trace 对应 team run 后处理，Eval Runs 和 Release Check 对应确定性评测门禁，Tools / MCP 展示运行时工具面。没有真实 key 时 config doctor 可能是 `WARNING` 或 `ERROR`，但 fixed smoke eval 和 release-check 的本地 smoke 部分不会访问真实模型。
 
-最终推荐演示路径：`config doctor -> release-check -> Console Demo Flow -> team run --worktree --verify -> workspace diff/change create -> trace/eval/experience -> tools/MCP diagnostics`。完整讲稿见 [docs/demo/demo-script.md](docs/demo/demo-script.md)。
+最终推荐演示路径：`config doctor -> release-check -> Console Demo Flow -> team run --worktree --verify -> workspace diff/change create -> trace/eval -> tools/MCP diagnostics`。完整讲稿见 [docs/demo/demo-script.md](docs/demo/demo-script.md)。
 
 本地 smoke 脚本：
 
@@ -201,14 +199,12 @@ Console 默认跟随 `serve` 启动，建议只绑定 `127.0.0.1`。
 - Trace Viewer：latest trace / timeline / run events
 - Team Reports：team session 和 task report
 - Workspaces：workspace session、受管 worktree 状态
-- Experience：candidate / verified / generated skill 状态
 - Eval Runs：读取 `workspace/.ricbot/evals` 下已有 artifact
 - Tools / MCP：当前 ToolRegistry、`mcp_*` 工具、MCP server 状态
 - Console Actions：最近 Console 写操作审计
 
 人工确认型写操作：
 
-- Experience：`verify`、`reject`、`promote-skill`
 - Approval：`approve`、`reject`
 - Workspace：受管 active `GIT_WORKTREE` 的 `change-create`、`discard`
 - Eval：固定 `Run Smoke Eval`
@@ -242,14 +238,6 @@ java -jar target/Ricbot-1.0-SNAPSHOT.jar agent \
 /trace show <taskId>
 ```
 
-经验治理：
-
-```text
-/experience list
-/experience verify <id>
-/experience promote-skill <id>
-```
-
 评测：
 
 ```bash
@@ -270,7 +258,7 @@ java -jar target/Ricbot-1.0-SNAPSHOT.jar eval smoke --scenarios evals/golden.jso
 ## 当前限制
 
 - Console 不支持任意 eval；只支持固定 golden smoke eval
-- Console 不支持 team run、eval learn、eval compare、eval replay
+- Console 不支持 team run、eval compare、eval replay
 - Console 不支持 git merge 或 git commit
 - Console MCP Hub 当前只读，不支持 reload/reconnect/启停 server，也不能调用工具
 - Provider capability 默认是静态/启发式，也支持 `model_capabilities` 用户覆盖；只有最终结果明确为 `false` 的能力才触发运行时降级，`UNKNOWN` 不阻断
@@ -287,11 +275,8 @@ java -jar target/Ricbot-1.0-SNAPSHOT.jar eval smoke --scenarios evals/golden.jso
 - [docs/demo/end-to-end-coding-agent.md](docs/demo/end-to-end-coding-agent.md)：端到端演示
 - [docs/security/console-safety.md](docs/security/console-safety.md)：Console 安全边界
 - [docs/mcp/mcp-diagnostics.md](docs/mcp/mcp-diagnostics.md)：MCP 配置诊断、工具启用解释和 schema snapshot
-- [docs/demo/self-improving-agent-loop.md](docs/demo/self-improving-agent-loop.md)：自改进闭环演示
 - [examples/context_engineering_flow.md](examples/context_engineering_flow.md)
 - [examples/approval_and_diffreview.md](examples/approval_and_diffreview.md)
-- [examples/experience_learning_flow.md](examples/experience_learning_flow.md)
-- [examples/eval_learning_flow.md](examples/eval_learning_flow.md)
 
 ## License / Contributing
 

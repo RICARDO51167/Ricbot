@@ -14,7 +14,6 @@ public record WorkerExecutionResult(
         String workspacePath,
         String whiteboardSummary,
         List<String> relatedFiles,
-        List<String> verifiedExperience,
         List<String> constraints,
         String summary,
         List<String> findings,
@@ -38,7 +37,6 @@ public record WorkerExecutionResult(
             String workspacePath,
             String whiteboardSummary,
             List<String> relatedFiles,
-            List<String> verifiedExperience,
             List<String> constraints,
             String summary,
             List<String> findings,
@@ -51,7 +49,7 @@ public record WorkerExecutionResult(
             String createdAt
     ) {
         this(taskId, teamSessionId, role, goal, workspacePath, whiteboardSummary, relatedFiles,
-                verifiedExperience, constraints, summary, findings, risks, suggestedTests, artifacts,
+                constraints, summary, findings, risks, suggestedTests, artifacts,
                 policySummary, List.of(), List.of(), List.of(), "", confidence, status, createdAt);
     }
 
@@ -63,7 +61,6 @@ public record WorkerExecutionResult(
         workspacePath = clean(workspacePath);
         whiteboardSummary = clean(whiteboardSummary);
         relatedFiles = copy(relatedFiles);
-        verifiedExperience = copy(verifiedExperience);
         constraints = copy(constraints);
         summary = clean(summary);
         findings = copy(findings);
@@ -89,7 +86,6 @@ public record WorkerExecutionResult(
         out.put("workspacePath", workspacePath);
         out.put("whiteboardSummary", whiteboardSummary);
         out.put("relatedFiles", relatedFiles);
-        out.put("verifiedExperience", verifiedExperience);
         out.put("constraints", constraints);
         out.put("summary", summary);
         out.put("findings", findings);
@@ -119,7 +115,6 @@ public record WorkerExecutionResult(
                 string(raw.get("workspacePath")),
                 string(raw.get("whiteboardSummary")),
                 stringList(raw.get("relatedFiles")),
-                stringList(raw.get("verifiedExperience")),
                 stringList(raw.get("constraints")),
                 string(raw.get("summary")),
                 stringList(raw.get("findings")),

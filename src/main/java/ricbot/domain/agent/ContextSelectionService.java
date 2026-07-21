@@ -2,8 +2,6 @@ package ricbot.domain.agent;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import ricbot.domain.experience.ExperienceEntry;
-import ricbot.domain.experience.ExperienceStore;
 import ricbot.domain.memory.MemoryEntry;
 import ricbot.domain.memory.MemoryRetriever;
 import ricbot.domain.memory.MemoryStore;
@@ -44,7 +42,6 @@ final class ContextSelectionService {
     private final int contextWindowTokens;
     private final NoteService noteService;
     private final WorkspaceRagService ragService;
-    private final ExperienceStore experienceStore;
     private final TraceStore traceStore;
 
     /**
@@ -77,18 +74,6 @@ final class ContextSelectionService {
             int contextWindowTokens,
             NoteService noteService,
             WorkspaceRagService ragService,
-            ExperienceStore experienceStore
-    ) {
-        this(memoryStore, toolTraceSummarizer, contextWindowTokens, noteService, ragService, experienceStore, null);
-    }
-
-    ContextSelectionService(
-            MemoryStore memoryStore,
-            ToolTraceSummarizer toolTraceSummarizer,
-            int contextWindowTokens,
-            NoteService noteService,
-            WorkspaceRagService ragService,
-            ExperienceStore experienceStore,
             TraceStore traceStore
     ) {
         this.memoryStore = memoryStore;
@@ -96,7 +81,6 @@ final class ContextSelectionService {
         this.contextWindowTokens = contextWindowTokens;
         this.noteService = noteService;
         this.ragService = ragService;
-        this.experienceStore = experienceStore;
         this.traceStore = traceStore;
     }
 
@@ -171,7 +155,6 @@ final class ContextSelectionService {
 
         addProjectNotes(bundle, currentMessage, taskState);
         addWorkspaceKnowledge(bundle, currentMessage, taskState);
-        addVerifiedExperience(bundle, currentMessage, taskState, preparedInputs.sessionId(), preparedInputs.toolTrace());
         addWorkspaceSessionContext(bundle, preparedInputs.workspaceContext());
         addTeamContext(bundle, preparedInputs.teamContext());
         addSubAgentSummaries(bundle, preparedInputs.sessionId(), preparedInputs.subAgentResults());
@@ -385,68 +368,6 @@ final class ContextSelectionService {
         }
     }
 
-    private void addVerifiedExperience(
-            PromptContextBundle bundle,
-            String currentMessage,
-            TaskState taskState,
-            String sessionId,
-            List<Map<String, Object>> toolTrace
-    ) {
-        if (experienceStore == null) {
-            return;
-        }
-        String query = experienceQuery(currentMessage, taskState);
-        List<String> relatedFiles = relatedFiles(currentMessage, toolTrace);
-        try {
-            for (ExperienceStore.ScoredExperience result : experienceStore.searchVerified(query, relatedFiles, 3)) {
-                ExperienceEntry entry = result.entry();
-                String rendered = entry.type()
-                        + " | " + entry.title()
-                        + " | when: " + entry.whenToApply()
-                        + " | content: " + entry.content()
-                        + (!entry.suggestedTests().isEmpty()
-                        ? " | suggestedTests: " + String.join("; ", entry.suggestedTests())
-                        : "")
-                        + " | confidence: " + String.format(Locale.ROOT, "%.2f", entry.confidence())
-                        + (!entry.sourceRef().isBlank() ? " | sourceRef: " + entry.sourceRef() : "");
-                Map<String, Object> metadata = new LinkedHashMap<>();
-                metadata.put("status", entry.status().name());
-                metadata.put("experience_type", entry.type().name());
-                metadata.put("sourceRef", entry.sourceRef());
-                metadata.put("confidence", Math.round(entry.confidence() * 1000.0d) / 1000.0d);
-                metadata.put("effectiveConfidence", Math.round(result.effectiveConfidence() * 1000.0d) / 1000.0d);
-                metadata.put("successCount", entry.successCount());
-                metadata.put("failureCount", entry.failureCount());
-                metadata.put("lastUsedAt", entry.lastUsedAt());
-                metadata.put("reason", result.reason());
-                bundle.addItem("verified_experience", rendered, result.score(),
-                        ContextSource.of(
-                                "experience",
-                                entry.id(),
-                                "experience/verified.jsonl:" + entry.id(),
-                                entry.title(),
-                                result.score(),
-                                metadata
-                        ));
-                try {
-                    experienceStore.recordUsage(
-                            entry.id(),
-                            sessionId,
-                            query,
-                            taskState != null ? taskState.goal() : "",
-                            result.score(),
-                            result.reason()
-                    );
-                } catch (Exception e) {
-                    log.warn("skip recording verified experience usage: {}", entry.id(), e);
-                }
-                traceExperienceHit(sessionId, entry, result);
-            }
-        } catch (Exception e) {
-            log.warn("skip verified experience context due to read/search failure", e);
-        }
-    }
-
     private void recordContextBuilt(PromptContextBundle bundle, String sessionId, String currentMessage) {
         if (traceStore == null || bundle == null) {
             return;
@@ -492,36 +413,6 @@ final class ContextSelectionService {
         }
     }
 
-    private void traceExperienceHit(String sessionId, ExperienceEntry entry, ExperienceStore.ScoredExperience result) {
-        if (traceStore == null || entry == null || result == null) {
-            return;
-        }
-        try {
-            traceStore.append(new TraceEvent(
-                    traceStore.traceIdForSession(sessionId),
-                    null,
-                    "",
-                    sessionId,
-                    "",
-                    "",
-                    "",
-                    TraceEventType.EXPERIENCE_HIT,
-                    "context",
-                    entry.title(),
-                    Map.of(
-                            "experienceId", entry.id(),
-                            "type", entry.type().name(),
-                            "score", result.score(),
-                            "sourceRef", entry.sourceRef()
-                    ),
-                    null,
-                    null
-            ));
-        } catch (Exception e) {
-            log.warn("skip experience hit trace", e);
-        }
-    }
-
     private void addWorkspaceKnowledge(PromptContextBundle bundle, String currentMessage, TaskState taskState) {
         if (ragService == null) {
             return;
@@ -549,23 +440,6 @@ final class ContextSelectionService {
             return 0d;
         }
         return Math.max(0d, Math.min(1d, score / maxExpected));
-    }
-
-    private String experienceQuery(String currentMessage, TaskState taskState) {
-        StringBuilder sb = new StringBuilder();
-        if (currentMessage != null) {
-            sb.append(currentMessage).append("\n");
-        }
-        if (taskState != null) {
-            sb.append(taskState.goal()).append("\n")
-                    .append(taskState.currentStep()).append("\n")
-                    .append(taskState.blockedReason()).append("\n")
-                    .append(taskState.nextAction()).append("\n");
-            for (TaskState.TaskStep step : taskState.steps()) {
-                sb.append(step.title()).append("\n").append(step.evidence()).append("\n");
-            }
-        }
-        return sb.toString();
     }
 
     private List<String> relatedFiles(String currentMessage, List<Map<String, Object>> toolTrace) {
