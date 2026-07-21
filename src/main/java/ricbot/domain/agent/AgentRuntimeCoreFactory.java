@@ -49,7 +49,7 @@ public final class AgentRuntimeCoreFactory {
                 parseInt(System.getenv("RICBOT_SKILLS_MAX_CHARS"), 12000));
         return new AgentRuntimeCore(contextBuilder, persistence, telemetry, events, traces, sideEffects,
                 memory, compactor, approvals, sideEffectApplication, autoCompact, workers, skills,
-                skillRouter, new ToolRegistry(), new AgentRunner(provider));
+                skillRouter, new ToolRegistry(), new GraphRunService(provider));
     }
 
     private static int parseInt(String raw, int fallback) {

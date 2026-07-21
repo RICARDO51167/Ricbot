@@ -26,6 +26,6 @@ public record AgentRuntimeCore(
         SkillsLoader skillsLoader,
         SkillRouter skillRouter,
         ToolRegistry tools,
-        AgentRunner runner
+        GraphRunService runner
 ) {
 }

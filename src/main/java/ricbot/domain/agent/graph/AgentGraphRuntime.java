@@ -4,7 +4,7 @@ import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
-/** Executes one durable graph node at a time and can resume from any serialized cursor. */
+/** Generic embeddable graph interpreter; Ricbot Run ownership remains in GraphRunService. */
 public final class AgentGraphRuntime {
     private final AgentGraphDefinition definition;
     private final GraphNodeRegistry nodes;

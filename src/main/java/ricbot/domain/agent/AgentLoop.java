@@ -111,7 +111,7 @@ public class AgentLoop {
     /** 工具注册表，管理所有可用工具 */
     private final ToolRegistry tools;
     /** Agent 运行器，负责执行具体的 LLM 交互循环 */
-    private final AgentRunner runner;
+    private final GraphRunService runner;
     /** Hook 工厂，负责组合请求级 Hook */
     private final AgentHookFactory hookFactory;
     /** 会话准备服务 */

@@ -37,7 +37,7 @@ public class AgentTeamWorkerRunner implements TeamWorkerRunner {
     );
 
     private final Path baseWorkspace;
-    private final AgentRunner runner;
+    private final GraphRunService runner;
     private final String model;
     private final int maxIterations;
     private final int maxToolResultChars;
@@ -46,13 +46,13 @@ public class AgentTeamWorkerRunner implements TeamWorkerRunner {
     private final Integer contextBlockLimit;
     private final ProviderCapability providerCapability;
 
-    public AgentTeamWorkerRunner(Path baseWorkspace, AgentRunner runner, String model) {
+    public AgentTeamWorkerRunner(Path baseWorkspace, GraphRunService runner, String model) {
         this(baseWorkspace, runner, model, 8, 10_000, "standard", 64_000, null, null);
     }
 
     public AgentTeamWorkerRunner(
             Path baseWorkspace,
-            AgentRunner runner,
+            GraphRunService runner,
             String model,
             int maxIterations,
             int maxToolResultChars,

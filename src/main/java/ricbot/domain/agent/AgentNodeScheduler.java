@@ -5,7 +5,7 @@ import ricbot.domain.agent.graph.GraphEdge;
 
 import java.time.Instant;
 
-/** Default ReAct scheduler backed by the same registered topology as the generic graph runtime. */
+/** ReAct graph cursor/state-transition helper. It never executes model or tool nodes. */
 public final class AgentNodeScheduler {
     public static final AgentGraphDefinition DEFAULT_GRAPH = AgentGraphDefinition
             .builder("ricbot-react-v1", AgentNodeType.MODEL.name())

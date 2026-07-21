@@ -56,7 +56,7 @@ public final class SpawnWorkerService implements AutoCloseable {
     private final Config.WebToolsConfig webConfig;
     private final boolean restrictToWorkspace;
     private final SkillsLoader skillsLoader;
-    private final AgentRunner runner;
+    private final GraphRunService runner;
     private final WorkerRuntime workers;
     private final RunCheckpointStore checkpoints;
     private final RunEventSink runEvents;
@@ -85,7 +85,7 @@ public final class SpawnWorkerService implements AutoCloseable {
         this.restrictToWorkspace = restrictToWorkspace;
         this.skillsLoader = new SkillsLoader(this.workspace, null,
                 new HashSet<>(disabledSkills != null ? disabledSkills : List.of()));
-        this.runner = new AgentRunner(provider);
+        this.runner = new GraphRunService(provider);
         this.workers = new WorkerRuntime(this.workspace);
         this.checkpoints = new FileRunCheckpointStore(this.workspace);
         this.runEvents = new FileRunJournalStore(this.workspace);

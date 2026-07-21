@@ -16,7 +16,7 @@ final class AgentExecutionService {
     private static final Logger LOGGER = Logger.getLogger(AgentExecutionService.class.getName());
 
     // Agent 运行器实例，用于执行具体的 Agent 任务
-    private final AgentRunner runner;
+    private final GraphRunService runner;
     // 工具注册表，提供 Agent 可调用的工具集合
     private final ToolRegistry tools;
     // 工作空间路径，Agent 操作的文件系统根目录
@@ -41,7 +41,7 @@ final class AgentExecutionService {
 
     // 构造函数，初始化所有必要配置
     AgentExecutionService(
-            AgentRunner runner,
+            GraphRunService runner,
             ToolRegistry tools,
             Path workspace,
             String model,
@@ -68,7 +68,7 @@ final class AgentExecutionService {
 
     // 构造函数，初始化所有必要配置
     AgentExecutionService(
-            AgentRunner runner,
+            GraphRunService runner,
             ToolRegistry tools,
             Path workspace,
             String model,
@@ -96,7 +96,7 @@ final class AgentExecutionService {
     }
 
     AgentExecutionService(
-            AgentRunner runner,
+            GraphRunService runner,
             ToolRegistry tools,
             Path workspace,
             String model,
@@ -114,7 +114,7 @@ final class AgentExecutionService {
     }
 
     AgentExecutionService(
-            AgentRunner runner,
+            GraphRunService runner,
             ToolRegistry tools,
             Path workspace,
             String model,
