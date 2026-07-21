@@ -43,8 +43,6 @@ class TaskNoteWriterTest {
         assertTrue(markdown.contains("/change create"), markdown);
         assertTrue(markdown.contains("## Workspace"), markdown);
         assertTrue(markdown.contains(".workspaces/workspace_demo/session.json"), markdown);
-        assertTrue(markdown.contains("## SubAgent Findings"), markdown);
-        assertTrue(markdown.contains("PLANNER task=subtask_demo"), markdown);
         assertTrue(markdown.contains("## Trace Summary"), markdown);
         assertTrue(markdown.contains(".traces/trace_cli_direct/events.jsonl"), markdown);
     }
@@ -102,7 +100,6 @@ class TaskNoteWriterTest {
                 "",
                 "",
                 "",
-                List.of("PLANNER task=subtask_demo summary=Plan note writing"),
                 "trace trace_cli_direct\npath: .traces/trace_cli_direct/events.jsonl\neventCount: 3",
                 ""
         );

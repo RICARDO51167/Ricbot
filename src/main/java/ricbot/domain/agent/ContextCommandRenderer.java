@@ -13,7 +13,6 @@ final class ContextCommandRenderer {
             "workspace_knowledge",
             "workspace_session",
             "team_context",
-            "subagent_summaries",
             "trace_context",
             "tool_trace"
     );
@@ -84,14 +83,10 @@ final class ContextCommandRenderer {
                     if (!label.isBlank()) {
                         sb.append(" label=").append(label);
                     }
-                    String subagentRole = string(row.get("subagent_role"));
                     String status = string(row.get("status"));
                     String sourceRef = string(row.get("sourceRef"));
                     String confidence = string(row.get("confidence"));
                     String reason = string(row.get("reason"));
-                    if (!subagentRole.isBlank()) {
-                        sb.append(" subagent_role=").append(subagentRole);
-                    }
                     if (!status.isBlank()) {
                         sb.append(" status=").append(status);
                     }

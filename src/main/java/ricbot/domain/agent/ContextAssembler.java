@@ -5,7 +5,6 @@ import ricbot.domain.session.Session;
 import ricbot.domain.skill.SkillRouter;
 import ricbot.domain.skill.SkillRoutingContext;
 import ricbot.domain.skill.SkillsLoader;
-import ricbot.domain.subagent.SubAgentOrchestrator;
 import ricbot.domain.team.TeamEngine;
 import ricbot.domain.team.TeamSession;
 import ricbot.domain.workspace.WorkspaceSession;
@@ -64,7 +63,6 @@ final class ContextAssembler {
                         prepared.archivedSummary(),
                         prepared.taskStateSnapshot(),
                         recentToolTrace(prepared.session()),
-                        SubAgentOrchestrator.resultsFromSession(prepared.session()),
                         teamContext(prepared.session()),
                         workspaceContext(prepared.session())
                 ),

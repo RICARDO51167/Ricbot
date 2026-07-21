@@ -26,10 +26,6 @@ import ricbot.domain.security.ApprovalService;
 import ricbot.domain.security.CommandRiskLevel;
 import ricbot.domain.security.PendingToolCall;
 import ricbot.domain.security.RiskAssessment;
-import ricbot.domain.subagent.SubAgentOrchestrator;
-import ricbot.domain.subagent.SubAgentResult;
-import ricbot.domain.subagent.SubAgentRole;
-import ricbot.domain.subagent.SubAgentTask;
 import ricbot.domain.team.TeamArtifact;
 import ricbot.domain.team.TeamDecisionPolicy;
 import ricbot.domain.team.TeamEngine;
@@ -176,8 +172,6 @@ final class AgentCommands {
         router.prefix("/context ", this::context);
         router.exact("/summary", this::summary);
         router.prefix("/summary ", this::summary);
-        router.exact("/subagent", this::subagent);
-        router.prefix("/subagent ", this::subagent);
         router.exact("/change", this::change);
         router.prefix("/change ", this::change);
         router.exact("/workspace", this::workspace);
@@ -223,7 +217,7 @@ final class AgentCommands {
     }
 
     private CompletableFuture<OutboundMessage> help(CommandRouter.CommandContext ctx) {
-        return completedReply(ctx, "ricbot 命令：\n/new — 开始新对话\n/stop — 停止当前任务\n/summary — 查看当前任务摘要\n/subagent plan|explore|review|list|show — 角色化子代理摘要\n/team start|status|list|resume|archive|suggest|suggest-current|task|auto-verify|verifier-report|verify|events|whiteboard|abort — TeamEngine 状态机\n/workspace create|status|list|use|diff|cleanup — Local/Worktree workspace session\n/change create|status|diff|commit-message|approve|commit|rollback — GitChangeSet 工作流\n/trace last|list|show|events|export — Coding Harness trace\n/help — 查看可用命令");
+        return completedReply(ctx, "ricbot 命令：\n/new — 开始新对话\n/stop — 停止当前任务\n/summary — 查看当前任务摘要\n/team start|status|list|resume|archive|suggest|suggest-current|task|auto-verify|verifier-report|verify|events|whiteboard|abort — TeamEngine 状态机\n/workspace create|status|list|use|diff|cleanup — Local/Worktree workspace session\n/change create|status|diff|commit-message|approve|commit|rollback — GitChangeSet 工作流\n/trace last|list|show|events|export — Coding Harness trace\n/help — 查看可用命令");
     }
 
     private CompletableFuture<OutboundMessage> status(CommandRouter.CommandContext ctx) {
@@ -906,141 +900,6 @@ final class AgentCommands {
             return "";
         }
         return session.tasks().get(session.tasks().size() - 1).id();
-    }
-
-    private CompletableFuture<OutboundMessage> subagent(CommandRouter.CommandContext ctx) {
-        String args = trim(ctx.getArgs());
-        String action = args.isBlank() ? "list" : args.split("\\s+")[0].toLowerCase();
-        SubAgentOrchestrator orchestrator = new SubAgentOrchestrator(sessionManager, workspace);
-        try {
-            return switch (action) {
-                case "plan" -> subagentPlan(ctx, orchestrator, afterCommand(args));
-                case "explore" -> subagentExplore(ctx, orchestrator, afterCommand(args));
-                case "review" -> subagentReview(ctx, orchestrator);
-                case "list" -> completedReply(ctx, renderSubAgentList(orchestrator.listRecentResults(ctx.getKey())));
-                case "show" -> completedReply(ctx, renderSubAgentShow(orchestrator.listRecentResults(ctx.getKey()), commandArg(args, 1)));
-                default -> completedReply(ctx, "用法：/subagent plan <goal>|explore <goal>|review|list|show <id>");
-            };
-        } catch (IllegalArgumentException | IllegalStateException e) {
-            return completedReply(ctx, "subagent error: " + e.getMessage());
-        }
-    }
-
-    private CompletableFuture<OutboundMessage> subagentPlan(
-            CommandRouter.CommandContext ctx,
-            SubAgentOrchestrator orchestrator,
-            String rawGoal
-    ) {
-        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
-        TaskState taskState = TaskState.fromSession(session);
-        String goal = !rawGoal.isBlank() ? rawGoal : !taskState.goal().isBlank() ? taskState.goal() : "Plan current task";
-        SubAgentTask task = orchestrator.createPlannerTask(goal, taskState.renderStatus());
-        SubAgentResult result = new SubAgentResult(
-                task.id(),
-                SubAgentRole.PLANNER,
-                "Planner scoped the task and proposed a small-step execution path.",
-                List.of("Goal: " + goal, "Next action: " + (!taskState.nextAction().isBlank() ? taskState.nextAction() : "identify the next smallest safe step")),
-                taskState.blockedReason().isBlank() ? List.of() : List.of(taskState.blockedReason()),
-                List.of(),
-                task.relatedFiles(),
-                0.62d,
-                null
-        );
-        orchestrator.recordResult(ctx.getKey(), result);
-        return completedReply(ctx, renderSubAgentCreated(task, result));
-    }
-
-    private CompletableFuture<OutboundMessage> subagentExplore(
-            CommandRouter.CommandContext ctx,
-            SubAgentOrchestrator orchestrator,
-            String goal
-    ) {
-        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
-        String actualGoal = !goal.isBlank() ? goal : "Explore current task context";
-        List<String> relatedFiles = pathLike(actualGoal);
-        List<String> sources = contextSourcePaths(session);
-        SubAgentTask task = orchestrator.createExplorerTask(actualGoal, relatedFiles, sources);
-        SubAgentResult result = new SubAgentResult(
-                task.id(),
-                SubAgentRole.EXPLORER,
-                "Explorer summarized likely files and context sources for the goal.",
-                List.of(
-                        relatedFiles.isEmpty() ? "No explicit related files in the request." : "Related files: " + String.join(", ", relatedFiles),
-                        sources.isEmpty() ? "No prior context sources recorded." : "Context sources available: " + String.join(", ", sources.stream().limit(5).toList())
-                ),
-                List.of("Exploration is a structured placeholder; verify by reading code before edits."),
-                List.of(),
-                relatedFiles,
-                0.58d,
-                null
-        );
-        orchestrator.recordResult(ctx.getKey(), result);
-        return completedReply(ctx, renderSubAgentCreated(task, result));
-    }
-
-    private CompletableFuture<OutboundMessage> subagentReview(
-            CommandRouter.CommandContext ctx,
-            SubAgentOrchestrator orchestrator
-    ) {
-        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
-        TaskSummaryService.TaskSummary summary = new TaskSummaryService().summarizeCurrentTask(session);
-        SubAgentTask task = orchestrator.createReviewerTask(null, summary);
-        List<String> findings = !summary.diffReviews().isEmpty()
-                ? summary.diffReviews()
-                : List.of("No DiffReview recorded yet; review current summary and tool trace first.");
-        List<String> risks = !summary.blockers().isEmpty()
-                ? summary.blockers()
-                : !summary.rollbackHints().isEmpty()
-                ? summary.rollbackHints()
-                : List.of("No explicit blocker recorded.");
-        SubAgentResult result = new SubAgentResult(
-                task.id(),
-                SubAgentRole.REVIEWER,
-                "Reviewer summarized current diff/task risks and follow-up tests.",
-                findings,
-                risks,
-                summary.suggestedTests(),
-                summary.changedFiles(),
-                0.64d,
-                null
-        );
-        orchestrator.recordResult(ctx.getKey(), result);
-        return completedReply(ctx, renderSubAgentCreated(task, result));
-    }
-
-    private String renderSubAgentCreated(SubAgentTask task, SubAgentResult result) {
-        return "subagent task created\n"
-                + "id: " + task.id() + "\n"
-                + "role: " + task.role() + "\n"
-                + "status: " + task.status() + "\n"
-                + "note: notes/temporary\n\n"
-                + "subagent result recorded\n"
-                + SubAgentOrchestrator.renderDetail(result);
-    }
-
-    private String renderSubAgentList(List<SubAgentResult> results) {
-        if (results == null || results.isEmpty()) {
-            return "No subagent results.";
-        }
-        StringBuilder sb = new StringBuilder("subagent results (" + results.size() + ")\n");
-        for (SubAgentResult result : results) {
-            sb.append("- ").append(result.taskId())
-                    .append(" [").append(result.role()).append("] ")
-                    .append(result.summary())
-                    .append(" confidence=")
-                    .append(String.format(java.util.Locale.ROOT, "%.2f", result.confidence()))
-                    .append("\n");
-        }
-        return sb.toString().trim();
-    }
-
-    private String renderSubAgentShow(List<SubAgentResult> results, String id) {
-        for (SubAgentResult result : results != null ? results : List.<SubAgentResult>of()) {
-            if (result.taskId().equals(id)) {
-                return SubAgentOrchestrator.renderDetail(result);
-            }
-        }
-        return "SubAgent result not found: " + id;
     }
 
     private CompletableFuture<OutboundMessage> team(CommandRouter.CommandContext ctx) {

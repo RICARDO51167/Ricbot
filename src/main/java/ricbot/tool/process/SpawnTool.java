@@ -10,9 +10,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
-/**
- * 启动后台子代理的工具类
- */
+/** Starts a durable background Worker. */
 public class SpawnTool extends Tool {
 
     private final SpawnWorkerService workers;
@@ -32,13 +30,13 @@ public class SpawnTool extends Tool {
 
     @Override
     public String getDescription() {
-        return "启动一个后台子代理，以异步方式执行任务。";
+        return "启动一个持久后台 Worker，以异步方式执行任务，并将结果写入 Mailbox。";
     }
 
     @Override
     public List<ToolParam> getParams() {
         return List.of(
-                ToolParam.of("task", "string", "子代理要执行的任务描述", true),
+                ToolParam.of("task", "string", "Worker 要执行的任务描述", true),
                 ToolParam.of("label", "string", "可选：后台任务的简短标签", false),
                 ToolParam.of("session_key", "string", "可选：用于分组/取消的会话密钥", false),
                 ToolParam.of("idempotency_key", "string", "可选：调用方提供的稳定幂等键", false)

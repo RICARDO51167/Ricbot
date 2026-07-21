@@ -416,7 +416,7 @@ public final class SpawnWorkerService implements AutoCloseable {
         String channel = String.valueOf(worker.spec().metadata().getOrDefault("origin_channel", ""));
         String chatId = String.valueOf(worker.spec().metadata().getOrDefault("origin_chat_id", ""));
         return PromptTemplates.renderTemplate(
-                "agent/subagent_system.md",
+                "agent/worker_system.md",
                 true,
                 Map.of(
                         "time_ctx", ContextBuilder.buildRuntimeContext(channel, chatId, null),

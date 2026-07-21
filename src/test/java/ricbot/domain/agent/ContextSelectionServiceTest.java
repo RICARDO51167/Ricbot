@@ -6,8 +6,6 @@ import ricbot.domain.memory.MemoryStore;
 import ricbot.domain.note.NoteService;
 import ricbot.domain.rag.WorkspaceRagService;
 import ricbot.domain.session.Session;
-import ricbot.domain.subagent.SubAgentResult;
-import ricbot.domain.subagent.SubAgentRole;
 import ricbot.domain.team.TeamEngine;
 import ricbot.domain.team.TeamRole;
 import ricbot.domain.trace.TraceEventType;
@@ -126,36 +124,6 @@ class ContextSelectionServiceTest {
     }
 
     @Test
-    void select_addsSubAgentSummaries(@TempDir Path workspace) {
-        ContextSelectionService service = new ContextSelectionService(new MemoryStore(workspace), new ToolTraceSummarizer());
-        SubAgentResult result = new SubAgentResult(
-                "subtask_plan",
-                SubAgentRole.PLANNER,
-                "Plan the context upgrade.",
-                List.of("Keep the change small."),
-                List.of("Do not change provider path."),
-                List.of("./mvnw -q -Dtest='ricbot.domain.agent.*Test' test"),
-                List.of("src/main/java/ricbot/domain/agent/ContextSelectionService.java"),
-                0.72d,
-                null
-        );
-
-        ContextSelectionService.SelectionResult selection = service.select(
-                new ContextSelectionService.SessionPreparedInputs("session-test", null, null, List.of(), List.of(result)),
-                List.of(),
-                "context upgrade",
-                6
-        );
-
-        String rendered = selection.bundle().render();
-        assertTrue(rendered.contains("## subagent_summaries"), rendered);
-        assertTrue(rendered.contains("Plan the context upgrade"), rendered);
-        Map<String, Object> budgetTrace = selection.bundle().budgetTrace();
-        assertTrue(String.valueOf(budgetTrace).contains("subagent_summaries"), String.valueOf(budgetTrace));
-        assertTrue(String.valueOf(budgetTrace).contains("subagent:subtask_plan"), String.valueOf(budgetTrace));
-    }
-
-    @Test
     void select_addsTeamContext(@TempDir Path workspace) {
         ContextSelectionService service = new ContextSelectionService(new MemoryStore(workspace), new ToolTraceSummarizer());
         Map<String, Object> teamContext = Map.ofEntries(
@@ -192,7 +160,7 @@ class ContextSelectionServiceTest {
         );
 
         ContextSelectionService.SelectionResult selection = service.select(
-                new ContextSelectionService.SessionPreparedInputs("session-test", null, null, List.of(), List.of(), teamContext),
+                new ContextSelectionService.SessionPreparedInputs("session-test", null, null, List.of(), teamContext),
                 List.of(),
                 "team verifier context",
                 6
@@ -225,7 +193,7 @@ class ContextSelectionServiceTest {
         ContextSelectionService service = new ContextSelectionService(new MemoryStore(workspace), new ToolTraceSummarizer());
 
         ContextSelectionService.SelectionResult selection = service.select(
-                new ContextSelectionService.SessionPreparedInputs("session-test", null, null, List.of(), List.of(), restored.contextSnapshot(resumed.id())),
+                new ContextSelectionService.SessionPreparedInputs("session-test", null, null, List.of(), restored.contextSnapshot(resumed.id())),
                 List.of(),
                 "resume team context",
                 6
@@ -250,7 +218,7 @@ class ContextSelectionServiceTest {
         );
 
         ContextSelectionService.SelectionResult selection = service.select(
-                new ContextSelectionService.SessionPreparedInputs("session-test", null, null, List.of(), List.of(), Map.of(), workspaceContext),
+                new ContextSelectionService.SessionPreparedInputs("session-test", null, null, List.of(), Map.of(), workspaceContext),
                 List.of(),
                 "workspace context",
                 6

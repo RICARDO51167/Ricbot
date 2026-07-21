@@ -8,8 +8,6 @@ import ricbot.domain.memory.MemoryStore;
 import ricbot.domain.note.NoteEntry;
 import ricbot.domain.note.NoteService;
 import ricbot.domain.rag.WorkspaceRagService;
-import ricbot.domain.subagent.SubAgentOrchestrator;
-import ricbot.domain.subagent.SubAgentResult;
 import ricbot.domain.trace.TraceEvent;
 import ricbot.domain.trace.TraceEventType;
 import ricbot.domain.trace.TraceStore;
@@ -157,7 +155,6 @@ final class ContextSelectionService {
         addWorkspaceKnowledge(bundle, currentMessage, taskState);
         addWorkspaceSessionContext(bundle, preparedInputs.workspaceContext());
         addTeamContext(bundle, preparedInputs.teamContext());
-        addSubAgentSummaries(bundle, preparedInputs.sessionId(), preparedInputs.subAgentResults());
 
         // 渲染最近的工具调用轨迹并添加到上下文中
         for (String trace : toolTraceSummarizer.renderRecent(preparedInputs.toolTrace(), 4)) {
@@ -314,36 +311,6 @@ final class ContextSelectionService {
                 0.82d,
                 ContextSource.of("workspace", id, source, "active workspace session", 0.82d, metadata)
         );
-    }
-
-    private void addSubAgentSummaries(
-            PromptContextBundle bundle,
-            String sessionId,
-            List<SubAgentResult> subAgentResults
-    ) {
-        List<SubAgentResult> results = subAgentResults != null ? subAgentResults : List.of();
-        for (SubAgentResult result : results.stream()
-                .sorted(Comparator.comparing(SubAgentResult::createdAt, Comparator.nullsLast(String::compareTo)).reversed())
-                .limit(3)
-                .toList()) {
-            Map<String, Object> metadata = new LinkedHashMap<>();
-            metadata.put("subagent_role", result.role().name());
-            metadata.put("confidence", Math.round(result.confidence() * 1000.0d) / 1000.0d);
-            metadata.put("sessionId", sessionId != null ? sessionId : "");
-            bundle.addItem(
-                    "subagent_summaries",
-                    SubAgentOrchestrator.renderCompact(result),
-                    result.confidence(),
-                    ContextSource.of(
-                            "subagent",
-                            result.taskId(),
-                            "subagent:" + result.taskId(),
-                            result.role().name() + " summary",
-                            result.confidence(),
-                            metadata
-                    )
-            );
-        }
     }
 
     private void addProjectNotes(PromptContextBundle bundle, String currentMessage, TaskState taskState) {
@@ -785,19 +752,17 @@ final class ContextSelectionService {
             String archivedSummary,
             TaskState taskState,
             List<Map<String, Object>> toolTrace,
-            List<SubAgentResult> subAgentResults,
             Map<String, Object> teamContext,
             Map<String, Object> workspaceContext
     ) {
         SessionPreparedInputs {
             toolTrace = toolTrace != null ? List.copyOf(toolTrace) : List.of();
-            subAgentResults = subAgentResults != null ? List.copyOf(subAgentResults) : List.of();
             teamContext = teamContext != null ? Map.copyOf(teamContext) : Map.of();
             workspaceContext = workspaceContext != null ? Map.copyOf(workspaceContext) : Map.of();
         }
 
         SessionPreparedInputs(String sessionId, String archivedSummary, TaskState taskState, List<Map<String, Object>> toolTrace) {
-            this(sessionId, archivedSummary, taskState, toolTrace, List.of(), Map.of(), Map.of());
+            this(sessionId, archivedSummary, taskState, toolTrace, Map.of(), Map.of());
         }
 
         SessionPreparedInputs(
@@ -805,24 +770,13 @@ final class ContextSelectionService {
                 String archivedSummary,
                 TaskState taskState,
                 List<Map<String, Object>> toolTrace,
-                List<SubAgentResult> subAgentResults
-        ) {
-            this(sessionId, archivedSummary, taskState, toolTrace, subAgentResults, Map.of(), Map.of());
-        }
-
-        SessionPreparedInputs(
-                String sessionId,
-                String archivedSummary,
-                TaskState taskState,
-                List<Map<String, Object>> toolTrace,
-                List<SubAgentResult> subAgentResults,
                 Map<String, Object> teamContext
         ) {
-            this(sessionId, archivedSummary, taskState, toolTrace, subAgentResults, teamContext, Map.of());
+            this(sessionId, archivedSummary, taskState, toolTrace, teamContext, Map.of());
         }
 
         SessionPreparedInputs(String archivedSummary, TaskState taskState, List<Map<String, Object>> toolTrace) {
-            this("", archivedSummary, taskState, toolTrace, List.of(), Map.of(), Map.of());
+            this("", archivedSummary, taskState, toolTrace, Map.of(), Map.of());
         }
     }
 

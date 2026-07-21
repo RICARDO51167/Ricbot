@@ -56,7 +56,6 @@ public class TaskNoteWriter {
         listSection(sb, "ChangeSet Recommendation", summary.changeSetRecommendation(), "未记录 ChangeSet 建议");
         listSection(sb, "ChangeSet", changeSetLines(summary), "未记录 ChangeSet");
         listSection(sb, "Workspace", summary.workspaceSummary(), "未记录 Workspace session");
-        listSection(sb, "SubAgent Findings", summary.subAgentFindings(), "未记录子代理摘要");
         section(sb, "Trace Summary", valueOrPlaceholder(summary.traceSummary(), "未记录 Trace Summary"));
         listSection(sb, "Test Commands", summary.testCommands(), "未记录已运行测试");
         listSection(sb, "Blockers", summary.blockers(), "未记录阻塞项");
@@ -84,9 +83,6 @@ public class TaskNoteWriter {
         }
         if (summary != null && !summary.diffReviews().isEmpty()) {
             tags.add("diff-review");
-        }
-        if (summary != null && !summary.subAgentFindings().isEmpty()) {
-            tags.add("subagent");
         }
         if (summary != null && !summary.teamFindings().isEmpty()) {
             tags.add("team");

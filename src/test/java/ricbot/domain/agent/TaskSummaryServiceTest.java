@@ -3,8 +3,6 @@ package ricbot.domain.agent;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import ricbot.domain.session.Session;
-import ricbot.domain.subagent.SubAgentResult;
-import ricbot.domain.subagent.SubAgentRole;
 import ricbot.domain.team.TeamEngine;
 import ricbot.domain.team.TeamRole;
 
@@ -127,32 +125,6 @@ class TaskSummaryServiceTest {
     }
 
     @Test
-    void summarizeCurrentTask_includesSubAgentFindingsFromSession() {
-        Session session = new Session("cli:direct");
-        session.getMetadata().put(SessionRuntimeKeys.TASK_STATE_KEY, Map.of(
-                "goal", "V4.1 subagent summaries"
-        ));
-        session.getMetadata().put(SessionRuntimeKeys.SUBAGENT_RESULTS_KEY, List.of(
-                new SubAgentResult(
-                        "subtask_review",
-                        SubAgentRole.REVIEWER,
-                        "Review current diff.",
-                        List.of("DiffReview is present."),
-                        List.of("Run targeted tests."),
-                        List.of("./mvnw -q -Dtest='ricbot.domain.agent.*Test' test"),
-                        List.of("src/main/java/ricbot/domain/agent/TaskSummaryService.java"),
-                        0.7d,
-                        null
-                ).toMap()
-        ));
-
-        TaskSummaryService.TaskSummary summary = new TaskSummaryService().summarizeCurrentTask(session);
-
-        assertTrue(summary.subAgentFindings().toString().contains("REVIEWER"), summary.subAgentFindings().toString());
-        assertTrue(summary.toMap().containsKey("subagent_findings"));
-    }
-
-    @Test
     void summarizeCurrentTask_includesTeamFindingsFromSession() {
         Session session = new Session("cli:direct");
         session.getMetadata().put(SessionRuntimeKeys.TASK_STATE_KEY, Map.of(
@@ -208,6 +180,22 @@ class TaskSummaryServiceTest {
         assertTrue(summary.toMap().containsKey("changeset_recommendation"));
         assertTrue(summary.toMap().containsKey("implementation_steps"));
         assertTrue(summary.toMap().containsKey("step_audit"));
+    }
+
+    @Test
+    void ignoresLegacySubagentMetadataWithoutDeletingIt() {
+        Session session = new Session("cli:legacy");
+        List<Map<String, Object>> legacy = List.of(Map.of(
+                "taskId", "subtask_old",
+                "role", "REVIEWER",
+                "summary", "legacy result"
+        ));
+        session.getMetadata().put("subagent_results", legacy);
+
+        TaskSummaryService.TaskSummary summary = new TaskSummaryService().summarizeCurrentTask(session);
+
+        assertEquals(legacy, session.getMetadata().get("subagent_results"));
+        assertFalse(summary.toMap().containsKey("subagent_findings"));
     }
 
     @Test

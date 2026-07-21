@@ -656,7 +656,7 @@ public class AgentLoop {
 
     /**
      * 处理系统通道（system channel）的后台消息。
-     * 此类消息通常由内部任务（如定时任务、子代理回调）触发，不直接来自用户交互。
+     * 此类消息由内部运行控制触发，不直接来自用户交互。
      *
      * @param msg 入站消息，包含触发系统处理的相关信息
      * @return 出站消息响应，包含处理结果或状态更新
@@ -670,8 +670,7 @@ public class AgentLoop {
         String key = channel + ":" + chatId;
 
         // 确定当前消息在对话中的角色
-        // 如果发送者是 "subagent"，则视为助手（assistant）的后续动作；否则视为用户（user）发起的系统指令
-        String currentRole = "subagent".equals(msg.getSenderId()) ? "assistant" : "user";
+        String currentRole = "user";
 
         // 准备系统轮次的会话上下文
         // 加载相关的历史记忆、会话状态，并为系统消息的处理做预处理

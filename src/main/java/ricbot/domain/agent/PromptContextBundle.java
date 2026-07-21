@@ -25,7 +25,6 @@ final class PromptContextBundle {
             "workspace_knowledge", // 工作区知识库
             "workspace_session", // active workspace session
             "team_context", // TeamEngine 协作状态
-            "subagent_summaries", // 子代理摘要
             "trace_context", // Coding Harness trace source
             "tool_trace"        // 工具调用轨迹
     );
@@ -405,7 +404,6 @@ final class PromptContextBundle {
         out.put("project_notes", new SectionBudget(5, 1_600));
         out.put("workspace_knowledge", new SectionBudget(5, 2_400));
         out.put("team_context", new SectionBudget(3, 1_000));
-        out.put("subagent_summaries", new SectionBudget(3, 900));
         out.put("tool_trace", new SectionBudget(4, 1_200));
         return out;
     }

@@ -1,8 +1,6 @@
 package ricbot.domain.agent;
 
 import ricbot.domain.session.Session;
-import ricbot.domain.subagent.SubAgentOrchestrator;
-import ricbot.domain.subagent.SubAgentResult;
 import ricbot.domain.team.TeamEngine;
 
 import java.util.ArrayList;
@@ -34,7 +32,6 @@ public final class TaskSummaryService {
                 metadataValue(session, SessionRuntimeKeys.CHANGESET_STATUS_KEY),
                 metadataValue(session, SessionRuntimeKeys.CHANGESET_COMMIT_HASH_KEY),
                 metadataValue(session, SessionRuntimeKeys.CHANGESET_ROLLBACK_STATUS_KEY),
-                renderSubAgentFindings(SubAgentOrchestrator.resultsFromSession(session)),
                 metadataValue(session, SessionRuntimeKeys.TRACE_SUMMARY_KEY)
         );
     }
@@ -46,7 +43,7 @@ public final class TaskSummaryService {
             List<String> testResults,
             List<String> keyDecisions
     ) {
-        return summarizeCurrentTask(taskState, toolTrace, modifiedFiles, testResults, keyDecisions, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), "", "", "", List.of(), "");
+        return summarizeCurrentTask(taskState, toolTrace, modifiedFiles, testResults, keyDecisions, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), "", "", "", "");
     }
 
     TaskSummary summarizeCurrentTask(
@@ -65,7 +62,6 @@ public final class TaskSummaryService {
             String changeSetStatus,
             String commitHash,
             String rollbackStatus,
-            List<String> subAgentFindings,
             String traceSummary
     ) {
         List<String> changedFiles = new ArrayList<>(dedupe(modifiedFiles));
@@ -117,7 +113,6 @@ public final class TaskSummaryService {
                 changeSetStatus,
                 commitHash,
                 rollbackStatus,
-                new ArrayList<>(dedupe(subAgentFindings)),
                 traceSummary,
                 notice(taskState, changedFiles, toolTrace)
         );
@@ -146,14 +141,6 @@ public final class TaskSummaryService {
             out.add("whiteboard: " + abbreviate(whiteboard, 220));
         }
         return new ArrayList<>(dedupe(out));
-    }
-
-    private List<String> renderSubAgentFindings(List<SubAgentResult> results) {
-        List<String> out = new ArrayList<>();
-        for (SubAgentResult result : results != null ? results : List.<SubAgentResult>of()) {
-            out.add(SubAgentOrchestrator.renderCompact(result));
-        }
-        return out;
     }
 
     private List<String> renderVerifierReports(Map<String, Object> teamContext) {
@@ -480,70 +467,9 @@ public final class TaskSummaryService {
             String changeSetStatus,
             String commitHash,
             String rollbackStatus,
-            List<String> subAgentFindings,
             String traceSummary,
             String notice
     ) {
-        public TaskSummary(
-                String goal,
-                List<String> changedFiles,
-                List<String> keyDecisions,
-                List<String> testCommands,
-                List<String> blockers,
-                List<String> nextActions,
-                List<String> approvalRecords,
-                List<String> diffReviews,
-                List<String> suggestedTests,
-                List<String> rollbackHints,
-                List<String> teamFindings,
-                List<String> verifierReports,
-                List<String> subAgentFindings,
-            String notice
-        ) {
-            this(goal, changedFiles, keyDecisions, testCommands, blockers, nextActions, approvalRecords,
-                    diffReviews, suggestedTests, rollbackHints, teamFindings, verifierReports, List.of(), List.of(), List.of(), List.of(), List.of(), "", "", "", subAgentFindings, "", notice);
-        }
-
-        public TaskSummary(
-                String goal,
-                List<String> changedFiles,
-                List<String> keyDecisions,
-                List<String> testCommands,
-                List<String> blockers,
-                List<String> nextActions,
-                List<String> approvalRecords,
-                List<String> diffReviews,
-                List<String> suggestedTests,
-                List<String> rollbackHints,
-                List<String> teamFindings,
-                List<String> verifierReports,
-                List<String> subAgentFindings,
-                String traceSummary,
-            String notice
-        ) {
-            this(goal, changedFiles, keyDecisions, testCommands, blockers, nextActions, approvalRecords,
-                    diffReviews, suggestedTests, rollbackHints, teamFindings, verifierReports, List.of(), List.of(), List.of(), List.of(), List.of(), "", "", "", subAgentFindings, traceSummary, notice);
-        }
-
-        public TaskSummary(
-                String goal,
-                List<String> changedFiles,
-                List<String> keyDecisions,
-                List<String> testCommands,
-                List<String> blockers,
-                List<String> nextActions,
-                List<String> approvalRecords,
-                List<String> diffReviews,
-                List<String> suggestedTests,
-                List<String> rollbackHints,
-                List<String> teamFindings,
-                List<String> subAgentFindings,
-            String notice
-        ) {
-            this(goal, changedFiles, keyDecisions, testCommands, blockers, nextActions, approvalRecords,
-                    diffReviews, suggestedTests, rollbackHints, teamFindings, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), "", "", "", subAgentFindings, "", notice);
-        }
-
         public TaskSummary {
             goal = goal != null ? goal : "";
             changedFiles = changedFiles != null ? List.copyOf(changedFiles) : List.of();
@@ -565,7 +491,6 @@ public final class TaskSummaryService {
             changeSetStatus = changeSetStatus != null ? changeSetStatus : "";
             commitHash = commitHash != null ? commitHash : "";
             rollbackStatus = rollbackStatus != null ? rollbackStatus : "";
-            subAgentFindings = subAgentFindings != null ? List.copyOf(subAgentFindings) : List.of();
             traceSummary = traceSummary != null ? traceSummary : "";
             notice = notice != null ? notice : "";
         }
@@ -596,7 +521,6 @@ public final class TaskSummaryService {
             out.put("changeset_status", changeSetStatus);
             out.put("commit_hash", commitHash);
             out.put("rollback_status", rollbackStatus);
-            out.put("subagent_findings", subAgentFindings);
             out.put("trace_summary", traceSummary);
             out.put("notice", notice);
             return out;

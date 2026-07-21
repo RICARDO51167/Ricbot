@@ -169,49 +169,6 @@ class AgentCommandsTest {
     }
 
     @Test
-    void subagentCommandsCreateListShowAndRecordRoleSummaries(@TempDir Path workspace) throws Exception {
-        SessionManager sessionManager = new SessionManager(workspace);
-        MemoryStore memoryStore = new MemoryStore(workspace);
-        Session session = sessionManager.getOrCreate("cli:direct");
-        seedSummaryMetadata(session);
-
-        AgentCommands commands = new AgentCommands(
-                sessionManager,
-                memoryStore,
-                "model",
-                workspace,
-                msg -> "cli:direct",
-                key -> List.<Future<?>>of(),
-                (key, reason) -> {}
-        );
-        CommandRouter router = new CommandRouter();
-        commands.register(router);
-
-        String planned = router.dispatch(context("/subagent plan V4.1 subagent summaries", sessionManager)).get().getContent();
-        String planId = lineValue(planned, "id:");
-        assertTrue(planned.contains("role: PLANNER"), planned);
-        assertTrue(planned.contains("subagent result recorded"), planned);
-
-        String explored = router.dispatch(context("/subagent explore inspect src/main/java/ricbot/domain/agent/ContextSelectionService.java", sessionManager)).get().getContent();
-        assertTrue(explored.contains("role: EXPLORER"), explored);
-
-        String reviewed = router.dispatch(context("/subagent review", sessionManager)).get().getContent();
-        assertTrue(reviewed.contains("role: REVIEWER"), reviewed);
-
-        String listed = router.dispatch(context("/subagent list", sessionManager)).get().getContent();
-        assertTrue(listed.contains("subagent results"), listed);
-        assertTrue(listed.contains(planId), listed);
-
-        String shown = router.dispatch(context("/subagent show " + planId, sessionManager)).get().getContent();
-        assertTrue(shown.contains("SubAgentResult " + planId), shown);
-        assertTrue(shown.contains("role: PLANNER"), shown);
-        String summary = router.dispatch(context("/summary", sessionManager)).get().getContent();
-        assertTrue(summary.contains("SubAgent Findings"), summary);
-        assertTrue(summary.contains(planId), summary);
-        assertTrue(Files.exists(workspace.resolve("notes").resolve("temporary")));
-    }
-
-    @Test
     void teamCommandsOperateStateMachineAndExposeSummary(@TempDir Path workspace) throws Exception {
         SessionManager sessionManager = new SessionManager(workspace);
         MemoryStore memoryStore = new MemoryStore(workspace);
@@ -1062,27 +1019,11 @@ class AgentCommandsTest {
     }
 
     @Test
-    void contextSourcesShowsTeamAndSubagentSources(@TempDir Path workspace) throws Exception {
+    void contextSourcesShowsTeamSources(@TempDir Path workspace) throws Exception {
         SessionManager sessionManager = new SessionManager(workspace);
         MemoryStore memoryStore = new MemoryStore(workspace);
         Session session = sessionManager.getOrCreate("cli:direct");
         PromptContextBundle bundle = new PromptContextBundle();
-        bundle.addItem(
-                "subagent_summaries",
-                "PLANNER task=subtask_context summary=Plan context display",
-                0.8d,
-                ContextSource.of(
-                        "subagent",
-                        "subtask_context",
-                        "subagent:subtask_context",
-                        "PLANNER summary",
-                        0.8d,
-                        Map.of(
-                                "subagent_role", "PLANNER",
-                                "confidence", 0.8d
-                        )
-                )
-        );
         bundle.addItem(
                 "team_context",
                 "session=team_demo | state=VERIFYING | goal=Team context",
@@ -1136,13 +1077,9 @@ class AgentCommandsTest {
         String detail = router.dispatch(context("/context --detail", sessionManager)).get().getContent();
 
         assertTrue(sources.contains("team_context"), sources);
-        assertTrue(sources.contains("subagent_summaries"), sources);
         assertTrue(sources.contains(".team/team_demo/whiteboard.md"), sources);
         assertTrue(sources.contains(".team/team_demo/verification.jsonl"), sources);
-        assertTrue(sources.contains("subagent:subtask_context"), sources);
-        assertTrue(sources.contains("subagent_role=PLANNER"), sources);
         assertTrue(detail.contains("team_context"), detail);
-        assertTrue(detail.contains("subagent_summaries"), detail);
         assertTrue(detail.contains("avg_relevance"), detail);
     }
 
