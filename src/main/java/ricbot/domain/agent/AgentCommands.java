@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ricbot.application.team.TeamReportApplicationService;
 import ricbot.application.team.TeamSessionApplicationService;
+import ricbot.application.team.TeamStepApplicationService;
 import ricbot.application.team.TeamTaskApplicationService;
 import ricbot.application.workspace.WorkspaceApplicationService;
 import ricbot.domain.change.ChangeSetRenderer;
@@ -43,7 +44,6 @@ import ricbot.domain.team.ImplementationStepStatus;
 import ricbot.domain.team.ImplementationStepType;
 import ricbot.domain.team.PendingImplementationStep;
 import ricbot.domain.team.StepGateResult;
-import ricbot.domain.team.StepUpdateRequest;
 import ricbot.domain.team.StepAuditEventType;
 import ricbot.domain.team.StepAuditRecord;
 import ricbot.domain.team.VerificationResult;
@@ -94,6 +94,7 @@ final class AgentCommands {
     private final TeamSessionApplicationService teamSessions;
     private final TeamReportApplicationService teamReports;
     private final TeamTaskApplicationService teamTasks;
+    private final TeamStepApplicationService teamSteps;
 
     AgentCommands(
             SessionManager sessionManager,
@@ -161,6 +162,7 @@ final class AgentCommands {
         this.teamSessions = new TeamSessionApplicationService(this.sessionManager, this.teamEngine);
         this.teamReports = new TeamReportApplicationService(this.teamEngine, this.teamSessions);
         this.teamTasks = new TeamTaskApplicationService(this.workspace, this.teamEngine, this.teamSessions);
+        this.teamSteps = new TeamStepApplicationService(this.workspace, this.teamEngine, this.teamSessions, this.traceStore);
     }
 
     void register(CommandRouter router) {
@@ -706,13 +708,9 @@ final class AgentCommands {
                 case "worker-report", "report", "verifier-report", "step-timeline", "task-timeline", "audit" ->
                         completedReply(ctx, teamReports.execute(session, action, afterCommand(args)));
                 case "tool-call" -> teamToolCall(ctx, afterCommand(args));
-                case "plan-steps" -> teamPlanSteps(ctx, afterCommand(args));
-                case "steps" -> teamSteps(ctx, afterCommand(args));
-                case "show-step" -> teamShowStep(ctx, afterCommand(args));
-                case "next-step" -> teamNextStep(ctx, afterCommand(args));
-                case "update-step" -> teamUpdateStep(ctx, afterCommand(args));
+                case "plan-steps", "steps", "show-step", "next-step", "update-step", "reject-step" ->
+                        completedReply(ctx, teamSteps.execute(session, action, afterCommand(args)));
                 case "apply-step" -> teamApplyStep(ctx, afterCommand(args));
-                case "reject-step" -> teamRejectStep(ctx, afterCommand(args));
                 case "auto-verify", "task", "verify" -> completedReply(ctx,
                         teamTasks.execute(session, action, afterCommand(args)));
                 default -> completedReply(ctx, "用法：/team start <goal>|status|list|resume <sessionId>|archive <sessionId>|suggest <goal>|suggest-current|run <task> [--worktree] [--verify]|task <role> <goal>|run-worker <taskId>|run-verifier <taskId>|worker-report <taskId>|report <taskId>|tool-call <taskId> <toolName> <jsonArgs>|plan-steps <taskId>|steps <taskId>|show-step <stepId>|next-step <taskId>|update-step <stepId> <jsonUpdate>|apply-step <stepId>|reject-step <stepId>|step-timeline <stepId>|task-timeline <taskId>|audit <taskId>|auto-verify <taskId>|verifier-report <taskId>|verify <taskId> pass|reject|needs-human <reason>|events|whiteboard|abort <taskId>");
@@ -886,87 +884,6 @@ final class AgentCommands {
         teamEngine.recordRoleToolCall(task.id(), report);
         storeTeamContext(session, task.sessionId());
         return completedReply(ctx, renderPolicyToolResult(result, report));
-    }
-
-    private CompletableFuture<OutboundMessage> teamPlanSteps(CommandRouter.CommandContext ctx, String rawArgs) {
-        String taskId = commandArg(rawArgs, 0);
-        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
-        TeamTask task = teamEngine.findTask(taskId);
-        if (task == null) {
-            throw new IllegalArgumentException("team task not found: " + taskId);
-        }
-        List<PendingImplementationStep> steps = teamEngine.createImplementationSteps(taskId);
-        storeTeamContext(session, task.sessionId());
-        for (PendingImplementationStep step : steps) {
-            traceImplementationStep(session, TraceEventType.IMPLEMENTATION_STEP_CREATED, step);
-        }
-        return completedReply(ctx, "implementation steps planned\n" + renderImplementationSteps(steps));
-    }
-
-    private CompletableFuture<OutboundMessage> teamSteps(CommandRouter.CommandContext ctx, String rawArgs) {
-        String taskId = commandArg(rawArgs, 0);
-        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
-        TeamTask task = teamEngine.findTask(taskId);
-        if (task == null) {
-            throw new IllegalArgumentException("team task not found: " + taskId);
-        }
-        List<PendingImplementationStep> steps = teamEngine.listImplementationSteps(taskId);
-        storeTeamContext(session, task.sessionId());
-        return completedReply(ctx, steps.isEmpty() ? "No implementation steps for task: " + taskId : "implementation steps\n" + renderImplementationSteps(steps));
-    }
-
-    private CompletableFuture<OutboundMessage> teamShowStep(CommandRouter.CommandContext ctx, String rawArgs) {
-        PendingImplementationStep step = requireImplementationStep(commandArg(rawArgs, 0));
-        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
-        StepGateResult gate = teamEngine.checkImplementationStepGate(step.id(), stepGateContext(session, step));
-        return completedReply(ctx, renderImplementationStepDetail(step) + "\n\n" + renderStepGate(gate));
-    }
-
-    private CompletableFuture<OutboundMessage> teamNextStep(CommandRouter.CommandContext ctx, String rawArgs) {
-        String taskId = commandArg(rawArgs, 0);
-        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
-        TeamTask task = teamEngine.findTask(taskId);
-        if (task == null) {
-            throw new IllegalArgumentException("team task not found: " + taskId);
-        }
-        List<PendingImplementationStep> steps = teamEngine.listImplementationSteps(taskId);
-        PendingImplementationStep next = new ImplementationStepGate().nextStep(steps, stepGateContext(session, null));
-        storeTeamContext(session, task.sessionId());
-        if (next == null) {
-            return completedReply(ctx, "No pending implementation step for task: " + taskId);
-        }
-        StepGateResult gate = teamEngine.checkImplementationStepGate(next.id(), stepGateContext(session, next));
-        return completedReply(ctx, "next implementation step\n" + renderImplementationStepDetail(next) + "\n\n" + renderStepGate(gate));
-    }
-
-    private CompletableFuture<OutboundMessage> teamUpdateStep(CommandRouter.CommandContext ctx, String rawArgs) {
-        String stepId = commandArg(rawArgs, 0);
-        String jsonUpdate = afterNthArg(rawArgs, 1);
-        if (jsonUpdate.isBlank()) {
-            throw new IllegalArgumentException("missing jsonUpdate");
-        }
-        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
-        PendingImplementationStep before = requireImplementationStep(stepId);
-        StepUpdateRequest request = StepUpdateRequest.fromMap(parseJsonArgs(jsonUpdate));
-        PendingImplementationStep updated = teamEngine.updateImplementationStep(stepId, request, stepGateContext(session, before), "user");
-        storeTeamContext(session, updated.teamSessionId());
-        traceImplementationStep(session, TraceEventType.IMPLEMENTATION_STEP_UPDATED, updated);
-        if (!updated.validationErrors().isEmpty()) {
-            traceImplementationStep(session, TraceEventType.IMPLEMENTATION_STEP_VALIDATION_FAILED, updated);
-        } else if (updated.status() == ImplementationStepStatus.READY) {
-            traceImplementationStep(session, TraceEventType.IMPLEMENTATION_STEP_READY, updated);
-        }
-        return completedReply(ctx, "implementation step updated\n"
-                + "updatedFields: " + renderListInline(request.updatedFields()) + "\n"
-                + renderImplementationStepDetail(updated));
-    }
-
-    private CompletableFuture<OutboundMessage> teamRejectStep(CommandRouter.CommandContext ctx, String rawArgs) {
-        PendingImplementationStep rejected = teamEngine.rejectImplementationStep(commandArg(rawArgs, 0));
-        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
-        storeTeamContext(session, rejected.teamSessionId());
-        traceImplementationStep(session, TraceEventType.IMPLEMENTATION_STEP_REJECTED, rejected);
-        return completedReply(ctx, "implementation step rejected\n" + renderImplementationStepDetail(rejected));
     }
 
     private CompletableFuture<OutboundMessage> teamApplyStep(CommandRouter.CommandContext ctx, String rawArgs) {
@@ -1334,30 +1251,6 @@ final class AgentCommands {
         return step;
     }
 
-    private String renderImplementationSteps(List<PendingImplementationStep> steps) {
-        StringBuilder sb = new StringBuilder();
-        List<PendingImplementationStep> safeSteps = steps != null ? steps : List.of();
-        sb.append("counts: DRAFT=").append(countSteps(safeSteps, ImplementationStepStatus.DRAFT))
-                .append(" READY=").append(countSteps(safeSteps, ImplementationStepStatus.READY))
-                .append(" BLOCKED=").append(countSteps(safeSteps, ImplementationStepStatus.BLOCKED))
-                .append(" APPLIED=").append(countSteps(safeSteps, ImplementationStepStatus.APPLIED))
-                .append("\n");
-        for (PendingImplementationStep step : safeSteps) {
-            sb.append("- ").append(step.id())
-                    .append(" [").append(step.type()).append("] ")
-                    .append(step.status())
-                    .append(" order=").append(step.orderIndex())
-                    .append(!step.targetPath().isBlank() ? " target=" + step.targetPath() : "")
-                    .append(!step.command().isBlank() ? " command=" + step.command() : "")
-                    .append(!step.dependsOnStepIds().isEmpty() ? " dependsOn=" + String.join(",", step.dependsOnStepIds()) : "")
-                    .append(!step.blockedReason().isBlank() ? " blockedReason=" + step.blockedReason() : "")
-                    .append(!step.requiredBeforeApply().isEmpty() ? " requiredBeforeApply=" + String.join("; ", step.requiredBeforeApply()) : "")
-                    .append(" reason=").append(step.reason())
-                    .append("\n");
-        }
-        return sb.toString().trim();
-    }
-
     private String renderTeamExecutionResult(TeamExecutionService.TeamExecutionResult result) {
         return "team execution\n"
                 + "taskId: " + result.taskId() + "\n"
@@ -1475,10 +1368,6 @@ final class AgentCommands {
         }
         long lines = diff.lines().count();
         return lines + " diff lines";
-    }
-
-    private long countSteps(List<PendingImplementationStep> steps, ImplementationStepStatus status) {
-        return steps.stream().filter(step -> step.status() == status).count();
     }
 
     private String renderImplementationStepDetail(PendingImplementationStep step) {
