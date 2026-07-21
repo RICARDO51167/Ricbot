@@ -52,9 +52,6 @@ public class AgentLoopTest {
         // 配置执行工具，设置为禁用状态
         Config.ExecToolConfig exec = new Config.ExecToolConfig();
         exec.setEnable(false);
-        Config.DreamConfig dreamConfig = new Config.DreamConfig();
-        dreamConfig.setEnabled(false);
-
         // 初始化 AgentLoop，传入各种配置参数
         AgentLoop loop = new AgentLoop(
                 bus,                // 消息总线
@@ -74,13 +71,19 @@ public class AgentLoopTest {
                 "UTC",              // 时区
                 false,              // 统一会话
                 List.of(),          // 禁用技能
-                0,                  // 会话 TTL
-                dreamConfig         // Dream 配置
+                0                   // 会话 TTL
         );
 
         // 使用 start() 启动 AgentLoop 及必要的后台组件
         loop.start();
         try {
+            assertTrue(Thread.getAllStackTraces().keySet().stream()
+                    .map(Thread::getName)
+                    .map(String::toLowerCase)
+                    .noneMatch(name -> name.contains("dream")
+                            || name.contains("cron")
+                            || name.contains("heartbeat")));
+
             // 创建一条来自 CLI 用户的入站消息，内容为 "ping"
             InboundMessage inbound = new InboundMessage("cli", "user", "direct", "ping");
             // 将入站消息发布到消息总线
@@ -131,9 +134,6 @@ public class AgentLoopTest {
         web.setEnable(false);
         Config.ExecToolConfig exec = new Config.ExecToolConfig();
         exec.setEnable(false);
-        Config.DreamConfig dreamConfig = new Config.DreamConfig();
-        dreamConfig.setEnabled(false);
-
         AgentLoop loop = new AgentLoop(
                 bus,
                 provider,
@@ -152,16 +152,15 @@ public class AgentLoopTest {
                 "UTC",
                 false,
                 List.of(),
-                0,
-                dreamConfig
+                0
         );
 
         OutboundMessage help = loop.processDirect("/help", "cli:direct");
         assertTrue(help.getContent().contains("ricbot 命令"));
         assertEquals(0, modelCalls.get());
 
-        OutboundMessage dream = loop.processDirect("/dream", "cli:direct");
-        assertTrue(dream.getContent().contains("未启用"));
+        OutboundMessage removedDreamCommand = loop.processDirect("/dream", "cli:direct");
+        assertTrue(removedDreamCommand.getContent().contains("command error: unknown command"));
         assertEquals(0, modelCalls.get());
 
         OutboundMessage missingReport = loop.processDirect("/team report teamtask_missing", "cli:direct");

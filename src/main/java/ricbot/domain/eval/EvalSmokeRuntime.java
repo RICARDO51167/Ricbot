@@ -22,7 +22,6 @@ public final class EvalSmokeRuntime {
                 workspace != null && !workspace.isBlank() ? workspace : DEFAULT_WORKSPACE
         );
         config.getAgents().getDefaults().setModel(MODEL);
-        config.getAgents().getDefaults().getDream().setEnabled(false);
         config.getTools().getExec().setEnable(false);
         config.getTools().getExec().setApprovalEnabled(false);
         config.getTools().getWeb().setEnable(false);

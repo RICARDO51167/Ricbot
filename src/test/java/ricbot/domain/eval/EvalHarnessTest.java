@@ -744,8 +744,7 @@ class EvalHarnessTest {
                 "UTC",
                 false,
                 List.of(),
-                0,
-                dreamDisabled()
+                0
         );
     }
 
@@ -753,7 +752,6 @@ class EvalHarnessTest {
         Config config = new Config();
         config.getAgents().getDefaults().setWorkspace(workspace.toString());
         config.getAgents().getDefaults().setModel("test-model");
-        config.getAgents().getDefaults().setDream(dreamDisabled());
         config.getTools().setExec(execDisabled());
         return config;
     }
@@ -840,12 +838,6 @@ class EvalHarnessTest {
         exec.setEnable(false);
         exec.setApprovalEnabled(false);
         return exec;
-    }
-
-    private static Config.DreamConfig dreamDisabled() {
-        Config.DreamConfig dream = new Config.DreamConfig();
-        dream.setEnabled(false);
-        return dream;
     }
 
     private static EvalRunSummary writeSummary(Path runDir, int total, int passed, int failed) throws Exception {

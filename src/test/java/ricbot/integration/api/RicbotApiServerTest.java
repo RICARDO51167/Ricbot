@@ -2611,9 +2611,6 @@ public class RicbotApiServerTest {
         web.setEnable(false);
         Config.ExecToolConfig exec = new Config.ExecToolConfig();
         exec.setEnable(false);
-        Config.DreamConfig dreamConfig = new Config.DreamConfig();
-        dreamConfig.setEnabled(false);
-
         AgentLoop loop = new AgentLoop(
                 bus,
                 provider,
@@ -2632,8 +2629,7 @@ public class RicbotApiServerTest {
                 "UTC",
                 false,
                 List.of(),
-                0,
-                dreamConfig
+                0
         );
         if (start) {
             loop.start();
@@ -2692,9 +2688,6 @@ public class RicbotApiServerTest {
         web.setEnable(false);
         Config.ExecToolConfig exec = new Config.ExecToolConfig();
         exec.setEnable(false);
-        Config.DreamConfig dreamConfig = new Config.DreamConfig();
-        dreamConfig.setEnabled(false);
-
         AgentLoop loop = new AgentLoop(
                 bus,
                 provider,
@@ -2713,8 +2706,7 @@ public class RicbotApiServerTest {
                 "UTC",
                 false,
                 List.of(),
-                0,
-                dreamConfig
+                0
         );
         loop.start();
         return loop;
@@ -2743,9 +2735,6 @@ public class RicbotApiServerTest {
         web.setEnable(false);
         Config.ExecToolConfig exec = new Config.ExecToolConfig();
         exec.setEnable(false);
-        Config.DreamConfig dreamConfig = new Config.DreamConfig();
-        dreamConfig.setEnabled(false);
-
         AgentLoop loop = new AgentLoop(
                 bus,
                 provider,
@@ -2764,8 +2753,7 @@ public class RicbotApiServerTest {
                 "UTC",
                 false,
                 List.of(),
-                0,
-                dreamConfig
+                0
         ) {
             @Override
             public OutboundMessage processDirect(String content, String sessionKey, String channel, String chatId) {
@@ -2820,8 +2808,7 @@ public class RicbotApiServerTest {
                 "UTC",
                 false,
                 List.of(),
-                0,
-                new Config.DreamConfig()
+                0
         ) {
             @Override
             public OutboundMessage processDirect(

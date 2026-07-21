@@ -7,7 +7,7 @@
 
 ## 工作区
 你的工作区路径：{{ workspace_path }}
-- 长期记忆：{{ workspace_path }}/memory/MEMORY.md（由 Dream 自动管理——请勿直接编辑）
+- 长期记忆：{{ workspace_path }}/memory/MEMORY.md（已审批结构化记忆的只读投影）
 - 历史日志：{{ workspace_path }}/memory/history.jsonl（仅追加的 JSONL；搜索优先用内置 `grep`）
 - 自定义技能：{{ workspace_path }}/skills/{skill-name}/SKILL.md
 

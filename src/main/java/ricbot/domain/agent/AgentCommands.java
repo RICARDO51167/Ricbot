@@ -7,7 +7,6 @@ import ricbot.domain.change.ChangeSetService;
 import ricbot.domain.change.GitChangeSet;
 import ricbot.domain.change.GitChangeSetStatus;
 import ricbot.domain.change.PendingChangeAction;
-import ricbot.domain.memory.Dream;
 import ricbot.domain.memory.MemoryStore;
 import ricbot.domain.experience.ExperienceEntry;
 import ricbot.domain.experience.ExperienceExtractor;
@@ -75,13 +74,10 @@ import ricbot.domain.workspace.WorkspaceLifecycleService;
 import ricbot.domain.workspace.WorkspaceRenderer;
 import ricbot.domain.workspace.WorkspaceSession;
 import ricbot.domain.workspace.WorkspaceSessionStore;
-import ricbot.infra.config.Config;
 import ricbot.integration.command.CommandRouter;
 import ricbot.tool.api.ToolRegistry;
 
 import java.nio.file.Path;
-import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -97,8 +93,6 @@ final class AgentCommands {
 
     private final SessionManager sessionManager;
     private final MemoryStore memoryStore;
-    private final Dream dream;
-    private final Config.DreamConfig dreamConfig;
     private final String model;
     private final Path workspace;
     private final Function<InboundMessage, String> sessionKeyResolver;
@@ -113,23 +107,19 @@ final class AgentCommands {
     AgentCommands(
             SessionManager sessionManager,
             MemoryStore memoryStore,
-            Dream dream,
-            Config.DreamConfig dreamConfig,
             String model,
             Path workspace,
             Function<InboundMessage, String> sessionKeyResolver,
             Function<String, List<Future<?>>> activeTaskRemover,
             BiConsumer<String, String> sessionInterruptMarker
     ) {
-        this(sessionManager, memoryStore, dream, dreamConfig, model, workspace, sessionKeyResolver,
+        this(sessionManager, memoryStore, model, workspace, sessionKeyResolver,
                 activeTaskRemover, sessionInterruptMarker, new ApprovalService(), null);
     }
 
     AgentCommands(
             SessionManager sessionManager,
             MemoryStore memoryStore,
-            Dream dream,
-            Config.DreamConfig dreamConfig,
             String model,
             Path workspace,
             Function<InboundMessage, String> sessionKeyResolver,
@@ -137,15 +127,13 @@ final class AgentCommands {
             BiConsumer<String, String> sessionInterruptMarker,
             ApprovalService approvalService
     ) {
-        this(sessionManager, memoryStore, dream, dreamConfig, model, workspace, sessionKeyResolver,
+        this(sessionManager, memoryStore, model, workspace, sessionKeyResolver,
                 activeTaskRemover, sessionInterruptMarker, approvalService, null);
     }
 
     AgentCommands(
             SessionManager sessionManager,
             MemoryStore memoryStore,
-            Dream dream,
-            Config.DreamConfig dreamConfig,
             String model,
             Path workspace,
             Function<InboundMessage, String> sessionKeyResolver,
@@ -154,15 +142,13 @@ final class AgentCommands {
             ApprovalService approvalService,
             ToolRegistry toolRegistry
     ) {
-        this(sessionManager, memoryStore, dream, dreamConfig, model, workspace, sessionKeyResolver,
+        this(sessionManager, memoryStore, model, workspace, sessionKeyResolver,
                 activeTaskRemover, sessionInterruptMarker, approvalService, toolRegistry, null);
     }
 
     AgentCommands(
             SessionManager sessionManager,
             MemoryStore memoryStore,
-            Dream dream,
-            Config.DreamConfig dreamConfig,
             String model,
             Path workspace,
             Function<InboundMessage, String> sessionKeyResolver,
@@ -174,8 +160,6 @@ final class AgentCommands {
     ) {
         this.sessionManager = sessionManager;
         this.memoryStore = memoryStore;
-        this.dream = dream;
-        this.dreamConfig = dreamConfig;
         this.model = model;
         this.workspace = workspace;
         this.sessionKeyResolver = sessionKeyResolver;
@@ -215,11 +199,6 @@ final class AgentCommands {
         router.prefix("/team ", this::team);
         router.prefix("/approve ", this::approve);
         router.prefix("/reject ", this::reject);
-        router.exact("/dream", this::dream);
-        router.exact("/dream-log", this::dreamLog);
-        router.prefix("/dream-log ", this::dreamLog);
-        router.exact("/dream-restore", this::dreamRestore);
-        router.prefix("/dream-restore ", this::dreamRestore);
     }
 
     private CompletableFuture<OutboundMessage> stop(CommandRouter.CommandContext ctx) {
@@ -2762,80 +2741,6 @@ final class AgentCommands {
                 "status", request.status().name()
         ), "", "", request.requestId());
         return completedReply(ctx, "已拒绝审批请求：" + request.requestId() + "\nstatus: " + request.status());
-    }
-
-    private CompletableFuture<OutboundMessage> dream(CommandRouter.CommandContext ctx) {
-        if (!dreamEnabled()) {
-            return completedReply(ctx, "Dream 未启用。");
-        }
-        return completedReply(ctx, dream.run()
-                ? "Dream 已完成一次整合，记忆文件已更新。"
-                : "Dream 本次没有检测到可更新内容。");
-    }
-
-    private CompletableFuture<OutboundMessage> dreamLog(CommandRouter.CommandContext ctx) {
-        if (!dreamEnabled()) {
-            return completedReply(ctx, "Dream 未启用。");
-        }
-
-        int maxEntries = 10;
-        String args = trim(ctx.getArgs());
-        if (!args.isBlank()) {
-            maxEntries = Math.max(1, Math.min(50, parseInt(args, 10)));
-        }
-
-        var git = memoryStore.getGit();
-        if (!git.isInitialized()) {
-            return completedReply(ctx, "Dream 日志仓库尚未初始化。先执行一次 /dream 后再查看日志。");
-        }
-
-        var logs = git.log(maxEntries);
-        if (logs.isEmpty()) {
-            return completedReply(ctx, "暂无 Dream 历史记录。");
-        }
-
-        StringBuilder sb = new StringBuilder();
-        sb.append("dream log (latest ").append(logs.size()).append(")\n");
-        sb.append("cursor: ").append(memoryStore.getLastDreamCursor())
-                .append("/").append(memoryStore.getLastCursor()).append("\n\n");
-        for (var c : logs) {
-            sb.append(c.sha()).append("  ").append(c.timestamp()).append("  ").append(c.message()).append("\n");
-        }
-        return completedReply(ctx, sb.toString().trim());
-    }
-
-    private CompletableFuture<OutboundMessage> dreamRestore(CommandRouter.CommandContext ctx) {
-        if (!dreamEnabled()) {
-            return completedReply(ctx, "Dream 未启用。");
-        }
-
-        String args = trim(ctx.getArgs());
-        if (args.isBlank()) {
-            return completedReply(ctx, "用法：/dream-restore <commit_sha>");
-        }
-
-        String sha = args.split("\\s+")[0];
-        var git = memoryStore.getGit();
-        if (!git.isInitialized()) {
-            return completedReply(ctx, "Dream 日志仓库尚未初始化，无法 restore。请先执行 /dream。");
-        }
-
-        var found = git.findCommit(sha, 200);
-        if (found == null) {
-            return completedReply(ctx, "未找到对应提交：" + sha);
-        }
-
-        String reverted = git.revert(found.sha());
-        if (reverted == null) {
-            return completedReply(ctx, "restore 失败，请检查工作区状态后重试。");
-        }
-
-        String now = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
-        return completedReply(ctx, "Dream 已恢复到 " + found.sha() + "，新提交: " + reverted + " (" + now + ")");
-    }
-
-    private boolean dreamEnabled() {
-        return dreamConfig != null && dreamConfig.isEnabled();
     }
 
     private String afterCommand(String args) {

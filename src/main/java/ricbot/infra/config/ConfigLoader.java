@@ -123,6 +123,9 @@ public final class ConfigLoader {
                 // 将 Map 转换为 Config 对象
                 config = mapToConfig(raw);
             } catch (Exception e) {
+                if (e instanceof RemovedConfigException removed) {
+                    throw removed;
+                }
                 log.warn("从 {} 加载配置失败，将使用默认配置。", path, e);
             }
         }
@@ -291,6 +294,14 @@ public final class ConfigLoader {
             return new LinkedHashMap<>();
         }
 
+        Map<String, Object> agents = asMap(data.get("agents"));
+        Map<String, Object> defaults = asMap(agents.get("defaults"));
+        if (defaults.containsKey("dream")) {
+            throw new RemovedConfigException(
+                    "配置 agents.defaults.dream 已删除；请移除该配置。长期记忆改为显式候选审批，长会话压缩仍由 Runtime 管理。"
+            );
+        }
+
         // 获取 tools 节点
         Object toolsObj = data.get("tools");
         // 如果 tools 不是 Map 类型，直接返回原数据
@@ -371,14 +382,6 @@ public final class ConfigLoader {
         ad.setUnifiedSession(booleanValue(defaults.get("unified_session"), ad.isUnifiedSession()));
         ad.setDisabledSkills(stringList(defaults.get("disabled_skills")));
         ad.setSessionTtlMinutes(intValue(defaults.get("session_ttl_minutes"), ad.getSessionTtlMinutes()));
-
-        // 处理 dream 配置
-        Map<String, Object> dream = asMap(defaults.get("dream"));
-        Config.DreamConfig dc = ad.getDream();
-        dc.setEnabled(booleanValue(dream.get("enabled"), dc.isEnabled()));
-        dc.setModelOverride(string(dream.get("model_override"), dc.getModelOverride()));
-        dc.setMaxBatchSize(intValue(dream.get("max_batch_size"), dc.getMaxBatchSize()));
-        dc.setMaxIterations(intValue(dream.get("max_iterations"), dc.getMaxIterations()));
 
         // --- 处理 providers 部分 ---
         Map<String, Object> providers = asMap(data.get("providers"));
@@ -529,14 +532,6 @@ public final class ConfigLoader {
         defaults.put("unified_session", ad.isUnifiedSession());
         defaults.put("disabled_skills", ad.getDisabledSkills());
         defaults.put("session_ttl_minutes", ad.getSessionTtlMinutes());
-
-        // 构建 dream 配置
-        Map<String, Object> dream = new LinkedHashMap<>();
-        dream.put("enabled", ad.getDream().isEnabled());
-        dream.put("model_override", ad.getDream().getModelOverride());
-        dream.put("max_batch_size", ad.getDream().getMaxBatchSize());
-        dream.put("max_iterations", ad.getDream().getMaxIterations());
-        defaults.put("dream", dream);
 
         agents.put("defaults", defaults);
         root.put("agents", agents);
@@ -867,5 +862,11 @@ public final class ConfigLoader {
         if (o instanceof Boolean b) return b;
         if (o != null) return Boolean.parseBoolean(String.valueOf(o));
         return def;
+    }
+
+    private static final class RemovedConfigException extends IllegalArgumentException {
+        private RemovedConfigException(String message) {
+            super(message);
+        }
     }
 }

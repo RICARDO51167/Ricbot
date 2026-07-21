@@ -56,9 +56,6 @@ public class AgentLoopToolCallTest {
         web.setEnable(false);
         Config.ExecToolConfig exec = new Config.ExecToolConfig();
         exec.setEnable(false);
-        Config.DreamConfig dreamConfig = new Config.DreamConfig();
-        dreamConfig.setEnabled(false);
-
         AgentLoop loop = new AgentLoop(
                 bus,
                 provider,
@@ -77,8 +74,7 @@ public class AgentLoopToolCallTest {
                 "UTC",
                 false,
                 List.of(),
-                0,
-                dreamConfig
+                0
         );
 
         String sessionKey = "cli:direct";
@@ -129,8 +125,7 @@ public class AgentLoopToolCallTest {
                 "UTC",
                 false,
                 List.of(),
-                0,
-                dreamConfig
+                0
         );
 
         String sessionKey2 = "cli:direct2";
@@ -176,9 +171,6 @@ public class AgentLoopToolCallTest {
         web.setEnable(false);
         Config.ExecToolConfig exec = new Config.ExecToolConfig();
         exec.setEnable(false);
-        Config.DreamConfig dreamConfig = new Config.DreamConfig();
-        dreamConfig.setEnabled(false);
-
         AgentLoop loop = new AgentLoop(
                 bus,
                 provider,
@@ -197,8 +189,7 @@ public class AgentLoopToolCallTest {
                 "UTC",
                 false,
                 List.of(),
-                0,
-                dreamConfig
+                0
         );
 
         String sessionKey = "cli:direct";
@@ -231,9 +222,6 @@ public class AgentLoopToolCallTest {
         web.setEnable(false);
         Config.ExecToolConfig exec = new Config.ExecToolConfig();
         exec.setEnable(false);
-        Config.DreamConfig dreamConfig = new Config.DreamConfig();
-        dreamConfig.setEnabled(false);
-
         AgentLoop loop = new AgentLoop(
                 bus,
                 provider,
@@ -252,8 +240,7 @@ public class AgentLoopToolCallTest {
                 "UTC",
                 false,
                 List.of(),
-                0,
-                dreamConfig
+                0
         );
 
         String sessionKey = "cli:direct";
@@ -289,9 +276,6 @@ public class AgentLoopToolCallTest {
         web.setEnable(false);
         Config.ExecToolConfig exec = new Config.ExecToolConfig();
         exec.setEnable(false);
-        Config.DreamConfig dreamConfig = new Config.DreamConfig();
-        dreamConfig.setEnabled(false);
-
         AgentLoop loop = new AgentLoop(
                 bus,
                 provider,
@@ -310,8 +294,7 @@ public class AgentLoopToolCallTest {
                 "UTC",
                 false,
                 List.of(),
-                0,
-                dreamConfig
+                0
         );
 
         String sessionKey = "cli:direct";

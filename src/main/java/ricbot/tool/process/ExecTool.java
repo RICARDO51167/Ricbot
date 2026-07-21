@@ -687,11 +687,11 @@ public class ExecTool extends Tool {
                 ">\\s*/dev/sd",
                 "\\b(shutdown|reboot|poweroff)\\b",
                 ":\\(\\)\\s*\\{.*\\};\\s*:",
-                ">>?\\s*\\S*(?:history\\.jsonl|\\.dream_cursor)",
-                "\\btee\\b[^|;&<>]*(?:history\\.jsonl|\\.dream_cursor)",
-                "\\b(?:cp|mv)\\b(?:\\s+[^\\s|;&<>]+)+\\s+\\S*(?:history\\.jsonl|\\.dream_cursor)",
-                "\\bdd\\b[^|;&<>]*\\bof=\\S*(?:history\\.jsonl|\\.dream_cursor)",
-                "\\bsed\\s+-i[^|;&<>]*(?:history\\.jsonl|\\.dream_cursor)"
+                ">>?\\s*\\S*history\\.jsonl",
+                "\\btee\\b[^|;&<>]*history\\.jsonl",
+                "\\b(?:cp|mv)\\b(?:\\s+[^\\s|;&<>]+)+\\s+\\S*history\\.jsonl",
+                "\\bdd\\b[^|;&<>]*\\bof=\\S*history\\.jsonl",
+                "\\bsed\\s+-i[^|;&<>]*history\\.jsonl"
         );
     }
 }

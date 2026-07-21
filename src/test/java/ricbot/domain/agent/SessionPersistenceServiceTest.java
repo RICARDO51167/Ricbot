@@ -152,7 +152,7 @@ class SessionPersistenceServiceTest {
 
         service.persistInteractiveTurn(request, outcome);
 
-        assertEquals(1, memoryStore.drainMemoryCandidates().size());
+        assertEquals(1, memoryStore.readMemoryCandidates().size());
     }
 
     @Test
@@ -204,7 +204,7 @@ class SessionPersistenceServiceTest {
         service.persistInteractiveTurn(request, outcome);
 
         assertEquals(1, calls.get());
-        List<MemoryEntry> candidates = memoryStore.drainMemoryCandidates();
+        List<MemoryEntry> candidates = memoryStore.readMemoryCandidates();
         assertEquals(1, candidates.size());
         assertEquals("policy candidate", candidates.get(0).getSummary());
     }

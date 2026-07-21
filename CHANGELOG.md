@@ -4,7 +4,7 @@
 
 - Runtime Core 收敛为 CLI、OpenAI-compatible API 与通用 WebSocket 输入，不再内置具体企业通信适配器。
 - 删除内置定时任务工具、持久调度器与后台心跳服务；外部调度器通过显式输入或 Resume 接口唤醒任务。
-- 移除后台 Dream 调度，Memory/Dream 暂时仅允许显式调用，等待后续边界收敛。
+- 删除后台记忆自学习、整文件改写与 Git restore 链路；保留结构化 Memory、显式候选审批和长会话压缩。
 
 ## V5.4 - Provider Capability Override
 

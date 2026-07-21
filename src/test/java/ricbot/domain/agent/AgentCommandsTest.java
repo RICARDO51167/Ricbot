@@ -4,7 +4,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import ricbot.domain.change.ChangeSetService;
 import ricbot.domain.change.GitChangeSetStatus;
-import ricbot.domain.memory.Dream;
 import ricbot.domain.experience.ExperienceEntry;
 import ricbot.domain.experience.ExperienceStore;
 import ricbot.domain.experience.ExperienceType;
@@ -58,8 +57,6 @@ class AgentCommandsTest {
         AgentCommands commands = new AgentCommands(
                 sessionManager,
                 memoryStore,
-                null,
-                new Config.DreamConfig(),
                 "model",
                 workspace,
                 msg -> "cli:direct",
@@ -96,8 +93,6 @@ class AgentCommandsTest {
         AgentCommands commands = new AgentCommands(
                 sessionManager,
                 memoryStore,
-                null,
-                new Config.DreamConfig(),
                 "model",
                 workspace,
                 msg -> "cli:direct",
@@ -130,8 +125,6 @@ class AgentCommandsTest {
         AgentCommands commands = new AgentCommands(
                 sessionManager,
                 memoryStore,
-                null,
-                new Config.DreamConfig(),
                 "model",
                 workspace,
                 msg -> "cli:direct",
@@ -159,8 +152,6 @@ class AgentCommandsTest {
         AgentCommands commands = new AgentCommands(
                 sessionManager,
                 memoryStore,
-                null,
-                new Config.DreamConfig(),
                 "model",
                 workspace,
                 msg -> "cli:direct",
@@ -190,8 +181,6 @@ class AgentCommandsTest {
         AgentCommands commands = new AgentCommands(
                 sessionManager,
                 memoryStore,
-                null,
-                new Config.DreamConfig(),
                 "model",
                 workspace,
                 msg -> "cli:direct",
@@ -233,8 +222,6 @@ class AgentCommandsTest {
         AgentCommands commands = new AgentCommands(
                 sessionManager,
                 memoryStore,
-                null,
-                new Config.DreamConfig(),
                 "model",
                 workspace,
                 msg -> "cli:direct",
@@ -278,8 +265,6 @@ class AgentCommandsTest {
         AgentCommands resumedCommands = new AgentCommands(
                 sessionManager,
                 memoryStore,
-                null,
-                new Config.DreamConfig(),
                 "model",
                 workspace,
                 msg -> "cli:direct",
@@ -337,8 +322,6 @@ class AgentCommandsTest {
         AgentCommands commands = new AgentCommands(
                 sessionManager,
                 memoryStore,
-                null,
-                new Config.DreamConfig(),
                 "model",
                 workspace,
                 msg -> "cli:direct",
@@ -1060,8 +1043,6 @@ class AgentCommandsTest {
         AgentCommands commands = new AgentCommands(
                 sessionManager,
                 memoryStore,
-                null,
-                new Config.DreamConfig(),
                 "model",
                 workspace,
                 msg -> "cli:direct",
@@ -1093,8 +1074,6 @@ class AgentCommandsTest {
         AgentCommands commands = new AgentCommands(
                 sessionManager,
                 memoryStore,
-                null,
-                new Config.DreamConfig(),
                 "model",
                 workspace,
                 msg -> "cli:direct",
@@ -1213,8 +1192,6 @@ class AgentCommandsTest {
         AgentCommands commands = new AgentCommands(
                 sessionManager,
                 memoryStore,
-                null,
-                new Config.DreamConfig(),
                 "model",
                 workspace,
                 msg -> "cli:direct",
@@ -1259,8 +1236,6 @@ class AgentCommandsTest {
         AgentCommands commands = new AgentCommands(
                 sessionManager,
                 memoryStore,
-                null,
-                new Config.DreamConfig(),
                 "model",
                 workspace,
                 msg -> "cli:direct",
@@ -1305,8 +1280,6 @@ class AgentCommandsTest {
         AgentCommands commands = new AgentCommands(
                 sessionManager,
                 memoryStore,
-                null,
-                new Config.DreamConfig(),
                 "model",
                 workspace,
                 msg -> "cli:direct",
@@ -1352,8 +1325,6 @@ class AgentCommandsTest {
         AgentCommands commands = new AgentCommands(
                 sessionManager,
                 memoryStore,
-                null,
-                new Config.DreamConfig(),
                 "model",
                 workspace,
                 msg -> "cli:direct",
@@ -1432,8 +1403,6 @@ class AgentCommandsTest {
         return new AgentCommands(
                 sessionManager,
                 memoryStore,
-                null,
-                new Config.DreamConfig(),
                 "model",
                 workspace,
                 msg -> "cli:direct",
@@ -1451,8 +1420,6 @@ class AgentCommandsTest {
         return new AgentCommands(
                 sessionManager,
                 memoryStore,
-                null,
-                new Config.DreamConfig(),
                 "model",
                 workspace,
                 msg -> "cli:direct",
@@ -1477,8 +1444,6 @@ class AgentCommandsTest {
         return new AgentCommands(
                 sessionManager,
                 memoryStore,
-                null,
-                new Config.DreamConfig(),
                 "model",
                 workspace,
                 msg -> "cli:direct",

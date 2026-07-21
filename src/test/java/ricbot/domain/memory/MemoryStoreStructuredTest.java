@@ -14,6 +14,20 @@ import static org.junit.jupiter.api.Assertions.*;
 class MemoryStoreStructuredTest {
 
     @Test
+    void constructorPreservesLegacyDreamData(@TempDir Path workspace) throws Exception {
+        Path memoryDir = Files.createDirectories(workspace.resolve("memory"));
+        Path legacyCursor = memoryDir.resolve(".dream_cursor");
+        Path legacyAudit = memoryDir.resolve("dream_audit.jsonl");
+        Files.writeString(legacyCursor, "17");
+        Files.writeString(legacyAudit, "{\"legacy\":true}\n");
+
+        new MemoryStore(workspace);
+
+        assertEquals("17", Files.readString(legacyCursor));
+        assertEquals("{\"legacy\":true}\n", Files.readString(legacyAudit));
+    }
+
+    @Test
     void mergeMemoryEntries_dedupesAndRebuildsMarkdownViews(@TempDir Path workspace) throws Exception {
         MemoryStore store = new MemoryStore(workspace);
 
@@ -73,10 +87,6 @@ class MemoryStoreStructuredTest {
 
         store.appendSessionSummary("用户讨论过 MCP streamable HTTP 超时");
 
-        List<Map<String, Object>> unprocessed = store.readUnprocessedHistory(0);
-        assertEquals(1, unprocessed.size());
-        assertEquals("session_summary", unprocessed.get(0).get("type"));
-
         List<String> recalled = store.recallArchivedHistory("MCP 超时", 3);
         assertEquals(1, recalled.size());
         assertTrue(recalled.get(0).contains("session summary"), recalled.get(0));
@@ -117,7 +127,7 @@ class MemoryStoreStructuredTest {
     }
 
     @Test
-    void appendMemoryCandidates_dedupesBeforeDreamDrain(@TempDir Path workspace) {
+    void appendMemoryCandidates_dedupesPendingCandidates(@TempDir Path workspace) {
         MemoryStore store = new MemoryStore(workspace);
 
         store.appendMemoryCandidates(List.of(
@@ -133,15 +143,14 @@ class MemoryStoreStructuredTest {
                         .setImportance(0.9d)
         ));
 
-        List<MemoryEntry> drained = store.drainMemoryCandidates();
-        assertEquals(1, drained.size());
-        assertEquals("用户偏好简短回答", drained.get(0).getSummary());
-        assertEquals(0.9d, drained.get(0).getImportance(), 0.001d);
-        assertTrue(store.drainMemoryCandidates().isEmpty());
+        List<MemoryEntry> candidates = store.readMemoryCandidates();
+        assertEquals(1, candidates.size());
+        assertEquals("用户偏好简短回答", candidates.get(0).getSummary());
+        assertEquals(0.9d, candidates.get(0).getImportance(), 0.001d);
     }
 
     @Test
-    void sensitiveMemoryCandidatesRequireApprovalBeforeDrain(@TempDir Path workspace) {
+    void sensitiveMemoryCandidatesRequireApprovalBeforePromotion(@TempDir Path workspace) {
         MemoryStore store = new MemoryStore(workspace);
 
         store.appendMemoryCandidates(List.of(
@@ -157,12 +166,16 @@ class MemoryStoreStructuredTest {
         MemoryEntry pending = candidates.get(0);
         assertEquals(MemoryEntry.SENSITIVITY_SENSITIVE, pending.getSensitivity());
         assertEquals(MemoryEntry.APPROVAL_PENDING, pending.getApprovalStatus());
-        assertTrue(store.drainMemoryCandidates().isEmpty());
+        assertTrue(store.readMemoryEntries().isEmpty());
 
         assertTrue(store.approveMemoryCandidate(pending.getId()));
-        List<MemoryEntry> drained = store.drainMemoryCandidates();
-        assertEquals(1, drained.size());
-        assertEquals(MemoryEntry.APPROVAL_APPROVED, drained.get(0).getApprovalStatus());
+        assertTrue(store.readMemoryCandidates().isEmpty());
+        List<MemoryEntry> promoted = store.readMemoryEntries();
+        assertEquals(1, promoted.size());
+        assertEquals(MemoryEntry.APPROVAL_APPROVED, promoted.get(0).getApprovalStatus());
+        assertTrue(store.readMemoryAudit().stream().anyMatch(event ->
+                "approved_and_promoted".equals(event.get("action"))
+                        && pending.getId().equals(event.get("memoryId"))));
     }
 
     @Test
@@ -223,10 +236,9 @@ class MemoryStoreStructuredTest {
                         .setSummary("项目使用 Java 21")
                         .setDetails("需要新的 Markdown 视图")
         ));
-        store.updateMemoryMd("# MEMORY\n\nstale\n");
-
         Path entriesFile = workspace.resolve("memory").resolve("memory_entries.jsonl");
         Path memoryFile = workspace.resolve("memory").resolve("MEMORY.md");
+        Files.writeString(memoryFile, "# MEMORY\n\nstale\n");
         FileTime futureTime = FileTime.fromMillis(System.currentTimeMillis() + 2_000);
         Files.setLastModifiedTime(entriesFile, futureTime);
         Files.setLastModifiedTime(memoryFile, FileTime.fromMillis(System.currentTimeMillis()));

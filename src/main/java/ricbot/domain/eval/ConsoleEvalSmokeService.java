@@ -71,8 +71,7 @@ public class ConsoleEvalSmokeService {
                 defaults.getTimezone(),
                 false,
                 defaults.getDisabledSkills(),
-                0,
-                defaults.getDream()
+                0
         );
     }
 }

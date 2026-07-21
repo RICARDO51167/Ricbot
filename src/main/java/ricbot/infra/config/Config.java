@@ -20,7 +20,7 @@ import java.util.function.Function;
  * 3. 提供 workspace / api_base / provider config 访问方法
  *
  * 设计说明（重要）：
- * - 这是一个“巨型配置类”：agent/provider/tool/mcp/channel/gateway/api/dream 等都在此文件中。
+ * - 这是一个“巨型配置类”：agent/provider/tool/mcp/channel/gateway/api 等都在此文件中。
  *   这种写法对“快速跑起来/单文件查配置”很友好，但长期维护会面临可读性差、模块边界模糊、修改冲击面大等问题。
  * - 部分字段属于“接口先长出来，主链实现未完全接入”的状态：调用方不要默认认为所有配置都已生效。
  *   例如 ToolsConfig.mcpServers 仍是弱类型 Map；
@@ -244,7 +244,7 @@ public class Config {
     public static class AgentDefaults {
         /**
          * 默认值偏“开发环境方便启动”取向，不保证对生产环境都是最稳妥的选择。
-         * 例如默认 model、contextWindowTokens、maxToolResultChars、dream/heartbeat 是否默认开启等，需要结合部署环境调整。
+         * 例如默认 model、contextWindowTokens、maxToolResultChars 等，需要结合部署环境调整。
          */
         private String model = "gpt-4o";
         private String workspace = Path.of(System.getProperty("user.home"), ".ricbot", "workspace").toString();
@@ -260,23 +260,9 @@ public class Config {
         private boolean unifiedSession = false;
         private List<String> disabledSkills = new ArrayList<>();
         private int sessionTtlMinutes = 0;
-        private DreamConfig dream = new DreamConfig();
         public void setDisabledSkills(List<String> disabledSkills) {
             this.disabledSkills = disabledSkills != null ? disabledSkills : new ArrayList<>();
         }
-
-        public void setDream(DreamConfig dream) {
-            this.dream = dream != null ? dream : new DreamConfig();
-        }
-    }
-
-    @Data
-    public static class DreamConfig {
-        /** Dream 仅允许显式触发；Runtime Core 不负责后台调度。 */
-        private boolean enabled = true;
-        private String modelOverride;
-        private int maxBatchSize = 20;
-        private int maxIterations = 5;
     }
 
     // =========================================================

@@ -1,6 +1,6 @@
 ---
 name: memory
-description: 双层记忆系统，由 Dream 自动管理知识文件。
+description: 结构化长期记忆与只追加会话历史；记忆候选必须经过显式审批。
 always: true
 ---
 
@@ -8,9 +8,11 @@ always: true
 
 ## 结构
 
-- `SOUL.md` — 机器人性格与沟通风格。**由 Dream 管理。**请勿编辑。
-- `USER.md` — 用户画像与偏好。**由 Dream 管理。**请勿编辑。
-- `memory/MEMORY.md` — 长期事实（项目上下文、重要事件）。**由 Dream 管理。**请勿编辑。
+- `SOUL.md` — 机器人性格与沟通风格的只读投影。
+- `USER.md` — 已确认用户画像与偏好的只读投影。
+- `memory/MEMORY.md` — 已审批长期事实的只读投影。
+- `memory/memory_entries.jsonl` — 结构化记忆事实。
+- `memory/candidates.jsonl` — 等待人工审批的候选记忆。
 - `memory/history.jsonl` — 仅追加的 JSONL，不会被加载进上下文。搜索优先使用内置 `grep` 工具。
 
 ## 搜索历史事件
@@ -31,6 +33,6 @@ always: true
 
 ## 重要
 
-- **不要编辑 SOUL.md、USER.md 或 MEMORY.md。**它们由 Dream 自动管理。
-- 如果发现信息过时，Dream 下次运行时会进行修正。
-- 用户可通过 `/dream-log` 查看 Dream 的活动记录。
+- **不要直接编辑 SOUL.md、USER.md 或 MEMORY.md。**它们由已审批结构化记忆生成。
+- 模型推断和低置信度内容不得自动进入 Prompt。
+- 候选记忆只有在用户通过 Memory API 明确批准后，才会进入长期记忆。

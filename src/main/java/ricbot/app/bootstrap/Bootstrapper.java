@@ -66,8 +66,7 @@ public class Bootstrapper {
                 defaults.getTimezone(),
                 defaults.isUnifiedSession(),
                 defaults.getDisabledSkills(),
-                defaults.getSessionTtlMinutes(),
-                defaults.getDream()
+                defaults.getSessionTtlMinutes()
         );
         loop.setProviderCapability(new ProviderCapabilityResolver().resolve(
                 config,

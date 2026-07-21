@@ -63,8 +63,7 @@ class EvalGoldenScenariosTest {
                 "UTC",
                 false,
                 List.of(),
-                0,
-                dreamDisabled()
+                0
         );
     }
 
@@ -79,9 +78,4 @@ class EvalGoldenScenariosTest {
         return exec;
     }
 
-    private static Config.DreamConfig dreamDisabled() {
-        Config.DreamConfig dream = new Config.DreamConfig();
-        dream.setEnabled(false);
-        return dream;
-    }
 }

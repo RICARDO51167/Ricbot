@@ -5,7 +5,6 @@ import ricbot.domain.skill.SkillRouter;
 import ricbot.tool.web.WebFetchTool;
 import ricbot.tool.web.WebSearchTool;
 import ricbot.domain.memory.Consolidator;
-import ricbot.domain.memory.Dream;
 import ricbot.domain.memory.MemoryStore;
 import ricbot.domain.experience.ExperienceStore;
 import ricbot.domain.config.ProviderCapability;
@@ -76,8 +75,6 @@ public class AgentLoop {
     private final Config.WebToolsConfig webConfig;
     /** 执行工具配置 */
     private final Config.ExecToolConfig execConfig;
-    /** Dream 配置 */
-    private final Config.DreamConfig dreamConfig;
     /** MCP 服务器配置映射 */
     private final Map<String, Object> mcpServers;
     /** 是否限制操作仅在工作空间内 */
@@ -108,8 +105,6 @@ public class AgentLoop {
     private final MemoryStore memoryStore;
     /** 记忆整合器，用于压缩和整理历史消息 */
     private final Consolidator consolidator;
-    /** Dream 模块，用于后台记忆整理和反思 */
-    private final Dream dream;
     private final ApprovalService approvalService;
     private final TraceStore traceStore;
     /** 会话自动归档器 */
@@ -180,7 +175,6 @@ public class AgentLoop {
      * @param unifiedSession     是否统一会话
      * @param disabledSkills     禁用的技能列表
      * @param sessionTtlMinutes  会话 TTL（分钟，<=0 表示禁用）
-     * @param dreamConfig        Dream 配置
      */
     public AgentLoop(
             MessageBus bus,
@@ -200,8 +194,7 @@ public class AgentLoop {
             String timezone,
             boolean unifiedSession,
             List<String> disabledSkills,
-            int sessionTtlMinutes,
-            Config.DreamConfig dreamConfig
+            int sessionTtlMinutes
     ) {
         // 获取默认配置
         Config.AgentDefaults defaults = new Config.AgentDefaults();
@@ -220,7 +213,6 @@ public class AgentLoop {
 
         this.webConfig = webConfig != null ? webConfig : new Config.WebToolsConfig();
         this.execConfig = execConfig != null ? execConfig : new Config.ExecToolConfig();
-        this.dreamConfig = dreamConfig != null ? dreamConfig : defaults.getDream();
         this.mcpServers = mcpServers != null ? mcpServers : Collections.emptyMap();
         this.restrictToWorkspace = restrictToWorkspace;
         this.unifiedSession = unifiedSession;
@@ -262,8 +254,6 @@ public class AgentLoop {
                 4096 // maxCompletionTokens placeholder
         );
         
-        // 初始化 Dream 模块
-        this.dream = new Dream(this.provider, this.model, this.memoryStore);
         this.approvalService = new ApprovalService(this.traceStore);
         this.sideEffectApplicationService = new SideEffectApplicationService(
                 this.sideEffectStore, this.approvalService);
@@ -350,8 +340,6 @@ public class AgentLoop {
         this.agentCommands = new AgentCommands(
                 this.sessionManager,
                 this.memoryStore,
-                this.dream,
-                this.dreamConfig,
                 this.model,
                 this.workspace,
                 this::effectiveSessionKey,
@@ -566,7 +554,6 @@ public class AgentLoop {
         log.info("Agent 循环正在停止");
     }
 
-    public Dream getDream() { return dream; }
     public SubagentManager getSubagents() { return subagents; }
     public SessionManager getSessions() { return sessionManager; }
     public ToolRegistry getTools() { return tools; }

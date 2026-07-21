@@ -3,7 +3,6 @@ package ricbot.domain.memory;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ricbot.infra.common.HelperUtils;
-import ricbot.infra.git.GitStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -45,7 +44,7 @@ public class MemoryStore {
     // 结构化记忆文件路径 (memory/memory_entries.jsonl)
     private final Path memoryEntriesFile;
     private final Path memoryCandidatesFile;
-    private final Path dreamAuditFile;
+    private final Path memoryAuditFile;
     // 历史记录文件路径 (memory/history.jsonl)
     private final Path historyFile;
     // 旧版历史记录文件路径 (memory/HISTORY.md)
@@ -56,11 +55,6 @@ public class MemoryStore {
     private final Path userFile;
     // 当前游标文件路径 (memory/.cursor)
     private final Path cursorFile;
-    // Dream 处理游标文件路径 (memory/.dream_cursor)
-    private final Path dreamCursorFile;
-
-    // Git 存储管理对象
-    private final GitStore git;
     private final MemoryRetriever memoryRetriever = new MemoryRetriever();
 
     // 用于同步访问游标文件的锁对象
@@ -88,15 +82,12 @@ public class MemoryStore {
         this.memoryFile = memoryDir.resolve("MEMORY.md");
         this.memoryEntriesFile = memoryDir.resolve("memory_entries.jsonl");
         this.memoryCandidatesFile = memoryDir.resolve("candidates.jsonl");
-        this.dreamAuditFile = memoryDir.resolve("dream_audit.jsonl");
+        this.memoryAuditFile = memoryDir.resolve("memory_audit.jsonl");
         this.historyFile = memoryDir.resolve("history.jsonl");
         this.legacyHistoryFile = memoryDir.resolve("HISTORY.md");
         this.soulFile = workspace.resolve("SOUL.md");
         this.userFile = workspace.resolve("USER.md");
         this.cursorFile = memoryDir.resolve(".cursor");
-        this.dreamCursorFile = memoryDir.resolve(".dream_cursor");
-        // 初始化 Git 存储，跟踪特定文件
-        this.git = new GitStore(workspace, List.of("SOUL.md", "USER.md", "memory/MEMORY.md"));
         ensureSeedFile(memoryFile, "templates/memory/MEMORY.md");
         ensureSeedFile(userFile, "templates/USER.md");
         ensureSeedFile(soulFile, "templates/SOUL.md");
@@ -109,12 +100,6 @@ public class MemoryStore {
      * @return 工作空间 Path
      */
     public Path getWorkspace() { return workspace; }
-
-    /**
-     * 获取 Git 存储对象
-     * @return GitStore 实例
-     */
-    public GitStore getGit() { return git; }
 
     /**
      * 读取文件内容为字符串
@@ -197,58 +182,21 @@ public class MemoryStore {
      * @param content 新内容
      * @throws IOException IO 异常
      */
-    public void updateMemoryMd(String content) throws IOException { Files.writeString(memoryFile, content); }
+    private void updateMemoryMd(String content) throws IOException { Files.writeString(memoryFile, content); }
 
     /**
      * 更新用户文件内容
      * @param content 新内容
      * @throws IOException IO 异常
      */
-    public void updateUserMd(String content) throws IOException { Files.writeString(userFile, content); }
+    private void updateUserMd(String content) throws IOException { Files.writeString(userFile, content); }
 
     /**
      * 更新 Soul 文件内容
      * @param content 新内容
      * @throws IOException IO 异常
      */
-    public void updateSoulMd(String content) throws IOException { Files.writeString(soulFile, content); }
-
-    /**
-     * 获取未处理的历史记录
-     * @return 未处理的历史记录列表
-     */
-    public List<Map<String, Object>> getUnprocessedHistory() {
-        // 获取上次 Dream 处理的游标位置
-        int since = getLastDreamCursor();
-        // 读取该游标之后的历史记录
-        return readUnprocessedHistory(since);
-    }
-
-    /**
-     * 标记指定数量的历史记录为已处理
-     * @param count 已处理的数量
-     */
-    /**
-     * 标记指定数量的历史记录为已处理
-     * @param count 已处理的数量
-     */
-    public void markHistoryAsProcessed(int count) {
-        // 如果计数小于或等于0，直接返回，不做任何操作
-        if (count <= 0) {
-            return;
-        }
-        // 使用锁确保线程安全，防止并发修改游标
-        synchronized (cursorLock) {
-            // 获取当前 Dream 处理的游标位置
-            int current = getLastDreamCursor();
-            // 获取最新的总历史记录游标位置
-            int max = getLastCursor();
-            // 计算新的游标位置：取当前游标加上处理数量与最大游标的较小值，防止越界
-            int next = Math.min(max, current + count);
-            // 更新 Dream 处理游标到新的位置
-            setLastDreamCursor(next);
-        }
-    }
+    private void updateSoulMd(String content) throws IOException { Files.writeString(soulFile, content); }
 
     /**
      * 读取结构化记忆条目
@@ -320,27 +268,6 @@ public class MemoryStore {
         }
     }
 
-    public List<MemoryEntry> drainMemoryCandidates() {
-        List<MemoryEntry> entries = readMemoryCandidates();
-        List<MemoryEntry> approved = entries.stream()
-                .filter(entry -> MemoryEntry.APPROVAL_APPROVED.equals(entry.getApprovalStatus()))
-                .filter(entry -> !entry.isExpired())
-                .toList();
-        List<MemoryEntry> retained = entries.stream()
-                .filter(entry -> !MemoryEntry.APPROVAL_APPROVED.equals(entry.getApprovalStatus()))
-                .filter(entry -> !MemoryEntry.APPROVAL_REJECTED.equals(entry.getApprovalStatus()))
-                .filter(entry -> !entry.isExpired())
-                .toList();
-        if (!entries.isEmpty()) {
-            try {
-                writeMemoryCandidateFile(retained);
-            } catch (IOException e) {
-                log.warn("更新即时记忆候选失败: {}", memoryCandidatesFile, e);
-            }
-        }
-        return approved;
-    }
-
     public List<MemoryEntry> readMemoryCandidates() {
         if (!Files.exists(memoryCandidatesFile)) {
             return List.of();
@@ -365,11 +292,39 @@ public class MemoryStore {
     }
 
     public boolean approveMemoryCandidate(String id) {
-        return updateMemoryCandidateApproval(id, MemoryEntry.APPROVAL_APPROVED);
+        if (id == null || id.isBlank()) {
+            return false;
+        }
+        List<MemoryEntry> candidates = new ArrayList<>(readMemoryCandidates());
+        MemoryEntry approved = candidates.stream()
+                .filter(candidate -> id.equals(candidate.getId()))
+                .findFirst()
+                .orElse(null);
+        if (approved == null || approved.isExpired()) {
+            return false;
+        }
+        approved.setApprovalStatus(MemoryEntry.APPROVAL_APPROVED);
+        approved.touch();
+        mergeMemoryEntries(List.of(approved));
+        candidates.removeIf(candidate -> id.equals(candidate.getId()));
+        try {
+            writeMemoryCandidateFile(candidates);
+        } catch (IOException e) {
+            throw new RuntimeException("更新即时记忆候选失败: " + memoryCandidatesFile, e);
+        }
+        appendMemoryAudit("approved_and_promoted", approved);
+        return true;
     }
 
     public boolean rejectMemoryCandidate(String id) {
-        return updateMemoryCandidateApproval(id, MemoryEntry.APPROVAL_REJECTED);
+        boolean rejected = updateMemoryCandidateApproval(id, MemoryEntry.APPROVAL_REJECTED);
+        if (rejected) {
+            readMemoryCandidates().stream()
+                    .filter(candidate -> id.equals(candidate.getId()))
+                    .findFirst()
+                    .ifPresent(candidate -> appendMemoryAudit("rejected", candidate));
+        }
+        return rejected;
     }
 
     public Map<String, Object> memoryGovernanceReport() {
@@ -446,31 +401,33 @@ public class MemoryStore {
         }
     }
 
-    public void appendDreamAudit(Map<String, Object> event) {
-        if (event == null || event.isEmpty()) {
-            return;
-        }
-        Map<String, Object> row = new LinkedHashMap<>(event);
-        row.putIfAbsent("timestamp", Instant.now().toString());
+    private void appendMemoryAudit(String action, MemoryEntry entry) {
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("timestamp", Instant.now().toString());
+        row.put("action", action);
+        row.put("memoryId", entry.getId());
+        row.put("source", entry.getSource());
+        row.put("confidence", entry.getConfidence());
+        row.put("approvalStatus", entry.getApprovalStatus());
         try {
-            Files.createDirectories(dreamAuditFile.getParent());
+            Files.createDirectories(memoryAuditFile.getParent());
             Files.writeString(
-                    dreamAuditFile,
+                    memoryAuditFile,
                     MAPPER.writeValueAsString(row) + "\n",
                     StandardOpenOption.CREATE,
                     StandardOpenOption.APPEND
             );
         } catch (IOException e) {
-            log.warn("写入 Dream 审计失败: {}", dreamAuditFile, e);
+            log.warn("写入记忆审计失败: {}", memoryAuditFile, e);
         }
     }
 
-    public List<Map<String, Object>> readDreamAudit() {
-        if (!Files.exists(dreamAuditFile)) {
+    public List<Map<String, Object>> readMemoryAudit() {
+        if (!Files.exists(memoryAuditFile)) {
             return List.of();
         }
         List<Map<String, Object>> out = new ArrayList<>();
-        try (BufferedReader reader = Files.newBufferedReader(dreamAuditFile)) {
+        try (BufferedReader reader = Files.newBufferedReader(memoryAuditFile)) {
             String line;
             while ((line = reader.readLine()) != null) {
                 if (line.isBlank()) {
@@ -479,7 +436,7 @@ public class MemoryStore {
                 out.add(MAPPER.readValue(line, new TypeReference<>() {}));
             }
         } catch (Exception e) {
-            log.warn("读取 Dream 审计失败: {}", dreamAuditFile, e);
+            log.warn("读取记忆审计失败: {}", memoryAuditFile, e);
         }
         return out;
     }
@@ -814,100 +771,6 @@ public class MemoryStore {
                 return 0;
             }
         }
-    }
-
-    /**
-     * 获取最后 Dream 处理的游标值
-     * @return Dream 游标整数值，默认 0
-     */
-    public int getLastDreamCursor() {
-        synchronized (cursorLock) {
-            try {
-                // 如果 Dream 游标文件不存在，返回 0
-                if (!Files.exists(dreamCursorFile)) return 0;
-                // 读取并解析 Dream 游标文件内容
-                return Integer.parseInt(Files.readString(dreamCursorFile).trim());
-            } catch (Exception e) {
-                // 如果发生异常，返回 0
-                return 0;
-            }
-        }
-    }
-
-    /**
-     * 设置最后 Dream 处理的游标值
-     * @param cursor 新的游标值
-     */
-    public void setLastDreamCursor(int cursor) {
-        synchronized (cursorLock) {
-            try {
-                // 写入 Dream 游标值，确保非负，并覆盖现有文件
-                Files.writeString(dreamCursorFile, String.valueOf(Math.max(0, cursor)),
-                        StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
-            } catch (IOException e) {
-                // 如果发生 IO 异常，抛出运行时异常
-                throw new RuntimeException(e);
-            }
-        }
-    }
-
-    /**
-     * 读取未处理的历史记录（游标大于 sinceCursor 的记录）
-     * @param sinceCursor 起始游标
-     * @return 未处理的历史记录列表
-     */
-    /**
-     * 读取未处理的历史记录（游标大于 sinceCursor 的记录）
-     * @param sinceCursor 起始游标，只返回游标值严格大于此值的记录
-     * @return 未处理的历史记录列表，每个元素是一个包含 cursor, timestamp, content 的 Map
-     */
-    public List<Map<String, Object>> readUnprocessedHistory(int sinceCursor) {
-        // 如果历史记录文件不存在，直接返回空列表
-        if (!Files.exists(historyFile)) return List.of();
-
-        // 初始化用于存储未处理历史记录的列表
-        List<Map<String, Object>> entries = new ArrayList<>();
-        try (BufferedReader reader = Files.newBufferedReader(historyFile)) {
-            String line;
-            // 逐行读取 history.jsonl 文件
-            while ((line = reader.readLine()) != null) {
-                // 跳过空行
-                if (line.isBlank()) {
-                    continue;
-                }
-                // 将 JSON 行解析为 Map 对象
-                Map<String, Object> parsed = MAPPER.readValue(line, new TypeReference<>() {});
-                
-                // 获取当前记录的游标值，如果不存在或类型不匹配则默认为 0
-                Object cursorObj = parsed.get("cursor");
-                int cursor = cursorObj instanceof Number n ? n.intValue() : 0;
-                
-                // 如果当前记录的游标小于或等于指定起始游标，则跳过（已处理过）
-                if (cursor <= sinceCursor) {
-                    continue;
-                }
-
-                // 构建新的条目 Map，只保留需要的字段
-                Map<String, Object> entry = new LinkedHashMap<>();
-                // 放入游标值
-                entry.put("cursor", cursor);
-                entry.put("type", String.valueOf(parsed.getOrDefault("type", "text")));
-                // 放入时间戳，转换为字符串，默认为空串
-                entry.put("timestamp", String.valueOf(parsed.getOrDefault("timestamp", "")));
-
-                // 兼容不同版本的内容字段：优先取 "content"，其次取 "payload"，最后默认为空串
-                if (parsed.containsKey("content")) {
-                    entry.put("content", parsed.get("content"));
-                } else entry.put("content", parsed.getOrDefault("payload", ""));
-                // 将构建好的条目添加到结果列表中
-                entries.add(entry);
-            }
-        } catch (Exception e) {
-            // 捕获异常并记录警告日志，防止程序崩溃
-            log.warn("读取 history 失败: {}", historyFile, e);
-        }
-        // 返回所有未处理的历史记录
-        return entries;
     }
 
     /**

@@ -42,6 +42,28 @@ class ConfigLoaderTest {
     }
 
     @Test
+    void loadConfig_withRemovedDreamConfigFailsWithMigrationMessage(@TempDir Path tempDir) throws Exception {
+        Path configPath = tempDir.resolve("legacy-dream.json");
+        Files.writeString(configPath, """
+                {
+                  "agents": {
+                    "defaults": {
+                      "dream": {"enabled": true}
+                    }
+                  }
+                }
+                """);
+
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> ConfigLoader.loadConfig(configPath)
+        );
+
+        assertTrue(error.getMessage().contains("agents.defaults.dream"));
+        assertTrue(error.getMessage().contains("已删除"));
+    }
+
+    @Test
     void saveConfig_withNullConfigWritesDefaultConfig(@TempDir Path tempDir) throws Exception {
         Path configPath = tempDir.resolve("saved-config.json");
 
