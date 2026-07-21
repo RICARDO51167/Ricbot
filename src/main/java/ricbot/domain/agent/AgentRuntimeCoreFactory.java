@@ -30,7 +30,7 @@ public final class AgentRuntimeCoreFactory {
         ContextBuilder contextBuilder = new ContextBuilder(workspace, timezone, disabledSkills);
         AgentPersistenceComponents persistence = AgentPersistenceFactory.create(workspace, suppliedSessions);
         OpenTelemetryRuntime telemetry = OpenTelemetryRuntime.fromEnvironment();
-        RunEventSink events = RunEventSink.composite(persistence.journalStore(),
+        RunEventSink events = RunEventSink.durableWithDiagnostics(persistence.journalStore(),
                 new OpenTelemetryRunEventSink(telemetry.tracer("ricbot.agent", "1.0")));
         TraceStore traces = new TraceStore(workspace);
         SideEffectStore sideEffects = new AuditedSideEffectStore(persistence.sideEffectStore(), traces);

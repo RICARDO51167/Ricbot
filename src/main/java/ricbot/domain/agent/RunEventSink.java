@@ -26,4 +26,27 @@ public interface RunEventSink {
             if (failure != null) throw failure;
         };
     }
+
+    /**
+     * Persists the durable fact first, then fans out to diagnostics without allowing
+     * telemetry failures to invalidate an already committed Run event.
+     */
+    static RunEventSink durableWithDiagnostics(RunEventSink durable, RunEventSink... diagnostics) {
+        RunEventSink required = java.util.Objects.requireNonNull(durable, "durable");
+        java.util.List<RunEventSink> optional = java.util.Arrays.stream(
+                        diagnostics != null ? diagnostics : new RunEventSink[0]
+                )
+                .filter(java.util.Objects::nonNull)
+                .toList();
+        return event -> {
+            required.append(event);
+            for (RunEventSink diagnostic : optional) {
+                try {
+                    diagnostic.append(event);
+                } catch (RuntimeException ignored) {
+                    // Diagnostic exporters are not a source of truth.
+                }
+            }
+        };
+    }
 }
