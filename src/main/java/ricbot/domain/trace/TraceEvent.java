@@ -6,6 +6,7 @@ import java.util.Map;
 import java.util.UUID;
 
 public record TraceEvent(
+        int schemaVersion,
         String traceId,
         String eventId,
         String parentEventId,
@@ -20,7 +21,12 @@ public record TraceEvent(
         String createdAt,
         Long durationMs
 ) {
+    public static final int CURRENT_SCHEMA_VERSION = 1;
+
     public TraceEvent {
+        if (schemaVersion <= 0 || schemaVersion > CURRENT_SCHEMA_VERSION) {
+            throw new IllegalArgumentException("unsupported trace event schema: " + schemaVersion);
+        }
         traceId = clean(traceId);
         eventId = eventId != null && !eventId.isBlank() ? eventId : newId();
         parentEventId = clean(parentEventId);
@@ -36,6 +42,25 @@ public record TraceEvent(
         durationMs = durationMs != null && durationMs >= 0 ? durationMs : null;
     }
 
+    public TraceEvent(
+            String traceId,
+            String eventId,
+            String parentEventId,
+            String sessionId,
+            String teamSessionId,
+            String changeSetId,
+            String approvalRequestId,
+            TraceEventType type,
+            String actor,
+            String message,
+            Map<String, Object> payload,
+            String createdAt,
+            Long durationMs
+    ) {
+        this(CURRENT_SCHEMA_VERSION, traceId, eventId, parentEventId, sessionId, teamSessionId,
+                changeSetId, approvalRequestId, type, actor, message, payload, createdAt, durationMs);
+    }
+
     public static TraceEvent of(
             String traceId,
             String sessionId,
@@ -44,36 +69,38 @@ public record TraceEvent(
             String message,
             Map<String, Object> payload
     ) {
-        return new TraceEvent(traceId, null, "", sessionId, "", "", "", type, actor, message, payload, null, null);
+        return new TraceEvent(CURRENT_SCHEMA_VERSION, traceId, null, "", sessionId, "", "", "",
+                type, actor, message, payload, null, null);
     }
 
     public TraceEvent withTraceId(String nextTraceId) {
-        return new TraceEvent(nextTraceId, eventId, parentEventId, sessionId, teamSessionId, changeSetId,
+        return new TraceEvent(schemaVersion, nextTraceId, eventId, parentEventId, sessionId, teamSessionId, changeSetId,
                 approvalRequestId, type, actor, message, payload, createdAt, durationMs);
     }
 
     public TraceEvent withTeamSessionId(String nextTeamSessionId) {
-        return new TraceEvent(traceId, eventId, parentEventId, sessionId, nextTeamSessionId, changeSetId,
+        return new TraceEvent(schemaVersion, traceId, eventId, parentEventId, sessionId, nextTeamSessionId, changeSetId,
                 approvalRequestId, type, actor, message, payload, createdAt, durationMs);
     }
 
     public TraceEvent withChangeSetId(String nextChangeSetId) {
-        return new TraceEvent(traceId, eventId, parentEventId, sessionId, teamSessionId, nextChangeSetId,
+        return new TraceEvent(schemaVersion, traceId, eventId, parentEventId, sessionId, teamSessionId, nextChangeSetId,
                 approvalRequestId, type, actor, message, payload, createdAt, durationMs);
     }
 
     public TraceEvent withApprovalRequestId(String nextApprovalRequestId) {
-        return new TraceEvent(traceId, eventId, parentEventId, sessionId, teamSessionId, changeSetId,
+        return new TraceEvent(schemaVersion, traceId, eventId, parentEventId, sessionId, teamSessionId, changeSetId,
                 nextApprovalRequestId, type, actor, message, payload, createdAt, durationMs);
     }
 
     public TraceEvent withDurationMs(long nextDurationMs) {
-        return new TraceEvent(traceId, eventId, parentEventId, sessionId, teamSessionId, changeSetId,
+        return new TraceEvent(schemaVersion, traceId, eventId, parentEventId, sessionId, teamSessionId, changeSetId,
                 approvalRequestId, type, actor, message, payload, createdAt, nextDurationMs);
     }
 
     public Map<String, Object> toMap() {
         Map<String, Object> out = new LinkedHashMap<>();
+        out.put("schemaVersion", schemaVersion);
         out.put("traceId", traceId);
         out.put("eventId", eventId);
         out.put("parentEventId", parentEventId);
@@ -95,6 +122,7 @@ public record TraceEvent(
             return null;
         }
         return new TraceEvent(
+                integer(raw.get("schemaVersion"), CURRENT_SCHEMA_VERSION),
                 string(raw.get("traceId")),
                 string(raw.get("eventId")),
                 string(raw.get("parentEventId")),
@@ -109,6 +137,15 @@ public record TraceEvent(
                 string(raw.get("createdAt")),
                 longValue(raw.get("durationMs"))
         );
+    }
+
+    private static int integer(Object raw, int fallback) {
+        if (raw instanceof Number number) return number.intValue();
+        try {
+            return raw != null ? Integer.parseInt(String.valueOf(raw)) : fallback;
+        } catch (Exception ignored) {
+            return fallback;
+        }
     }
 
     private static TraceEventType parseType(Object raw) {

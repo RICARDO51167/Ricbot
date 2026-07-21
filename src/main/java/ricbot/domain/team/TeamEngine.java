@@ -333,6 +333,14 @@ public class TeamEngine {
     }
 
     public TeamTask submitVerification(String taskId, VerificationResult verification) {
+        return submitVerification(taskId, verification, null);
+    }
+
+    public TeamTask submitVerification(
+            String taskId,
+            VerificationResult verification,
+            VerificationEvidence evidence
+    ) {
         TeamTask current = requireTask(taskId);
         VerificationResult result = verification != null ? verification : VerificationResult.needsHuman("missing verifier result");
         TeamTaskState nextState = switch (result.status()) {
@@ -363,7 +371,7 @@ public class TeamEngine {
         if (result.status() == VerificationResult.Status.REJECT) {
             appendEvent(TeamEvent.of(task.sessionId(), task.id(), TeamRole.VERIFIER, TeamEvent.REVISION_REQUESTED, revisionRequest));
         }
-        traceVerification(task, result);
+        traceVerification(task, result, evidence);
         return task;
     }
 
@@ -874,11 +882,21 @@ public class TeamEngine {
         traceTeamEvent(event);
     }
 
-    private void traceVerification(TeamTask task, VerificationResult result) {
+    private void traceVerification(TeamTask task, VerificationResult result, VerificationEvidence evidence) {
         if (traceStore == null || task == null || result == null) {
             return;
         }
         try {
+            Map<String, Object> payload = new LinkedHashMap<>();
+            payload.put("taskId", task.id());
+            payload.put("status", result.status().name());
+            payload.put("riskLevel", result.riskLevel().name());
+            payload.put("missingTests", result.missingTests());
+            payload.put("requiredActions", result.requiredActions());
+            payload.put("confidence", result.confidence());
+            if (evidence != null && !evidence.isEmpty()) {
+                payload.put("evidence", verificationEvidenceMap(evidence));
+            }
             traceStore.append(new TraceEvent(
                     traceStore.traceIdForSession(task.sessionId()),
                     null,
@@ -890,19 +908,40 @@ public class TeamEngine {
                     TraceEventType.VERIFICATION_RESULT,
                     "verifier",
                     result.reason(),
-                    Map.of(
-                            "taskId", task.id(),
-                            "status", result.status().name(),
-                            "riskLevel", result.riskLevel().name(),
-                            "missingTests", result.missingTests(),
-                            "requiredActions", result.requiredActions(),
-                            "confidence", result.confidence()
-                    ),
+                    payload,
                     null,
                     null
             ));
         } catch (Exception ignored) {
         }
+    }
+
+    private static Map<String, Object> verificationEvidenceMap(VerificationEvidence evidence) {
+        return Map.of(
+                "executedTests", evidence.executedTests().stream().map(test -> Map.<String, Object>of(
+                        "command", test.command(),
+                        "exitCode", test.exitCode() != null ? test.exitCode() : -1,
+                        "passed", test.passed(),
+                        "outputSummary", test.outputSummary(),
+                        "durationMillis", test.durationMillis() != null ? test.durationMillis() : 0L,
+                        "executedAt", test.executedAt() != null ? test.executedAt().toString() : ""
+                )).toList(),
+                "changedFiles", evidence.changedFiles().stream().map(diff -> Map.<String, Object>of(
+                        "path", diff.path(),
+                        "changeType", diff.changeType(),
+                        "riskLevel", diff.riskLevel().name(),
+                        "testFile", diff.testFile(),
+                        "testDeleted", diff.testDeleted(),
+                        "configFile", diff.configFile(),
+                        "securitySensitive", diff.securitySensitive(),
+                        "runtimeArtifact", diff.runtimeArtifact()
+                )).toList(),
+                "approvals", evidence.approvals().stream().map(approval -> Map.<String, Object>of(
+                        "requestId", approval.requestId(),
+                        "riskLevel", approval.riskLevel().name(),
+                        "status", approval.status()
+                )).toList()
+        );
     }
 
     private void traceTeamEvent(TeamEvent event) {

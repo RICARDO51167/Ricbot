@@ -4,7 +4,12 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import ricbot.infra.persistence.EventClassificationCatalog;
+import ricbot.infra.persistence.FileRuntimeFactJournal;
+import ricbot.infra.persistence.ImmutableArtifactStore;
+import ricbot.infra.persistence.RuntimeFactEvent;
 
+import java.time.Instant;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -25,10 +30,14 @@ public class TraceStore {
 
     private final Path workspace;
     private final Path root;
+    private final FileRuntimeFactJournal factJournal;
+    private final ImmutableArtifactStore artifactStore;
 
     public TraceStore(Path workspace) {
         this.workspace = workspace.toAbsolutePath().normalize();
         this.root = this.workspace.resolve(".traces");
+        this.factJournal = new FileRuntimeFactJournal(this.workspace);
+        this.artifactStore = new ImmutableArtifactStore(this.workspace);
     }
 
     public TraceEvent append(TraceEvent event) {
@@ -38,6 +47,7 @@ public class TraceStore {
         TraceEvent safe = event.traceId().isBlank()
                 ? event.withTraceId(traceIdForSession(event.sessionId()))
                 : event.withTraceId(safeTraceId(event.traceId()));
+        appendCanonicalFact(safe);
         try {
             Path dir = root.resolve(safe.traceId());
             Files.createDirectories(dir);
@@ -53,6 +63,46 @@ public class TraceStore {
             log.warn("skip trace write: {}", safe.traceId(), e);
         }
         return safe;
+    }
+
+    private void appendCanonicalFact(TraceEvent event) {
+        EventClassificationCatalog.Classification classification = EventClassificationCatalog.classification(
+                EventClassificationCatalog.TRACE, event.type().name());
+        if (classification == EventClassificationCatalog.Classification.DIAGNOSTIC
+                || classification == EventClassificationCatalog.Classification.READ_MODEL) {
+            return;
+        }
+        Map<String, Object> details = new LinkedHashMap<>();
+        details.put("schema_version", RuntimeFactEvent.CURRENT_SCHEMA_VERSION);
+        details.put("trace_id", event.traceId());
+        details.put("team_session_id", event.teamSessionId());
+        details.put("change_set_id", event.changeSetId());
+        details.put("approval_request_id", event.approvalRequestId());
+        if (event.durationMs() != null) details.put("duration_ms", event.durationMs());
+        if (classification == EventClassificationCatalog.Classification.IMMUTABLE_ARTIFACT) {
+            ImmutableArtifactStore.ArtifactReference artifact = artifactStore.putJson(
+                    "trace." + event.type().name(), event.payload());
+            details.put("artifact", artifact.toMap());
+        } else {
+            details.put("payload", event.payload());
+        }
+        factJournal.append(
+                event.eventId(),
+                event.sessionId().isBlank() ? "global" : event.sessionId(),
+                "trace." + event.type().name(),
+                event.actor(),
+                event.message(),
+                details,
+                parseInstant(event.createdAt())
+        );
+    }
+
+    private static Instant parseInstant(String value) {
+        try {
+            return value != null && !value.isBlank() ? Instant.parse(value) : Instant.now();
+        } catch (Exception ignored) {
+            return Instant.now();
+        }
     }
 
     public List<String> listTraces() {

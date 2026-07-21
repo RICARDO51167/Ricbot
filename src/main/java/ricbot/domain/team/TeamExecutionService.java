@@ -190,7 +190,7 @@ public class TeamExecutionService {
                 evidence
         );
         VerificationResult result = verificationService.verify(input);
-        TeamTask updated = teamEngine.submitVerification(task.id(), result);
+        TeamTask updated = teamEngine.submitVerification(task.id(), result, evidence);
         Map<String, Object> verifierMetadata = new LinkedHashMap<>();
         verifierMetadata.put("verificationStatus", result.status().name());
         verifierMetadata.put("workspacePath", executionRoot.toString());
