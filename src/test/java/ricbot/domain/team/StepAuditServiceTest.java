@@ -4,8 +4,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import ricbot.domain.security.CommandRiskLevel;
-import ricbot.domain.trace.TraceEventType;
-import ricbot.domain.trace.TraceStore;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -31,8 +29,8 @@ class StepAuditServiceTest {
         service.append(created);
         service.append(approval);
 
-        assertEquals(2, service.listByStep("step_1").size());
-        assertEquals(2, service.listByTask("task_1").size());
+        assertEquals(1, service.listByStep("step_1").size());
+        assertEquals(1, service.listByTask("task_1").size());
         StepAuditSummary summary = service.summarizeTask("task_1");
         assertEquals(1, summary.approvalRequiredCount());
         assertEquals(StepAuditHealth.NEEDS_REVIEW, summary.auditHealth());
@@ -49,7 +47,7 @@ class StepAuditServiceTest {
         Files.writeString(fileWorkspace, "not a directory");
         StepAuditService service = new StepAuditService(fileWorkspace);
 
-        assertDoesNotThrow(() -> service.append(record("step_1", "task_1", "team_1", StepAuditEventType.STEP_CREATED, "", "READY")));
+        assertDoesNotThrow(() -> service.append(record("step_1", "task_1", "team_1", StepAuditEventType.STEP_FAILED, "", "FAILED")));
         assertTrue(service.listByTask("task_1").isEmpty());
     }
 
@@ -89,9 +87,8 @@ class StepAuditServiceTest {
     }
 
     @Test
-    void verifierStepAuditTraceIncludesStructuredEvidenceMetadata(@TempDir Path workspace) {
-        TraceStore traceStore = new TraceStore(workspace);
-        StepAuditService service = new StepAuditService(workspace, traceStore);
+    void verifierOutcomeKeepsStructuredEvidenceWithoutTraceMirror(@TempDir Path workspace) {
+        StepAuditService service = new StepAuditService(workspace);
         service.append(new StepAuditRecord(null, "", "task_1", "team_1",
                 StepAuditEventType.STEP_VERIFIED, "", "DONE",
                 "Verifier executed in task workspace.", "", "", "", "",
@@ -104,12 +101,24 @@ class StepAuditServiceTest {
                 "structuredEvidenceSource", "team-worktree-verifier"
         )));
 
-        assertTrue(traceStore.loadEvents(traceStore.traceIdForSession("team_1")).stream()
-                .filter(event -> event.type() == TraceEventType.STEP_AUDIT_RECORDED)
-                .anyMatch(event -> event.payload().toString().contains("exitCode=0")
-                        && event.payload().toString().contains("verificationDecision=PASS")
-                        && event.payload().toString().contains("changedFilesCount=1")),
-                traceStore.loadEvents(traceStore.traceIdForSession("team_1")).toString());
+        StepAuditRecord persisted = service.listByTask("task_1").get(0);
+        assertEquals(StepAuditRecord.CURRENT_SCHEMA_VERSION, persisted.schemaVersion());
+        assertEquals(0, persisted.metadata().get("exitCode"));
+        assertEquals("PASS", persisted.metadata().get("verificationDecision"));
+        assertTrue(persisted.toMap().keySet().stream().noneMatch(key -> key.toLowerCase().contains("trace")));
+    }
+
+    @Test
+    void loadsLegacyRecordWithoutSchemaOrTraceDependency(@TempDir Path workspace) throws Exception {
+        Path file = workspace.resolve(".team/team_1/step_audit.jsonl");
+        Files.createDirectories(file.getParent());
+        Files.writeString(file, """
+                {"id":"legacy-1","stepId":"step_1","taskId":"task_1","teamSessionId":"team_1","eventType":"STEP_VERIFIED","verificationStatus":"PASS","traceEventId":"old-trace","createdAt":"2025-01-01T00:00:00Z","metadata":{}}
+                """);
+
+        StepAuditRecord legacy = new StepAuditService(workspace).listByTask("task_1").get(0);
+        assertEquals(1, legacy.schemaVersion());
+        assertTrue(legacy.toMap().keySet().stream().noneMatch(key -> key.toLowerCase().contains("trace")));
     }
 
     private StepAuditRecord record(String stepId, String taskId, String teamSessionId, StepAuditEventType eventType, String before, String after) {

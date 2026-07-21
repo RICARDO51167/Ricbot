@@ -2,9 +2,6 @@ package ricbot.domain.team;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import ricbot.domain.trace.TraceEvent;
-import ricbot.domain.trace.TraceEventType;
-import ricbot.domain.trace.TraceStore;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -21,38 +18,28 @@ public class StepAuditService {
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {
     };
 
-    private final Path workspace;
     private final Path teamRoot;
-    private final TraceStore traceStore;
 
     public StepAuditService(Path workspace) {
-        this(workspace, null);
-    }
-
-    public StepAuditService(Path workspace, TraceStore traceStore) {
-        this.workspace = workspace.toAbsolutePath().normalize();
-        this.teamRoot = this.workspace.resolve(".team");
-        this.traceStore = traceStore;
+        this.teamRoot = workspace.toAbsolutePath().normalize().resolve(".team");
     }
 
     public StepAuditRecord append(StepAuditRecord record) {
         if (record == null || record.teamSessionId().isBlank()) {
             return record;
         }
-        StepAuditRecord toWrite = record;
+        if (!record.eventType().durableOutcome()) {
+            return record;
+        }
         try {
-            TraceEvent trace = traceAudit(record);
-            if (trace != null) {
-                toWrite = record.withTraceEventId(trace.eventId());
-            }
             Path file = auditFile(record.teamSessionId());
             Files.createDirectories(file.getParent());
-            Files.writeString(file, MAPPER.writeValueAsString(toWrite) + "\n", StandardCharsets.UTF_8,
+            Files.writeString(file, MAPPER.writeValueAsString(record) + "\n", StandardCharsets.UTF_8,
                     StandardOpenOption.CREATE, StandardOpenOption.APPEND);
         } catch (Exception e) {
             warn("step audit append failed: " + e.getMessage());
         }
-        return toWrite;
+        return record;
     }
 
     public List<StepAuditRecord> listByStep(String stepId) {
@@ -99,7 +86,6 @@ public class StepAuditService {
                     .append(record.toolName().isBlank() ? "" : " | tool=" + record.toolName())
                     .append(record.changeSetId().isBlank() ? "" : " | changeSet=" + record.changeSetId())
                     .append(record.verificationStatus().isBlank() ? "" : " | verifier=" + record.verificationStatus())
-                    .append(record.traceEventId().isBlank() ? "" : " | traceEvent=" + record.traceEventId())
                     .append("\n");
         }
         return sb.toString().trim();
@@ -282,101 +268,6 @@ public class StepAuditService {
             warn("step audit read failed: " + e.getMessage());
         }
         return out;
-    }
-
-    private TraceEvent traceAudit(StepAuditRecord record) {
-        if (traceStore == null || record == null) {
-            return null;
-        }
-        try {
-            Map<String, Object> payload = new LinkedHashMap<>();
-            payload.put("stepId", record.stepId());
-            payload.put("taskId", record.taskId());
-            payload.put("eventType", record.eventType().name());
-            payload.put("beforeStatus", record.beforeStatus());
-            payload.put("afterStatus", record.afterStatus());
-            payload.putAll(record.metadata());
-            return traceStore.append(new TraceEvent(
-                    traceStore.traceIdForSession(record.teamSessionId()),
-                    null,
-                    "",
-                    "",
-                    record.teamSessionId(),
-                    record.changeSetId(),
-                    record.approvalRequestId(),
-                    TraceEventType.STEP_AUDIT_RECORDED,
-                    "team",
-                    record.message(),
-                    payload,
-                    null,
-                    null
-            ));
-        } catch (Exception e) {
-            warn("step audit trace failed: " + e.getMessage());
-            return null;
-        }
-    }
-
-    private void traceSummary(StepAuditSummary summary) {
-        if (traceStore == null || summary == null || summary.teamSessionId().isBlank()) {
-            return;
-        }
-        try {
-            traceStore.append(new TraceEvent(
-                    traceStore.traceIdForSession(summary.teamSessionId()),
-                    null,
-                    "",
-                    "",
-                    summary.teamSessionId(),
-                    summary.latestChangeSetId(),
-                    "",
-                    TraceEventType.STEP_AUDIT_COMPACTED,
-                    "team",
-                    "step audit compacted",
-                    Map.of(
-                            "taskId", summary.taskId(),
-                            "auditHealth", summary.auditHealth().name(),
-                            "linkedChangeSetIds", summary.linkedChangeSetIds(),
-                            "latestVerificationStatus", summary.latestVerificationStatus()
-                    ),
-                    null,
-                    null
-            ));
-        } catch (Exception e) {
-            warn("step audit compact trace failed: " + e.getMessage());
-        }
-    }
-
-    private void traceLinked(String taskId, List<StepAuditRecord> records) {
-        if (traceStore == null || records == null || records.isEmpty()) {
-            return;
-        }
-        String teamSessionId = records.stream().map(StepAuditRecord::teamSessionId).filter(value -> !value.isBlank()).findFirst().orElse("");
-        if (teamSessionId.isBlank()) {
-            return;
-        }
-        try {
-            traceStore.append(new TraceEvent(
-                    traceStore.traceIdForSession(teamSessionId),
-                    null,
-                    "",
-                    "",
-                    teamSessionId,
-                    "",
-                    "",
-                    TraceEventType.STEP_AUDIT_LINKED,
-                    "team",
-                    "step audit linked",
-                    Map.of(
-                            "taskId", taskId != null ? taskId : "",
-                            "linkedRecords", records.stream().filter(record -> record.metadata().containsKey("linkConfidence")).count()
-                    ),
-                    null,
-                    null
-            ));
-        } catch (Exception e) {
-            warn("step audit link trace failed: " + e.getMessage());
-        }
     }
 
     private void warn(String message) {

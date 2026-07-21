@@ -310,10 +310,10 @@ class TeamEngineTest {
         assertEquals(ImplementationStepStatus.REJECTED, rejected.status());
         assertTrue(Files.exists(workspace.resolve(".team").resolve(session.id()).resolve("implementation_steps.jsonl")));
         assertTrue(Files.exists(workspace.resolve(".team").resolve(session.id()).resolve("step_audit.jsonl")));
-        assertTrue(engine.stepAuditByStep(read.id()).stream().anyMatch(record -> record.eventType() == StepAuditEventType.STEP_CREATED), engine.stepAuditByStep(read.id()).toString());
-        assertTrue(engine.stepAuditByStep(read.id()).stream().anyMatch(record -> record.eventType() == StepAuditEventType.STEP_APPLY_REQUESTED), engine.stepAuditByStep(read.id()).toString());
-        assertTrue(engine.stepAuditByTask(task.id()).stream().anyMatch(record -> record.eventType() == StepAuditEventType.STEP_BLOCKED), engine.stepAuditByTask(task.id()).toString());
-        assertTrue(engine.renderStepTimeline(read.id()).contains("STEP_APPLY_REQUESTED"));
+        assertTrue(engine.stepAuditByStep(read.id()).stream().anyMatch(record -> record.eventType() == StepAuditEventType.STEP_TOOL_APPLIED), engine.stepAuditByStep(read.id()).toString());
+        assertTrue(engine.stepAuditByTask(task.id()).stream().anyMatch(record -> record.eventType() == StepAuditEventType.STEP_REJECTED), engine.stepAuditByTask(task.id()).toString());
+        assertTrue(engine.stepAuditByTask(task.id()).stream().noneMatch(record -> !record.eventType().durableOutcome()), engine.stepAuditByTask(task.id()).toString());
+        assertTrue(engine.renderStepTimeline(read.id()).contains("STEP_TOOL_APPLIED"));
         assertTrue(engine.contextSnapshot(session.id()).toString().contains("implementationSteps"), engine.contextSnapshot(session.id()).toString());
         assertTrue(engine.contextSnapshot(session.id()).toString().contains("implementationStepProgress"), engine.contextSnapshot(session.id()).toString());
         assertTrue(engine.contextSnapshot(session.id()).toString().contains("stepAuditSummary"), engine.contextSnapshot(session.id()).toString());
@@ -343,8 +343,7 @@ class TeamEngineTest {
         assertEquals(ImplementationStepStatus.READY, ready.status());
         assertTrue(ready.validationErrors().isEmpty(), ready.toString());
         assertEquals("user", ready.lastUpdatedBy());
-        assertTrue(engine.stepAuditByStep(edit.id()).stream().anyMatch(record -> record.eventType() == StepAuditEventType.STEP_UPDATED), engine.stepAuditByStep(edit.id()).toString());
-        assertTrue(engine.stepAuditByStep(edit.id()).stream().anyMatch(record -> record.eventType() == StepAuditEventType.STEP_READY), engine.stepAuditByStep(edit.id()).toString());
+        assertTrue(engine.stepAuditByStep(edit.id()).stream().noneMatch(record -> !record.eventType().durableOutcome()), engine.stepAuditByStep(edit.id()).toString());
     }
 
     @Test

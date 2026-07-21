@@ -51,7 +51,7 @@ public class TeamEngine {
         this.store = new TeamSessionStore(this.workspace);
         this.traceStore = traceStore;
         this.workerExecutor = new TeamWorkerExecutor(verificationService, new PolicyEngine(this.workspace));
-        this.stepAuditService = new StepAuditService(this.workspace, traceStore);
+        this.stepAuditService = new StepAuditService(this.workspace);
         this.taskReportService = new TeamTaskReportService(stepAuditService);
         this.workerRuntime = new WorkerRuntime(this.workspace);
         this.legacyTeamRuntime = new PersistentTeamRuntime(this.workspace);
@@ -465,7 +465,6 @@ public class TeamEngine {
                     + "\nReason: " + step.reason());
             appendEvent(TeamEvent.of(task.sessionId(), task.id(), task.role(), "IMPLEMENTATION_STEP_CREATED", step.id(), step.toMap()));
             traceImplementationStep(TraceEventType.IMPLEMENTATION_STEP_CREATED, step, "");
-            recordStepAudit(StepAuditRecord.of(step, StepAuditEventType.STEP_CREATED, "", "Implementation step created."));
         }
         return created;
     }
@@ -509,7 +508,6 @@ public class TeamEngine {
             ).withDependencies(orderBase + created.size(), List.of(), List.of(),
                     "Team worker already applied this file change.", List.of());
             created.add(step);
-            recordStepAudit(StepAuditRecord.of(step, StepAuditEventType.STEP_CREATED, "", "Applied change step created from worker diff."));
             recordStepAudit(StepAuditRecord.of(step, StepAuditEventType.STEP_TOOL_APPLIED, "", "Worker applied file change."));
         }
         if (!created.isEmpty()) {
@@ -546,7 +544,6 @@ public class TeamEngine {
 
     public PendingImplementationStep applyImplementationStep(String stepId) {
         PendingImplementationStep step = requireImplementationStep(stepId);
-        recordStepAudit(StepAuditRecord.of(step, StepAuditEventType.STEP_APPLY_REQUESTED, step.status().name(), "Implementation step apply requested."));
         PendingImplementationStep updated = updateImplementationStep(step.withStatus(ImplementationStepStatus.APPLIED), TraceEventType.IMPLEMENTATION_STEP_APPLIED, "Implementation step applied.");
         recordStepAudit(StepAuditRecord.of(updated, StepAuditEventType.STEP_TOOL_APPLIED, step.status().name(), "Implementation step applied."));
         return updated;
@@ -588,18 +585,12 @@ public class TeamEngine {
             }
         }
         PendingImplementationStep updated = updateImplementationStep(next, TraceEventType.IMPLEMENTATION_STEP_UPDATED, "Implementation step updated.");
-        recordStepAudit(new StepAuditRecord(null, updated.id(), updated.taskId(), updated.teamSessionId(),
-                StepAuditEventType.STEP_UPDATED, current.status().name(), updated.status().name(),
-                "Implementation step updated.", "", "", "", "", "", "", null,
-                Map.of("updatedFields", safeRequest.updatedFields(), "validationErrors", updated.validationErrors())));
         traceImplementationStepUpdate(stateTrace, updated, safeRequest, stateMessage);
         appendEvent(TeamEvent.of(updated.teamSessionId(), updated.taskId(), updated.role(), stateTrace.name(), stateMessage, updated.toMap()));
-        StepAuditEventType stateAuditType = stateTrace == TraceEventType.IMPLEMENTATION_STEP_READY
-                ? StepAuditEventType.STEP_READY
-                : stateTrace == TraceEventType.IMPLEMENTATION_STEP_BLOCKED
-                ? StepAuditEventType.STEP_BLOCKED
-                : StepAuditEventType.STEP_FAILED;
-        recordStepAudit(StepAuditRecord.of(updated, stateAuditType, current.status().name(), stateMessage));
+        if (stateTrace == TraceEventType.IMPLEMENTATION_STEP_VALIDATION_FAILED) {
+            recordStepAudit(StepAuditRecord.of(updated, StepAuditEventType.STEP_FAILED,
+                    current.status().name(), stateMessage));
+        }
         return updated;
     }
 
@@ -630,7 +621,6 @@ public class TeamEngine {
         PendingImplementationStep step = requireImplementationStep(stepId);
         PendingImplementationStep updated = updateImplementationStep(step.withGateResult(gateResult, ImplementationStepStatus.BLOCKED),
                 TraceEventType.IMPLEMENTATION_STEP_BLOCKED, "Implementation step blocked by gate.");
-        recordStepAudit(StepAuditRecord.of(updated, StepAuditEventType.STEP_BLOCKED, step.status().name(), "Implementation step blocked by gate."));
         return updated;
     }
 

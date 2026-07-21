@@ -64,9 +64,6 @@ public class TeamExecutionService {
         Path executionRoot = workspaceSession != null
                 ? Path.of(workspaceSession.workspacePath()).toAbsolutePath().normalize()
                 : baseWorkspace;
-        recordAudit(task, StepAuditEventType.STEP_APPLY_REQUESTED, "", task.state().name(),
-                "Worktree-backed team execution started.", workspaceSession, Map.of("workspacePath", executionRoot.toString()));
-
         WorkerExecutionInput workerInput = new WorkerExecutionInput(
                 task.id(),
                 task.sessionId(),

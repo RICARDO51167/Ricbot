@@ -6,6 +6,7 @@ import java.util.Map;
 import java.util.UUID;
 
 public record TeamEvent(
+        int schemaVersion,
         String eventId,
         String sessionId,
         String taskId,
@@ -15,6 +16,7 @@ public record TeamEvent(
         Map<String, Object> metadata,
         String createdAt
 ) {
+    public static final int CURRENT_SCHEMA_VERSION = 1;
     public static final String TEAM_STARTED = "TEAM_STARTED";
     public static final String TASK_CREATED = "TASK_CREATED";
     public static final String TASK_PRODUCING = "TASK_PRODUCING";
@@ -30,6 +32,9 @@ public record TeamEvent(
     public static final String ARTIFACT_RECORDED = "ARTIFACT_RECORDED";
 
     public TeamEvent {
+        if (schemaVersion <= 0 || schemaVersion > CURRENT_SCHEMA_VERSION) {
+            throw new IllegalArgumentException("unsupported team event schema: " + schemaVersion);
+        }
         eventId = eventId != null && !eventId.isBlank() ? eventId : newId();
         sessionId = clean(sessionId);
         taskId = clean(taskId);
@@ -40,12 +45,27 @@ public record TeamEvent(
         createdAt = createdAt != null && !createdAt.isBlank() ? createdAt : Instant.now().toString();
     }
 
+    public TeamEvent(
+            String eventId,
+            String sessionId,
+            String taskId,
+            String type,
+            String actor,
+            String message,
+            Map<String, Object> metadata,
+            String createdAt
+    ) {
+        this(CURRENT_SCHEMA_VERSION, eventId, sessionId, taskId, type, actor, message, metadata, createdAt);
+    }
+
     public static TeamEvent of(String sessionId, String taskId, TeamRole role, String type, String message) {
-        return new TeamEvent(null, sessionId, taskId, type, role != null ? role.name() : TeamRole.LEADER.name(), message, Map.of(), null);
+        return new TeamEvent(CURRENT_SCHEMA_VERSION, null, sessionId, taskId, type,
+                role != null ? role.name() : TeamRole.LEADER.name(), message, Map.of(), null);
     }
 
     public static TeamEvent of(String sessionId, String taskId, TeamRole role, String type, String message, Map<String, Object> metadata) {
-        return new TeamEvent(null, sessionId, taskId, type, role != null ? role.name() : TeamRole.LEADER.name(), message, metadata, null);
+        return new TeamEvent(CURRENT_SCHEMA_VERSION, null, sessionId, taskId, type,
+                role != null ? role.name() : TeamRole.LEADER.name(), message, metadata, null);
     }
 
     public String id() {
@@ -58,6 +78,7 @@ public record TeamEvent(
 
     public Map<String, Object> toMap() {
         Map<String, Object> out = new LinkedHashMap<>();
+        out.put("schemaVersion", schemaVersion);
         out.put("eventId", eventId);
         out.put("id", eventId);
         out.put("sessionId", sessionId);
@@ -76,6 +97,7 @@ public record TeamEvent(
             return null;
         }
         return new TeamEvent(
+                integer(raw.get("schemaVersion"), CURRENT_SCHEMA_VERSION),
                 first(raw, "eventId", "id"),
                 string(raw.get("sessionId")),
                 string(raw.get("taskId")),
@@ -85,6 +107,15 @@ public record TeamEvent(
                 metadata(raw.get("metadata")),
                 string(raw.get("createdAt"))
         );
+    }
+
+    private static int integer(Object raw, int fallback) {
+        if (raw instanceof Number number) return number.intValue();
+        try {
+            return raw != null ? Integer.parseInt(String.valueOf(raw)) : fallback;
+        } catch (Exception ignored) {
+            return fallback;
+        }
     }
 
     private static TeamRole parseRole(Object raw) {

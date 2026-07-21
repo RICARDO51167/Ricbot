@@ -12,5 +12,13 @@ public enum StepAuditEventType {
     STEP_REJECTED,
     STEP_FAILED,
     STEP_CHANGESET_LINKED,
-    STEP_VERIFIED
+    STEP_VERIFIED;
+
+    public boolean durableOutcome() {
+        return switch (this) {
+            case STEP_APPROVAL_REQUIRED, STEP_APPROVED, STEP_TOOL_APPLIED, STEP_REJECTED,
+                    STEP_FAILED, STEP_CHANGESET_LINKED, STEP_VERIFIED -> true;
+            case STEP_CREATED, STEP_UPDATED, STEP_READY, STEP_BLOCKED, STEP_APPLY_REQUESTED -> false;
+        };
+    }
 }

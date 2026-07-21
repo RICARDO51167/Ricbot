@@ -6,6 +6,7 @@ import java.util.Map;
 import java.util.UUID;
 
 public record StepAuditRecord(
+        int schemaVersion,
         String id,
         String stepId,
         String taskId,
@@ -19,11 +20,15 @@ public record StepAuditRecord(
         String toolResultSummary,
         String changeSetId,
         String verificationStatus,
-        String traceEventId,
         String createdAt,
         Map<String, Object> metadata
 ) {
+    public static final int CURRENT_SCHEMA_VERSION = 2;
+
     public StepAuditRecord {
+        if (schemaVersion <= 0 || schemaVersion > CURRENT_SCHEMA_VERSION) {
+            throw new IllegalArgumentException("unsupported step audit schema: " + schemaVersion);
+        }
         id = id != null && !id.isBlank() ? id : newId();
         stepId = clean(stepId);
         taskId = clean(taskId);
@@ -37,13 +42,36 @@ public record StepAuditRecord(
         toolResultSummary = clean(toolResultSummary);
         changeSetId = clean(changeSetId);
         verificationStatus = clean(verificationStatus);
-        traceEventId = clean(traceEventId);
         createdAt = createdAt != null && !createdAt.isBlank() ? createdAt : Instant.now().toString();
         metadata = metadata != null ? Map.copyOf(metadata) : Map.of();
     }
 
+    /** Compatibility constructor for callers and persisted schema v1, whose Trace link is intentionally discarded. */
+    public StepAuditRecord(
+            String id,
+            String stepId,
+            String taskId,
+            String teamSessionId,
+            StepAuditEventType eventType,
+            String beforeStatus,
+            String afterStatus,
+            String message,
+            String approvalRequestId,
+            String toolName,
+            String toolResultSummary,
+            String changeSetId,
+            String verificationStatus,
+            String legacyTraceEventId,
+            String createdAt,
+            Map<String, Object> metadata
+    ) {
+        this(CURRENT_SCHEMA_VERSION, id, stepId, taskId, teamSessionId, eventType, beforeStatus, afterStatus,
+                message, approvalRequestId, toolName, toolResultSummary, changeSetId, verificationStatus,
+                createdAt, metadata);
+    }
+
     public static StepAuditRecord of(PendingImplementationStep step, StepAuditEventType eventType, String beforeStatus, String message) {
-        return new StepAuditRecord(null,
+        return new StepAuditRecord(CURRENT_SCHEMA_VERSION, null,
                 step != null ? step.id() : "",
                 step != null ? step.taskId() : "",
                 step != null ? step.teamSessionId() : "",
@@ -56,15 +84,8 @@ public record StepAuditRecord(
                 "",
                 "",
                 "",
-                "",
                 null,
                 step != null ? step.toMap() : Map.of());
-    }
-
-    public StepAuditRecord withTraceEventId(String nextTraceEventId) {
-        return new StepAuditRecord(id, stepId, taskId, teamSessionId, eventType, beforeStatus, afterStatus,
-                message, approvalRequestId, toolName, toolResultSummary, changeSetId, verificationStatus,
-                nextTraceEventId, createdAt, metadata);
     }
 
     public StepAuditRecord withStepLink(String nextStepId, String confidence) {
@@ -72,13 +93,14 @@ public record StepAuditRecord(
         if (confidence != null && !confidence.isBlank()) {
             nextMetadata.put("linkConfidence", confidence);
         }
-        return new StepAuditRecord(id, nextStepId, taskId, teamSessionId, eventType, beforeStatus, afterStatus,
+        return new StepAuditRecord(schemaVersion, id, nextStepId, taskId, teamSessionId, eventType, beforeStatus, afterStatus,
                 message, approvalRequestId, toolName, toolResultSummary, changeSetId, verificationStatus,
-                traceEventId, createdAt, nextMetadata);
+                createdAt, nextMetadata);
     }
 
     public Map<String, Object> toMap() {
         Map<String, Object> out = new LinkedHashMap<>();
+        out.put("schemaVersion", schemaVersion);
         out.put("id", id);
         out.put("stepId", stepId);
         out.put("taskId", taskId);
@@ -92,7 +114,6 @@ public record StepAuditRecord(
         out.put("toolResultSummary", toolResultSummary);
         out.put("changeSetId", changeSetId);
         out.put("verificationStatus", verificationStatus);
-        out.put("traceEventId", traceEventId);
         out.put("createdAt", createdAt);
         out.put("metadata", metadata);
         return out;
@@ -103,6 +124,7 @@ public record StepAuditRecord(
             return null;
         }
         return new StepAuditRecord(
+                integer(raw.get("schemaVersion"), 1),
                 string(raw.get("id")),
                 string(raw.get("stepId")),
                 string(raw.get("taskId")),
@@ -116,10 +138,18 @@ public record StepAuditRecord(
                 string(raw.get("toolResultSummary")),
                 string(raw.get("changeSetId")),
                 string(raw.get("verificationStatus")),
-                string(raw.get("traceEventId")),
                 string(raw.get("createdAt")),
                 map(raw.get("metadata"))
         );
+    }
+
+    private static int integer(Object raw, int fallback) {
+        if (raw instanceof Number number) return number.intValue();
+        try {
+            return raw != null ? Integer.parseInt(String.valueOf(raw)) : fallback;
+        } catch (Exception ignored) {
+            return fallback;
+        }
     }
 
     private static StepAuditEventType parseEventType(Object raw) {

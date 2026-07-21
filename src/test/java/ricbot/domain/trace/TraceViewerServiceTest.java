@@ -112,9 +112,9 @@ class TraceViewerServiceTest {
         TeamSession session = engine.createSession("sorted timeline");
         TeamTask task = engine.createTask(session.id(), TeamRole.DEVELOPER, "sort events");
         StepAuditService audit = new StepAuditService(workspace);
-        audit.append(new StepAuditRecord(null, "", task.id(), session.id(), StepAuditEventType.STEP_UPDATED,
+        audit.append(new StepAuditRecord(null, "", task.id(), session.id(), StepAuditEventType.STEP_VERIFIED,
                 "", "", "late", "", "", "", "", "", "", "2026-01-01T00:00:03Z", Map.of()));
-        audit.append(new StepAuditRecord(null, "", task.id(), session.id(), StepAuditEventType.STEP_CREATED,
+        audit.append(new StepAuditRecord(null, "", task.id(), session.id(), StepAuditEventType.STEP_FAILED,
                 "", "", "early", "", "", "", "", "", "", "2026-01-01T00:00:01Z", Map.of()));
 
         TraceTimeline timeline = new TraceViewerService(workspace).show(task.id());

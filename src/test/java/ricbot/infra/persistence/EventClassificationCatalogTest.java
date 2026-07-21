@@ -31,6 +31,16 @@ class EventClassificationCatalogTest {
                 EventClassificationCatalog.classification(EventClassificationCatalog.CONSOLE, "ConsoleEvent"));
     }
 
+    @Test
+    void stepAuditOnlyPersistsClassifiedDurableOutcomes() {
+        Arrays.stream(StepAuditEventType.values()).forEach(type -> assertEquals(
+                EventClassificationCatalog.classification(EventClassificationCatalog.STEP_AUDIT, type.name())
+                        == EventClassificationCatalog.Classification.DURABLE_FACT,
+                type.durableOutcome(),
+                type.name()
+        ));
+    }
+
     private static void assertCoverage(String namespace, Enum<?>[] values) {
         long count = EventClassificationCatalog.entries().keySet().stream()
                 .filter(key -> key.startsWith(namespace + ":"))

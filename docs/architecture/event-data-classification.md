@@ -16,8 +16,8 @@ This table is the migration contract for pruning duplicate fact stores. The exec
 | --- | --- | --- |
 | Run Journal | Run/tool outcomes are Durable Facts; node transitions, model requests, and batch summaries are Diagnostic | Keep facts in Journal; send diagnostic detail to OTLP/logs |
 | Trace | Approval, side-effect, ChangeSet, Workspace, policy, and implementation gate outcomes are Durable Facts; diff/test/eval payloads are Artifacts; repeated lifecycle records are Diagnostic | Migrate Trace-only facts to Journal and replace evidence payloads with Artifact references |
-| Team Event | All declared Team events are Durable Facts, including Artifact references | Add schema version, then retain as the Team fact stream or bridge into the Run Journal |
-| Step Audit | Approval, applied tool, rejection, failure, ChangeSet link, and verification are Durable Facts; step bookkeeping is Diagnostic | Keep gate/evidence outcomes and remove repeated state bookkeeping |
+| Team Event | All declared Team events are Durable Facts, including Artifact references | Schema v1 is retained as the Team fact stream; records written before versioning load as v1 |
+| Step Audit | Approval, applied tool, rejection, failure, ChangeSet link, and verification are Durable Facts; step bookkeeping is Diagnostic | Schema v2 writes only gate/evidence outcomes; legacy bookkeeping remains readable but is never appended or mirrored to Trace |
 | Evidence | DiffEvidence, ExecutedTestEvidence, ApprovalEvidence, and VerificationEvidence are Immutable Artifacts | Preserve all four; never demote them to Trace |
 | Console | ConsoleEvent, metrics, and run history are Read Models; explicit Console action audit is a Durable Fact | Rebuild Console views from Journal/Team/Worker state and delete Console Event Store |
 
@@ -28,3 +28,7 @@ evidence bytes -> immutable Artifact -> Journal Event containing the Artifact re
 display-only fields -> read model
 diagnostic-only fields -> OTLP/logs
 ```
+
+The former `.ricbot/console-events.jsonl` read model is no longer read or written. Console views are rebuilt from
+Run Journal, Runtime Fact Journal, Team State, and Worker State. Legacy `.ricbot/console-actions.jsonl` data is
+read-only; new Console action audits are versioned Runtime Fact events.

@@ -14,6 +14,7 @@ import ricbot.domain.security.RiskAssessment;
 import ricbot.domain.session.Session;
 import ricbot.domain.session.SessionManager;
 import ricbot.domain.team.TeamEngine;
+import ricbot.domain.team.StepAuditService;
 import ricbot.domain.team.TeamTask;
 import ricbot.domain.team.TeamWorkerResult;
 import ricbot.domain.team.TeamWorkerRunner;
@@ -530,7 +531,9 @@ class AgentCommandsTest {
         assertTrue(traceStore.loadEvents(traceId).stream().anyMatch(event -> event.type() == TraceEventType.IMPLEMENTATION_STEP_UPDATED), traceStore.loadEvents(traceId).toString());
         assertTrue(traceStore.loadEvents(traceId).stream().anyMatch(event -> event.type() == TraceEventType.IMPLEMENTATION_STEP_READY), traceStore.loadEvents(traceId).toString());
         String teamTraceId = traceStore.traceIdForSession(teamSessionId);
-        assertTrue(traceStore.loadEvents(teamTraceId).stream().anyMatch(event -> event.type() == TraceEventType.STEP_AUDIT_RECORDED), traceStore.loadEvents(teamTraceId).toString());
+        assertFalse(traceStore.loadEvents(teamTraceId).stream().anyMatch(event -> event.type() == TraceEventType.STEP_AUDIT_RECORDED), traceStore.loadEvents(teamTraceId).toString());
+        assertTrue(new StepAuditService(workspace).listByTask(taskId).stream()
+                .allMatch(record -> record.eventType().durableOutcome()));
     }
 
     @Test
