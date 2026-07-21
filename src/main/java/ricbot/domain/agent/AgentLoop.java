@@ -11,7 +11,6 @@ import ricbot.domain.config.ProviderCapabilityResolver;
 import ricbot.domain.note.NoteService;
 import ricbot.domain.rag.WorkspaceRagService;
 import ricbot.domain.security.ApprovalService;
-import ricbot.domain.subagent.SubagentManager;
 import ricbot.domain.trace.TraceStore;
 import ricbot.domain.hook.AgentHook;
 import ricbot.tool.api.BuiltinToolRegistrar;
@@ -108,8 +107,8 @@ public class AgentLoop {
     private final TraceStore traceStore;
     /** 会话自动归档器 */
     private final AutoCompact autoCompact;
-    /** 子代理管理器，用于管理子代理任务 */
-    private final SubagentManager subagents;
+    /** Spawn Worker 的 Run 调度服务；完成结果以持久 Mailbox 为准。 */
+    private final SpawnWorkerService spawnWorkers;
     /** 技能加载器，用于加载可用技能 */
     private final SkillsLoader skillsLoader;
     /** 技能路由器，用于根据上下文选择合适技能 */
@@ -258,11 +257,9 @@ public class AgentLoop {
                 this.sideEffectStore, this.approvalService);
         this.autoCompact = new AutoCompact(this.sessionManager, this.consolidator, this.sessionTtlMinutes);
         
-        // 初始化子代理管理器
-        this.subagents = new SubagentManager(
+        this.spawnWorkers = new SpawnWorkerService(
                 this.provider,
                 this.workspace,
-                this.bus,
                 this.maxToolResultChars,
                 this.model,
                 this.webConfig,
@@ -415,7 +412,7 @@ public class AgentLoop {
 
         if (execConfig.isEnable()) {
             BuiltinToolRegistrar.registerExecTool(tools, workspace, restrictToWorkspace, execConfig, toolApprovalService);
-            tools.register(new SpawnTool(subagents));
+            tools.register(new SpawnTool(spawnWorkers));
         }
 
         if (webConfig.isEnable()) {
@@ -541,9 +538,9 @@ public class AgentLoop {
             markSessionInterrupted(sessionKey, "shutdown");
         }
         try {
-            subagents.close();
+            spawnWorkers.close();
         } catch (Exception e) {
-            log.warn("关闭子代理管理器失败", e);
+            log.warn("关闭 Spawn Worker 服务失败", e);
         }
         mcpLoader.close();
         telemetryRuntime.close();
@@ -552,7 +549,7 @@ public class AgentLoop {
         log.info("Agent 循环正在停止");
     }
 
-    public SubagentManager getSubagents() { return subagents; }
+    public SpawnWorkerService getSpawnWorkers() { return spawnWorkers; }
     public SessionManager getSessions() { return sessionManager; }
     public ToolRegistry getTools() { return tools; }
     public ApprovalService getApprovalService() { return approvalService; }

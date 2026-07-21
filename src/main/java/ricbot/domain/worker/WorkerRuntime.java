@@ -43,6 +43,10 @@ public final class WorkerRuntime {
         return store.load(workerId);
     }
 
+    public Optional<WorkerStore.StoredWorker> findByIdempotencyKey(String scopeId, String idempotencyKey) {
+        return store.findByIdempotencyKey(scopeId, idempotencyKey);
+    }
+
     public List<WorkerStore.StoredWorker> workers() {
         return store.list();
     }

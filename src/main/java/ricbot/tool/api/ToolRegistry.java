@@ -4,7 +4,6 @@ import lombok.RequiredArgsConstructor;
 import ricbot.tool.filesystem.ListDirTool;
 import ricbot.tool.filesystem.ReadFileTool;
 import ricbot.tool.process.ExecTool;
-import ricbot.tool.process.SpawnTool;
 import ricbot.tool.search.GlobTool;
 import ricbot.tool.search.GrepTool;
 import ricbot.tool.web.WebFetchTool;
@@ -43,14 +42,6 @@ public class ToolRegistry {
                             (String) params.get("file_glob"),
                             (Boolean) params.get("ignore_case"),
                             (Integer) params.get("max_results")
-                    )
-            ),
-            new LegacyToolExecutor<>(
-                    SpawnTool.class,
-                    (tool, params) -> tool.execute(
-                            (String) params.get("task"),
-                            (String) params.get("label"),
-                            (String) params.get("session_key")
                     )
             ),
             new LegacyToolExecutor<>(
