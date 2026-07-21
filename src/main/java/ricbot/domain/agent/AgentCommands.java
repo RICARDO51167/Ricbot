@@ -2,6 +2,7 @@ package ricbot.domain.agent;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import ricbot.application.workspace.WorkspaceApplicationService;
 import ricbot.domain.change.ChangeSetRenderer;
 import ricbot.domain.change.ChangeSetService;
 import ricbot.domain.change.GitChangeSet;
@@ -60,7 +61,6 @@ import ricbot.domain.workspace.LocalWorkspaceBackend;
 import ricbot.domain.workspace.WorkspaceBackend;
 import ricbot.domain.workspace.WorkspaceBackendType;
 import ricbot.domain.workspace.WorkspaceLifecycleService;
-import ricbot.domain.workspace.WorkspaceRenderer;
 import ricbot.domain.workspace.WorkspaceSession;
 import ricbot.domain.workspace.WorkspaceSessionStore;
 import ricbot.integration.command.CommandRouter;
@@ -92,6 +92,7 @@ final class AgentCommands {
     private final TeamWorkerRunner teamWorkerRunner;
     private final TeamEngine teamEngine;
     private final TraceStore traceStore;
+    private final WorkspaceApplicationService workspaceApplication;
 
     AgentCommands(
             SessionManager sessionManager,
@@ -160,6 +161,7 @@ final class AgentCommands {
         this.toolRegistry = toolRegistry;
         this.teamWorkerRunner = teamWorkerRunner;
         this.teamEngine = new TeamEngine(this.workspace, this.traceStore);
+        this.workspaceApplication = new WorkspaceApplicationService(this.workspace, this.sessionManager, this.traceStore);
     }
 
     void register(CommandRouter router) {
@@ -366,220 +368,8 @@ final class AgentCommands {
     }
 
     private CompletableFuture<OutboundMessage> workspace(CommandRouter.CommandContext ctx) {
-        String args = trim(ctx.getArgs());
-        String action = args.isBlank() ? "status" : args.split("\\s+")[0].toLowerCase(java.util.Locale.ROOT);
-        WorkspaceSessionStore store = new WorkspaceSessionStore(workspace);
-        WorkspaceRenderer renderer = new WorkspaceRenderer();
         Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
-        try {
-            return switch (action) {
-                case "create" -> workspaceCreate(ctx, session, store, renderer);
-                case "status" -> workspaceStatus(ctx, session, store, renderer, commandArgOrBlank(args, 1));
-                case "list" -> completedReply(ctx, renderer.renderList(new WorkspaceLifecycleService(workspace).activeWorktrees()));
-                case "use" -> workspaceUse(ctx, session, store, renderer, commandArg(args, 1));
-                case "diff" -> workspaceDiff(ctx, session, store, renderer, commandArgOrBlank(args, 1));
-                case "discard" -> workspaceDiscard(ctx, session, renderer, afterCommand(args));
-                case "cleanup" -> workspaceCleanup(ctx, session, store, renderer, commandArg(args, 1));
-                default -> completedReply(ctx, "用法：/workspace create --mode local|worktree <goal>|status [taskId|workspaceId]|list|use <id>|diff <taskId|workspaceId>|discard <taskId|workspaceId> --force|cleanup <id>");
-            };
-        } catch (IllegalArgumentException | IllegalStateException e) {
-            return completedReply(ctx, "workspace error: " + e.getMessage());
-        }
-    }
-
-    private CompletableFuture<OutboundMessage> workspaceCreate(
-            CommandRouter.CommandContext ctx,
-            Session session,
-            WorkspaceSessionStore store,
-            WorkspaceRenderer renderer
-    ) {
-        String args = trim(ctx.getArgs());
-        String mode = optionValue(args, "--mode", "local").toLowerCase(java.util.Locale.ROOT);
-        String goal = workspaceCreateGoal(args);
-        WorkspaceBackend backend = switch (mode) {
-            case "local" -> new LocalWorkspaceBackend(store);
-            case "worktree", "git_worktree" -> new GitWorktreeWorkspaceBackend(workspace, store);
-            default -> throw new IllegalArgumentException("unsupported workspace mode: " + mode);
-        };
-        WorkspaceSession created = backend.createSession(workspace, goal);
-        storeWorkspaceContext(session, created, renderer);
-        traceEvent(session, TraceEventType.WORKSPACE_CREATED, "workspace", "workspace session created", Map.of(
-                "workspaceSessionId", created.id(),
-                "type", created.type().name(),
-                "workspacePath", created.workspacePath(),
-                "goal", created.goal()
-        ), "", "", "");
-        return completedReply(ctx, "workspace created\n"
-                + "id: " + created.id() + "\n"
-                + "source: .workspaces/" + created.id() + "/session.json\n\n"
-                + renderer.renderStatus(created));
-    }
-
-    private CompletableFuture<OutboundMessage> workspaceUse(
-            CommandRouter.CommandContext ctx,
-            Session session,
-            WorkspaceSessionStore store,
-            WorkspaceRenderer renderer,
-            String sessionId
-    ) {
-        WorkspaceSession selected = requireWorkspaceSession(store, sessionId);
-        storeWorkspaceContext(session, selected, renderer);
-        traceEvent(session, TraceEventType.WORKSPACE_SELECTED, "workspace", "workspace session selected", Map.of(
-                "workspaceSessionId", selected.id(),
-                "type", selected.type().name(),
-                "workspacePath", selected.workspacePath()
-        ), "", "", "");
-        return completedReply(ctx, "workspace selected\n" + renderer.renderStatus(selected));
-    }
-
-    private CompletableFuture<OutboundMessage> workspaceStatus(
-            CommandRouter.CommandContext ctx,
-            Session session,
-            WorkspaceSessionStore store,
-            WorkspaceRenderer renderer,
-            String target
-    ) {
-        if (target == null || target.isBlank()) {
-            return completedReply(ctx, renderer.renderStatus(activeWorkspaceSession(session, store)));
-        }
-        WorkspaceSession direct = store.load(target);
-        if (direct != null && direct.type() != WorkspaceBackendType.GIT_WORKTREE) {
-            return completedReply(ctx, renderer.renderStatus(direct));
-        }
-        WorkspaceLifecycleService lifecycle = new WorkspaceLifecycleService(workspace);
-        return completedReply(ctx, renderer.renderLifecycleStatus(lifecycle.status(target)));
-    }
-
-    private CompletableFuture<OutboundMessage> workspaceDiff(
-            CommandRouter.CommandContext ctx,
-            Session session,
-            WorkspaceSessionStore store,
-            WorkspaceRenderer renderer,
-            String sessionId
-    ) {
-        rejectTeamSessionIdArgument(sessionId, "/workspace diff 需要 taskId 或 workspaceId，例如 teamtask_xxx。");
-        WorkspaceSession direct = !sessionId.isBlank() ? store.load(sessionId) : activeWorkspaceSession(session, store);
-        if (direct != null && direct.type() != WorkspaceBackendType.GIT_WORKTREE) {
-            String diff = backendFor(direct, store).diff(direct.id());
-            traceEvent(session, TraceEventType.WORKSPACE_DIFFED, "workspace", "workspace diff rendered", Map.of(
-                    "workspaceSessionId", direct.id(),
-                    "type", direct.type().name(),
-                    "diffChars", diff != null ? diff.length() : 0
-            ), "", "", "");
-            return completedReply(ctx, renderer.renderDiff(direct, diff, 4_000));
-        }
-        String token = sessionId.isBlank() && direct != null ? direct.id() : sessionId;
-        WorkspaceLifecycleService lifecycle = new WorkspaceLifecycleService(workspace);
-        WorkspaceLifecycleService.WorkspaceDiff lifecycleDiff = lifecycle.diff(token);
-        WorkspaceSession target = lifecycleDiff.session();
-        traceEvent(session, TraceEventType.WORKSPACE_DIFFED, "workspace", "workspace diff rendered", Map.of(
-                "workspaceSessionId", target.id(),
-                "type", target.type().name(),
-                "diffChars", lifecycleDiff.patch().length(),
-                "changedFiles", lifecycleDiff.changedFiles()
-        ), "", "", "");
-        return completedReply(ctx, renderer.renderLifecycleDiff(lifecycleDiff, 4_000));
-    }
-
-    private CompletableFuture<OutboundMessage> workspaceDiscard(
-            CommandRouter.CommandContext ctx,
-            Session session,
-            WorkspaceRenderer renderer,
-            String rawArgs
-    ) {
-        String args = trim(rawArgs);
-        boolean force = containsFlag(args, "--force");
-        String target = stripFlags(args, "--force");
-        WorkspaceLifecycleService lifecycle = new WorkspaceLifecycleService(workspace);
-        WorkspaceSession discarded = lifecycle.discard(target, force);
-        if (activeWorkspaceSessionId(session).equals(discarded.id())) {
-            session.getMetadata().remove(SessionRuntimeKeys.ACTIVE_WORKSPACE_SESSION_ID_KEY);
-            session.getMetadata().remove(SessionRuntimeKeys.WORKSPACE_SUMMARY_KEY);
-            session.getMetadata().remove(SessionRuntimeKeys.WORKSPACE_SOURCE_KEY);
-            sessionManager.save(session);
-        }
-        traceEvent(session, TraceEventType.WORKSPACE_CLEANED, "workspace", "workspace session discarded", Map.of(
-                "workspaceSessionId", discarded.id(),
-                "type", discarded.type().name(),
-                "workspacePath", discarded.workspacePath(),
-                "status", discarded.status().name()
-        ), "", "", "");
-        return completedReply(ctx, "workspace discarded\n" + renderer.renderStatus(discarded));
-    }
-
-    private CompletableFuture<OutboundMessage> workspaceCleanup(
-            CommandRouter.CommandContext ctx,
-            Session session,
-            WorkspaceSessionStore store,
-            WorkspaceRenderer renderer,
-            String sessionId
-    ) {
-        WorkspaceSession target = requireWorkspaceSession(store, sessionId);
-        WorkspaceSession cleaned = backendFor(target, store).cleanup(target.id());
-        if (activeWorkspaceSessionId(session).equals(cleaned.id())) {
-            session.getMetadata().remove(SessionRuntimeKeys.ACTIVE_WORKSPACE_SESSION_ID_KEY);
-            session.getMetadata().remove(SessionRuntimeKeys.WORKSPACE_SUMMARY_KEY);
-            session.getMetadata().remove(SessionRuntimeKeys.WORKSPACE_SOURCE_KEY);
-            sessionManager.save(session);
-        }
-        traceEvent(session, TraceEventType.WORKSPACE_CLEANED, "workspace", "workspace session cleaned", Map.of(
-                "workspaceSessionId", cleaned.id(),
-                "type", cleaned.type().name(),
-                "workspacePath", cleaned.workspacePath(),
-                "status", cleaned.status().name()
-        ), "", "", "");
-        return completedReply(ctx, "workspace cleaned\n" + renderer.renderStatus(cleaned));
-    }
-
-    private WorkspaceBackend backendFor(WorkspaceSession session, WorkspaceSessionStore store) {
-        if (session.type() == WorkspaceBackendType.GIT_WORKTREE) {
-            return new GitWorktreeWorkspaceBackend(workspace, store);
-        }
-        return new LocalWorkspaceBackend(store);
-    }
-
-    private WorkspaceSession activeWorkspaceSession(Session session, WorkspaceSessionStore store) {
-        String id = activeWorkspaceSessionId(session);
-        WorkspaceSession active = !id.isBlank() ? store.load(id) : null;
-        if (active != null) {
-            return active;
-        }
-        return store.loadActive().stream().findFirst().orElse(null);
-    }
-
-    private WorkspaceSession requireWorkspaceSession(WorkspaceSessionStore store, String sessionId) {
-        WorkspaceSession workspaceSession = store.load(sessionId);
-        if (workspaceSession == null) {
-            throw new IllegalArgumentException("workspace session not found: " + sessionId);
-        }
-        return workspaceSession;
-    }
-
-    private void storeWorkspaceContext(Session session, WorkspaceSession workspaceSession, WorkspaceRenderer renderer) {
-        if (session == null || workspaceSession == null) {
-            return;
-        }
-        session.getMetadata().put(SessionRuntimeKeys.ACTIVE_WORKSPACE_SESSION_ID_KEY, workspaceSession.id());
-        session.getMetadata().put(SessionRuntimeKeys.WORKSPACE_SUMMARY_KEY, renderer.renderStatus(workspaceSession).replace("\n", " | "));
-        session.getMetadata().put(SessionRuntimeKeys.WORKSPACE_SOURCE_KEY, ".workspaces/" + workspaceSession.id() + "/session.json");
-        sessionManager.save(session);
-    }
-
-    private String activeWorkspaceSessionId(Session session) {
-        if (session == null || session.getMetadata() == null) {
-            return "";
-        }
-        Object raw = session.getMetadata().get(SessionRuntimeKeys.ACTIVE_WORKSPACE_SESSION_ID_KEY);
-        return raw != null ? String.valueOf(raw).trim() : "";
-    }
-
-    private String workspaceCreateGoal(String args) {
-        String value = afterCommand(args);
-        String mode = optionValue(args, "--mode", "");
-        if (!mode.isBlank()) {
-            value = value.replaceFirst("--mode\\s+" + java.util.regex.Pattern.quote(mode), "").trim();
-        }
-        return value.isBlank() ? "workspace session" : value;
+        return completedReply(ctx, workspaceApplication.execute(session, ctx.getArgs()));
     }
 
     private CompletableFuture<OutboundMessage> change(CommandRouter.CommandContext ctx) {
@@ -1121,7 +911,7 @@ final class AgentCommands {
         if (!result.workspaceSessionId().isBlank()) {
             WorkspaceSession workspaceSession = new WorkspaceSessionStore(workspace).load(result.workspaceSessionId());
             if (workspaceSession != null) {
-                storeWorkspaceContext(session, workspaceSession, new WorkspaceRenderer());
+                workspaceApplication.activate(session, workspaceSession);
             }
         }
         return completedReply(ctx, renderTeamExecutionResult(result));
@@ -1702,6 +1492,18 @@ final class AgentCommands {
                 0d,
                 ""
         );
+    }
+
+    private String activeWorkspaceSessionId(Session session) {
+        if (session == null || session.getMetadata() == null) return "";
+        Object raw = session.getMetadata().get(SessionRuntimeKeys.ACTIVE_WORKSPACE_SESSION_ID_KEY);
+        return raw != null ? String.valueOf(raw).trim() : "";
+    }
+
+    private WorkspaceBackend backendFor(WorkspaceSession session, WorkspaceSessionStore store) {
+        return session.type() == WorkspaceBackendType.GIT_WORKTREE
+                ? new GitWorktreeWorkspaceBackend(workspace, store)
+                : new LocalWorkspaceBackend(store);
     }
 
     private String activeWorkspacePath(Session session) {
