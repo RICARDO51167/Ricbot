@@ -32,6 +32,16 @@ public final class BuiltinToolRegistrar {
     }
 
     public static void registerFileAndSearchTools(ToolRegistry registry, Path workspace, Path allowedDir, ApprovalService approvalService) {
+        registerCoreFileAndSearchTools(registry, workspace, allowedDir, approvalService);
+        registerKnowledgeTools(registry, workspace);
+    }
+
+    public static void registerCoreFileAndSearchTools(
+            ToolRegistry registry,
+            Path workspace,
+            Path allowedDir,
+            ApprovalService approvalService
+    ) {
         CommandRiskAnalyzer riskAnalyzer = approvalService != null ? new CommandRiskAnalyzer(workspace) : null;
         registry.register(new ReadFileTool(workspace, allowedDir, List.of()));
         registry.register(new ListDirTool(workspace, allowedDir));
@@ -39,6 +49,9 @@ public final class BuiltinToolRegistrar {
         registry.register(new EditFileTool(workspace, allowedDir, riskAnalyzer, approvalService));
         registry.register(new GlobTool(workspace, allowedDir));
         registry.register(new GrepTool(workspace, allowedDir));
+    }
+
+    public static void registerKnowledgeTools(ToolRegistry registry, Path workspace) {
         registry.register(new NoteTool(workspace));
         registry.register(new RagTool(workspace));
     }

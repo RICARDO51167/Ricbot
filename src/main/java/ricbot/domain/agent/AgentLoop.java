@@ -2,7 +2,7 @@ package ricbot.domain.agent;
 
 import ricbot.domain.skill.SkillsLoader;
 import ricbot.domain.skill.SkillRouter;
-import ricbot.app.bootstrap.RuntimeToolBootstrap;
+import ricbot.tool.pack.RuntimeToolPacks;
 import ricbot.domain.memory.Consolidator;
 import ricbot.domain.memory.MemoryStore;
 import ricbot.domain.config.ProviderCapability;
@@ -349,7 +349,7 @@ public class AgentLoop {
 
         // 注册默认工具
         if (suppliedCore == null) {
-            RuntimeToolBootstrap.register(this.tools, this.workspace, this.restrictToWorkspace,
+            RuntimeToolPacks.registerAll(this.tools, this.workspace, this.restrictToWorkspace,
                     this.execConfig, this.webConfig, this.approvalService, this.skillsLoader, this.spawnWorkers);
         }
         registerCommandRoutes();

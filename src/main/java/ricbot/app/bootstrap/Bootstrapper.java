@@ -9,6 +9,7 @@ import ricbot.infra.config.Config;
 import ricbot.infra.config.ConfigLoader;
 import ricbot.integration.llm.api.LLMProvider;
 import ricbot.integration.llm.provider.ProviderFactory;
+import ricbot.tool.pack.RuntimeToolPacks;
 import ricbot.integration.channel.ChannelManager;
 
 import java.nio.file.Files;
@@ -64,7 +65,7 @@ public class Bootstrapper {
                 defaults.getDisabledSkills(),
                 defaults.getSessionTtlMinutes()
         );
-        RuntimeToolBootstrap.register(core.tools(), config.getWorkspacePath(),
+        RuntimeToolPacks.registerAll(core.tools(), config.getWorkspacePath(),
                 config.getTools().isRestrictToWorkspace(), config.getTools().getExec(),
                 config.getTools().getWeb(), core.approvalService(), core.skillsLoader(), core.spawnWorkers());
 
