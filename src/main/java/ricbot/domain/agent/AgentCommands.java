@@ -9,7 +9,6 @@ import ricbot.domain.change.ChangeSetService;
 import ricbot.domain.change.GitChangeSet;
 import ricbot.domain.change.GitChangeSetStatus;
 import ricbot.domain.change.PendingChangeAction;
-import ricbot.domain.memory.MemoryStore;
 import ricbot.domain.message.InboundMessage;
 import ricbot.domain.message.OutboundMessage;
 import ricbot.domain.message.OutboundMessages;
@@ -80,7 +79,6 @@ final class AgentCommands {
     };
 
     private final SessionManager sessionManager;
-    private final MemoryStore memoryStore;
     private final String model;
     private final Path workspace;
     private final Function<InboundMessage, String> sessionKeyResolver;
@@ -96,20 +94,18 @@ final class AgentCommands {
 
     AgentCommands(
             SessionManager sessionManager,
-            MemoryStore memoryStore,
             String model,
             Path workspace,
             Function<InboundMessage, String> sessionKeyResolver,
             Function<String, List<Future<?>>> activeTaskRemover,
             BiConsumer<String, String> sessionInterruptMarker
     ) {
-        this(sessionManager, memoryStore, model, workspace, sessionKeyResolver,
+        this(sessionManager, model, workspace, sessionKeyResolver,
                 activeTaskRemover, sessionInterruptMarker, new ApprovalService(), null);
     }
 
     AgentCommands(
             SessionManager sessionManager,
-            MemoryStore memoryStore,
             String model,
             Path workspace,
             Function<InboundMessage, String> sessionKeyResolver,
@@ -117,13 +113,12 @@ final class AgentCommands {
             BiConsumer<String, String> sessionInterruptMarker,
             ApprovalService approvalService
     ) {
-        this(sessionManager, memoryStore, model, workspace, sessionKeyResolver,
+        this(sessionManager, model, workspace, sessionKeyResolver,
                 activeTaskRemover, sessionInterruptMarker, approvalService, null);
     }
 
     AgentCommands(
             SessionManager sessionManager,
-            MemoryStore memoryStore,
             String model,
             Path workspace,
             Function<InboundMessage, String> sessionKeyResolver,
@@ -132,13 +127,12 @@ final class AgentCommands {
             ApprovalService approvalService,
             ToolRegistry toolRegistry
     ) {
-        this(sessionManager, memoryStore, model, workspace, sessionKeyResolver,
+        this(sessionManager, model, workspace, sessionKeyResolver,
                 activeTaskRemover, sessionInterruptMarker, approvalService, toolRegistry, null);
     }
 
     AgentCommands(
             SessionManager sessionManager,
-            MemoryStore memoryStore,
             String model,
             Path workspace,
             Function<InboundMessage, String> sessionKeyResolver,
@@ -149,7 +143,6 @@ final class AgentCommands {
             TeamWorkerRunner teamWorkerRunner
     ) {
         this.sessionManager = sessionManager;
-        this.memoryStore = memoryStore;
         this.model = model;
         this.workspace = workspace;
         this.sessionKeyResolver = sessionKeyResolver;

@@ -54,7 +54,6 @@ class AgentCommandsTest {
 
         AgentCommands commands = new AgentCommands(
                 sessionManager,
-                memoryStore,
                 "model",
                 workspace,
                 msg -> "cli:direct",
@@ -90,7 +89,6 @@ class AgentCommandsTest {
 
         AgentCommands commands = new AgentCommands(
                 sessionManager,
-                memoryStore,
                 "model",
                 workspace,
                 msg -> "cli:direct",
@@ -122,7 +120,6 @@ class AgentCommandsTest {
 
         AgentCommands commands = new AgentCommands(
                 sessionManager,
-                memoryStore,
                 "model",
                 workspace,
                 msg -> "cli:direct",
@@ -149,7 +146,6 @@ class AgentCommandsTest {
 
         AgentCommands commands = new AgentCommands(
                 sessionManager,
-                memoryStore,
                 "model",
                 workspace,
                 msg -> "cli:direct",
@@ -176,7 +172,6 @@ class AgentCommandsTest {
 
         AgentCommands commands = new AgentCommands(
                 sessionManager,
-                memoryStore,
                 "model",
                 workspace,
                 msg -> "cli:direct",
@@ -219,7 +214,6 @@ class AgentCommandsTest {
 
         AgentCommands resumedCommands = new AgentCommands(
                 sessionManager,
-                memoryStore,
                 "model",
                 workspace,
                 msg -> "cli:direct",
@@ -276,7 +270,6 @@ class AgentCommandsTest {
 
         AgentCommands commands = new AgentCommands(
                 sessionManager,
-                memoryStore,
                 "model",
                 workspace,
                 msg -> "cli:direct",
@@ -999,7 +992,6 @@ class AgentCommandsTest {
 
         AgentCommands commands = new AgentCommands(
                 sessionManager,
-                memoryStore,
                 "model",
                 workspace,
                 msg -> "cli:direct",
@@ -1066,7 +1058,6 @@ class AgentCommandsTest {
 
         AgentCommands commands = new AgentCommands(
                 sessionManager,
-                memoryStore,
                 "model",
                 workspace,
                 msg -> "cli:direct",
@@ -1129,7 +1120,6 @@ class AgentCommandsTest {
     private static AgentCommands commands(SessionManager sessionManager, MemoryStore memoryStore, Path workspace) {
         return new AgentCommands(
                 sessionManager,
-                memoryStore,
                 "model",
                 workspace,
                 msg -> "cli:direct",
@@ -1146,7 +1136,6 @@ class AgentCommandsTest {
     ) {
         return new AgentCommands(
                 sessionManager,
-                memoryStore,
                 "model",
                 workspace,
                 msg -> "cli:direct",
@@ -1170,7 +1159,6 @@ class AgentCommandsTest {
         tools.register(new EditFileTool(workspace, workspace));
         return new AgentCommands(
                 sessionManager,
-                memoryStore,
                 "model",
                 workspace,
                 msg -> "cli:direct",

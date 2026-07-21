@@ -334,7 +334,6 @@ public class AgentLoop {
         this.commandRouter = new CommandRouter();
         this.agentCommands = new AgentCommands(
                 this.sessionManager,
-                this.memoryStore,
                 this.model,
                 this.workspace,
                 this::effectiveSessionKey,
