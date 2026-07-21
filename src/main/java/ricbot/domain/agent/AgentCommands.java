@@ -2,6 +2,7 @@ package ricbot.domain.agent;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import ricbot.application.team.TeamSessionApplicationService;
 import ricbot.application.workspace.WorkspaceApplicationService;
 import ricbot.domain.change.ChangeSetRenderer;
 import ricbot.domain.change.ChangeSetService;
@@ -28,9 +29,7 @@ import ricbot.domain.security.CommandRiskLevel;
 import ricbot.domain.security.PendingToolCall;
 import ricbot.domain.security.RiskAssessment;
 import ricbot.domain.team.TeamArtifact;
-import ricbot.domain.team.TeamDecisionPolicy;
 import ricbot.domain.team.TeamEngine;
-import ricbot.domain.team.TeamEvent;
 import ricbot.domain.team.TeamExecutionService;
 import ricbot.domain.team.TeamRole;
 import ricbot.domain.team.TeamSession;
@@ -93,6 +92,7 @@ final class AgentCommands {
     private final TeamEngine teamEngine;
     private final TraceStore traceStore;
     private final WorkspaceApplicationService workspaceApplication;
+    private final TeamSessionApplicationService teamSessions;
 
     AgentCommands(
             SessionManager sessionManager,
@@ -162,6 +162,7 @@ final class AgentCommands {
         this.teamWorkerRunner = teamWorkerRunner;
         this.teamEngine = new TeamEngine(this.workspace, this.traceStore);
         this.workspaceApplication = new WorkspaceApplicationService(this.workspace, this.sessionManager, this.traceStore);
+        this.teamSessions = new TeamSessionApplicationService(this.sessionManager, this.teamEngine);
     }
 
     void register(CommandRouter router) {
@@ -695,15 +696,12 @@ final class AgentCommands {
     private CompletableFuture<OutboundMessage> team(CommandRouter.CommandContext ctx) {
         String args = trim(ctx.getArgs());
         String action = args.isBlank() ? "status" : args.split("\\s+")[0].toLowerCase(java.util.Locale.ROOT);
+        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
         try {
             return switch (action) {
-                case "start" -> teamStart(ctx, afterCommand(args));
-                case "status" -> teamStatus(ctx);
-                case "list" -> teamList(ctx);
-                case "resume" -> teamResume(ctx, afterCommand(args));
-                case "archive" -> teamArchive(ctx, afterCommand(args));
-                case "suggest" -> teamSuggest(ctx, afterCommand(args));
-                case "suggest-current" -> teamSuggestCurrent(ctx);
+                case "start", "status", "list", "resume", "archive", "suggest", "suggest-current",
+                        "events", "whiteboard", "abort" -> completedReply(ctx,
+                        teamSessions.execute(session, action, afterCommand(args)));
                 case "run" -> teamRun(ctx, afterCommand(args));
                 case "run-worker" -> teamRunWorker(ctx, afterCommand(args));
                 case "run-verifier" -> teamRunVerifier(ctx, afterCommand(args));
@@ -723,171 +721,11 @@ final class AgentCommands {
                 case "verifier-report" -> teamVerifierReport(ctx, afterCommand(args));
                 case "task" -> teamTask(ctx, afterCommand(args));
                 case "verify" -> teamVerify(ctx, afterCommand(args));
-                case "events" -> teamEvents(ctx);
-                case "whiteboard" -> teamWhiteboard(ctx);
-                case "abort" -> teamAbort(ctx, afterCommand(args));
                 default -> completedReply(ctx, "用法：/team start <goal>|status|list|resume <sessionId>|archive <sessionId>|suggest <goal>|suggest-current|run <task> [--worktree] [--verify]|task <role> <goal>|run-worker <taskId>|run-verifier <taskId>|worker-report <taskId>|report <taskId>|tool-call <taskId> <toolName> <jsonArgs>|plan-steps <taskId>|steps <taskId>|show-step <stepId>|next-step <taskId>|update-step <stepId> <jsonUpdate>|apply-step <stepId>|reject-step <stepId>|step-timeline <stepId>|task-timeline <taskId>|audit <taskId>|auto-verify <taskId>|verifier-report <taskId>|verify <taskId> pass|reject|needs-human <reason>|events|whiteboard|abort <taskId>");
             };
         } catch (IllegalArgumentException | IllegalStateException e) {
             return completedReply(ctx, "team error: " + e.getMessage());
         }
-    }
-
-    private CompletableFuture<OutboundMessage> teamStart(CommandRouter.CommandContext ctx, String rawGoal) {
-        String goal = trim(rawGoal);
-        if (goal.isBlank()) {
-            throw new IllegalArgumentException("missing team goal");
-        }
-        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
-        TeamSession teamSession = teamEngine.createSession(goal);
-        storeTeamContext(session, teamSession.id());
-        return completedReply(ctx, "team session started\n"
-                + "id: " + teamSession.id() + "\n"
-                + "state: " + teamSession.state() + "\n"
-                + "goal: " + teamSession.goal() + "\n"
-                + "whiteboard: " + teamEngine.whiteboard(teamSession.id()).relativeWhiteboardPath());
-    }
-
-    private CompletableFuture<OutboundMessage> teamStatus(CommandRouter.CommandContext ctx) {
-        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
-        String sessionId = resolveActiveTeamSessionId(session);
-        if (sessionId.isBlank()) {
-            return completedReply(ctx, "No active team session.");
-        }
-        storeTeamContext(session, sessionId);
-        return completedReply(ctx, teamEngine.getStatus(sessionId));
-    }
-
-    private CompletableFuture<OutboundMessage> teamList(CommandRouter.CommandContext ctx) {
-        List<TeamSession> sessions = teamEngine.listSessions();
-        if (sessions.isEmpty()) {
-            return completedReply(ctx, "No team sessions.");
-        }
-        StringBuilder sb = new StringBuilder("team sessions\n");
-        for (TeamSession session : sessions) {
-            sb.append("- ").append(session.id())
-                    .append(" [").append(session.state()).append("]")
-                    .append(teamEngine.isArchived(session.id()) ? " archived=true" : "")
-                    .append(" updatedAt=").append(session.updatedAt())
-                    .append(" goal=").append(session.goal())
-                    .append("\n");
-        }
-        return completedReply(ctx, sb.toString().trim());
-    }
-
-    private CompletableFuture<OutboundMessage> teamResume(CommandRouter.CommandContext ctx, String rawArgs) {
-        String sessionId = commandArg(rawArgs, 0);
-        TeamSession teamSession = teamEngine.resumeSession(sessionId);
-        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
-        storeTeamContext(session, teamSession.id());
-        return completedReply(ctx, "team session resumed\n"
-                + "id: " + teamSession.id() + "\n"
-                + "state: " + teamSession.state() + "\n"
-                + "goal: " + teamSession.goal() + "\n"
-                + "whiteboard: " + teamEngine.whiteboard(teamSession.id()).relativeWhiteboardPath());
-    }
-
-    private CompletableFuture<OutboundMessage> teamArchive(CommandRouter.CommandContext ctx, String rawArgs) {
-        String sessionId = commandArg(rawArgs, 0);
-        TeamSession archived = teamEngine.archiveSession(sessionId);
-        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
-        if (sessionId.equals(activeTeamSessionId(session))) {
-            session.getMetadata().remove(SessionRuntimeKeys.TEAM_SESSION_ID_KEY);
-            session.getMetadata().remove(SessionRuntimeKeys.TEAM_CONTEXT_KEY);
-            sessionManager.save(session);
-        }
-        return completedReply(ctx, "team session archived\n"
-                + "id: " + archived.id() + "\n"
-                + "state: " + archived.state());
-    }
-
-    private CompletableFuture<OutboundMessage> teamSuggest(CommandRouter.CommandContext ctx, String rawGoal) {
-        String goal = trim(rawGoal);
-        if (goal.isBlank()) {
-            throw new IllegalArgumentException("missing team goal");
-        }
-        List<String> files = pathLike(goal);
-        String lower = goal.toLowerCase(java.util.Locale.ROOT);
-        CommandRiskLevel riskLevel = lower.contains("security")
-                || lower.contains("approval")
-                || lower.contains("risk")
-                || lower.contains("permission")
-                || lower.contains("provider")
-                || lower.contains("config")
-                ? CommandRiskLevel.HIGH
-                : CommandRiskLevel.SAFE;
-        boolean requiresResearch = lower.contains("research") || lower.contains("explore") || lower.contains("inspect")
-                || lower.contains("调查") || lower.contains("研究");
-        boolean requiresVerification = lower.contains("verify") || lower.contains("test") || lower.contains("review")
-                || lower.contains("测试") || lower.contains("验证");
-        int estimatedSteps = Math.max(1, files.size());
-        if (lower.contains("state") || lower.contains("flow") || lower.contains("restore") || requiresResearch || requiresVerification) {
-            estimatedSteps = Math.max(estimatedSteps, 3);
-        }
-        TeamDecisionPolicy.Decision decision = new TeamDecisionPolicy().evaluate(
-                goal,
-                riskLevel,
-                files,
-                estimatedSteps,
-                requiresResearch,
-                requiresVerification
-        );
-        return completedReply(ctx, "team suggestion\n"
-                + "useTeam: " + decision.useTeam() + "\n"
-                + "riskLevel: " + riskLevel + "\n"
-                + "estimatedSteps: " + estimatedSteps + "\n"
-                + "reasons: " + (decision.reasons().isEmpty() ? "none" : String.join(", ", decision.reasons())) + "\n"
-                + "suggestedRoles: " + (decision.suggestedRoles().isEmpty()
-                ? "none"
-                : String.join(", ", decision.suggestedRoles().stream().map(Enum::name).toList())));
-    }
-
-    private CompletableFuture<OutboundMessage> teamSuggestCurrent(CommandRouter.CommandContext ctx) {
-        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
-        resolveActiveTeamSessionId(session);
-        TaskSummaryService.TaskSummary summary = new TaskSummaryService().summarizeCurrentTask(session);
-        List<String> changedFiles = summary.changedFiles();
-        boolean highRiskDiff = containsAny(summary.diffReviews(), "risk=high", "high risk", "blocked", "security", "approval", "provider", "agentloop", "toolregistry", "config", "ci");
-        boolean missingSuggestedTests = !summary.suggestedTests().isEmpty()
-                && !suggestedTestsCovered(summary.suggestedTests(), summary.testCommands());
-        boolean hasVerifierReport = !summary.verifierReports().isEmpty();
-        CommandRiskLevel riskLevel = highRiskDiff ? CommandRiskLevel.HIGH : CommandRiskLevel.SAFE;
-        int estimatedSteps = Math.max(1, changedFiles.size());
-        if (highRiskDiff || missingSuggestedTests || hasVerifierReport) {
-            estimatedSteps = Math.max(estimatedSteps, 3);
-        }
-        TeamDecisionPolicy.Decision decision = new TeamDecisionPolicy().evaluate(
-                !summary.goal().isBlank() ? summary.goal() : "Current task",
-                riskLevel,
-                changedFiles,
-                estimatedSteps,
-                !summary.diffReviews().isEmpty(),
-                highRiskDiff || missingSuggestedTests || hasVerifierReport
-        );
-        java.util.ArrayList<String> reasons = new java.util.ArrayList<>(decision.reasons());
-        if (highRiskDiff && !reasons.contains("high risk diff present")) {
-            reasons.add("high risk diff present");
-        }
-        if (missingSuggestedTests && !reasons.contains("suggested tests are not covered")) {
-            reasons.add("suggested tests are not covered");
-        }
-        if (hasVerifierReport && !reasons.contains("existing verifier report should be reviewed")) {
-            reasons.add("existing verifier report should be reviewed");
-        }
-        java.util.ArrayList<TeamRole> roles = new java.util.ArrayList<>(decision.suggestedRoles());
-        if ((highRiskDiff || missingSuggestedTests || hasVerifierReport) && !roles.contains(TeamRole.VERIFIER)) {
-            roles.add(TeamRole.VERIFIER);
-        }
-        if (missingSuggestedTests && !roles.contains(TeamRole.TESTER)) {
-            roles.add(TeamRole.TESTER);
-        }
-        boolean useTeam = decision.useTeam() || highRiskDiff || missingSuggestedTests || hasVerifierReport;
-        return completedReply(ctx, "team suggestion\n"
-                + "useTeam: " + useTeam + "\n"
-                + "riskLevel: " + riskLevel + "\n"
-                + "changedFiles: " + (changedFiles.isEmpty() ? "none" : String.join(", ", changedFiles)) + "\n"
-                + "reasons: " + (reasons.isEmpty() ? "none" : String.join(", ", reasons)) + "\n"
-                + "suggestedRoles: " + (roles.isEmpty() ? "none" : String.join(", ", roles.stream().map(Enum::name).toList())));
     }
 
     private CompletableFuture<OutboundMessage> teamRun(CommandRouter.CommandContext ctx, String rawArgs) {
@@ -1398,46 +1236,6 @@ final class AgentCommands {
             return completedReply(ctx, "No verifier report for task: " + taskId);
         }
         return completedReply(ctx, renderVerifierReports(reports));
-    }
-
-    private CompletableFuture<OutboundMessage> teamEvents(CommandRouter.CommandContext ctx) {
-        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
-        String sessionId = requireActiveTeamSessionId(session);
-        storeTeamContext(session, sessionId);
-        List<TeamEvent> events = teamEngine.listEvents(sessionId);
-        if (events.isEmpty()) {
-            return completedReply(ctx, "No team events.");
-        }
-        StringBuilder sb = new StringBuilder("team events\n");
-        for (TeamEvent event : events) {
-            sb.append("- ").append(event.createdAt())
-                    .append(" ").append(event.type())
-                    .append(" role=").append(event.role())
-                    .append(!event.taskId().isBlank() ? " task=" + event.taskId() : "")
-                    .append(" ").append(event.message())
-                    .append("\n");
-        }
-        return completedReply(ctx, sb.toString().trim());
-    }
-
-    private CompletableFuture<OutboundMessage> teamWhiteboard(CommandRouter.CommandContext ctx) {
-        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
-        String sessionId = requireActiveTeamSessionId(session);
-        storeTeamContext(session, sessionId);
-        String summary = teamEngine.whiteboard(sessionId).readSummary();
-        return completedReply(ctx, "team whiteboard\n"
-                + "path: " + teamEngine.whiteboard(sessionId).relativeWhiteboardPath()
-                + "\n\n" + (summary.isBlank() ? "(empty)" : summary));
-    }
-
-    private CompletableFuture<OutboundMessage> teamAbort(CommandRouter.CommandContext ctx, String rawArgs) {
-        String taskId = commandArg(rawArgs, 0);
-        TeamTask task = teamEngine.abortTask(taskId);
-        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
-        storeTeamContext(session, task.sessionId());
-        return completedReply(ctx, "team task aborted\n"
-                + "taskId: " + task.id() + "\n"
-                + "state: " + task.state());
     }
 
     private TeamRole parseTeamRole(String raw) {
@@ -2080,79 +1878,16 @@ final class AgentCommands {
         return "none";
     }
 
-    private boolean suggestedTestsCovered(List<String> suggestedTests, List<String> executedTests) {
-        for (String suggested : suggestedTests != null ? suggestedTests : List.<String>of()) {
-            String normalized = normalizeCommand(suggested);
-            boolean covered = false;
-            for (String executed : executedTests != null ? executedTests : List.<String>of()) {
-                String normalizedExecuted = normalizeCommand(executed);
-                if (normalizedExecuted.contains(normalized) || normalized.contains(normalizedExecuted)) {
-                    covered = true;
-                    break;
-                }
-            }
-            if (!covered) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    private boolean containsAny(List<String> values, String... needles) {
-        for (String value : values != null ? values : List.<String>of()) {
-            String lower = value != null ? value.toLowerCase(java.util.Locale.ROOT) : "";
-            for (String needle : needles) {
-                if (lower.contains(needle.toLowerCase(java.util.Locale.ROOT))) {
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
-
-    private String normalizeCommand(String raw) {
-        return raw != null
-                ? raw.toLowerCase(java.util.Locale.ROOT).replace("'", "").replace("\"", "").replaceAll("\\s+", " ").trim()
-                : "";
-    }
-
-    private String activeTeamSessionId(Session session) {
-        if (session == null || session.getMetadata() == null) {
-            return "";
-        }
-        Object raw = session.getMetadata().get(SessionRuntimeKeys.TEAM_SESSION_ID_KEY);
-        return raw != null ? String.valueOf(raw).trim() : "";
-    }
-
     private String requireActiveTeamSessionId(Session session) {
-        String sessionId = resolveActiveTeamSessionId(session);
-        if (sessionId.isBlank()) {
-            throw new IllegalStateException("no active team session. Run /team start <goal> first");
-        }
-        return sessionId;
+        return teamSessions.requireActiveSessionId(session);
     }
 
     private String resolveActiveTeamSessionId(Session session) {
-        String sessionId = activeTeamSessionId(session);
-        if (!sessionId.isBlank() && teamEngine.findSession(sessionId) != null && !teamEngine.isArchived(sessionId)) {
-            storeTeamContext(session, sessionId);
-            return sessionId;
-        }
-        TeamSession latest = teamEngine.loadLatestActiveSession();
-        if (latest == null) {
-            return "";
-        }
-        storeTeamContext(session, latest.id());
-        return latest.id();
+        return teamSessions.resolveActiveSessionId(session);
     }
 
     private void storeTeamContext(Session session, String teamSessionId) {
-        if (session == null || teamSessionId == null || teamSessionId.isBlank()) {
-            return;
-        }
-        session.getMetadata().put(SessionRuntimeKeys.TEAM_SESSION_ID_KEY, teamSessionId);
-        session.getMetadata().put(SessionRuntimeKeys.TEAM_CONTEXT_KEY, teamEngine.contextSnapshot(teamSessionId));
-        sessionManager.save(session);
+        teamSessions.storeContext(session, teamSessionId);
     }
 
     private CompletableFuture<OutboundMessage> approve(CommandRouter.CommandContext ctx) {
@@ -2310,24 +2045,6 @@ final class AgentCommands {
         String value = trim(args);
         int firstSpace = value.indexOf(' ');
         return firstSpace >= 0 ? value.substring(firstSpace + 1).trim() : "";
-    }
-
-    private List<String> pathLike(String text) {
-        java.util.ArrayList<String> out = new java.util.ArrayList<>();
-        if (text == null || text.isBlank()) {
-            return out;
-        }
-        String cleaned = text.replace("{", " ").replace("}", " ").replace(",", " ");
-        for (String token : cleaned.split("\\s+")) {
-            String value = token.replace("\"", "").replace("'", "").trim();
-            if (value.contains("/") || value.endsWith(".java") || value.endsWith(".md") || value.endsWith(".json")
-                    || value.endsWith(".yml") || value.endsWith(".yaml") || value.endsWith(".txt")) {
-                if (!out.contains(value)) {
-                    out.add(value);
-                }
-            }
-        }
-        return out;
     }
 
     private List<String> contextSourcePaths(Session session) {
