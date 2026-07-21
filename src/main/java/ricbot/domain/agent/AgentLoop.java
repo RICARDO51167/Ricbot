@@ -2,8 +2,7 @@ package ricbot.domain.agent;
 
 import ricbot.domain.skill.SkillsLoader;
 import ricbot.domain.skill.SkillRouter;
-import ricbot.tool.web.WebFetchTool;
-import ricbot.tool.web.WebSearchTool;
+import ricbot.app.bootstrap.RuntimeToolBootstrap;
 import ricbot.domain.memory.Consolidator;
 import ricbot.domain.memory.MemoryStore;
 import ricbot.domain.config.ProviderCapability;
@@ -13,11 +12,7 @@ import ricbot.domain.rag.WorkspaceRagService;
 import ricbot.domain.security.ApprovalService;
 import ricbot.domain.trace.TraceStore;
 import ricbot.domain.hook.AgentHook;
-import ricbot.tool.api.BuiltinToolRegistrar;
 import ricbot.tool.api.ToolRegistry;
-import ricbot.tool.filesystem.NotebookEditTool;
-import ricbot.tool.process.SpawnTool;
-import ricbot.tool.skill.ReadSkillTool;
 import ricbot.integration.mcp.MCPLoader;
 import ricbot.integration.command.CommandRouter;
 import ricbot.domain.message.InboundMessage;
@@ -194,6 +189,33 @@ public class AgentLoop {
             List<String> disabledSkills,
             int sessionTtlMinutes
     ) {
+        this(bus, provider, workspace, model, maxIterations, contextWindowTokens, contextBlockLimit,
+                maxToolResultChars, providerRetryMode, webConfig, execConfig, mcpServers,
+                restrictToWorkspace, sessionManager, timezone, unifiedSession, disabledSkills,
+                sessionTtlMinutes, null);
+    }
+
+    public AgentLoop(
+            MessageBus bus,
+            LLMProvider provider,
+            Path workspace,
+            String model,
+            Integer maxIterations,
+            Integer contextWindowTokens,
+            Integer contextBlockLimit,
+            Integer maxToolResultChars,
+            String providerRetryMode,
+            Config.WebToolsConfig webConfig,
+            Config.ExecToolConfig execConfig,
+            Map<String, Object> mcpServers,
+            boolean restrictToWorkspace,
+            SessionManager sessionManager,
+            String timezone,
+            boolean unifiedSession,
+            List<String> disabledSkills,
+            int sessionTtlMinutes,
+            AgentRuntimeCore suppliedCore
+    ) {
         // 获取默认配置
         Config.AgentDefaults defaults = new Config.AgentDefaults();
 
@@ -226,65 +248,28 @@ public class AgentLoop {
                 defaults.getMaxTokens()
         );
 
-        // 初始化核心组件
-        this.contextBuilder = new ContextBuilder(this.workspace, timezone, disabledSkills);
-        AgentPersistenceComponents persistence = AgentPersistenceFactory.create(this.workspace, sessionManager);
-        this.sessionManager = persistence.sessionManager();
-        this.runCheckpointStore = persistence.checkpointStore();
-        this.runJournalStore = persistence.journalStore();
-        this.telemetryRuntime = OpenTelemetryRuntime.fromEnvironment();
-        this.runEventSink = RunEventSink.composite(
-                this.runJournalStore,
-                new OpenTelemetryRunEventSink(
-                        this.telemetryRuntime.tracer("ricbot.agent", "1.0"))
-        );
-        this.traceStore = new TraceStore(this.workspace);
-        this.sideEffectStore = new AuditedSideEffectStore(persistence.sideEffectStore(), this.traceStore);
-        this.memoryStore = new MemoryStore(this.workspace);
-        
-        // 初始化记忆整合器
-        this.consolidator = new Consolidator(
-                this.memoryStore,
-                this.provider,
-                this.model,
-                this.sessionManager,
-                this.contextWindowTokens,
-                4096 // maxCompletionTokens placeholder
-        );
-        
-        this.approvalService = new ApprovalService(this.traceStore);
-        this.sideEffectApplicationService = new SideEffectApplicationService(
-                this.sideEffectStore, this.approvalService);
-        this.autoCompact = new AutoCompact(this.sessionManager, this.consolidator, this.sessionTtlMinutes);
-        
-        this.spawnWorkers = new SpawnWorkerService(
-                this.provider,
-                this.workspace,
-                this.maxToolResultChars,
-                this.model,
-                this.webConfig,
-                this.execConfig,
-                this.restrictToWorkspace,
-                disabledSkills
-        );
-        
-        // 初始化技能加载器
-        this.skillsLoader = new SkillsLoader(
-                this.workspace,
-                null, // builtinDir will be resolved automatically
-                disabledSkills != null ? new HashSet<>(disabledSkills) : new HashSet<>()
-        );
-        
-        // 初始化技能路由器，从环境变量读取配置
-        this.skillRouter = new SkillRouter(
-                this.skillsLoader,
-                parseInt(System.getenv("RICBOT_SKILLS_MAX_SELECTED"), 3),
-                parseInt(System.getenv("RICBOT_SKILLS_MAX_CHARS"), 12000)
-        );
-        
-        // 初始化工具注册表和运行器
-        this.tools = new ToolRegistry();
-        this.runner = new AgentRunner(provider);
+        AgentRuntimeCore core = suppliedCore != null ? suppliedCore : AgentRuntimeCoreFactory.create(
+                this.provider, this.workspace, this.model, this.contextWindowTokens,
+                this.maxToolResultChars, this.webConfig, this.execConfig, this.restrictToWorkspace,
+                sessionManager, timezone, disabledSkills, this.sessionTtlMinutes);
+        this.contextBuilder = core.contextBuilder();
+        this.sessionManager = core.persistence().sessionManager();
+        this.runCheckpointStore = core.persistence().checkpointStore();
+        this.runJournalStore = core.persistence().journalStore();
+        this.telemetryRuntime = core.telemetryRuntime();
+        this.runEventSink = core.runEventSink();
+        this.traceStore = core.traceStore();
+        this.sideEffectStore = core.sideEffectStore();
+        this.memoryStore = core.memoryStore();
+        this.consolidator = core.consolidator();
+        this.approvalService = core.approvalService();
+        this.sideEffectApplicationService = core.sideEffectApplicationService();
+        this.autoCompact = core.autoCompact();
+        this.spawnWorkers = core.spawnWorkers();
+        this.skillsLoader = core.skillsLoader();
+        this.skillRouter = core.skillRouter();
+        this.tools = core.tools();
+        this.runner = core.runner();
         ToolContextApplier toolContextApplier = new ToolContextInjector(this.tools);
         this.hookFactory = new AgentHookFactory(this.bus, toolContextApplier);
         this.sessionPreparationService = new SessionPreparationService(
@@ -363,7 +348,10 @@ public class AgentLoop {
         this.scheduler = Executors.newSingleThreadScheduledExecutor();
 
         // 注册默认工具
-        registerDefaultTools();
+        if (suppliedCore == null) {
+            RuntimeToolBootstrap.register(this.tools, this.workspace, this.restrictToWorkspace,
+                    this.execConfig, this.webConfig, this.approvalService, this.skillsLoader, this.spawnWorkers);
+        }
         registerCommandRoutes();
     }
 
@@ -388,43 +376,6 @@ public class AgentLoop {
                 },
                 new ThreadPoolExecutor.CallerRunsPolicy()
         );
-    }
-
-    // ---------------------------------------------------------------------
-    // Tool registration
-    // ---------------------------------------------------------------------
-
-    /**
-     * 注册默认工具。
-     *
-     * 最小可展示工具集：read_file / list_dir / exec
-     */
-    private void registerDefaultTools() {
-        Path allowedDir = BuiltinToolRegistrar.allowedDir(workspace, restrictToWorkspace, execConfig);
-        ApprovalService toolApprovalService = execConfig != null && execConfig.isApprovalEnabled()
-                ? approvalService
-                : null;
-
-        tools.register(new ReadSkillTool(skillsLoader));
-        BuiltinToolRegistrar.registerFileAndSearchTools(tools, workspace, allowedDir, toolApprovalService);
-        tools.register(new NotebookEditTool(workspace, allowedDir, List.of()));
-
-        if (execConfig.isEnable()) {
-            BuiltinToolRegistrar.registerExecTool(tools, workspace, restrictToWorkspace, execConfig, toolApprovalService);
-            tools.register(new SpawnTool(spawnWorkers));
-        }
-
-        if (webConfig.isEnable()) {
-            tools.register(new WebFetchTool(
-                    webConfig.getMaxChars(),
-                    webConfig.getProxy()
-            ));
-            tools.register(new WebSearchTool(
-                    webConfig.getSearch(),
-                    webConfig.getProxy()
-            ));
-        }
-
     }
 
     private void registerCommandRoutes() {

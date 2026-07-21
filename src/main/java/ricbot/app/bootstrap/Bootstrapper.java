@@ -1,6 +1,8 @@
 package ricbot.app.bootstrap;
 
 import ricbot.domain.agent.AgentLoop;
+import ricbot.domain.agent.AgentRuntimeCore;
+import ricbot.domain.agent.AgentRuntimeCoreFactory;
 import ricbot.domain.config.ProviderCapabilityResolver;
 import ricbot.domain.message.MessageBus;
 import ricbot.infra.config.Config;
@@ -47,12 +49,30 @@ public class Bootstrapper {
 
     public AgentLoop createAgentLoop(Config config, MessageBus bus, LLMProvider provider) {
         Config.AgentDefaults defaults = config.getAgents().getDefaults();
+        String model = defaults.getModel() != null ? defaults.getModel() : provider.getDefaultModel();
+        AgentRuntimeCore core = AgentRuntimeCoreFactory.create(
+                provider,
+                config.getWorkspacePath(),
+                model,
+                defaults.getContextWindowTokens(),
+                defaults.getMaxToolResultChars(),
+                config.getTools().getWeb(),
+                config.getTools().getExec(),
+                config.getTools().isRestrictToWorkspace(),
+                null,
+                defaults.getTimezone(),
+                defaults.getDisabledSkills(),
+                defaults.getSessionTtlMinutes()
+        );
+        RuntimeToolBootstrap.register(core.tools(), config.getWorkspacePath(),
+                config.getTools().isRestrictToWorkspace(), config.getTools().getExec(),
+                config.getTools().getWeb(), core.approvalService(), core.skillsLoader(), core.spawnWorkers());
 
         AgentLoop loop = new AgentLoop(
                 bus,
                 provider,
                 config.getWorkspacePath(),
-                defaults.getModel(),
+                model,
                 defaults.getMaxToolIterations(),
                 defaults.getContextWindowTokens(),
                 defaults.getContextBlockLimit(),
@@ -66,7 +86,8 @@ public class Bootstrapper {
                 defaults.getTimezone(),
                 defaults.isUnifiedSession(),
                 defaults.getDisabledSkills(),
-                defaults.getSessionTtlMinutes()
+                defaults.getSessionTtlMinutes(),
+                core
         );
         loop.setProviderCapability(new ProviderCapabilityResolver().resolve(
                 config,
