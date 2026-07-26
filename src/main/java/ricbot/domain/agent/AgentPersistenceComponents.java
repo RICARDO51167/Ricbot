@@ -15,8 +15,13 @@ public record AgentPersistenceComponents(SessionManager sessionManager, SideEffe
     }
 
     public static AgentPersistenceComponents unified(Path workspace, SessionManager supplied) {
-        SqliteRuntimeStore runtime = new SqliteRuntimeStore(workspace);
+        SqliteRuntimeStore runtime = ricbot.app.bootstrap.RuntimeStoreRegistry.shared(workspace);
+        return unified(runtime, supplied);
+    }
+
+    public static AgentPersistenceComponents unified(SqliteRuntimeStore runtime, SessionManager supplied) {
         return new AgentPersistenceComponents(
-                supplied != null ? supplied : new SqliteSessionManager(workspace, runtime), runtime.sideEffectStore());
+                supplied != null ? supplied : new SqliteSessionManager(runtime.database().getParent().getParent(), runtime),
+                runtime.sideEffectStore());
     }
 }

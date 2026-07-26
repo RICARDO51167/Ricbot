@@ -9,6 +9,8 @@ import ricbot.domain.agent.SideEffectRecord;
 import ricbot.domain.runtime.UnknownRuntimeEventVersionException;
 import ricbot.domain.runtime.RuntimeEventUpcasters;
 import ricbot.domain.runtime.RuntimeFaultPoint;
+import ricbot.domain.runtime.RuntimeInstanceRecord;
+import ricbot.domain.runtime.RuntimeInstanceStatus;
 import ricbot.domain.task.TaskFailurePolicy;
 import ricbot.domain.task.TaskRecord;
 import ricbot.domain.task.TaskResult;
@@ -87,6 +89,64 @@ class SqliteRuntimeStoreTest {
     }
 
     @Test
+    void activeOwnerSideEffectCannotBeRecoveredByAnotherRuntime() {
+        SqliteRuntimeStore store = new SqliteRuntimeStore(workspace);
+        Instant now = Instant.now();
+        RuntimeInstanceRecord owner = new RuntimeInstanceRecord("owner-active", "host", 1001,
+                now.minusSeconds(10), now, now.plusSeconds(30), RuntimeInstanceStatus.ACTIVE, 0);
+        store.registerRuntimeInstance(owner);
+        SideEffectRecord reserved = SideEffectRecord.reserved("active-effect", "run-active", "session",
+                "", "activation", "write_file", "digest", Map.of("path", "a.txt"));
+        store.claimSideEffect(reserved);
+        SideEffectRecord executing = reserved.claimExecution(owner.instanceId(), now.minusSeconds(1));
+        store.transitionSideEffectRecord(executing, reserved.version(),
+                java.util.Set.of(ricbot.domain.agent.SideEffectStatus.RESERVED));
+
+        assertThrows(IllegalStateException.class,
+                () -> store.recoverExpiredSideEffects(owner.instanceId(), now));
+        assertEquals(ricbot.domain.agent.SideEffectStatus.EXECUTING,
+                store.loadSideEffectRecord(reserved.idempotencyKey()).orElseThrow().status());
+    }
+
+    @Test
+    void expiredDeadOwnerSideEffectIsRecoveredExactlyOnce() {
+        SqliteRuntimeStore store = new SqliteRuntimeStore(workspace);
+        Instant now = Instant.now();
+        RuntimeInstanceRecord owner = new RuntimeInstanceRecord("owner-dead", "host", 1002,
+                now.minusSeconds(60), now.minusSeconds(40), now.minusSeconds(30),
+                RuntimeInstanceStatus.ACTIVE, 0);
+        store.registerRuntimeInstance(owner);
+        RuntimeInstanceRecord expired = store.saveRuntimeInstance(owner.expire(now.minusSeconds(20)),
+                owner.version(), RuntimeInstanceStatus.ACTIVE);
+        SideEffectRecord reserved = SideEffectRecord.reserved("dead-effect", "run-dead", "session",
+                "", "activation", "write_file", "digest", Map.of("path", "b.txt"));
+        store.claimSideEffect(reserved);
+        SideEffectRecord executing = reserved.claimExecution(owner.instanceId(), now.minusSeconds(1));
+        store.transitionSideEffectRecord(executing, reserved.version(),
+                java.util.Set.of(ricbot.domain.agent.SideEffectStatus.RESERVED));
+
+        assertEquals(1, store.recoverExpiredSideEffects(expired.instanceId(), now));
+        assertEquals(0, store.recoverExpiredSideEffects(expired.instanceId(), now));
+        assertEquals(ricbot.domain.agent.SideEffectStatus.UNKNOWN,
+                store.loadSideEffectRecord(reserved.idempotencyKey()).orElseThrow().status());
+    }
+
+    @Test
+    void readyActivationCanBeClaimedByOnlyOneRuntime() {
+        SqliteRuntimeStore first = new SqliteRuntimeStore(workspace);
+        SqliteRuntimeStore second = new SqliteRuntimeStore(workspace);
+        GraphExecutionState state = GraphExecutionState.initial("graph", "activation-run", "model", Map.of());
+        first.commit(state, GraphRuntimeEventType.RUN_STARTED, Map.of(), "start");
+        Instant now = Instant.now();
+
+        assertTrue(first.claimReadyActivations(state.runId(), "instance-a", now, now.plusSeconds(30)));
+        assertFalse(second.claimReadyActivations(state.runId(), "instance-b", now, now.plusSeconds(30)));
+        first.releaseActivationClaims(state.runId(), "instance-a");
+        assertTrue(second.claimReadyActivations(state.runId(), "instance-b", now.plusSeconds(1),
+                now.plusSeconds(31)));
+    }
+
+    @Test
     void forkUsesLastSafeCommittedStateAndRequiresResume() {
         SqliteRuntimeStore store = new SqliteRuntimeStore(workspace);
         GraphExecutionState first = GraphExecutionState.initial("test-graph", "source", "model", Map.of("v", 1));
@@ -102,6 +162,88 @@ class SqliteRuntimeStoreTest {
         assertEquals(GraphExecutionStatus.READY, fork.state().status());
         assertFalse(fork.state().runId().equals(first.runId()));
         assertTrue(store.replay("forked", Long.MAX_VALUE).projectionMatches());
+    }
+
+    @Test
+    void historicalReplayUsesSequenceBoundProjectionDigest() {
+        SqliteRuntimeStore store = new SqliteRuntimeStore(workspace);
+        GraphExecutionState first = GraphExecutionState.initial("test-graph", "history-run", "model", Map.of());
+        store.commit(first, GraphRuntimeEventType.RUN_STARTED, Map.of(), "start");
+        TaskSpec spec = new TaskSpec("history-task", first.runId(), "activation", 0, 0,
+                TaskRole.EXPLORER, "inspect", List.of(), List.of(), TaskWorkspaceMode.SHARED_READ,
+                TaskFailurePolicy.TOLERATE, false);
+        store.create(TaskRecord.planned(spec));
+        long taskSequence = store.runtimeEvents(first.runId(), Long.MAX_VALUE).get(1).globalSequence();
+        GraphExecutionState later = new GraphExecutionState(GraphExecutionState.SCHEMA_VERSION, first.graphId(),
+                first.runId(), 1, first.activeNodes(), Map.of("later", true), List.of(), List.of(),
+                GraphExecutionStatus.PAUSED, first.lastNodeId(), 1, Instant.now());
+        store.commit(later, GraphRuntimeEventType.SUPERSTEP_COMMITTED, Map.of(), "later");
+
+        var replay = store.replay(first.runId(), taskSequence);
+
+        assertTrue(replay.projectionMatches());
+        assertEquals(first, replay.state());
+        assertEquals(taskSequence, replay.events().get(replay.events().size() - 1).globalSequence());
+    }
+
+    @Test
+    void historicalReplayFailsClosedWhenEventFactIsTampered() throws Exception {
+        SqliteRuntimeStore store = new SqliteRuntimeStore(workspace);
+        GraphExecutionState state = GraphExecutionState.initial("test-graph", "tampered-run", "model", Map.of());
+        store.commit(state, GraphRuntimeEventType.RUN_STARTED, Map.of(), "start");
+        TaskSpec spec = new TaskSpec("tampered-task", state.runId(), "activation", 0, 0,
+                TaskRole.EXPLORER, "inspect", List.of(), List.of(), TaskWorkspaceMode.SHARED_READ,
+                TaskFailurePolicy.TOLERATE, false);
+        store.create(TaskRecord.planned(spec));
+        long taskSequence = store.runtimeEvents(state.runId(), Long.MAX_VALUE).get(1).globalSequence();
+        try (var connection = DriverManager.getConnection("jdbc:sqlite:" + store.database());
+             var statement = connection.prepareStatement("""
+                     UPDATE runtime_events SET payload_json = replace(payload_json, 'inspect', 'tampered')
+                     WHERE run_id = ? AND global_sequence = ?
+                     """)) {
+            statement.setString(1, state.runId());
+            statement.setLong(2, taskSequence);
+            statement.executeUpdate();
+        }
+
+        IllegalStateException failure = assertThrows(IllegalStateException.class,
+                () -> store.replay(state.runId(), taskSequence));
+        assertTrue(failure.getMessage().contains("projection digest mismatch"), failure.getMessage());
+    }
+
+    @Test
+    void forkExcludesFactsAfterLastCommittedSuperstep() {
+        SqliteRuntimeStore store = new SqliteRuntimeStore(workspace);
+        GraphExecutionState state = GraphExecutionState.initial("test-graph", "safe-source", "model", Map.of());
+        store.commit(state, GraphRuntimeEventType.RUN_STARTED, Map.of(), "start");
+        TaskSpec unsafe = new TaskSpec("unsafe-task", state.runId(), "activation", 0, 0,
+                TaskRole.EXPLORER, "not committed", List.of(), List.of(), TaskWorkspaceMode.SHARED_READ,
+                TaskFailurePolicy.TOLERATE, false);
+        store.create(TaskRecord.planned(unsafe));
+
+        store.fork(state.runId(), Long.MAX_VALUE, "safe-fork");
+
+        assertTrue(store.listByParent("safe-fork").isEmpty());
+        assertTrue(store.replay("safe-fork", Long.MAX_VALUE).projectionMatches());
+    }
+
+    @Test
+    void headReplayDetectsProjectionTampering() throws Exception {
+        SqliteRuntimeStore store = new SqliteRuntimeStore(workspace);
+        GraphExecutionState state = GraphExecutionState.initial("test-graph", "projection-run", "model", Map.of());
+        store.commit(state, GraphRuntimeEventType.RUN_STARTED, Map.of(), "start");
+        TaskSpec spec = new TaskSpec("projection-task", state.runId(), "activation", 0, 0,
+                TaskRole.EXPLORER, "inspect", List.of(), List.of(), TaskWorkspaceMode.SHARED_READ,
+                TaskFailurePolicy.TOLERATE, false);
+        store.create(TaskRecord.planned(spec));
+        try (var connection = DriverManager.getConnection("jdbc:sqlite:" + store.database());
+             var statement = connection.prepareStatement(
+                     "UPDATE tasks SET status = 'FAILED' WHERE task_id = ?")) {
+            statement.setString(1, spec.taskId());
+            statement.executeUpdate();
+        }
+
+        assertThrows(IllegalStateException.class, () -> store.replay(state.runId(), Long.MAX_VALUE));
     }
 
     @Test
@@ -155,5 +297,23 @@ class SqliteRuntimeStoreTest {
         SqliteRuntimeStore restarted = new SqliteRuntimeStore(workspace);
         assertTrue(restarted.loadCheckpoint("atomic-run").isEmpty());
         assertTrue(restarted.runtimeEvents("atomic-run", Long.MAX_VALUE).isEmpty());
+    }
+
+    @Test
+    void staleRunTransitionCannotOverwriteCancellation() {
+        SqliteRuntimeStore store = new SqliteRuntimeStore(workspace);
+        GraphExecutionState initial = GraphExecutionState.initial("graph", "cancel-cas", "node", Map.of());
+        store.commit(initial, GraphRuntimeEventType.RUN_STARTED, Map.of(), "start");
+        GraphExecutionState cancelled = new GraphExecutionState(GraphExecutionState.SCHEMA_VERSION,
+                initial.graphId(), initial.runId(), initial.superstep(), List.of(), initial.channels(), List.of(),
+                initial.failures(), GraphExecutionStatus.CANCELLED, initial.lastNodeId(), 1, Instant.now());
+        store.commit(cancelled, GraphRuntimeEventType.RUN_CANCELLED, Map.of(), "cancel");
+        GraphExecutionState staleCompletion = new GraphExecutionState(GraphExecutionState.SCHEMA_VERSION,
+                initial.graphId(), initial.runId(), 1, List.of(), initial.channels(), List.of(),
+                initial.failures(), GraphExecutionStatus.COMPLETED, "done", 1, Instant.now());
+
+        assertThrows(IllegalStateException.class, () -> store.commit(staleCompletion,
+                GraphRuntimeEventType.RUN_COMPLETED, Map.of(), "stale-complete"));
+        assertEquals(GraphExecutionStatus.CANCELLED, store.loadCheckpoint(initial.runId()).orElseThrow().status());
     }
 }

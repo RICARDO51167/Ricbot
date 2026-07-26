@@ -4,7 +4,7 @@ import java.util.concurrent.CompletionService;
 import java.util.concurrent.ExecutorCompletionService;
 import java.util.concurrent.ExecutorService;
 
-/** Owns only tool-node concurrency resources; GraphRunService owns scheduling and transitions. */
+/** Owns only tool-node concurrency resources; AgentGraphFactory owns node execution adapters. */
 public final class ToolNodeExecutor implements AutoCloseable {
     private final ExecutorService executor;
     private final boolean ownsExecutor;

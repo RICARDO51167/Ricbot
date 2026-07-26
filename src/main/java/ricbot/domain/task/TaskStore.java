@@ -11,4 +11,7 @@ public interface TaskStore {
     List<TaskRecord> listAll();
     TaskResult saveResult(TaskResult result);
     Optional<TaskResult> loadResult(String taskId);
+    default List<TaskResult> loadResultHistory(String taskId) {
+        return loadResult(taskId).map(List::of).orElseGet(List::of);
+    }
 }

@@ -17,7 +17,7 @@ record SessionPreparationService(SessionManager sessionManager, StructuredContex
                                                    CommandDispatcher dispatcher) {
         Session session = sessionManager.getOrCreate(sessionKey);
         clearLegacyPendingMarker(session);
-        contextCompaction.maybeCompact(session);
+        // Context/Compact graph nodes are the only owners of message compaction.
         String raw = message.getContent() != null ? message.getContent().trim() : "";
         OutboundMessage immediate = raw.startsWith("/")
                 ? dispatcher.dispatch(message, session, sessionKey, raw) : null;

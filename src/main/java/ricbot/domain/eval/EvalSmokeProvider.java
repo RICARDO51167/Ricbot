@@ -2,6 +2,8 @@ package ricbot.domain.eval;
 
 import ricbot.integration.llm.api.LLMProvider;
 import ricbot.integration.llm.api.LLMResponse;
+import ricbot.integration.llm.api.LLMFailureException;
+import ricbot.integration.llm.api.LLMFailureKind;
 import ricbot.integration.llm.api.ToolCallRequest;
 
 import java.util.List;
@@ -25,7 +27,7 @@ public class EvalSmokeProvider extends LLMProvider {
             Double temperature,
             String reasoningEffort,
             Object toolChoice
-    ) {
+    ) throws Exception {
         String user = lastUserMessage(messages);
         String lower = user.toLowerCase(java.util.Locale.ROOT);
 
@@ -71,7 +73,8 @@ public class EvalSmokeProvider extends LLMProvider {
             return response("{\"status\":\"ok\",\"checks\":[{\"name\":\"harness\",\"passed\":true}],\"debug\":null}");
         }
         if (lower.contains("simulate model api failure")) {
-            throw new RuntimeException("model api failure injected by eval smoke provider");
+            throw new LLMFailureException(LLMFailureKind.TRANSIENT,
+                    "model api failure injected by eval smoke provider", 503, null, null);
         }
         if (lower.contains("call read_file without path")) {
             return toolCall("read_file", Map.of());

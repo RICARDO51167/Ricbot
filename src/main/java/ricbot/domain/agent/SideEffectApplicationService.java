@@ -5,6 +5,7 @@ import ricbot.domain.security.ApprovalService;
 import ricbot.domain.security.CommandRiskLevel;
 import ricbot.domain.security.PendingToolCall;
 import ricbot.domain.security.RiskAssessment;
+import ricbot.domain.security.ApprovalBinding;
 import ricbot.tool.api.ToolRegistry;
 
 import java.time.Instant;
@@ -31,11 +32,10 @@ public final class SideEffectApplicationService {
 
     public ApprovalRequest requestRetry(String idempotencyKey) {
         SideEffectRecord record = status(idempotencyKey);
-        if (record.status() != SideEffectStatus.RESERVED) {
-            throw new IllegalStateException("only an uncertain reserved side effect can request retry");
+        if (record.status() != SideEffectStatus.UNKNOWN) {
+            throw new IllegalStateException("only an UNKNOWN side effect can request retry");
         }
-        return approvals.createRequest(risk(RETRY_ACTION, record), RETRY_ACTION,
-                Map.of("idempotency_key", record.idempotencyKey()), record.sessionKey());
+        return boundRequest(RETRY_ACTION, record, Map.of("idempotency_key", record.idempotencyKey()));
     }
 
     public SideEffectRecord applyApprovedRetry(String approvalId) {
@@ -45,18 +45,22 @@ public final class SideEffectApplicationService {
         return coordinator.authorizeRetry(key, approvalId);
     }
 
-    public ApprovalRequest requestCompensation(String idempotencyKey, Map<String, Object> originalArguments) {
+    public ApprovalRequest requestCompensation(String idempotencyKey) {
         SideEffectRecord record = status(idempotencyKey);
         if (record.status() != SideEffectStatus.SUCCEEDED) {
             throw new IllegalStateException("only a successful side effect can request compensation");
         }
+        return boundRequest(COMPENSATE_ACTION, record, Map.of(
+                "idempotency_key", record.idempotencyKey(),
+                "original_arguments", record.arguments()));
+    }
+
+    public ApprovalRequest requestCompensation(String idempotencyKey, Map<String, Object> originalArguments) {
+        SideEffectRecord record = status(idempotencyKey);
         if (!record.argumentsDigest().equals(ToolInvocationRecord.argumentsDigest(originalArguments))) {
             throw new IllegalArgumentException("compensation arguments do not match the original effect");
         }
-        return approvals.createRequest(risk(COMPENSATE_ACTION, record), COMPENSATE_ACTION, Map.of(
-                "idempotency_key", record.idempotencyKey(),
-                "original_arguments", originalArguments != null ? originalArguments : Map.of()
-        ), record.sessionKey());
+        return requestCompensation(idempotencyKey);
     }
 
     public SideEffectRecord applyApprovedCompensation(ToolRegistry tools, String approvalId) {
@@ -80,6 +84,17 @@ public final class SideEffectApplicationService {
             throw new IllegalArgumentException("approval is not for " + expectedTool);
         }
         return call;
+    }
+
+    private ApprovalRequest boundRequest(String action, SideEffectRecord record, Map<String, Object> arguments) {
+        ApprovalBinding binding = new ApprovalBinding(record.runId(), record.activationId(), action,
+                record.idempotencyKey(), record.toolName(), record.argumentsDigest());
+        if (!binding.bound()) {
+            throw new IllegalStateException("side effect is not bound to a resumable Run/Activation");
+        }
+        PendingToolCall call = PendingToolCall.create(null, action, arguments, record.sessionKey(),
+                risk(action, record));
+        return approvals.createRequest(risk(action, record), call, binding);
     }
 
     private static RiskAssessment risk(String action, SideEffectRecord record) {

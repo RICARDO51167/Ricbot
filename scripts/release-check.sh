@@ -7,7 +7,9 @@ cd "$PROJECT_ROOT"
 
 REPORT_DIR="target"
 REPORT="$REPORT_DIR/release-check-report.md"
+LOG_DIR="$REPORT_DIR/release-check-logs"
 SMOKE_OUT="target/release-check-eval-smoke"
+REPLAY_OUT="target/release-check-eval-replay"
 COMPARE_OUT="target/release-check-eval-compare"
 BASELINE_DIR=".ricbot/eval-baselines/golden"
 CONFIG_PATH="${RICBOT_CONFIG:-config/ricbot.config.json}"
@@ -22,12 +24,15 @@ PACKAGE_STATUS="NOT_RUN"
 CONFIG_STATUS="NOT_RUN"
 SMOKE_STATUS="NOT_RUN"
 COMPARE_STATUS="SKIPPED"
+REPLAY_STATUS="NOT_RUN"
+MIGRATION_STATUS="NOT_RUN"
 BASELINE_STATUS="MISSING"
 ARCHITECTURE_STATUS="NOT_RUN"
 TEAM_RUNTIME_STATUS="NOT_RUN"
 CONFIG_OUTPUT=""
 SMOKE_OUTPUT=""
 COMPARE_OUTPUT=""
+REPLAY_OUTPUT=""
 COMPARE_WARNINGS=""
 COMPARE_REGRESSIONS="n/a"
 COMPARE_IMPROVEMENTS="n/a"
@@ -35,7 +40,7 @@ COMPARE_UNCHANGED="n/a"
 SMOKE_RUN_ID=""
 SMOKE_ARTIFACTS=""
 
-mkdir -p "$REPORT_DIR" "$SMOKE_OUT" "$COMPARE_OUT"
+mkdir -p "$REPORT_DIR" "$LOG_DIR" "$SMOKE_OUT" "$REPLAY_OUT" "$COMPARE_OUT"
 
 now_utc() {
   date -u "+%Y-%m-%dT%H:%M:%SZ"
@@ -106,8 +111,10 @@ write_report() {
     echo "| package | $PACKAGE_STATUS |"
     echo "| config doctor | $CONFIG_STATUS |"
     echo "| eval smoke | $SMOKE_STATUS |"
+    echo "| eval replay | $REPLAY_STATUS |"
     echo "| eval compare | $COMPARE_STATUS |"
     echo "| architecture hard-cut | $ARCHITECTURE_STATUS |"
+    echo "| schema migration/recovery | $MIGRATION_STATUS |"
     echo "| team runtime golden | $TEAM_RUNTIME_STATUS |"
     echo
     echo "## Baseline"
@@ -132,6 +139,14 @@ write_report() {
     echo
     echo '```text'
     printf "%s\n" "$SMOKE_OUTPUT"
+    echo '```'
+    echo
+    echo "## Eval Replay"
+    echo
+    echo "- status: $REPLAY_STATUS"
+    echo
+    echo '```text'
+    printf "%s\n" "$REPLAY_OUTPUT"
     echo '```'
     echo
     echo "## Eval Compare"
@@ -175,10 +190,17 @@ write_report() {
   } >"$REPORT"
 }
 
-TEST_LOG="$REPORT_DIR/release-check-mvn-test.log"
-if run_capture "mvn test" "$TEST_LOG" sh ./mvnw -q test; then
+TEST_TEMP_LOG="${TMPDIR:-/tmp}/ricbot-release-check-mvn-test-$$.log"
+TEST_LOG="$LOG_DIR/mvn-clean-test.log"
+if run_capture "mvn clean test" "$TEST_TEMP_LOG" sh ./mvnw -q clean test; then
+  mkdir -p "$LOG_DIR" "$SMOKE_OUT" "$REPLAY_OUT" "$COMPARE_OUT"
+  cp "$TEST_TEMP_LOG" "$TEST_LOG"
+  rm -f "$TEST_TEMP_LOG"
   TEST_STATUS="PASS"
 else
+  mkdir -p "$LOG_DIR"
+  cp "$TEST_TEMP_LOG" "$TEST_LOG"
+  rm -f "$TEST_TEMP_LOG"
   TEST_STATUS="FAIL"
   mark_fail
   append_final_reason "mvn test failed"
@@ -189,7 +211,7 @@ else
   exit 1
 fi
 
-ARCHITECTURE_LOG="$REPORT_DIR/release-check-architecture.log"
+ARCHITECTURE_LOG="$LOG_DIR/architecture.log"
 FORBIDDEN_TYPES="AgentRunner.java SpawnWorkerService.java SpawnTool.java AutoCompact.java Consolidator.java RuntimeV2QueryService.java RunCheckpoint.java RunCheckpointStore.java RunJournalStore.java RunEventSink.java RunResumeService.java RunRecoveryCoordinator.java RunEventReplayService.java"
 : >"$ARCHITECTURE_LOG"
 for forbidden_type in $FORBIDDEN_TYPES; do
@@ -211,8 +233,28 @@ if grep -R -n -E 'isReadOnly\(|isExclusive\(|supportsCompensation\(|preflight\('
   :
 fi
 if grep -R -n 'runtime-v2' src/main/java README.md --include='*.java' --include='*.md' \
-    | grep -v 'LegacyRuntimeMigrator.java' >>"$ARCHITECTURE_LOG" 2>/dev/null; then
+    | grep -v 'RuntimeSchemaV2Migrator.java' >>"$ARCHITECTURE_LOG" 2>/dev/null; then
   :
+fi
+if grep -R -n 'GraphRunService\|AgentApprovalGraphResumeService\|runTeamGraph' \
+    src/main/java --include='*.java' >>"$ARCHITECTURE_LOG" 2>/dev/null; then
+  :
+fi
+if grep -R -n 'new SqliteRuntimeStore' src/main/java --include='*.java' \
+    | grep -v 'RuntimeStoreRegistry.java' \
+    | grep -v 'RuntimeSchemaV2Migrator.java' >>"$ARCHITECTURE_LOG" 2>/dev/null; then
+  :
+fi
+if grep -R -n 'Thread\.sleep' src/main/java/ricbot/application/runtime \
+    src/main/java/ricbot/domain/agent/graph src/main/java/ricbot/domain/agent/AgentGraphFactory.java \
+    >>"$ARCHITECTURE_LOG" 2>/dev/null; then
+  :
+fi
+if ! grep -q 'AgentRuntimeFactory.create' src/main/java/ricbot/domain/agent/AgentRuntimeCoreFactory.java; then
+  echo 'missing AgentRuntime production wiring' >>"$ARCHITECTURE_LOG"
+fi
+if ! grep -q 'RuntimeEventOpenTelemetrySubscriber' src/main/java/ricbot/application/runtime/AgentRuntimeFactory.java; then
+  echo 'missing RuntimeEventOpenTelemetrySubscriber production wiring' >>"$ARCHITECTURE_LOG"
 fi
 if [ -s "$ARCHITECTURE_LOG" ]; then
   ARCHITECTURE_STATUS="FAIL"
@@ -225,9 +267,23 @@ if [ -s "$ARCHITECTURE_LOG" ]; then
 fi
 ARCHITECTURE_STATUS="PASS"
 
-TEAM_LOG="$REPORT_DIR/release-check-team-runtime.log"
+MIGRATION_LOG="$LOG_DIR/schema-migration-recovery.log"
+if run_capture "schema migration and recovery" "$MIGRATION_LOG" sh ./mvnw -q \
+  -Dtest=RuntimeSchemaV2MigratorTest,SqliteRuntimeStoreTest test; then
+  MIGRATION_STATUS="PASS"
+else
+  MIGRATION_STATUS="FAIL"
+  mark_fail
+  append_final_reason "schema migration or recovery tests failed"
+  write_report
+  echo "release-check failed: schema migration/recovery"
+  echo "report: $REPORT"
+  exit 1
+fi
+
+TEAM_LOG="$LOG_DIR/team-runtime.log"
 if run_capture "team runtime golden" "$TEAM_LOG" sh ./mvnw -q \
-  -Dtest=LocalTeamGraphServiceTest,LocalTaskSchedulerTest,PatchLedgerServiceTest,SqliteTaskClaimConcurrencyTest test; then
+  -Dtest=TeamAgentRuntimeTest,LocalTaskSchedulerTest,PatchLedgerServiceTest,SqliteTaskClaimConcurrencyTest test; then
   TEAM_RUNTIME_STATUS="PASS"
 else
   TEAM_RUNTIME_STATUS="FAIL"
@@ -239,7 +295,7 @@ else
   exit 1
 fi
 
-PACKAGE_LOG="$REPORT_DIR/release-check-package.log"
+PACKAGE_LOG="$LOG_DIR/package.log"
 if run_capture "package" "$PACKAGE_LOG" sh ./mvnw -q -DskipTests package; then
   PACKAGE_STATUS="PASS"
 else
@@ -253,7 +309,7 @@ else
   exit 1
 fi
 
-CONFIG_LOG="$REPORT_DIR/release-check-config-doctor.log"
+CONFIG_LOG="$LOG_DIR/config-doctor.log"
 if run_capture "config doctor" "$CONFIG_LOG" java -jar "$JAR" config doctor -c "$CONFIG_PATH"; then
   :
 else
@@ -265,18 +321,26 @@ if [ -z "$CONFIG_STATUS" ]; then
   CONFIG_STATUS="UNKNOWN"
   append_warning "config doctor status was not found in output"
 elif [ "$CONFIG_STATUS" != "OK" ]; then
-  if printf "%s\n" "$CONFIG_OUTPUT" | grep -qi "api key"; then
+  CONFIG_ERROR_CODES="$(printf "%s\n" "$CONFIG_OUTPUT" | awk -F': ' '/^errorCodes:/ {print $2; exit}')"
+  if [ "$CONFIG_STATUS" = "ERROR" ] && [ -n "$CONFIG_ERROR_CODES" ] \
+      && ! printf "%s\n" "$CONFIG_ERROR_CODES" | tr ',' '\n' | grep -qv '^MISSING_OPTIONAL_CREDENTIAL$'; then
     CONFIG_STATUS="OPTIONAL_CREDENTIALS_MISSING"
     WARNINGS="${WARNINGS}- optional local API credentials are not configured; fixed smoke uses no real key
 "
+  elif [ "$CONFIG_STATUS" = "WARNING" ]; then
+    append_warning "config doctor reported warnings"
   else
-    append_warning "config doctor reported $CONFIG_STATUS"
-    append_warning_reason "config doctor reported $CONFIG_STATUS"
-    append_final_reason "config doctor reported $CONFIG_STATUS, treated as warning"
+    CONFIG_STATUS="FAIL"
+    mark_fail
+    append_final_reason "config doctor reported non-optional errors: ${CONFIG_ERROR_CODES:-NO_ERROR_CODE}"
+    write_report
+    echo "release-check failed: config doctor"
+    echo "report: $REPORT"
+    exit 1
   fi
 fi
 
-SMOKE_LOG="$REPORT_DIR/release-check-eval-smoke.log"
+SMOKE_LOG="$LOG_DIR/eval-smoke.log"
 if run_capture "fixed eval smoke" "$SMOKE_LOG" java -jar "$JAR" eval smoke \
   --scenarios evals/golden.jsonl \
   --workspace target/eval-release-check-workspace \
@@ -301,9 +365,29 @@ if [ -z "$SMOKE_ARTIFACTS" ]; then
   append_warning "eval smoke artifacts path was not found in output"
 fi
 
+REPLAY_LOG="$LOG_DIR/eval-replay.log"
+if run_capture "eval replay" "$REPLAY_LOG" java -jar "$JAR" eval replay \
+  --run "$SMOKE_ARTIFACTS" \
+  --workspace target/eval-release-check-replay-workspace \
+  --out "$REPLAY_OUT" \
+  --fail-fast; then
+  REPLAY_STATUS="PASS"
+else
+  REPLAY_STATUS="FAIL"
+  mark_fail
+fi
+REPLAY_OUTPUT="$(cat "$REPLAY_LOG")"
+if [ "$REPLAY_STATUS" = "FAIL" ]; then
+  append_final_reason "eval replay failed"
+  write_report
+  echo "release-check failed: eval replay"
+  echo "report: $REPORT"
+  exit 1
+fi
+
 if [ -d "$BASELINE_DIR" ] && [ -f "$BASELINE_DIR/summary.json" ] && [ -f "$BASELINE_DIR/cases.jsonl" ]; then
   BASELINE_STATUS="FOUND"
-  COMPARE_LOG="$REPORT_DIR/release-check-eval-compare.log"
+  COMPARE_LOG="$LOG_DIR/eval-compare.log"
   if run_capture "eval compare" "$COMPARE_LOG" java -jar "$JAR" eval compare \
     --baseline "$BASELINE_DIR" \
     --candidate "$SMOKE_ARTIFACTS" \

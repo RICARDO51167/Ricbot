@@ -12,7 +12,6 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -27,13 +26,6 @@ public final class AgentGraphRuntime implements AutoCloseable {
     private final ExecutorService executor;
     private final boolean ownsExecutor;
     private GraphExecutionState state;
-
-    /** Migration constructor. New production callers should pass an explicit strict channel schema and store. */
-    public AgentGraphRuntime(AgentGraphDefinition definition, GraphNodeRegistry nodes,
-                             GraphConditionRegistry conditions, GraphExecutionState initialState) {
-        this(definition, nodes, conditions, GraphStateSchema.legacyDynamic(), new InMemoryGraphRuntimeStore(),
-                Executors.newFixedThreadPool(4), true, initialState);
-    }
 
     public AgentGraphRuntime(AgentGraphDefinition definition, GraphNodeRegistry nodes,
                              GraphConditionRegistry conditions, GraphStateSchema schema,
@@ -90,6 +82,7 @@ public final class AgentGraphRuntime implements AutoCloseable {
             if (definition.terminal(activation.nodeId()) || completed.containsKey(activation.activationId())) continue;
             futures.put(activation, executor.submit(() -> invoke(snapshot, activation, invocationInput)));
         }
+        List<GraphRetrySchedule> retries = new ArrayList<>();
         for (Map.Entry<NodeActivation, Future<GraphPendingWrite>> entry : futures.entrySet()) {
             NodeActivation activation = entry.getKey();
             GraphNodeSpec spec = definition.nodeSpec(activation.nodeId());
@@ -98,11 +91,22 @@ public final class AgentGraphRuntime implements AutoCloseable {
                 write = entry.getValue().get(spec.timeout().toMillis(), TimeUnit.MILLISECONDS);
             } catch (TimeoutException e) {
                 entry.getValue().cancel(true);
+                GraphRetrySchedule retry = retrySchedule(activation, spec, "timeout",
+                        "node timed out after " + spec.timeout());
+                if (retry != null) {
+                    retries.add(retry);
+                    continue;
+                }
                 write = failedWrite(activation, "timeout", "node timed out after " + spec.timeout(), e);
             } catch (InterruptedException e) {
+                entry.getValue().cancel(true);
                 Thread.currentThread().interrupt();
                 write = failedWrite(activation, "cancelled", "node execution interrupted", e);
             } catch (ExecutionException e) {
+                if (e.getCause() instanceof RetryableNodeFailure retryable) {
+                    retries.add(retryable.schedule());
+                    continue;
+                }
                 if (e.getCause() instanceof GraphFatalFailure && e.getCause() instanceof RuntimeException fatal) {
                     throw fatal;
                 }
@@ -113,6 +117,23 @@ public final class AgentGraphRuntime implements AutoCloseable {
                     Map.of("activationId", activation.activationId(), "nodeId", activation.nodeId()),
                     "write:" + state.superstep() + ":" + activation.activationId());
             completed.put(activation.activationId(), write);
+        }
+
+        if (!retries.isEmpty()) {
+            Instant commonDue = retries.stream().map(GraphRetrySchedule::availableAt).max(Instant::compareTo)
+                    .orElseThrow();
+            Map<String, GraphRetrySchedule> byActivation = new LinkedHashMap<>();
+            retries.forEach(retry -> byActivation.put(retry.activation().activationId(),
+                    new GraphRetrySchedule(retry.activation(), commonDue, retry.failureKind(), retry.message())));
+            List<NodeActivation> retrying = activations.stream().map(activation -> {
+                GraphRetrySchedule retry = byActivation.get(activation.activationId());
+                return retry != null ? retry.activation().nextAttempt() : activation;
+            }).sorted().toList();
+            state = new GraphExecutionState(GraphExecutionState.SCHEMA_VERSION, snapshot.graphId(), snapshot.runId(),
+                    snapshot.superstep(), retrying, snapshot.channels(), List.of(), snapshot.failures(),
+                    GraphExecutionStatus.RETRY_WAIT, snapshot.lastNodeId(), snapshot.transition() + 1, Instant.now());
+            store.scheduleRetries(state, List.copyOf(byActivation.values()));
+            return state;
         }
 
         List<GraphPendingWrite> writes = activations.stream().filter(a -> !definition.terminal(a.nodeId()))
@@ -171,36 +192,41 @@ public final class AgentGraphRuntime implements AutoCloseable {
 
     public GraphExecutionState state() { return state; }
 
+    /** Makes a persisted retry runnable only after its durable due time. */
+    public synchronized GraphExecutionState activateDueRetries(Instant now) {
+        state = store.activateDueRetries(state.runId(), now != null ? now : Instant.now());
+        return state;
+    }
+
+    public java.util.Optional<Instant> nextRetryAt() { return store.nextRetryAt(state.runId()); }
+
     private GraphPendingWrite invoke(GraphExecutionState snapshot, NodeActivation original,
                                      Map<String, Object> invocationInput) {
         GraphNodeSpec spec = definition.nodeSpec(original.nodeId());
-        NodeActivation activation = original;
-        Throwable last = null;
-        while (activation.attempt() <= spec.retryPolicy().maxAttempts()) {
-            try {
-                Map<String, Object> input = new LinkedHashMap<>(invocationInput);
-                input.putAll(activation.input());
-                GraphNodeResult result = nodes.require(spec.executorId()).execute(snapshot, Map.copyOf(input));
-                if (result == null) throw new IllegalStateException("node returned null result");
-                return new GraphPendingWrite(snapshot.runId(), snapshot.superstep(), activation,
-                        normalizeWait(result, activation), null, Instant.now());
-            } catch (Throwable failure) {
-                if (failure instanceof GraphFatalFailure && failure instanceof RuntimeException fatal) {
-                    throw fatal;
-                }
-                last = failure;
-                if (activation.attempt() >= spec.retryPolicy().maxAttempts() || !spec.retryPolicy().sideEffectSafe()) break;
-                java.time.Duration backoff = spec.retryPolicy().backoffForAttempt(activation.attempt());
-                store.append(snapshot.runId(), snapshot.superstep(), GraphRuntimeEventType.NODE_RETRY_SCHEDULED,
-                        Map.of("activationId", activation.activationId(), "nodeId", activation.nodeId(),
-                                "completedAttempt", activation.attempt(), "nextAttempt", activation.attempt() + 1,
-                                "dueAt", Instant.now().plus(backoff).toString(), "backoffMillis", backoff.toMillis()),
-                        "retry:" + activation.activationId() + ":" + activation.attempt());
-                sleep(backoff.toMillis());
-                activation = activation.nextAttempt();
+        try {
+            Map<String, Object> input = new LinkedHashMap<>(invocationInput);
+            input.putAll(original.input());
+            GraphNodeResult result = nodes.require(spec.executorId()).execute(snapshot, Map.copyOf(input));
+            if (result == null) throw new IllegalStateException("node returned null result");
+            return new GraphPendingWrite(snapshot.runId(), snapshot.superstep(), original,
+                    normalizeWait(result, original), null, Instant.now());
+        } catch (Throwable failure) {
+            if (failure instanceof GraphFatalFailure && failure instanceof RuntimeException fatal) throw fatal;
+            if (failure instanceof GraphNonRetryableException) {
+                return failedWrite(original, "non_retryable", message(failure), failure);
             }
+            GraphRetrySchedule retry = retrySchedule(original, spec, "execution", message(failure));
+            if (retry != null) throw new RetryableNodeFailure(retry, failure);
+            return failedWrite(original, "execution", message(failure), failure);
         }
-        return failedWrite(activation, "execution", message(last), last);
+    }
+
+    private static GraphRetrySchedule retrySchedule(NodeActivation activation, GraphNodeSpec spec,
+                                                    String kind, String message) {
+        if (activation.attempt() >= spec.retryPolicy().maxAttempts()
+                || !spec.retryPolicy().sideEffectSafe()) return null;
+        java.time.Duration backoff = spec.retryPolicy().backoffForAttempt(activation.attempt());
+        return new GraphRetrySchedule(activation, Instant.now().plus(backoff), kind, message);
     }
 
     private GraphExecutionState commitSuperstep(GraphExecutionState snapshot, List<GraphPendingWrite> pending,
@@ -306,10 +332,6 @@ public final class AgentGraphRuntime implements AutoCloseable {
     private GraphNodeResult normalizeWait(GraphNodeResult result, NodeActivation activation) {
         if (result.waitCondition() == null) return result;
         GraphWait wait = result.waitCondition();
-        if ("legacy-activation".equals(wait.activationId())) {
-            wait = new GraphWait(activation.activationId() + ":wait", activation.activationId(), wait.type(),
-                    wait.reason(), wait.details(), wait.createdAt());
-        }
         return new GraphNodeResult(result.outcome(), result.updates(), result.sends(), wait);
     }
 
@@ -365,10 +387,13 @@ public final class AgentGraphRuntime implements AutoCloseable {
         return failure.getMessage() != null && !failure.getMessage().isBlank()
                 ? failure.getMessage() : failure.getClass().getSimpleName();
     }
-    private static void sleep(long millis) {
-        if (millis <= 0) return;
-        try { Thread.sleep(millis); }
-        catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new IllegalStateException("retry interrupted", e); }
+    private static final class RetryableNodeFailure extends RuntimeException {
+        private final GraphRetrySchedule schedule;
+        private RetryableNodeFailure(GraphRetrySchedule schedule, Throwable cause) {
+            super(schedule.message(), cause);
+            this.schedule = schedule;
+        }
+        private GraphRetrySchedule schedule() { return schedule; }
     }
 
     @Override

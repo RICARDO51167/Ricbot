@@ -4,6 +4,7 @@ public enum TaskStatus {
     PLANNED,
     READY,
     RUNNING,
+    CANCEL_REQUESTED,
     RECOVERING,
     WAITING_CONFIRMATION,
     SUCCEEDED,

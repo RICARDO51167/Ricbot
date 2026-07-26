@@ -209,6 +209,29 @@ public class ToolRegistry {
         return execute(name, params, ToolExecutionContext.protocol(idempotencyKey, approvalId));
     }
 
+    /** Checked protocol execution used by the runtime's timeout and lease boundary. */
+    public Object executeProtocolChecked(String name, java.util.Map<String, Object> params,
+                                         String idempotencyKey, String approvalId) throws Exception {
+        PrepareResult prepared = prepareCall(name, params);
+        if (prepared.error() != null) throw new IllegalArgumentException(prepared.error());
+        @SuppressWarnings("unchecked") Map<String, Object> cast = (Map<String, Object>) prepared.params();
+        ToolExecutionContext context = ToolExecutionContext.protocol(idempotencyKey, approvalId);
+        try (ToolExecutionContext.Scope ignored = ToolExecutionContext.activate(context)) {
+            return executeTool(prepared.tool(), cast, context);
+        }
+    }
+
+    public ToolStateProbe probeProtocolChecked(String name, java.util.Map<String, Object> params,
+                                               String idempotencyKey) throws Exception {
+        PrepareResult prepared = prepareCall(name, params);
+        if (prepared.error() != null) throw new IllegalArgumentException(prepared.error());
+        @SuppressWarnings("unchecked") Map<String, Object> cast = (Map<String, Object>) prepared.params();
+        ToolExecutionContext context = ToolExecutionContext.protocol(idempotencyKey, "");
+        try (ToolExecutionContext.Scope ignored = ToolExecutionContext.activate(context)) {
+            return prepared.tool().probe(cast, context);
+        }
+    }
+
     public Object compensate(
             String name,
             java.util.Map<String, Object> params,

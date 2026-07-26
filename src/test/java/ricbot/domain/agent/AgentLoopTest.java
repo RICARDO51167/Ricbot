@@ -76,9 +76,7 @@ public class AgentLoopTest {
             assertTrue(Thread.getAllStackTraces().keySet().stream()
                     .map(Thread::getName)
                     .map(String::toLowerCase)
-                    .noneMatch(name -> name.contains("dream")
-                            || name.contains("cron")
-                            || name.contains("heartbeat")));
+                    .anyMatch(name -> name.equals("ricbot-runtime-heartbeat")));
 
             // 创建一条来自 CLI 用户的入站消息，内容为 "ping"
             InboundMessage inbound = new InboundMessage("cli", "user", "direct", "ping");

@@ -37,7 +37,7 @@ class AgentExecutionServiceTest {
         assertEquals(1, runner.specs.size());
     }
 
-    private static AgentExecutionService service(GraphRunService runner, Path workspace) {
+    private static AgentExecutionService service(AgentInvocationRuntime runner, Path workspace) {
         return new AgentExecutionService(runner, new ToolRegistry(), workspace, "model", 4, 4000,
                 "standard", 8000, 24);
     }
@@ -49,19 +49,10 @@ class AgentExecutionServiceTest {
                 null, false);
     }
 
-    private static final class StubRunner extends GraphRunService {
+    private static final class StubRunner implements AgentInvocationRuntime {
         private final AgentRunResult result;
         private final List<AgentRunSpec> specs = new ArrayList<>();
-        private StubRunner(AgentRunResult result) {
-            super(new LLMProvider("k", "local") {
-                public LLMResponse chat(List<Map<String, Object>> messages, List<Map<String, Object>> tools,
-                                        String model, Integer maxTokens, Double temperature,
-                                        String reasoningEffort, Object toolChoice) {
-                    return new LLMResponse("unused");
-                }
-            });
-            this.result = result;
-        }
+        private StubRunner(AgentRunResult result) { this.result = result; }
         @Override public AgentRunResult run(AgentRunSpec spec) { specs.add(spec); return result; }
     }
 }

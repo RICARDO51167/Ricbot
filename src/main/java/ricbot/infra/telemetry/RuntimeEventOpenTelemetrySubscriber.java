@@ -4,6 +4,9 @@ import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.SpanKind;
 import io.opentelemetry.api.trace.StatusCode;
 import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.api.trace.SpanContext;
+import io.opentelemetry.api.trace.TraceFlags;
+import io.opentelemetry.api.trace.TraceState;
 import io.opentelemetry.context.Context;
 import ricbot.domain.runtime.RuntimeDigest;
 import ricbot.domain.runtime.RuntimeEventEnvelope;
@@ -24,11 +27,13 @@ public final class RuntimeEventOpenTelemetrySubscriber implements RuntimeEventSu
 
     @Override public void onEvent(RuntimeEventEnvelope event) {
         Span run = runs.computeIfAbsent(event.runId(), id -> tracer.spanBuilder("Run " + id)
-                .setSpanKind(SpanKind.INTERNAL).startSpan());
+                .setParent(parentContext(event.traceParent())).setSpanKind(SpanKind.INTERNAL).startSpan());
         run.setAttribute("ricbot.event.sequence", event.globalSequence());
         run.setAttribute("ricbot.event.type", event.eventType());
         run.setAttribute("ricbot.payload.length", event.payload().toString().length());
         run.setAttribute("ricbot.payload.digest", RuntimeDigest.sha256(event.payload()));
+        run.setAttribute("ricbot.correlation.id", event.correlationId());
+        run.setAttribute("ricbot.causation.id", event.causationId());
 
         String activationKey = !event.activationId().isBlank() ? event.activationId()
                 : !event.taskId().isBlank() ? "task:" + event.taskId() : "";
@@ -51,6 +56,17 @@ public final class RuntimeEventOpenTelemetrySubscriber implements RuntimeEventSu
             run.end();
             runs.remove(event.runId());
         }
+    }
+
+    private static Context parentContext(String traceParent) {
+        if (traceParent == null) return Context.root();
+        String[] parts = traceParent.trim().split("-");
+        if (parts.length != 4 || parts[1].length() != 32 || parts[2].length() != 16) return Context.root();
+        try {
+            SpanContext parent = SpanContext.createFromRemoteParent(parts[1], parts[2],
+                    TraceFlags.fromHex(parts[3], 0), TraceState.getDefault());
+            return parent.isValid() ? Context.root().with(Span.wrap(parent)) : Context.root();
+        } catch (RuntimeException ignored) { return Context.root(); }
     }
 
     private static String spanName(RuntimeEventEnvelope event) {

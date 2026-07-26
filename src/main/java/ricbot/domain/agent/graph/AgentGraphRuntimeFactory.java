@@ -17,12 +17,13 @@ public final class AgentGraphRuntimeFactory {
                 .node(AgentNodeType.MODEL.name(), AgentNodeType.MODEL.name(), java.time.Duration.ofMinutes(5),
                         GraphRetryPolicy.readOnly(3, java.time.Duration.ofMillis(250)), GraphFailurePolicy.FAIL_STOP)
                 .node(AgentNodeType.TOOLS.name(), AgentNodeType.TOOLS.name(), java.time.Duration.ofMinutes(10),
-                        GraphRetryPolicy.sideEffecting(), GraphFailurePolicy.FAIL_STOP)
+                        GraphRetryPolicy.readOnly(3, java.time.Duration.ofMillis(250)), GraphFailurePolicy.FAIL_STOP)
                 .node(AgentNodeType.APPROVAL.name()).node(AgentNodeType.STEERING.name())
                 .terminalNode(AgentNodeType.TERMINAL.name())
                 .edge(AgentNodeType.INGEST.name(), "next", AgentNodeType.CONTEXT.name())
                 .edge(AgentNodeType.CONTEXT.name(), "compact", AgentNodeType.COMPACT.name())
                 .edge(AgentNodeType.CONTEXT.name(), "model", AgentNodeType.MODEL.name())
+                .edge(AgentNodeType.CONTEXT.name(), "tools", AgentNodeType.TOOLS.name())
                 .edge(AgentNodeType.COMPACT.name(), "next", AgentNodeType.MODEL.name())
                 .edge(AgentNodeType.MODEL.name(), "tools", AgentNodeType.TOOLS.name())
                 .edge(AgentNodeType.MODEL.name(), "overflow", AgentNodeType.COMPACT.name())
@@ -44,12 +45,16 @@ public final class AgentGraphRuntimeFactory {
                 .channel("approvalRequestIds", StateReducers.replace())
                 .channel("approvalSignal", StateReducers.replace())
                 .channel("compactRequested", StateReducers.replace())
+                .channel("overflowCompactions", StateReducers.replace())
                 .channel("contextUtilization", StateReducers.replace())
                 .channel("contextCompactedAt", StateReducers.replace())
                 .channel("stopReason", StateReducers.replace())
                 .channel("iterations", StateReducers.replace())
                 .channel("usage", StateReducers.replace())
                 .channel("finalContent", StateReducers.replace())
-                .channel("error", StateReducers.replace()).build();
+                .channel("error", StateReducers.replace())
+                .channel("goal", StateReducers.replace())
+                .channel("sessionId", StateReducers.replace())
+                .channel("runConfig", StateReducers.replace()).build();
     }
 }

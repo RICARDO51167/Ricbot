@@ -38,11 +38,13 @@ public class ApprovalService {
     }
 
     public ApprovalService(Path workspace) {
-        this(null, DEFAULT_TTL, Clock.systemUTC(), new SqliteRuntimeStore(workspace).approvalStore());
+        this(null, DEFAULT_TTL, Clock.systemUTC(),
+                ricbot.app.bootstrap.RuntimeStoreRegistry.shared(workspace).approvalStore());
     }
 
     public ApprovalService(Path workspace, TraceStore traceStore) {
-        this(traceStore, DEFAULT_TTL, Clock.systemUTC(), new SqliteRuntimeStore(workspace).approvalStore());
+        this(traceStore, DEFAULT_TTL, Clock.systemUTC(),
+                ricbot.app.bootstrap.RuntimeStoreRegistry.shared(workspace).approvalStore());
     }
 
     public ApprovalService(ApprovalRequestStore store) {
@@ -83,6 +85,9 @@ public class ApprovalService {
                     .filter(candidate -> candidate.binding().runId().equals(binding.runId()))
                     .filter(candidate -> candidate.binding().idempotencyKey().equals(binding.idempotencyKey()))
                     .filter(candidate -> candidate.binding().actionType().equals(binding.actionType()))
+                    .filter(candidate -> !candidate.consumed())
+                    .filter(candidate -> candidate.status() == ApprovalRequest.ApprovalStatus.PENDING
+                            || candidate.status() == ApprovalRequest.ApprovalStatus.APPROVED)
                     .findFirst().orElse(null);
             if (existing != null) return existing;
         }
@@ -136,6 +141,23 @@ public class ApprovalService {
                 .filter(candidate -> candidate.binding().runId().equals(binding.runId()))
                 .filter(candidate -> candidate.binding().idempotencyKey().equals(binding.idempotencyKey()))
                 .filter(candidate -> candidate.binding().actionType().equals(binding.actionType()))
+                .filter(candidate -> !candidate.consumed())
+                .filter(candidate -> candidate.status() == ApprovalRequest.ApprovalStatus.PENDING
+                        || candidate.status() == ApprovalRequest.ApprovalStatus.APPROVED)
+                .findFirst().orElse(null);
+    }
+
+    public ApprovalRequest findByBinding(String runId, String idempotencyKey) {
+        return findByBinding(runId, idempotencyKey, null);
+    }
+
+    public ApprovalRequest findByBinding(String runId, String idempotencyKey, String actionType) {
+        if (runId == null || idempotencyKey == null) return null;
+        return requests.values().stream()
+                .filter(candidate -> candidate.binding() != null && candidate.binding().bound())
+                .filter(candidate -> candidate.binding().runId().equals(runId))
+                .filter(candidate -> candidate.binding().idempotencyKey().equals(idempotencyKey))
+                .filter(candidate -> actionType == null || actionType.equals(candidate.binding().actionType()))
                 .findFirst().orElse(null);
     }
 
@@ -174,6 +196,12 @@ public class ApprovalService {
                 .filter(request -> request.status() == ApprovalRequest.ApprovalStatus.PENDING)
                 .filter(request -> !isExpired(request))
                 .sorted((left, right) -> right.createdAt().compareTo(left.createdAt()))
+                .toList();
+    }
+
+    public List<ApprovalRequest> list() {
+        return requests.values().stream()
+                .sorted((left, right) -> left.createdAt().compareTo(right.createdAt()))
                 .toList();
     }
 

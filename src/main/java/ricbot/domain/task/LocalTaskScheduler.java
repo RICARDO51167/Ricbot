@@ -14,11 +14,14 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Future;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.Executors;
 
 /** The single local scheduler used by team and spawn workflows. */
 public final class LocalTaskScheduler implements AutoCloseable {
@@ -31,6 +34,9 @@ public final class LocalTaskScheduler implements AutoCloseable {
     private final ThreadPoolExecutor executor;
     private final Map<TaskRole, TaskExecutor> executors = new EnumMap<>(TaskRole.class);
     private final Map<String, Future<?>> running = new ConcurrentHashMap<>();
+    private final Map<String, CountDownLatch> executionStops = new ConcurrentHashMap<>();
+    private final ScheduledExecutorService leaseHeartbeats;
+    private final String instanceId;
     private volatile boolean closing;
 
     public LocalTaskScheduler(Path workspace, TaskStore store, ParentRunWaker waker,
@@ -41,9 +47,17 @@ public final class LocalTaskScheduler implements AutoCloseable {
         LocalTaskSchedulerConfig safe = config != null ? config : LocalTaskSchedulerConfig.defaults();
         this.validator = new TeamPlanValidator(safe.maxTasksPerPlan(), safe.maxDelegationDepth(),
                 Set.of(TaskRole.values()), allowedTools != null ? allowedTools : Set.of());
+        this.instanceId = ricbot.app.bootstrap.RuntimeStoreRegistry.lifecycle(this.workspace)
+                .instance().instanceId();
         this.executor = new ThreadPoolExecutor(safe.maxParallel(), safe.maxParallel(), 30, TimeUnit.SECONDS,
                 new LinkedBlockingQueue<>(safe.queueCapacity()), new SchedulerThreadFactory(),
                 new ThreadPoolExecutor.AbortPolicy());
+        this.leaseHeartbeats = Executors.newSingleThreadScheduledExecutor(runnable -> {
+            Thread thread = new Thread(runnable, "ricbot-task-heartbeat");
+            thread.setDaemon(true);
+            return thread;
+        });
+        this.leaseHeartbeats.scheduleAtFixedRate(this::heartbeatRunningTasks, 5, 5, TimeUnit.SECONDS);
     }
 
     public synchronized LocalTaskScheduler register(TaskRole role, TaskExecutor taskExecutor) {
@@ -67,13 +81,11 @@ public final class LocalTaskScheduler implements AutoCloseable {
     public ParentRunWaker parentRunWaker() { return waker; }
     public int runningCount() { return (int) running.values().stream().filter(future -> !future.isDone()).count(); }
 
-    public synchronized int cancelParent(String parentRunId, String reason) {
+    public int cancelParent(String parentRunId, String reason) {
         int cancelled = 0;
         for (TaskRecord record : store.listByParent(parentRunId)) {
             if (record.status().terminal()) continue;
-            Future<?> future = running.get(record.spec().taskId());
-            if (future != null) future.cancel(true);
-            settle(record, TaskResult.cancelled(record, reason != null ? reason : "parent run cancelled"));
+            cancelTask(record.spec().taskId(), reason != null ? reason : "parent run cancelled");
             cancelled++;
         }
         return cancelled;
@@ -84,27 +96,38 @@ public final class LocalTaskScheduler implements AutoCloseable {
         return scheduler != null ? scheduler.cancelParent(parentRunId, reason) : 0;
     }
 
-    public synchronized boolean cancelTask(String taskId, String reason) {
-        TaskRecord record = store.load(taskId).orElseThrow(() -> new IllegalArgumentException("task not found: " + taskId));
-        if (record.status().terminal()) return false;
-        Future<?> future = running.get(taskId);
-        if (future != null) future.cancel(true);
-        settle(record, TaskResult.cancelled(record, reason != null ? reason : "task cancelled"));
-        scheduleReady(record.spec().parentRunId());
+    public static boolean cancelActiveTask(String parentRunId, String taskId, String reason) {
+        LocalTaskScheduler scheduler = ACTIVE_PARENTS.get(parentRunId);
+        return scheduler != null && scheduler.cancelTask(taskId, reason);
+    }
+
+    public boolean cancelTask(String taskId, String reason) {
+        TaskRecord record;
+        synchronized (this) {
+            record = store.load(taskId).orElseThrow(() -> new IllegalArgumentException("task not found: " + taskId));
+            if (record.status().terminal()) return false;
+            requestCancellation(record, reason != null ? reason : "task cancelled");
+        }
+        awaitExecutionStop(taskId);
+        synchronized (this) {
+            scheduleReady(record.spec().parentRunId());
+        }
         return true;
     }
 
     public synchronized void recover() {
         for (TaskRecord record : store.listAll()) {
-            if (record.status() == TaskStatus.RUNNING
-                    && record.updatedAt().isAfter(Instant.now().minus(CLAIM_LEASE))) {
+            if (record.status() == TaskStatus.RUNNING && record.leaseExpiresAt() != null
+                    && record.leaseExpiresAt().isAfter(Instant.now())) {
                 // Another live runtime may own this claim. Only an expired lease is recoverable.
                 continue;
             }
+            if (record.status() == TaskStatus.RUNNING
+                    && store instanceof ricbot.infra.runtime.SqliteRuntimeStore sqlite
+                    && sqlite.runtimeInstanceActive(record.leaseOwner(), Instant.now())) continue;
             if (record.status() == TaskStatus.RUNNING || record.status() == TaskStatus.RECOVERING) {
                 TaskRecord recovering = record.status() == TaskStatus.RECOVERING ? record
-                        : store.save(record.transition(TaskStatus.RECOVERING, record.childRunId(),
-                            "scheduler process restarted"), record.version());
+                        : store.save(record.recovering("scheduler owner lease expired"), record.version());
                 if (store.loadResult(record.spec().taskId()).isPresent()) {
                     settle(recovering, store.loadResult(record.spec().taskId()).orElseThrow());
                 } else if (record.spec().workspaceMode() == TaskWorkspaceMode.SHARED_READ) {
@@ -151,7 +174,16 @@ public final class LocalTaskScheduler implements AutoCloseable {
             settle(record, TaskResult.failed(record, new IllegalStateException("no executor for role " + record.spec().role())));
             return;
         }
-        Future<?> future = executor.submit(() -> execute(record, taskExecutor));
+        CountDownLatch stopped = new CountDownLatch(1);
+        executionStops.put(record.spec().taskId(), stopped);
+        Future<?> future = executor.submit(() -> {
+            try {
+                execute(record, taskExecutor);
+            } finally {
+                stopped.countDown();
+                executionStops.remove(record.spec().taskId(), stopped);
+            }
+        });
         running.put(record.spec().taskId(), future);
     }
 
@@ -161,9 +193,11 @@ public final class LocalTaskScheduler implements AutoCloseable {
             TaskRecord current = store.load(scheduled.spec().taskId()).orElseThrow();
             if (current.status() != TaskStatus.READY) return;
             String childRunId = !current.childRunId().isBlank() ? current.childRunId()
-                    : "child-" + UUID.nameUUIDFromBytes(current.spec().taskId().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                    : "child-" + UUID.nameUUIDFromBytes((current.spec().taskId() + ":attempt:"
+                    + current.attempt()).getBytes(java.nio.charset.StandardCharsets.UTF_8));
             try {
-                runningRecord = store.save(current.transition(TaskStatus.RUNNING, childRunId, "worker started"),
+                Instant now = Instant.now();
+                runningRecord = store.save(current.claim(instanceId, childRunId, now, now.plus(CLAIM_LEASE)),
                         current.version());
             } catch (IllegalStateException claimLost) {
                 if (claimLost.getMessage() != null && claimLost.getMessage().startsWith("task version conflict:")) return;
@@ -184,6 +218,11 @@ public final class LocalTaskScheduler implements AutoCloseable {
         synchronized (this) {
             running.remove(runningRecord.spec().taskId());
             TaskRecord current = store.load(runningRecord.spec().taskId()).orElseThrow();
+            if (current.status() == TaskStatus.CANCEL_REQUESTED) {
+                settle(current, TaskResult.cancelled(current, "task cancellation confirmed"));
+                scheduleReady(runningRecord.spec().parentRunId());
+                return;
+            }
             if (closing && !current.status().terminal()) {
                 if (current.status() == TaskStatus.RUNNING) {
                     store.save(current.transition(TaskStatus.RECOVERING, current.childRunId(),
@@ -223,6 +262,46 @@ public final class LocalTaskScheduler implements AutoCloseable {
         }
     }
 
+    private void requestCancellation(TaskRecord record, String reason) {
+        TaskRecord requested = record.status() == TaskStatus.CANCEL_REQUESTED ? record
+                : store.save(record.transition(TaskStatus.CANCEL_REQUESTED, record.childRunId(), reason),
+                record.version());
+        Future<?> future = running.get(record.spec().taskId());
+        if (future != null && !future.isDone()) {
+            future.cancel(true);
+        } else {
+            settle(requested, TaskResult.cancelled(requested, reason));
+        }
+    }
+
+    private void awaitExecutionStop(String taskId) {
+        CountDownLatch stopped = executionStops.get(taskId);
+        if (stopped == null) return;
+        try {
+            if (!stopped.await(5, TimeUnit.SECONDS)) {
+                throw new IllegalStateException("task process did not stop within cancellation timeout: " + taskId);
+            }
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("interrupted while waiting for task cancellation: " + taskId, interrupted);
+        }
+    }
+
+    private void heartbeatRunningTasks() {
+        if (closing) return;
+        Instant now = Instant.now();
+        for (String taskId : List.copyOf(running.keySet())) {
+            try {
+                TaskRecord current = store.load(taskId).orElse(null);
+                if (current == null || current.status() != TaskStatus.RUNNING
+                        || !instanceId.equals(current.leaseOwner())) continue;
+                store.save(current.heartbeat(instanceId, now, now.plus(CLAIM_LEASE)), current.version());
+            } catch (RuntimeException ignored) {
+                // Completion/cancellation can race a heartbeat; the version CAS decides the owner.
+            }
+        }
+    }
+
     private static void validateResult(TaskRecord record, TaskResult result) {
         if (result == null) throw new IllegalStateException("task executor returned null");
         if (!record.spec().taskId().equals(result.taskId())
@@ -237,6 +316,7 @@ public final class LocalTaskScheduler implements AutoCloseable {
         closing = true;
         ACTIVE_PARENTS.entrySet().removeIf(entry -> entry.getValue() == this);
         running.values().forEach(future -> future.cancel(true));
+        leaseHeartbeats.shutdownNow();
         executor.shutdownNow();
         try {
             executor.awaitTermination(5, TimeUnit.SECONDS);

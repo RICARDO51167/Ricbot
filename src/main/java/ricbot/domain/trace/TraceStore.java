@@ -14,7 +14,8 @@ import java.util.Set;
 public class TraceStore {
     private final SqliteRuntimeStore runtime;
 
-    public TraceStore(Path workspace) { this.runtime = new SqliteRuntimeStore(workspace); }
+    public TraceStore(Path workspace) { this(ricbot.app.bootstrap.RuntimeStoreRegistry.shared(workspace)); }
+    public TraceStore(SqliteRuntimeStore runtime) { this.runtime = java.util.Objects.requireNonNull(runtime, "runtime"); }
 
     public TraceEvent append(TraceEvent event) {
         if (event == null) return null;

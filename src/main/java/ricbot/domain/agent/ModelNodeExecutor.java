@@ -2,6 +2,7 @@ package ricbot.domain.agent;
 
 import ricbot.integration.llm.api.LLMProvider;
 import ricbot.integration.llm.api.LLMResponse;
+import ricbot.integration.llm.api.LLMFailureException;
 
 import java.util.List;
 import java.util.Map;
@@ -20,10 +21,11 @@ public final class ModelNodeExecutor {
                                LLMProvider.StreamDeltaHandler onDelta,
                                LLMProvider.StreamEndHandler onEnd) throws Exception {
         if (stream) {
-            return provider.chatStream(messages, toolDefinitions, spec.getModel(),
-                    null, null, null, null, onDelta, onEnd);
+            return LLMFailureException.requireSuccess(provider.chatStream(messages, toolDefinitions, spec.getModel(),
+                    null, null, null, null, onDelta, onEnd));
         }
         // The graph node retry policy is the sole retry owner.
-        return provider.chat(messages, toolDefinitions, spec.getModel(), null, null, null, null);
+        return LLMFailureException.requireSuccess(
+                provider.chat(messages, toolDefinitions, spec.getModel(), null, null, null, null));
     }
 }

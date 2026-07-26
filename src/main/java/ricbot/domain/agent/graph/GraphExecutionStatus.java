@@ -2,6 +2,7 @@ package ricbot.domain.agent.graph;
 
 public enum GraphExecutionStatus {
     READY,
+    RETRY_WAIT,
     RUNNING,
     PAUSED,
     WAITING,

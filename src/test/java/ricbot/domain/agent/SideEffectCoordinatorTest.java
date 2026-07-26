@@ -41,8 +41,12 @@ class SideEffectCoordinatorTest {
         SideEffectCoordinator coordinator = new SideEffectCoordinator(store);
         ToolRegistry tools = registry(new CountingTool(new AtomicInteger(), false));
         Map<String, Object> args = Map.of("value", "x");
-        store.claim(SideEffectRecord.reserved(
-                "key-2", "session", "write", ToolInvocationRecord.argumentsDigest(args)));
+        SideEffectRecord reserved = SideEffectRecord.reserved(
+                "key-2", "run-2", "session", "", "activation-2", "write",
+                ToolInvocationRecord.argumentsDigest(args), args);
+        store.claim(reserved);
+        store.transition(reserved.clearLease(SideEffectStatus.UNKNOWN, null, ""), 0,
+                java.util.Set.of(SideEffectStatus.RESERVED));
 
         assertThrows(SideEffectConfirmationRequiredException.class, () -> coordinator.execute(
                 tools, "session", "key-2", "write", args, false, ignored -> true));
@@ -52,6 +56,25 @@ class SideEffectCoordinatorTest {
                 tools, "session", "key-2", "write", args, false, ignored -> true);
         assertEquals(SideEffectStatus.SUCCEEDED, retried.record().status());
         assertEquals("approval-7", retried.record().confirmationId());
+    }
+
+    @Test
+    void crashAfterReservationButBeforeExecutionIsSafeToResume(@TempDir Path workspace) {
+        AtomicInteger executions = new AtomicInteger();
+        ToolRegistry tools = registry(new CountingTool(executions, false));
+        SideEffectStore store = new SqliteRuntimeStore(workspace).sideEffectStore();
+        Map<String, Object> args = Map.of("value", "x");
+        SideEffectRecord reserved = SideEffectRecord.reserved("reserved-only", "run", "session", "",
+                "activation", "write", ToolInvocationRecord.argumentsDigest(args), args);
+        store.claim(reserved);
+
+        SideEffectOutcome recovered = new SideEffectCoordinator(store).execute(tools,
+                new SideEffectExecutionIdentity("run", "session", "", "activation"),
+                reserved.idempotencyKey(), reserved.toolName(), args, reservedPolicy(), ignored -> true,
+                ignored -> false);
+
+        assertEquals(1, executions.get());
+        assertEquals(SideEffectStatus.SUCCEEDED, recovered.record().status());
     }
 
     @Test
@@ -73,6 +96,48 @@ class SideEffectCoordinatorTest {
     }
 
     @Test
+    void uncertainCompensationRequiresANewApprovalAndDoesNotAutoRepeat(@TempDir Path workspace) {
+        AtomicInteger compensations = new AtomicInteger();
+        Tool flaky = new Tool() {
+            public String getName() { return "flaky-write"; }
+            public String getDescription() { return "test"; }
+            public Object execute(Map<String, Object> params, ToolExecutionContext context) {
+                return Map.of("ok", true);
+            }
+            @Override public ricbot.tool.api.ToolEffectPolicy effectPolicy() {
+                return ricbot.tool.api.ToolEffectPolicy.compensatable(java.time.Duration.ofSeconds(30),
+                        ricbot.tool.api.ToolEffectPolicy.Approval.ALWAYS);
+            }
+            @Override public Object compensate(Map<String, Object> params, Object previous,
+                                               ToolExecutionContext context) {
+                int attempt = compensations.incrementAndGet();
+                return attempt == 1 ? Map.of("error", "uncertain") : Map.of("ok", true, "attempt", attempt);
+            }
+        };
+        ToolRegistry tools = registry(flaky);
+        SideEffectStore store = new SqliteRuntimeStore(workspace).sideEffectStore();
+        SideEffectCoordinator coordinator = new SideEffectCoordinator(store);
+        Map<String, Object> args = Map.of("value", "x");
+        coordinator.execute(tools, "session", "compensate-uncertain", flaky.getName(), args,
+                false, ignored -> true);
+
+        assertThrows(IllegalStateException.class, () -> coordinator.compensate(
+                tools, "compensate-uncertain", args, "approval-1"));
+        assertThrows(SideEffectConfirmationRequiredException.class, () -> coordinator.compensate(
+                tools, "compensate-uncertain", args, "approval-1"));
+        assertEquals(1, compensations.get());
+
+        SideEffectRecord compensated = coordinator.compensate(
+                tools, "compensate-uncertain", args, "approval-2");
+        assertEquals(SideEffectStatus.COMPENSATED, compensated.status());
+        assertEquals(2, compensations.get());
+        assertEquals(SideEffectStatus.SUCCEEDED, store.load(
+                SideEffectCoordinator.compensationKey("compensate-uncertain")).orElseThrow().status());
+        coordinator.compensate(tools, "compensate-uncertain", args, "approval-2");
+        assertEquals(2, compensations.get());
+    }
+
+    @Test
     void retryAndCompensationRequireBoundOneShotApprovals(@TempDir Path workspace) {
         TraceStore traces = new TraceStore(workspace);
         SideEffectStore store = new AuditedSideEffectStore(new SqliteRuntimeStore(workspace).sideEffectStore(), traces);
@@ -81,8 +146,12 @@ class SideEffectCoordinatorTest {
         CountingTool tool = new CountingTool(new AtomicInteger(), true);
         ToolRegistry tools = registry(tool);
         Map<String, Object> args = Map.of("value", "x");
-        store.claim(SideEffectRecord.reserved(
-                "uncertain", "session", "write", ToolInvocationRecord.argumentsDigest(args)));
+        SideEffectRecord reserved = SideEffectRecord.reserved(
+                "uncertain", "run-1", "session", "", "activation-1", "write",
+                ToolInvocationRecord.argumentsDigest(args), args);
+        store.claim(reserved);
+        store.transition(reserved.clearLease(SideEffectStatus.UNKNOWN, null, ""), 0,
+                java.util.Set.of(SideEffectStatus.RESERVED));
 
         ApprovalRequest retry = service.requestRetry("uncertain");
         assertThrows(IllegalStateException.class, () -> service.applyApprovedRetry(retry.requestId()));
@@ -110,6 +179,12 @@ class SideEffectCoordinatorTest {
         ToolRegistry registry = new ToolRegistry();
         registry.register(tool);
         return registry;
+    }
+
+    private static ricbot.tool.api.ToolEffectPolicy reservedPolicy() {
+        return ricbot.tool.api.ToolEffectPolicy.atMostOnce(java.time.Duration.ofSeconds(30),
+                ricbot.tool.api.ToolEffectPolicy.Concurrency.SERIAL_PER_RUN,
+                ricbot.tool.api.ToolEffectPolicy.Approval.RISK_BASED);
     }
 
     private static final class CountingTool extends Tool {

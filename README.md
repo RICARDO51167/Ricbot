@@ -83,6 +83,8 @@ java -jar target/Ricbot-1.0-SNAPSHOT.jar agent
 /run fork <runId> [eventSequence] [newRunId]
 /task list <runId>
 /task show|retry|cancel <taskId>
+/side-effect list
+/side-effect show|retry|compensate <idempotencyKey>
 /approve <requestId>
 /reject <requestId>
 /workspace
@@ -101,7 +103,9 @@ CLI 能力边界：
 | Memory | Agent 上下文自动召回已审批 Memory | 仅运行时使用；没有查询、写入或治理命令 |
 | Eval | `eval`、`lint`、`smoke`、`matrix`、`compare`、`replay` | 已覆盖 |
 
-新 Run、Session、Task、Delivery、Approval 与 SideEffect 统一写入 SQLite WAL 数据库 `.ricbot/runtime.db`。首次启动会原子导入可恢复的旧状态，校验 Replay Digest 后将源目录归档到 `.ricbot/archive/<migration-id>`；历史写入口不再注册。
+新 Run、Session、Task、Delivery、Approval 与 SideEffect 统一写入 SQLite WAL 数据库 `.ricbot/runtime.db`。首次 Schema v2 启动会在文件锁和 SQLite 排他锁下校验并备份旧数据库，将其归档到 `.ricbot/archive/<migration-id>`，再创建全新的执行库。归档 Run 仅支持 list、status、events 和 Legacy Replay；不能 resume、signal、cancel、retry 或 fork。
+
+进程通过 5 秒 heartbeat 和 30 秒 lease 注册实例；Activation、Task 与 SideEffect 均以 owner、lease、version 和 CAS 领取。只有租约过期且原 owner 已确认死亡的 `EXECUTING` 副作用才会转入 `UNKNOWN`。Runtime 退避只使用数据库 `availableAt`，执行路径不进行内存睡眠。
 
 ## Eval
 

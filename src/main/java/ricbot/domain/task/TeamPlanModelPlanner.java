@@ -12,6 +12,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import ricbot.domain.runtime.RuntimeDigest;
 
 /** Converts a leader model's schema-constrained tool call into an untrusted TeamPlan. */
 public final class TeamPlanModelPlanner {
@@ -49,14 +50,29 @@ public final class TeamPlanModelPlanner {
     private TeamPlan convert(GraphExecutionState state, Map<String, Object> payload, int revision) {
         Object rawTasks = payload.get("tasks");
         if (!(rawTasks instanceof List<?> list)) throw new IllegalArgumentException("leader plan has no tasks array");
+        String planId = "plan-" + RuntimeDigest.sha256(state.runId() + ":revision:" + revision).substring(0, 20);
         List<TaskSpec> tasks = new ArrayList<>();
+        List<Map<String, Object>> normalized = new ArrayList<>();
+        Map<String, String> globalIds = new LinkedHashMap<>();
         int order = 0;
         for (Object item : list) {
             if (!(item instanceof Map<?, ?> raw)) throw new IllegalArgumentException("leader task must be an object");
             Map<String, Object> task = new LinkedHashMap<>();
             raw.forEach((key, value) -> task.put(String.valueOf(key), value));
-            String id = text(task.get("id"));
-            if (id.isBlank()) id = "task-" + order;
+            String localId = text(task.get("id"));
+            if (localId.isBlank()) localId = "task-" + order;
+            String globalId = deterministicTaskId(state.runId(), revision, localId);
+            if (globalIds.putIfAbsent(localId, globalId) != null) {
+                throw new IllegalArgumentException("duplicate leader local task id: " + localId);
+            }
+            task.put("localId", localId);
+            normalized.add(task);
+            order++;
+        }
+        order = 0;
+        for (Map<String, Object> task : normalized) {
+            String localId = text(task.get("localId"));
+            String id = globalIds.get(localId);
             TaskRole role = TaskRole.valueOf(text(task.get("role")).toUpperCase(java.util.Locale.ROOT));
             TaskWorkspaceMode workspaceMode = task.get("workspaceMode") != null
                     ? TaskWorkspaceMode.valueOf(text(task.get("workspaceMode")).toUpperCase(java.util.Locale.ROOT))
@@ -65,12 +81,23 @@ public final class TeamPlanModelPlanner {
                     ? TaskFailurePolicy.valueOf(text(task.get("failurePolicy")).toUpperCase(java.util.Locale.ROOT))
                     : role == TaskRole.EXPLORER || role == TaskRole.REVIEWER
                         ? TaskFailurePolicy.TOLERATE : TaskFailurePolicy.FAIL_FAST;
-            tasks.add(new TaskSpec(id, state.runId(), state.nodeId() + ":" + state.superstep(), order++, 0,
-                    role, text(task.get("goal")), strings(task.get("dependsOn")), strings(task.get("allowedTools")),
+            List<String> dependencies = strings(task.get("dependsOn")).stream().map(dependency -> {
+                String mapped = globalIds.get(dependency);
+                if (mapped == null) throw new IllegalArgumentException("unknown local dependency " + dependency);
+                return mapped;
+            }).toList();
+            tasks.add(new TaskSpec(id, state.runId(), planId, revision, localId,
+                    state.nodeId() + ":" + state.superstep(), order++, 0,
+                    role, text(task.get("goal")), dependencies, strings(task.get("allowedTools")),
                     workspaceMode, policy, Boolean.TRUE.equals(task.get("allowFailedDependencies")),
                     strings(task.get("requiredCheckIds")), strings(task.get("acceptanceCriteria"))));
         }
-        return new TeamPlan("plan-" + UUID.randomUUID(), state.runId(), revision, tasks);
+        return new TeamPlan(planId, state.runId(), revision, tasks);
+    }
+
+    public static String deterministicTaskId(String parentRunId, int revision, String localId) {
+        String digest = RuntimeDigest.sha256(parentRunId + "\u0000" + revision + "\u0000" + localId);
+        return "task-" + digest.substring(0, 24);
     }
 
     public static Map<String, Object> schema() {

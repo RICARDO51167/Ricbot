@@ -14,6 +14,7 @@ public final class ConfigDoctorReport {
     private boolean apiKeyPresent;
     private Map<String, Object> enabledTools = new LinkedHashMap<>();
     private final List<String> errors = new ArrayList<>();
+    private final List<String> errorCodes = new ArrayList<>();
     private final List<String> warnings = new ArrayList<>();
     private final List<String> ignoredFields = new ArrayList<>();
     private final List<String> suggestedFixes = new ArrayList<>();
@@ -40,6 +41,7 @@ public final class ConfigDoctorReport {
         map.put("apiKeyPresent", apiKeyPresent);
         map.put("enabledTools", enabledTools);
         map.put("errors", errors);
+        map.put("errorCodes", errorCodes);
         map.put("warnings", warnings);
         map.put("ignoredFields", ignoredFields);
         map.put("suggestedFixes", suggestedFixes);
@@ -48,6 +50,11 @@ public final class ConfigDoctorReport {
     }
 
     public void addError(String error) {
+        addError("CONFIG_ERROR", error);
+    }
+
+    public void addError(String code, String error) {
+        addUnique(errorCodes, code != null ? code.trim().toUpperCase(java.util.Locale.ROOT) : "CONFIG_ERROR");
         addUnique(errors, error);
     }
 
@@ -128,6 +135,8 @@ public final class ConfigDoctorReport {
     public List<String> getErrors() {
         return errors;
     }
+
+    public List<String> getErrorCodes() { return List.copyOf(errorCodes); }
 
     public List<String> getWarnings() {
         return warnings;

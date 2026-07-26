@@ -10,8 +10,8 @@
     }
   },
   "providers": {
-    "openai": {
-      "api_key": "${OPENAI_API_KEY}",
+    "dashscope": {
+      "api_key": "${DASHSCOPE_API_KEY}",
       "api_base": "https://dashscope.aliyuncs.com/compatible-mode/v1",
       "extra_headers": {}
     }

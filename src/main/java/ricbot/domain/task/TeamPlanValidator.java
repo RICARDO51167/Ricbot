@@ -33,6 +33,12 @@ public final class TeamPlanValidator {
         Set<Integer> orders = new LinkedHashSet<>();
         for (TaskSpec task : plan.tasks()) {
             if (!plan.parentRunId().equals(task.parentRunId())) throw new IllegalArgumentException("task parentRunId mismatch");
+            if (!task.planId().isBlank() && !plan.planId().equals(task.planId())) {
+                throw new IllegalArgumentException("task planId mismatch");
+            }
+            if (!task.planId().isBlank() && plan.revision() != task.planRevision()) {
+                throw new IllegalArgumentException("task planRevision mismatch");
+            }
             if (byId.putIfAbsent(task.taskId(), task) != null) throw new IllegalArgumentException("duplicate task: " + task.taskId());
             if (!orders.add(task.planOrder())) throw new IllegalArgumentException("duplicate task planOrder: " + task.planOrder());
             if (task.delegationDepth() > maxDelegationDepth) throw new IllegalArgumentException("delegation depth exceeded");

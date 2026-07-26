@@ -30,12 +30,6 @@ public record GraphNodeResult(
         return new GraphNodeResult("wait", updates, List.of(), wait);
     }
 
-    /** Compatibility helper; runtime replaces the placeholder activation id with the current activation. */
-    public static GraphNodeResult pause(String reason, Map<String, Object> updates) {
-        GraphWait wait = GraphWait.external("legacy-wait", "legacy-activation", "external", reason, Map.of());
-        return waitFor(reason, wait, updates);
-    }
-
     public Map<String, Object> variables() { return updates; }
     public boolean pause() { return waitCondition != null; }
     public String pauseReason() { return waitCondition != null ? waitCondition.reason() : ""; }

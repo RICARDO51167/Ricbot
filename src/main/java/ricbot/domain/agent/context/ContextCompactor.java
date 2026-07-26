@@ -9,7 +9,6 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.UUID;
 
 /** Non-destructive, tool-pair-aware context compaction policy. */
 public final class ContextCompactor {
@@ -28,15 +27,23 @@ public final class ContextCompactor {
 
     public ContextCompactionResult compact(List<Map<String, Object>> input, int availableInputTokens,
                                            String model, SummaryGenerator generator) {
+        return compact(input, availableInputTokens, model, generator, false);
+    }
+
+    /** Forces progress after a provider-confirmed overflow even when the local estimator is optimistic. */
+    public ContextCompactionResult compact(List<Map<String, Object>> input, int availableInputTokens,
+                                           String model, SummaryGenerator generator, boolean force) {
         List<Map<String, Object>> messages = normalize(input);
         int currentTokens = estimate(messages);
-        if (availableInputTokens <= 0 || currentTokens < availableInputTokens * TRIGGER_RATIO) {
+        if (availableInputTokens <= 0 || (!force && currentTokens < availableInputTokens * TRIGGER_RATIO)) {
             return unchanged(messages, model, currentTokens);
         }
         Set<Integer> preserved = preservedIndexes(messages);
         List<Integer> candidates = new ArrayList<>();
         int activeTokens = currentTokens;
-        int target = (int) Math.floor(availableInputTokens * TARGET_RATIO);
+        int target = force ? Math.min((int) Math.floor(availableInputTokens * TARGET_RATIO),
+                Math.max(1, (int) Math.floor(currentTokens * 0.75d)))
+                : (int) Math.floor(availableInputTokens * TARGET_RATIO);
         for (int index = 0; index < messages.size() && activeTokens > target; index++) {
             if (preserved.contains(index)) continue;
             candidates.add(index);
@@ -94,11 +101,13 @@ public final class ContextCompactor {
 
     private static List<Map<String, Object>> normalize(List<Map<String, Object>> input) {
         List<Map<String, Object>> normalized = new ArrayList<>();
+        int index = 0;
         for (Map<String, Object> original : input != null ? input : List.<Map<String, Object>>of()) {
             Map<String, Object> message = new LinkedHashMap<>(original != null ? original : Map.of());
-            message.putIfAbsent(MESSAGE_ID, "msg-" + UUID.randomUUID());
+            message.putIfAbsent(MESSAGE_ID, "msg-" + RuntimeDigest.sha256(Map.of("index", index, "message", message)));
             message.putIfAbsent(MESSAGE_MARKS, List.of(MessageMark.ACTIVE.name()));
             normalized.add(message);
+            index++;
         }
         return normalized;
     }
@@ -159,7 +168,8 @@ public final class ContextCompactor {
         message.put("role", "system");
         message.put("content", asJson(summary));
         message.put("context_compaction", metadata);
-        message.put(MESSAGE_ID, "compact-" + UUID.randomUUID());
+        message.put(MESSAGE_ID, "compact-" + RuntimeDigest.sha256(Map.of("source", metadata.get("sourceMessageIds"),
+                "model", clean(model), "result", summary)));
         message.put(MESSAGE_MARKS, List.of(MessageMark.PRESERVED.name()));
         return message;
     }

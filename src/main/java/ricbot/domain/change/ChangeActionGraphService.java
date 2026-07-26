@@ -51,7 +51,7 @@ public final class ChangeActionGraphService {
         this.workspace = workspace.toAbsolutePath().normalize();
         this.approvals = approvals;
         this.changes = new ChangeSetService(this.workspace);
-        this.store = new SqliteRuntimeStore(this.workspace);
+        this.store = ricbot.app.bootstrap.RuntimeStoreRegistry.shared(this.workspace);
     }
 
     public Result start(PendingChangeAction action, RiskAssessment risk) {

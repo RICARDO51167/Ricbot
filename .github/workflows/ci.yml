@@ -25,52 +25,8 @@ jobs:
           java-version: "17"
           cache: maven
 
-      - name: Run unit and golden eval tests
-        run: sh mvnw -B test
-
-      - name: Build fat jar
-        run: sh mvnw -B -DskipTests package
-
-      - name: Smoke CLI version
-        run: java -jar target/Ricbot-1.0-SNAPSHOT.jar --version
-
-      - name: Lint eval scenarios
-        run: java -jar target/Ricbot-1.0-SNAPSHOT.jar eval lint --scenarios evals/golden.jsonl --out target/eval-lint
-
-      - name: Smoke eval CLI fast subset
-        run: |
-          java -jar target/Ricbot-1.0-SNAPSHOT.jar eval smoke \
-            --scenarios evals/golden.jsonl \
-            --workspace target/eval-smoke-fast-workspace \
-            --out target/eval-smoke-fast-artifacts \
-            --tag fast \
-            --fail-fast
-
-      - name: Smoke eval CLI full golden
-        run: |
-          java -jar target/Ricbot-1.0-SNAPSHOT.jar eval smoke \
-            --scenarios evals/golden.jsonl \
-            --workspace target/eval-smoke-workspace \
-            --out target/eval-smoke-artifacts \
-            --fail-fast
-
-      - name: Smoke eval replayable subset
-        run: |
-          java -jar target/Ricbot-1.0-SNAPSHOT.jar eval smoke \
-            --scenarios evals/golden.jsonl \
-            --workspace target/eval-replayable-workspace \
-            --out target/eval-replayable-artifacts \
-            --tag replayable \
-            --fail-fast
-
-      - name: Replay smoke eval artifacts
-        run: |
-          RUN_DIR="$(find target/eval-replayable-artifacts -mindepth 1 -maxdepth 1 -type d | sort | tail -1)"
-          java -jar target/Ricbot-1.0-SNAPSHOT.jar eval replay \
-            --run "$RUN_DIR" \
-            --workspace target/eval-replay-workspace \
-            --out target/eval-replay-artifacts \
-            --fail-fast
+      - name: Production release gate
+        run: sh scripts/release-check.sh
 
       - name: Upload test reports
         if: always()
@@ -85,5 +41,7 @@ jobs:
             target/eval-smoke-artifacts/
             target/eval-replayable-artifacts/
             target/eval-replay-artifacts/
+            target/release-check-report.md
+            target/release-check-logs/
             target/ricbot-test.log
           if-no-files-found: ignore

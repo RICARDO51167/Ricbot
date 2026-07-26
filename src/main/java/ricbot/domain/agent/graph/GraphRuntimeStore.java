@@ -3,12 +3,17 @@ package ricbot.domain.agent.graph;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.time.Instant;
 
 /** Crash-safe storage boundary for the unified graph runtime. */
 public interface GraphRuntimeStore {
     Optional<GraphExecutionState> loadCheckpoint(String runId);
     void savePending(GraphPendingWrite write);
     List<GraphPendingWrite> pending(String runId, long superstep);
+    /** Atomically persists retry attempt/due time, event, and checkpoint. */
+    void scheduleRetries(GraphExecutionState state, List<GraphRetrySchedule> retries);
+    Optional<Instant> nextRetryAt(String runId);
+    GraphExecutionState activateDueRetries(String runId, Instant now);
     void commitCheckpoint(GraphExecutionState state);
     /** Atomically commits the checkpoint projection and its causal event when the backend supports transactions. */
     default GraphRuntimeEvent commit(GraphExecutionState state, GraphRuntimeEventType type,

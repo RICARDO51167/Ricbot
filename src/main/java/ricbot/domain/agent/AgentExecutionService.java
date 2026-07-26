@@ -12,7 +12,7 @@ import java.util.function.Consumer;
 
 /** Builds immutable invocation input and delegates once to the graph runtime. */
 final class AgentExecutionService {
-    private final GraphRunService runner;
+    private final AgentInvocationRuntime runner;
     private final ToolRegistry tools;
     private final Path workspace;
     private final String model;
@@ -25,14 +25,14 @@ final class AgentExecutionService {
     private final SideEffectStore sideEffectStore;
     private final ApprovalService approvalService;
 
-    AgentExecutionService(GraphRunService runner, ToolRegistry tools, Path workspace, String model,
+    AgentExecutionService(AgentInvocationRuntime runner, ToolRegistry tools, Path workspace, String model,
                           int maxIterations, int maxToolResultChars, String providerRetryMode,
                           int contextWindowTokens, Integer contextBlockLimit) {
         this(runner, tools, workspace, model, maxIterations, maxToolResultChars, providerRetryMode,
                 contextWindowTokens, contextBlockLimit, null, SideEffectStore.disabled(), null);
     }
 
-    AgentExecutionService(GraphRunService runner, ToolRegistry tools, Path workspace, String model,
+    AgentExecutionService(AgentInvocationRuntime runner, ToolRegistry tools, Path workspace, String model,
                           int maxIterations, int maxToolResultChars, String providerRetryMode,
                           int contextWindowTokens, Integer contextBlockLimit,
                           ProviderCapability capability) {
@@ -40,7 +40,7 @@ final class AgentExecutionService {
                 contextWindowTokens, contextBlockLimit, capability, SideEffectStore.disabled(), null);
     }
 
-    AgentExecutionService(GraphRunService runner, ToolRegistry tools, Path workspace, String model,
+    AgentExecutionService(AgentInvocationRuntime runner, ToolRegistry tools, Path workspace, String model,
                           int maxIterations, int maxToolResultChars, String providerRetryMode,
                           int contextWindowTokens, Integer contextBlockLimit,
                           ProviderCapability capability, SideEffectStore effects,

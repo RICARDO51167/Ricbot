@@ -47,7 +47,7 @@ public final class OpenTelemetryRuntime implements AutoCloseable {
                 .build();
         Resource resource = Resource.getDefault().merge(Resource.create(Attributes.of(
                 AttributeKey.stringKey("service.name"), required(serviceName, "serviceName"),
-                AttributeKey.stringKey("service.version"), "1.0"
+                AttributeKey.stringKey("service.version"), ricbot.app.bootstrap.BuildVersion.current()
         )));
         SdkTracerProvider provider = SdkTracerProvider.builder()
                 .setResource(resource)

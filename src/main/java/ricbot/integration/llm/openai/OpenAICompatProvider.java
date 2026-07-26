@@ -3,6 +3,7 @@ package ricbot.integration.llm.openai;
 import com.fasterxml.jackson.core.type.TypeReference;
 import ricbot.integration.llm.provider.ProviderSpec;
 import ricbot.integration.llm.api.LLMProvider;
+import ricbot.integration.llm.api.LLMFailureException;
 import ricbot.integration.llm.api.LLMResponse;
 import ricbot.integration.llm.api.OpenAIResponsesSupport;
 import ricbot.integration.llm.api.ToolCallRequest;
@@ -152,8 +153,8 @@ public class OpenAICompatProvider extends LLMProvider {
 
         // 调试打印请求信息
         debugPrintRequest(request);
-        // 执行请求并支持重试
-        return runWithRetry(() -> doRequest(request));
+        // Runtime graph owns all retries and persists their due time.
+        return LLMFailureException.requireSuccess(doRequest(request));
     }
 
     /**

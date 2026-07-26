@@ -11,10 +11,11 @@ import ricbot.integration.llm.api.LLMProvider;
 import ricbot.tool.api.ToolRegistry;
 import ricbot.infra.runtime.SqliteRuntimeStore;
 import ricbot.infra.runtime.SqliteSessionManager;
-import ricbot.infra.runtime.LegacyRuntimeMigrator;
+import ricbot.app.bootstrap.RuntimeStoreRegistry;
 
 import java.nio.file.Path;
 import java.util.List;
+import ricbot.application.runtime.AgentRuntimeFactory;
 
 /** Pure bootstrap factory for the stateful core shared by AgentLoop services. */
 public final class AgentRuntimeCoreFactory {
@@ -28,21 +29,23 @@ public final class AgentRuntimeCoreFactory {
                                           String timezone, int sessionTtlMinutes) {
         Path workspace = rawWorkspace.toAbsolutePath().normalize();
         ContextBuilder contextBuilder = new ContextBuilder(workspace, timezone);
-        SqliteRuntimeStore runtimeStore = new SqliteRuntimeStore(workspace);
-        new LegacyRuntimeMigrator(workspace, runtimeStore).migrateIfNeeded();
+        SqliteRuntimeStore runtimeStore = RuntimeStoreRegistry.acquire(workspace);
         SessionManager runtimeSessions = suppliedSessions != null ? suppliedSessions
                 : new SqliteSessionManager(workspace, runtimeStore);
-        AgentPersistenceComponents persistence = AgentPersistenceFactory.create(workspace, runtimeSessions);
+        AgentPersistenceComponents persistence = AgentPersistenceFactory.create(runtimeStore, runtimeSessions);
         OpenTelemetryRuntime telemetry = OpenTelemetryRuntime.fromEnvironment();
-        TraceStore traces = new TraceStore(workspace);
+        TraceStore traces = new TraceStore(runtimeStore);
         SideEffectStore sideEffects = new AuditedSideEffectStore(runtimeStore.sideEffectStore(), traces);
         MemoryStore memory = new MemoryStore(workspace);
         StructuredContextService compactor = new StructuredContextService(provider, model,
                 persistence.sessionManager(), contextWindowTokens, 4096);
         ApprovalService approvals = new ApprovalService(runtimeStore.approvalStore(), traces);
         SideEffectApplicationService sideEffectApplication = new SideEffectApplicationService(sideEffects, approvals);
+        ToolRegistry tools = new ToolRegistry();
+        AgentRuntimeFactory.Components runtime = AgentRuntimeFactory.create(provider, runtimeStore, tools,
+                sideEffects, approvals, telemetry, model);
         return new AgentRuntimeCore(contextBuilder, persistence, telemetry, traces, sideEffects,
                 memory, compactor, approvals, sideEffectApplication,
-                new ToolRegistry(), new GraphRunService(provider));
+                tools, runtime.runtime(), runtime.invocations());
     }
 }

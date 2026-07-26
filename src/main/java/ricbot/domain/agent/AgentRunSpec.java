@@ -26,12 +26,17 @@ import java.util.*;
 @Accessors(chain = true)
 public class AgentRunSpec {
 
+    /** Optional caller-assigned durable Run ID (used by child Task Runs). */
+    private String runId;
+
     // 初始消息列表，用于启动 Agent 对话
     private List<Map<String, Object>> initialMessages = new ArrayList<>();
     // 工具注册表，包含 Agent 可调用的所有工具
     private ToolRegistry tools;
     // 使用的模型名称
     private String model;
+    /** Optional independent model for structured compaction; defaults to the main model. */
+    private String compactModel;
     // 最大迭代次数，防止无限循环
     private int maxIterations = 20;
     // 单次 run 的软超时；仅在每轮开始前检查，不中断正在执行的 Provider/Tool 调用。
@@ -51,6 +56,8 @@ public class AgentRunSpec {
     private boolean concurrentTools = false;
     // 工作空间路径
     private Path workspace;
+    /** Runtime database workspace; tool workspace may be an isolated child worktree. */
+    private Path runtimeWorkspace;
     // 会话密钥，用于标识和隔离不同会话
     private String sessionKey;
     // 上下文窗口令牌数限制

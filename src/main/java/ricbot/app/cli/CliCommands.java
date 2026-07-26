@@ -948,6 +948,7 @@ public final class CliCommands {
 
         sb.append("ricbot config doctor\n");
         sb.append("status: ").append(report.status()).append("\n\n");
+        sb.append("errorCodes: ").append(String.join(",", report.getErrorCodes())).append("\n\n");
         sb.append("effective config\n");
         sb.append("  configPath: ").append(report.getConfigPath()).append("\n");
         sb.append("  workspace: ").append(report.getWorkspace()).append("\n");
@@ -1197,7 +1198,7 @@ public final class CliCommands {
      * 打印版本信息。
      */
     private static void printVersion() {
-        System.out.println("ricbot v0.1.0"); // 打印版本号
+        System.out.println("ricbot v" + ricbot.app.bootstrap.BuildVersion.current());
     }
 
     /**

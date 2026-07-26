@@ -25,6 +25,8 @@ public final class ChangeSetActionAuthorization {
 
     public String requestId() { return request.requestId(); }
     public PendingChangeAction action() { return request.pendingChangeAction(); }
+    public String runId() { return request.binding().runId(); }
+    public String activationId() { return request.binding().activationId(); }
 
     public void require(PendingChangeAction.ActionType type, String changeSetId, String message) {
         PendingChangeAction action = action();

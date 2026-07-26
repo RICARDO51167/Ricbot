@@ -33,21 +33,26 @@ public final class LocalTeamTaskExecutor implements TaskExecutor {
     @Override
     public TaskResult execute(TaskExecutionContext context) {
         var spec = context.task().spec();
-        // Read workers are also isolated when using this legacy worker adapter; this is stricter than shared-read.
-        var isolatedSpec = spec.workspaceMode() == TaskWorkspaceMode.ISOLATED_WORKTREE ? spec
-                : new ricbot.domain.task.TaskSpec(spec.taskId(), spec.parentRunId(), spec.activationId(), spec.planOrder(),
-                    spec.delegationDepth(), spec.role(), spec.goal(), spec.dependsOn(), spec.allowedTools(),
-                    TaskWorkspaceMode.ISOLATED_WORKTREE, spec.failurePolicy(), spec.allowFailedDependencies());
-        TaskWorkspaceLease lease = worktrees.worker(isolatedSpec);
-        WorkspaceSession workspaceSession = sessions.load(lease.workspaceId());
-        TaskWorkerRequest task = new TaskWorkerRequest(spec.taskId(), spec.parentRunId(), spec.role(),
-                dependencyPrompt(spec.goal(), context.dependencyResults()));
-        TaskWorkerResult worker = runner.run(task, workspaceSession, lease.path());
+        boolean sharedRead = spec.workspaceMode() == TaskWorkspaceMode.SHARED_READ;
+        TaskWorkspaceLease lease = sharedRead ? null : worktrees.worker(spec);
+        WorkspaceSession workspaceSession = sharedRead ? null : sessions.load(lease.workspaceId());
+        java.nio.file.Path executionRoot = sharedRead ? context.workspace() : lease.path();
+        TaskWorkerRequest task = new TaskWorkerRequest(spec.taskId(), spec.parentRunId(),
+                context.task().childRunId(), context.task().attempt(), spec.role(),
+                dependencyPrompt(spec.goal(), context.dependencyResults()), spec.workspaceMode(), spec.allowedTools());
+        TaskWorkerResult worker = runner.run(task, workspaceSession, executionRoot);
         TaskStatus status = worker.status() == TaskWorkerStatus.FAILED ? TaskStatus.FAILED : TaskStatus.SUCCEEDED;
         TaskResult result = new TaskResult(2, spec.taskId(), spec.parentRunId(), context.task().childRunId(), context.task().attempt(), status,
-                spec.planOrder(), worker.summary(), Map.of("workspace", lease.path().toString(),
+                spec.planOrder(), worker.summary(), Map.of("workspace", executionRoot.toString(),
                         "workerRunId", worker.childRunId()), "", worker.changedFiles(), worker.debugLines(),
                 worker.errorMessage(), Instant.now());
+        if (sharedRead) {
+            if (!worker.changedFiles().isEmpty()) {
+                return TaskResult.failed(context.task(), new IllegalStateException(
+                        "shared-read worker attempted to change files: " + worker.changedFiles()));
+            }
+            return result;
+        }
         return worktrees.attachPatch(result, lease);
     }
 

@@ -35,9 +35,10 @@ public class AgentTeamWorkerRunner implements TaskWorkerRunner {
             "grep",
             "glob"
     );
+    public static final List<String> READ_ONLY_TOOLS = List.of("list_dir", "read_file", "grep", "glob");
 
     private final Path baseWorkspace;
-    private final GraphRunService runner;
+    private final AgentInvocationRuntime runner;
     private final String model;
     private final int maxIterations;
     private final int maxToolResultChars;
@@ -46,13 +47,13 @@ public class AgentTeamWorkerRunner implements TaskWorkerRunner {
     private final Integer contextBlockLimit;
     private final ProviderCapability providerCapability;
 
-    public AgentTeamWorkerRunner(Path baseWorkspace, GraphRunService runner, String model) {
+    public AgentTeamWorkerRunner(Path baseWorkspace, AgentInvocationRuntime runner, String model) {
         this(baseWorkspace, runner, model, 8, 10_000, "standard", 64_000, null, null);
     }
 
     public AgentTeamWorkerRunner(
             Path baseWorkspace,
-            GraphRunService runner,
+            AgentInvocationRuntime runner,
             String model,
             int maxIterations,
             int maxToolResultChars,
@@ -83,16 +84,19 @@ public class AgentTeamWorkerRunner implements TaskWorkerRunner {
         }
         Path root;
         try {
-            root = safeWorktreeRoot(workspaceSession, workspaceRoot);
+            root = safeWorkspaceRoot(task, workspaceSession, workspaceRoot);
         } catch (Exception e) {
             return TaskWorkerResult.failed(e.getMessage(), 0);
         }
         String sessionKey = "task-worker-" + task.taskId();
         try {
             WorkspaceLifecycleService lifecycle = new WorkspaceLifecycleService(baseWorkspace);
-            WorkspaceLifecycleService.WorkspaceDiff beforeDiff = lifecycle.diff(workspaceSession.id());
+            boolean sharedRead = task.workspaceMode() == ricbot.domain.task.TaskWorkspaceMode.SHARED_READ;
+            WorkspaceLifecycleService.WorkspaceDiff beforeDiff = sharedRead
+                    ? emptyDiff() : lifecycle.diff(workspaceSession.id());
             AgentRunResult result = runner.run(workerSpec(task, workspaceSession, root, sessionKey));
-            WorkspaceLifecycleService.WorkspaceDiff diff = lifecycle.diff(workspaceSession.id());
+            WorkspaceLifecycleService.WorkspaceDiff diff = sharedRead
+                    ? emptyDiff() : lifecycle.diff(workspaceSession.id());
             List<String> changedFiles = diff.changedFiles();
             List<Map<String, Object>> toolEvents = result.getToolEvents() != null ? result.getToolEvents() : List.of();
             List<String> toolCallNames = toolEvents.stream()
@@ -137,8 +141,9 @@ public class AgentTeamWorkerRunner implements TaskWorkerRunner {
         metadata.put("workspaceSessionId", workspaceSession != null ? workspaceSession.id() : "");
         metadata.put("workspaceRoot", root.toString());
         return new AgentRunSpec()
+                .setRunId(task.childRunId())
                 .setInitialMessages(workerMessages(task, root))
-                .setTools(workerTools(root))
+                .setTools(workerTools(root, task.workspaceMode() != ricbot.domain.task.TaskWorkspaceMode.SHARED_READ))
                 .setModel(model)
                 .setMaxIterations(maxIterations)
                 .setMaxToolResultChars(maxToolResultChars)
@@ -147,16 +152,18 @@ public class AgentTeamWorkerRunner implements TaskWorkerRunner {
                 .setMaxIterationsMessage("Team worker reached the tool iteration limit before completing the task.")
                 .setConcurrentTools(false)
                 .setWorkspace(root)
+                .setRuntimeWorkspace(baseWorkspace)
                 .setSessionKey(sessionKey)
                 .setContextWindowTokens(contextWindowTokens)
                 .setContextBlockLimit(contextBlockLimit)
                 .setProviderCapability(providerCapability)
                 .setMetadata(metadata)
-                .setAllowedTools(ALLOWED_TOOLS);
+                .setAllowedTools(workerToolNames(task));
     }
 
     private List<Map<String, Object>> workerMessages(TaskWorkerRequest task, Path root) {
-        String system = """
+        boolean writable = task.workspaceMode() != ricbot.domain.task.TaskWorkspaceMode.SHARED_READ;
+        String system = (writable ? """
                 You are Ricbot Team worker.
                 You run inside a managed git worktree and must use the available file tools to make real file changes when the task requires changes.
                 Do not only output a plan. If you do not call a write tool, the task is not complete.
@@ -167,7 +174,11 @@ public class AgentTeamWorkerRunner implements TaskWorkerRunner {
                 Do not claim a file changed unless a tool changed it.
                 Do not call tools that are not provided or invent tools.
                 Do not modify runtime artifacts such as .git, .ricbot, .workspaces, notes, session.json, target, or logs.
-                """;
+                """ : """
+                You are a read-only Ricbot Team worker sharing the parent repository workspace.
+                Inspect only with list_dir, read_file, grep and glob. Never modify files, run commands, or claim changes.
+                Return concise findings and evidence for the parent run.
+                """);
         String user = "Current task: " + task.goal()
                 + "\nWorkspace root: " + root
                 + "\nComplete real changes in this worktree. If impossible, explain why.";
@@ -177,18 +188,27 @@ public class AgentTeamWorkerRunner implements TaskWorkerRunner {
         );
     }
 
-    private ToolRegistry workerTools(Path root) {
+    private ToolRegistry workerTools(Path root, boolean writable) {
         ToolRegistry registry = new ToolRegistry();
         registry.register(new GuardedTool(new ListDirTool(root, root), root, false));
         registry.register(new GuardedTool(new ReadFileTool(root, root, List.of()), root, false));
-        registry.register(new GuardedTool(new WriteFileTool(root, root), root, true));
-        registry.register(new GuardedTool(new EditFileTool(root, root), root, true));
+        if (writable) {
+            registry.register(new GuardedTool(new WriteFileTool(root, root), root, true));
+            registry.register(new GuardedTool(new EditFileTool(root, root), root, true));
+        }
         registry.register(new GuardedTool(new GrepTool(root, root), root, false));
         registry.register(new GuardedTool(new GlobTool(root, root), root, false));
         return registry;
     }
 
-    private Path safeWorktreeRoot(WorkspaceSession workspaceSession, Path workspaceRoot) {
+    private Path safeWorkspaceRoot(TaskWorkerRequest task, WorkspaceSession workspaceSession, Path workspaceRoot) {
+        if (task.workspaceMode() == ricbot.domain.task.TaskWorkspaceMode.SHARED_READ) {
+            Path root = workspaceRoot != null ? workspaceRoot.toAbsolutePath().normalize() : baseWorkspace;
+            if (!root.equals(baseWorkspace)) {
+                throw new IllegalStateException("shared-read worker must use the base workspace: " + root);
+            }
+            return root;
+        }
         if (workspaceSession == null || workspaceSession.id().isBlank()) {
             throw new IllegalArgumentException("workspaceSession is required");
         }
@@ -204,6 +224,17 @@ public class AgentTeamWorkerRunner implements TaskWorkerRunner {
             throw new IllegalStateException("team worker workspace must stay under .workspaces: " + root);
         }
         return root;
+    }
+
+    private static WorkspaceLifecycleService.WorkspaceDiff emptyDiff() {
+        return new WorkspaceLifecycleService.WorkspaceDiff(null, "", List.of(), "");
+    }
+
+    private static List<String> workerToolNames(TaskWorkerRequest task) {
+        List<String> maximum = task.workspaceMode() == ricbot.domain.task.TaskWorkspaceMode.SHARED_READ
+                ? READ_ONLY_TOOLS : ALLOWED_TOOLS;
+        if (task.allowedTools().isEmpty()) return maximum;
+        return maximum.stream().filter(task.allowedTools()::contains).toList();
     }
 
     private static String clean(String value) {
@@ -252,8 +283,8 @@ public class AgentTeamWorkerRunner implements TaskWorkerRunner {
         out.add("debug:workerSessionKey=" + sessionKey);
         out.add("debug:workerWorkspaceRoot=" + root);
         out.add("debug:workerTaskId=" + task.taskId());
-        out.add("debug:workerWorkspaceSessionId=" + workspaceSession.id());
-        out.add("debug:allowedTools=" + String.join(",", ALLOWED_TOOLS));
+        out.add("debug:workerWorkspaceSessionId=" + (workspaceSession != null ? workspaceSession.id() : "shared-read"));
+        out.add("debug:allowedTools=" + String.join(",", workerToolNames(task)));
         out.add("debug:registeredTools=" + String.join(",", valuesFromExposure(result, "registered_tools")));
         out.add("debug:exposedTools=" + String.join(",", valuesFromExposure(result, "exposed_tools")));
         List<String> missing = valuesFromExposure(result, "missing_allowed_tools");

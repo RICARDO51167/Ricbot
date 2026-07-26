@@ -6,6 +6,7 @@ import ricbot.domain.security.ApprovalService;
 import ricbot.domain.trace.TraceStore;
 import ricbot.infra.telemetry.OpenTelemetryRuntime;
 import ricbot.tool.api.ToolRegistry;
+import ricbot.domain.runtime.AgentRuntime;
 
 /** Pre-assembled runtime components injected into the AgentLoop lifecycle coordinator. */
 public record AgentRuntimeCore(
@@ -19,6 +20,7 @@ public record AgentRuntimeCore(
         ApprovalService approvalService,
         SideEffectApplicationService sideEffectApplicationService,
         ToolRegistry tools,
-        GraphRunService runner
+        AgentRuntime agentRuntime,
+        AgentInvocationRuntime runner
 ) {
 }

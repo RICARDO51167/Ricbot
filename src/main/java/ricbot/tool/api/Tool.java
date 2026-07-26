@@ -30,6 +30,11 @@ public abstract class Tool {
         throw new UnsupportedOperationException("工具 '" + getName() + "' 不支持补偿。");
     }
 
+    /** Must be read-only. Called only when the policy explicitly declares state-probe support. */
+    public ToolStateProbe probe(Map<String, Object> params, ToolExecutionContext context) throws Exception {
+        return ToolStateProbe.inconclusive("tool did not implement a state probe");
+    }
+
     public Map<String, Object> castParams(Map<String, Object> params) {
         return params != null ? params : new LinkedHashMap<>();
     }

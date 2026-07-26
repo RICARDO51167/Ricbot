@@ -15,6 +15,8 @@ public final class GraphRunCoordinator implements AutoCloseable {
     private final DurableParentRunWaker waker;
     private final Supplier<Map<String, Object>> inputSupplier;
     private final java.util.concurrent.atomic.AtomicBoolean deliveryAvailable = new java.util.concurrent.atomic.AtomicBoolean();
+    private final java.util.concurrent.locks.ReentrantLock deliveryLock = new java.util.concurrent.locks.ReentrantLock();
+    private final java.util.concurrent.locks.Condition deliveryArrived = deliveryLock.newCondition();
 
     public GraphRunCoordinator(AgentGraphRuntime runtime, DurableParentRunWaker waker,
                                Supplier<Map<String, Object>> inputSupplier) {
@@ -23,7 +25,12 @@ public final class GraphRunCoordinator implements AutoCloseable {
         this.inputSupplier = inputSupplier != null ? inputSupplier : Map::of;
         // Delivery callbacks may run while the task scheduler holds its own lock. They only
         // signal availability; the coordinator's driver performs the graph mutation.
-        waker.register(runtime.state().runId(), ignored -> deliveryAvailable.set(true));
+        waker.register(runtime.state().runId(), ignored -> {
+            deliveryAvailable.set(true);
+            deliveryLock.lock();
+            try { deliveryArrived.signalAll(); }
+            finally { deliveryLock.unlock(); }
+        });
     }
 
     /** Drives synchronously until terminal or an external wait. */
@@ -73,8 +80,18 @@ public final class GraphRunCoordinator implements AutoCloseable {
             if (!current.waits().isEmpty() && current.waits().stream().anyMatch(wait -> !"tasks".equals(wait.type()))) {
                 return current;
             }
-            try { Thread.sleep(25); }
-            catch (InterruptedException e) { Thread.currentThread().interrupt(); return runtime.state(); }
+            deliveryLock.lock();
+            try {
+                if (!deliveryAvailable.get()) {
+                    long remaining = deadline - System.nanoTime();
+                    if (remaining > 0) deliveryArrived.awaitNanos(remaining);
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return runtime.state();
+            } finally {
+                deliveryLock.unlock();
+            }
         }
         return runtime.state();
     }

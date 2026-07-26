@@ -12,6 +12,7 @@ public final class InMemoryGraphRuntimeStore implements GraphRuntimeStore {
     private final Map<String, GraphPendingWrite> writes = new LinkedHashMap<>();
     private final Map<String, List<GraphRuntimeEvent>> journals = new LinkedHashMap<>();
     private final Map<String, GraphRuntimeEvent> deduplicated = new LinkedHashMap<>();
+    private final Map<String, Instant> retryDue = new LinkedHashMap<>();
 
     @Override
     public synchronized Optional<GraphExecutionState> loadCheckpoint(String runId) {
@@ -25,6 +26,35 @@ public final class InMemoryGraphRuntimeStore implements GraphRuntimeStore {
     public synchronized List<GraphPendingWrite> pending(String runId, long superstep) {
         return writes.values().stream().filter(write -> write.runId().equals(runId) && write.superstep() == superstep)
                 .toList();
+    }
+    @Override
+    public synchronized void scheduleRetries(GraphExecutionState state, List<GraphRetrySchedule> retries) {
+        checkpoints.put(state.runId(), state);
+        Instant due = retries.stream().map(GraphRetrySchedule::availableAt).max(Instant::compareTo)
+                .orElseThrow(() -> new IllegalArgumentException("retries are required"));
+        retryDue.put(state.runId(), due);
+        append(state.runId(), state.superstep(), GraphRuntimeEventType.NODE_RETRY_SCHEDULED,
+                Map.of("attempts", retries.stream().map(retry -> retry.activation().attempt()).toList(),
+                        "availableAt", due.toString()), "retry:" + state.transition());
+    }
+    @Override public synchronized Optional<Instant> nextRetryAt(String runId) {
+        return Optional.ofNullable(retryDue.get(runId));
+    }
+    @Override
+    public synchronized GraphExecutionState activateDueRetries(String runId, Instant now) {
+        GraphExecutionState current = checkpoints.get(runId);
+        if (current == null) throw new IllegalArgumentException("run not found: " + runId);
+        Instant due = retryDue.get(runId);
+        if (current.status() != GraphExecutionStatus.RETRY_WAIT || due == null || due.isAfter(now)) return current;
+        GraphExecutionState ready = new GraphExecutionState(GraphExecutionState.SCHEMA_VERSION,
+                current.graphId(), current.runId(), current.superstep(), current.activeNodes(), current.channels(),
+                current.waits(), current.failures(), GraphExecutionStatus.READY, current.lastNodeId(),
+                current.transition() + 1, now);
+        checkpoints.put(runId, ready);
+        retryDue.remove(runId);
+        append(runId, ready.superstep(), GraphRuntimeEventType.NODE_RETRY_DUE,
+                Map.of("availableAt", due.toString()), "retry-due:" + ready.transition());
+        return ready;
     }
     @Override
     public synchronized void commitCheckpoint(GraphExecutionState state) { checkpoints.put(state.runId(), state); }

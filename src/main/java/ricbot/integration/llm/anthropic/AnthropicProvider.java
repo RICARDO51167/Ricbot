@@ -2,6 +2,7 @@ package ricbot.integration.llm.anthropic;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import ricbot.integration.llm.api.LLMProvider;
+import ricbot.integration.llm.api.LLMFailureException;
 import ricbot.integration.llm.api.LLMResponse;
 import ricbot.integration.llm.api.ToolCallRequest;
 
@@ -538,13 +539,14 @@ public class AnthropicProvider extends LLMProvider {
         // 如果状态码不是 200
         if (response.statusCode() != 200) {
             // 返回错误响应
-            return new LLMResponse()
+            return LLMFailureException.requireSuccess(new LLMResponse()
                     .setFinishReason("error")
-                    .setContent("Anthropic API 错误: " + response.statusCode() + " " + response.body());
+                    .setErrorStatusCode(response.statusCode())
+                    .setContent("Anthropic API 错误: " + response.statusCode() + " " + response.body()));
         }
 
         // 解析并返回 Anthropic 响应
-        return parseAnthropicResponse(response.body());
+        return LLMFailureException.requireSuccess(parseAnthropicResponse(response.body()));
     }
 
     /**

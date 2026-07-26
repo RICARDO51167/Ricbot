@@ -3,6 +3,7 @@ package ricbot.domain.eval;
 import ricbot.integration.llm.api.LLMProvider;
 import ricbot.integration.llm.api.LLMResponse;
 import ricbot.integration.llm.api.ToolCallRequest;
+import ricbot.integration.llm.api.LLMFailureException;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -64,10 +65,7 @@ public class EvalRecordingProvider extends LLMProvider {
             return response;
         } catch (Exception e) {
             event.put("status", "error");
-            event.put("error", Map.of(
-                    "class", e.getClass().getName(),
-                    "message", e.getMessage() != null ? e.getMessage() : ""
-            ));
+            event.put("error", recordedError(e));
             throw e;
         } finally {
             Instant ended = Instant.now();
@@ -120,10 +118,7 @@ public class EvalRecordingProvider extends LLMProvider {
             return response;
         } catch (Exception e) {
             event.put("status", "error");
-            event.put("error", Map.of(
-                    "class", e.getClass().getName(),
-                    "message", e.getMessage() != null ? e.getMessage() : ""
-            ));
+            event.put("error", recordedError(e));
             throw e;
         } finally {
             Instant ended = Instant.now();
@@ -151,6 +146,18 @@ public class EvalRecordingProvider extends LLMProvider {
 
     public boolean isRecordingSmokeProvider() {
         return delegate instanceof EvalSmokeProvider;
+    }
+
+    private static Map<String, Object> recordedError(Exception failure) {
+        Map<String, Object> error = new LinkedHashMap<>();
+        error.put("class", failure.getClass().getName());
+        error.put("message", failure.getMessage() != null ? failure.getMessage() : "");
+        if (failure instanceof LLMFailureException typed) {
+            error.put("kind", typed.kind().name());
+            error.put("status_code", typed.statusCode());
+            error.put("retry_after_seconds", typed.retryAfterSeconds());
+        }
+        return error;
     }
 
     private static Map<String, Object> responseToMap(LLMResponse response) {

@@ -7,6 +7,7 @@ import ricbot.domain.trace.TraceStore;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 /** Emits immutable trace evidence for every idempotency-ledger transition. */
 public final class AuditedSideEffectStore implements SideEffectStore {
@@ -32,8 +33,14 @@ public final class AuditedSideEffectStore implements SideEffectStore {
     }
 
     @Override
-    public SideEffectRecord save(SideEffectRecord record) {
-        SideEffectRecord saved = delegate.save(record);
+    public SideEffectRecord transition(SideEffectRecord record, long expectedVersion,
+                                       Set<SideEffectStatus> allowedSources) {
+        SideEffectRecord saved = delegate.transition(record, expectedVersion, allowedSources);
+        traceTransition(saved);
+        return saved;
+    }
+
+    private void traceTransition(SideEffectRecord saved) {
         TraceEventType type = switch (saved.status()) {
             case RESERVED -> TraceEventType.SIDE_EFFECT_RESERVED;
             case EXECUTING -> TraceEventType.SIDE_EFFECT_RESERVED;
@@ -45,7 +52,6 @@ public final class AuditedSideEffectStore implements SideEffectStore {
             case COMPENSATED -> TraceEventType.SIDE_EFFECT_COMPENSATED;
         };
         trace(saved, type, "side effect " + saved.status().name().toLowerCase(java.util.Locale.ROOT));
-        return saved;
     }
 
     private void trace(SideEffectRecord record, TraceEventType type, String message) {

@@ -92,7 +92,7 @@ public final class ConfigDoctorService {
             }
             String message = "环境变量未设置：" + ref.name() + "（引用位置：" + ref.path() + "）";
             if (ref.path().contains(".api_key") || ref.path().contains(".apiKey")) {
-                report.addError(message);
+                report.addError("MISSING_OPTIONAL_CREDENTIAL", message);
                 report.addSuggestedFix("设置 " + ref.name() + "，或在 provider 配置中填入可用 api_key。");
             } else {
                 report.addWarning(message);
@@ -111,7 +111,8 @@ public final class ConfigDoctorService {
             ConfigDoctorReport report
     ) {
         if (spec == null) {
-            report.addError("无法从模型推断出已注册 Provider：model=" + model + ", provider=" + providerName);
+            report.addError("UNKNOWN_PROVIDER",
+                    "无法从模型推断出已注册 Provider：model=" + model + ", provider=" + providerName);
             report.addSuggestedFix("使用带 provider 前缀的模型名，或补充 ProviderRegistry 中的 provider spec。");
             return;
         }
@@ -122,7 +123,8 @@ public final class ConfigDoctorService {
         }
 
         if (requiresApiKey(spec) && (isBlank(apiKey) || looksLikePlaceholder(apiKey))) {
-            report.addError("Provider '" + providerName + "' 缺少已解析的 API Key。");
+            report.addError("MISSING_OPTIONAL_CREDENTIAL",
+                    "Provider '" + providerName + "' 缺少已解析的 API Key。");
             String envKey = spec.getEnvKey();
             report.addSuggestedFix(!isBlank(envKey)
                     ? "写入 providers." + providerName + ".api_key，或将其配置为 ${" + envKey + "} 并设置该环境变量。"

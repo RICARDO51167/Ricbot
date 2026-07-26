@@ -34,7 +34,7 @@ public final class WorkspaceVerificationService {
     public WorkspaceVerificationService(Path trustedWorkspace, ExecutionBackend backend) {
         this.trustedWorkspace = trustedWorkspace.toAbsolutePath().normalize();
         this.backend = backend != null ? backend : new LocalExecutionBackend();
-        this.runtime = new ricbot.infra.runtime.SqliteRuntimeStore(this.trustedWorkspace);
+        this.runtime = ricbot.app.bootstrap.RuntimeStoreRegistry.shared(this.trustedWorkspace);
     }
 
     public VerificationReport verify(String runId, Path integrationWorkspace, TeamPlan plan,

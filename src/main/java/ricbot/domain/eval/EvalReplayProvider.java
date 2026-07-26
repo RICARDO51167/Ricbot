@@ -1,8 +1,12 @@
 package ricbot.domain.eval;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
 import ricbot.integration.llm.api.LLMProvider;
 import ricbot.integration.llm.api.LLMResponse;
 import ricbot.integration.llm.api.ToolCallRequest;
+import ricbot.integration.llm.api.LLMFailureException;
+import ricbot.integration.llm.api.LLMFailureKind;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -12,6 +16,8 @@ import java.util.Objects;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public class EvalReplayProvider extends LLMProvider {
+    private static final ObjectMapper CANONICAL_JSON = new ObjectMapper()
+            .configure(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS, true);
     private final List<Map<String, Object>> modelCalls;
     private final AtomicInteger index = new AtomicInteger();
     private final List<String> requestMismatches = new ArrayList<>();
@@ -31,7 +37,7 @@ public class EvalReplayProvider extends LLMProvider {
             Double temperature,
             String reasoningEffort,
             Object toolChoice
-    ) {
+    ) throws Exception {
         int current = index.getAndIncrement();
         if (current >= modelCalls.size()) {
             throw new IllegalStateException("replay_exhausted: no recorded model response for call " + (current + 1));
@@ -42,6 +48,15 @@ public class EvalReplayProvider extends LLMProvider {
         String status = String.valueOf(call.getOrDefault("status", "ok"));
         if ("error".equals(status)) {
             Object rawError = call.get("error");
+            if (rawError instanceof Map<?, ?> error && error.get("kind") != null) {
+                LLMFailureKind kind;
+                try { kind = LLMFailureKind.valueOf(String.valueOf(error.get("kind"))); }
+                catch (IllegalArgumentException invalid) {
+                    throw new IllegalStateException("replay_artifact_invalid: unknown model failure kind", invalid);
+                }
+                throw new LLMFailureException(kind, stringOrDefault(error.get("message"), "recorded provider error"),
+                        integerOrNull(error.get("status_code")), doubleOrNull(error.get("retry_after_seconds")), null);
+            }
             throw new IllegalStateException("replay_recorded_error: " + String.valueOf(rawError));
         }
 
@@ -177,7 +192,17 @@ public class EvalReplayProvider extends LLMProvider {
         if (text == null || text.isBlank()) {
             return text;
         }
-        return text.replaceAll("启用=(true|false)", "启用=<bool>");
+        String normalized = text.replaceAll("启用=(true|false)", "启用=<bool>");
+        String trimmed = normalized.trim();
+        if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+            try {
+                Object parsed = CANONICAL_JSON.readValue(trimmed, Object.class);
+                return CANONICAL_JSON.writeValueAsString(parsed);
+            } catch (Exception ignored) {
+                // Plain tool text that only resembles JSON remains comparable as text.
+            }
+        }
+        return normalized;
     }
 
     private List<String> toolNames(Object raw) {

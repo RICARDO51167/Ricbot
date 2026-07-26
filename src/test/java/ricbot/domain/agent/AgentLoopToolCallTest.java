@@ -1,6 +1,7 @@
 package ricbot.domain.agent;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.io.TempDir;
 import ricbot.domain.agent.AgentLoop;
 import ricbot.domain.message.MessageBus;
@@ -19,6 +20,11 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.jupiter.api.Assertions.*;
 
 public class AgentLoopToolCallTest {
+
+    @AfterEach
+    void closeRuntimeResources() {
+        ricbot.app.bootstrap.RuntimeStoreRegistry.closeAll();
+    }
 
     @Test
     void toolCall_isExecuted_andToolFailureIsRecorded(@TempDir Path workspace) throws Exception {

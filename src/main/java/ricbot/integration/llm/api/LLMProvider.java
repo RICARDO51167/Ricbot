@@ -6,7 +6,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
-import java.util.concurrent.Callable;
 
 /**
  * 对应 Python: LLMProvider
@@ -154,7 +153,7 @@ public abstract class LLMProvider {
             List<Map<String, Object>> tools,
             String model
     ) throws Exception {
-        return runWithRetry(() -> chat(messages, tools, model, null, null, null, null));
+        return LLMFailureException.requireSuccess(chat(messages, tools, model, null, null, null, null));
     }
 
     /**
@@ -545,41 +544,6 @@ public abstract class LLMProvider {
      *
      * 对应 Python 那种 provider._run_with_retry(...) 的核心思想。
      */
-    public LLMResponse runWithRetry(Callable<LLMResponse> call) throws Exception {
-        LLMResponse last = null;
-
-        // 最多重试 CHAT_RETRY_DELAYS.size() + 1 次
-        for (int i = 0; i <= CHAT_RETRY_DELAYS.size(); i++) {
-            // 执行调用
-            last = call.call();
-            if (last == null) {
-                return null;
-            }
-
-            // 如果不是错误状态或不是瞬态错误，直接返回
-            if (!"error".equals(last.getFinishReason()) || !isTransientResponse(last)) {
-                return last;
-            }
-
-            // 如果还有重试机会
-            if (i < CHAT_RETRY_DELAYS.size()) {
-                // 计算延迟时间：优先使用响应中的 Retry-After，否则使用预设延迟
-                double delay = last.getRetryAfter() != null ? last.getRetryAfter() : CHAT_RETRY_DELAYS.get(i);
-                try {
-                    // 等待指定时间
-                    Thread.sleep((long) (delay * 1000));
-                } catch (InterruptedException e) {
-                    // 如果线程被中断，恢复中断状态并返回当前结果
-                    Thread.currentThread().interrupt();
-                    return last;
-                }
-            }
-        }
-
-        // 返回最后一次尝试的结果
-        return last;
-    }
-
     /**
      * 流式增量回调接口
      */

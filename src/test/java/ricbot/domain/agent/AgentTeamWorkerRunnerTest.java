@@ -28,13 +28,11 @@ class AgentTeamWorkerRunnerTest {
         var worktree = new GitWorktreeWorkspaceBackend(workspace, sessions)
                 .createSession(workspace, "task", "worker-test");
         Path root = Path.of(worktree.workspacePath());
-        GraphRunService fake = new GraphRunService(provider()) {
-            @Override public AgentRunResult run(AgentRunSpec spec) {
+        AgentInvocationRuntime fake = spec -> {
                 assertEquals(root, spec.getWorkspace());
                 assertFalse(spec.getTools().toolNames().contains("exec"));
                 spec.getTools().execute("write_file", Map.of("path", "README.md", "content", "base\nchanged\n"));
                 return new AgentRunResult().setFinalContent("done").setRunId("child-run");
-            }
         };
         var request = new TaskWorkerRequest("task-1", "parent-1", TaskRole.DEVELOPER, "update readme");
         var result = new AgentTeamWorkerRunner(workspace, fake, "model").run(request, worktree, root);

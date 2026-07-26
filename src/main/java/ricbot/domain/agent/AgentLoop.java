@@ -20,6 +20,7 @@ import ricbot.infra.telemetry.OpenTelemetryRuntime;
 import ricbot.integration.llm.api.LLMProvider;
 import ricbot.domain.session.Session;
 import ricbot.domain.session.SessionManager;
+import ricbot.domain.runtime.AgentRuntime;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -31,7 +32,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /**
  * Agent 主循环：ricbot 的核心调度引擎。
  */
-public class AgentLoop {
+public class AgentLoop implements AutoCloseable {
 
     /** 日志记录器，用于记录 AgentLoop 类的运行日志 */
     private static final Logger log = LoggerFactory.getLogger(AgentLoop.class);
@@ -89,7 +90,8 @@ public class AgentLoop {
     /** 工具注册表，管理所有可用工具 */
     private final ToolRegistry tools;
     /** Agent 运行器，负责执行具体的 LLM 交互循环 */
-    private final GraphRunService runner;
+    private final AgentInvocationRuntime runner;
+    private final AgentRuntime agentRuntime;
     /** Hook 工厂，负责组合请求级 Hook */
     private final AgentHookFactory hookFactory;
     /** 会话准备服务 */
@@ -228,6 +230,7 @@ public class AgentLoop {
         this.sideEffectApplicationService = core.sideEffectApplicationService();
         this.tools = core.tools();
         this.runner = core.runner();
+        this.agentRuntime = core.agentRuntime();
         ToolContextApplier toolContextApplier = new ToolContextInjector(this.tools);
         this.hookFactory = new AgentHookFactory(this.bus, toolContextApplier);
         this.sessionPreparationService = new SessionPreparationService(this.sessionManager, this.contextCompaction);
@@ -282,7 +285,8 @@ public class AgentLoop {
                         this.contextBlockLimit,
                         this.providerCapability
                 ),
-                this.provider
+                this.provider,
+                core.agentRuntime()
         );
 
         // 初始化并发控制
@@ -299,6 +303,9 @@ public class AgentLoop {
                     this.execConfig, this.approvalService);
         }
         registerCommandRoutes();
+        if (this.agentRuntime instanceof ricbot.application.runtime.LocalAgentRuntime localRuntime) {
+            localRuntime.recoverPending();
+        }
     }
 
     public void setProviderCapability(ProviderCapability providerCapability) {
@@ -411,15 +418,20 @@ public class AgentLoop {
     }
 
     public void stop() {
+        if (!backgroundStarted.compareAndSet(true, false) && executor.isShutdown()) return;
         this.running = false;
         for (String sessionKey : activeTasks.keySet()) {
             markSessionInterrupted(sessionKey, "shutdown");
         }
-        telemetryRuntime.close();
         executor.shutdownNow();
         scheduler.shutdownNow();
+        agentRuntime.close();
+        telemetryRuntime.close();
+        ricbot.app.bootstrap.RuntimeStoreRegistry.release(workspace);
         log.info("Agent 循环正在停止");
     }
+
+    @Override public void close() { stop(); }
 
     public SessionManager getSessions() { return sessionManager; }
     public ToolRegistry getTools() { return tools; }
