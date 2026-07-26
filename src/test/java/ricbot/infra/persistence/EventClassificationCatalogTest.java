@@ -1,50 +1,18 @@
 package ricbot.infra.persistence;
 
 import org.junit.jupiter.api.Test;
-import ricbot.domain.agent.RunEventType;
-import ricbot.domain.team.StepAuditEventType;
 import ricbot.domain.trace.TraceEventType;
-
 import java.util.Arrays;
-
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 class EventClassificationCatalogTest {
     @Test
-    void classifiesEveryTypedEventExactlyOnce() {
-        assertCoverage(EventClassificationCatalog.RUN, RunEventType.values());
+    void classifiesRetainedTypedProjections() {
         assertCoverage(EventClassificationCatalog.TRACE, TraceEventType.values());
-        assertCoverage(EventClassificationCatalog.STEP_AUDIT, StepAuditEventType.values());
     }
-
-    @Test
-    void keepsEvidenceImmutable() {
-        assertEquals(EventClassificationCatalog.Classification.IMMUTABLE_ARTIFACT,
-                EventClassificationCatalog.classification(EventClassificationCatalog.EVIDENCE, "DiffEvidence"));
-        assertEquals(EventClassificationCatalog.Classification.IMMUTABLE_ARTIFACT,
-                EventClassificationCatalog.classification(EventClassificationCatalog.EVIDENCE, "ExecutedTestEvidence"));
-        assertEquals(EventClassificationCatalog.Classification.IMMUTABLE_ARTIFACT,
-                EventClassificationCatalog.classification(EventClassificationCatalog.EVIDENCE, "ApprovalEvidence"));
-        assertEquals(EventClassificationCatalog.Classification.IMMUTABLE_ARTIFACT,
-                EventClassificationCatalog.classification(EventClassificationCatalog.EVIDENCE, "VerificationEvidence"));
-    }
-
-    @Test
-    void stepAuditOnlyPersistsClassifiedDurableOutcomes() {
-        Arrays.stream(StepAuditEventType.values()).forEach(type -> assertEquals(
-                EventClassificationCatalog.classification(EventClassificationCatalog.STEP_AUDIT, type.name())
-                        == EventClassificationCatalog.Classification.DURABLE_FACT,
-                type.durableOutcome(),
-                type.name()
-        ));
-    }
-
     private static void assertCoverage(String namespace, Enum<?>[] values) {
-        long count = EventClassificationCatalog.entries().keySet().stream()
-                .filter(key -> key.startsWith(namespace + ":"))
-                .count();
-        assertEquals(values.length, count);
-        Arrays.stream(values).forEach(value ->
-                EventClassificationCatalog.classification(namespace, value.name()));
+        assertEquals(values.length, EventClassificationCatalog.entries().keySet().stream()
+                .filter(key -> key.startsWith(namespace + ":")).count());
+        Arrays.stream(values).forEach(value -> EventClassificationCatalog.classification(namespace, value.name()));
     }
 }

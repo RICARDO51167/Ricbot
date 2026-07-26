@@ -1,0 +1,16 @@
+package ricbot.domain.agent.graph;
+
+public enum GraphRuntimeEventType {
+    RUN_STARTED,
+    SUPERSTEP_STARTED,
+    NODE_WRITE_SAVED,
+    NODE_RETRY_SCHEDULED,
+    SUPERSTEP_COMMITTED,
+    EXTERNAL_SIGNAL_RECEIVED,
+    RUN_PAUSED,
+    RUN_COMPLETED,
+    RUN_FAILED,
+    RUN_CANCELLED,
+    PARENT_WAKE_DELIVERED,
+    PATCH_APPLIED
+}

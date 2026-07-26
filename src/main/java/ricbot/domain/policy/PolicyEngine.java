@@ -7,7 +7,7 @@ import org.slf4j.LoggerFactory;
 import ricbot.domain.security.CommandRiskAnalyzer;
 import ricbot.domain.security.CommandRiskLevel;
 import ricbot.domain.security.RiskAssessment;
-import ricbot.domain.team.TeamRole;
+import ricbot.domain.task.TaskRole;
 import ricbot.domain.workspace.WorkspaceSession;
 
 import java.nio.charset.StandardCharsets;
@@ -37,20 +37,20 @@ public class PolicyEngine {
         this.riskAnalyzer = new CommandRiskAnalyzer(this.workspace);
     }
 
-    public PolicyDecision evaluate(TeamRole role, String toolName, Map<String, Object> args, WorkspaceSession workspaceSession) {
+    public PolicyDecision evaluate(TaskRole role, String toolName, Map<String, Object> args, WorkspaceSession workspaceSession) {
         String tool = normalizeTool(toolName);
         RiskAssessment risk = riskAnalyzer.analyzeTool(tool, pathFromArgs(args));
         return decide(role, tool, risk, "tool policy evaluated");
     }
 
-    public PolicyDecision evaluateCommand(TeamRole role, String command, WorkspaceSession workspaceSession) {
+    public PolicyDecision evaluateCommand(TaskRole role, String command, WorkspaceSession workspaceSession) {
         String workingDir = workspaceSession != null && !workspaceSession.workspacePath().isBlank() ? workspaceSession.workspacePath() : workspace.toString();
         RiskAssessment risk = riskAnalyzer.analyzeExec(command, workingDir);
         String tool = isTestCommand(command) ? "exec test" : "exec";
         return decide(role, tool, risk, "command policy evaluated");
     }
 
-    public PolicyDecision evaluatePath(TeamRole role, String path, WorkspaceSession workspaceSession) {
+    public PolicyDecision evaluatePath(TaskRole role, String path, WorkspaceSession workspaceSession) {
         RiskAssessment risk = riskAnalyzer.analyzeTool("read_file", path);
         return decide(role, "read_file", risk, "path policy evaluated");
     }
@@ -59,8 +59,8 @@ public class PolicyEngine {
         return policy;
     }
 
-    private PolicyDecision decide(TeamRole role, String tool, RiskAssessment risk, String reason) {
-        TeamRole safeRole = role != null ? role : TeamRole.LEADER;
+    private PolicyDecision decide(TaskRole role, String tool, RiskAssessment risk, String reason) {
+        TaskRole safeRole = role != null ? role : TaskRole.LEADER;
         List<String> reasons = new ArrayList<>();
         List<String> matched = new ArrayList<>();
         reasons.add(reason);
@@ -85,7 +85,7 @@ public class PolicyEngine {
             return decision(PolicyDecisionType.DENY, safeRole, tool, riskLevel(risk), reasons, matched);
         }
         if (risk != null && (risk.riskLevel() == CommandRiskLevel.HIGH || risk.riskLevel() == CommandRiskLevel.MEDIUM)) {
-            if (safeRole == TeamRole.DEVELOPER || matches(rolePolicy.approval(), tool)) {
+            if (safeRole == TaskRole.DEVELOPER || matches(rolePolicy.approval(), tool)) {
                 matched.add("risk:approval");
                 return decision(PolicyDecisionType.REQUIRE_APPROVAL, safeRole, tool, risk.riskLevel(), reasons, matched);
             }
@@ -105,7 +105,7 @@ public class PolicyEngine {
         return decision(PolicyDecisionType.DENY, safeRole, tool, riskLevel(risk), reasons, matched);
     }
 
-    private PolicyDecision decision(PolicyDecisionType type, TeamRole role, String tool, CommandRiskLevel risk, List<String> reasons, List<String> matched) {
+    private PolicyDecision decision(PolicyDecisionType type, TaskRole role, String tool, CommandRiskLevel risk, List<String> reasons, List<String> matched) {
         String action = switch (type) {
             case ALLOW -> "continue";
             case REQUIRE_APPROVAL -> "request approval before execution";
@@ -176,11 +176,11 @@ public class PolicyEngine {
         }
     }
 
-    private static TeamRole parseRole(Object raw) {
+    private static TaskRole parseRole(Object raw) {
         try {
-            return raw != null ? TeamRole.valueOf(String.valueOf(raw).toUpperCase(java.util.Locale.ROOT)) : TeamRole.LEADER;
+            return raw != null ? TaskRole.valueOf(String.valueOf(raw).toUpperCase(java.util.Locale.ROOT)) : TaskRole.LEADER;
         } catch (Exception e) {
-            return TeamRole.LEADER;
+            return TaskRole.LEADER;
         }
     }
 

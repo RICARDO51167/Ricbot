@@ -14,30 +14,43 @@ public record ApprovalRequest(
         ApprovalStatus status,
         PendingToolCall pendingToolCall,
         PendingChangeAction pendingChangeAction,
-        boolean consumed
+        boolean consumed,
+        ApprovalBinding binding
 ) {
     public enum ApprovalStatus {
         PENDING,
         APPROVED,
+        CLAIMED,
+        CONSUMED,
         REJECTED
     }
 
+    public ApprovalRequest {
+        binding = binding != null ? binding : ApprovalBinding.unbound();
+    }
+
     public ApprovalRequest withStatus(ApprovalStatus nextStatus) {
-        return new ApprovalRequest(requestId, riskAssessment, createdAt, expiresAt, nextStatus, pendingToolCall, pendingChangeAction, consumed);
+        return new ApprovalRequest(requestId, riskAssessment, createdAt, expiresAt, nextStatus, pendingToolCall, pendingChangeAction, consumed, binding);
     }
 
     public ApprovalRequest withPendingToolCall(PendingToolCall nextPendingToolCall) {
-        return new ApprovalRequest(requestId, riskAssessment, createdAt, expiresAt, status, nextPendingToolCall, pendingChangeAction, consumed);
+        return new ApprovalRequest(requestId, riskAssessment, createdAt, expiresAt, status, nextPendingToolCall, pendingChangeAction, consumed, binding);
     }
 
     public ApprovalRequest withPendingChangeAction(PendingChangeAction nextPendingChangeAction) {
-        return new ApprovalRequest(requestId, riskAssessment, createdAt, expiresAt, status, pendingToolCall, nextPendingChangeAction, consumed);
+        return new ApprovalRequest(requestId, riskAssessment, createdAt, expiresAt, status, pendingToolCall, nextPendingChangeAction, consumed, binding);
+    }
+
+    public ApprovalRequest withBinding(ApprovalBinding nextBinding) {
+        return new ApprovalRequest(requestId, riskAssessment, createdAt, expiresAt, status, pendingToolCall,
+                pendingChangeAction, consumed, nextBinding);
     }
 
     public ApprovalRequest markConsumed() {
         PendingToolCall consumedCall = pendingToolCall != null ? pendingToolCall.markConsumed() : null;
         PendingChangeAction consumedAction = pendingChangeAction != null ? pendingChangeAction.markConsumed() : null;
-        return new ApprovalRequest(requestId, riskAssessment, createdAt, expiresAt, status, consumedCall, consumedAction, true);
+        return new ApprovalRequest(requestId, riskAssessment, createdAt, expiresAt, ApprovalStatus.CONSUMED,
+                consumedCall, consumedAction, true, binding);
     }
 
     public boolean isExpired(Instant now) {
@@ -59,6 +72,7 @@ public record ApprovalRequest(
         out.put("pendingToolCall", pendingToolCall != null ? pendingToolCall.toMap() : null);
         out.put("pendingChangeAction", pendingChangeAction != null ? pendingChangeAction.toMap() : null);
         out.put("consumed", consumed);
+        out.put("binding", binding);
         return out;
     }
 
@@ -70,6 +84,7 @@ public record ApprovalRequest(
     public static ApprovalRequest create(String requestId, RiskAssessment riskAssessment, Instant createdAt, Instant expiresAt) {
         Instant created = createdAt != null ? createdAt : Instant.now();
         Instant expires = expiresAt != null ? expiresAt : created.plus(java.time.Duration.ofMinutes(30));
-        return new ApprovalRequest(requestId, riskAssessment, created.toString(), expires.toString(), ApprovalStatus.PENDING, null, null, false);
+        return new ApprovalRequest(requestId, riskAssessment, created.toString(), expires.toString(), ApprovalStatus.PENDING, null, null, false,
+                ApprovalBinding.unbound());
     }
 }

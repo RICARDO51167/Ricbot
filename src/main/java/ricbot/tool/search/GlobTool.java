@@ -18,6 +18,9 @@ import java.util.List;
  * 3. 受 allowedDir 限制
  */
 public class GlobTool extends Tool {
+    @Override public ricbot.tool.api.ToolEffectPolicy effectPolicy() {
+        return ricbot.tool.api.ToolEffectPolicy.readOnly(java.time.Duration.ofSeconds(30));
+    }
 
     // 工作空间根路径
     private final Path workspace;
@@ -51,15 +54,6 @@ public class GlobTool extends Tool {
     @Override
     public String getDescription() {
         return "按 glob 模式查找文件，例如 '**/*.java' 或 'src/**/*.md'。";
-    }
-
-    /**
-     * 判断该工具是否为只读操作
-     * @return true，表示只读
-     */
-    @Override
-    public boolean isReadOnly() {
-        return true;
     }
 
     /**

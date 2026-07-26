@@ -8,6 +8,7 @@ import ricbot.domain.security.RiskAssessment;
 import ricbot.tool.api.Tool;
 import ricbot.tool.api.Tool.ToolExecutionContext;
 import ricbot.tool.api.ToolParam;
+import ricbot.tool.api.ToolRiskDecision;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -19,6 +20,11 @@ import java.util.Map;
  * 文件编辑工具类
  */
 public class EditFileTool extends Tool {
+    @Override public ricbot.tool.api.ToolEffectPolicy effectPolicy() {
+        return ricbot.tool.api.ToolEffectPolicy.atMostOnce(java.time.Duration.ofMinutes(2),
+                ricbot.tool.api.ToolEffectPolicy.Concurrency.SERIAL_PER_RUN,
+                ricbot.tool.api.ToolEffectPolicy.Approval.RISK_BASED);
+    }
 
     private final Path workspace;
 
@@ -130,6 +136,19 @@ public class EditFileTool extends Tool {
         String newText = params != null ? (String) params.get("new_text") : null;
         Boolean replaceAll = params != null ? (Boolean) params.get("replace_all") : null;
         return execute(path, oldText, newText, replaceAll, context != null && context.approved());
+    }
+
+    @Override
+    public ToolRiskDecision assessRisk(Map<String, Object> params) {
+        if (riskAnalyzer == null) return ToolRiskDecision.allow();
+        try {
+            String path = params != null ? String.valueOf(params.get("path")) : "";
+            Path target = FileToolSupport.resolvePath(workspace, path);
+            FileToolSupport.ensureAllowed(target, allowedDir, List.of());
+            return ToolRiskDecision.from(riskAnalyzer.analyzeTool(getName(), target.toString()));
+        } catch (Exception e) {
+            return new ToolRiskDecision(ToolRiskDecision.Decision.DENY, null, e.getMessage());
+        }
     }
 
     private String riskGate(Path target, String path, String oldText, String newText, Boolean replaceAll) {

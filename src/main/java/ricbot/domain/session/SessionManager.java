@@ -36,12 +36,18 @@ public class SessionManager {
      * @param workspace 工作空间路径
      */
     public SessionManager(Path workspace) {
+        this(workspace, true);
+    }
+
+    protected SessionManager(Path workspace, boolean initializeFileStore) {
         // 规范化工作空间路径
         this.workspace = workspace.toAbsolutePath().normalize();
         // 确保会话目录存在并初始化
-        this.sessionsDir = HelperUtils.ensureDir(this.workspace.resolve("sessions"));
+        this.sessionsDir = initializeFileStore ? HelperUtils.ensureDir(this.workspace.resolve("sessions"))
+                : this.workspace.resolve("sessions");
         // 确保旧会话目录存在并初始化
-        this.legacySessionsDir = HelperUtils.ensureDir(this.workspace.resolve("legacy_sessions"));
+        this.legacySessionsDir = initializeFileStore ? HelperUtils.ensureDir(this.workspace.resolve("legacy_sessions"))
+                : this.workspace.resolve("legacy_sessions");
     }
 
     /**

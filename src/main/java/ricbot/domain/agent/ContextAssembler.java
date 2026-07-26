@@ -2,8 +2,6 @@ package ricbot.domain.agent;
 
 import ricbot.domain.message.InboundMessage;
 import ricbot.domain.session.Session;
-import ricbot.domain.team.TeamEngine;
-import ricbot.domain.team.TeamSession;
 import ricbot.domain.workspace.WorkspaceSession;
 import ricbot.domain.workspace.WorkspaceSessionStore;
 
@@ -39,7 +37,7 @@ final class ContextAssembler {
                         prepared.archivedSummary(),
                         prepared.taskStateSnapshot(),
                         recentToolTrace(prepared.session()),
-                        teamContext(prepared.session()),
+                        Map.of(),
                         workspaceContext(prepared.session())
                 ),
                 prepared.session().getMessages(),
@@ -89,20 +87,6 @@ final class ContextAssembler {
         trace.put("prompt_context_budget", selection.bundle().budgetTrace());
         trace.put("context_quality", selection.bundle().qualityReport().toMap());
         return trace;
-    }
-
-    private Map<String, Object> teamContext(Session session) {
-        Map<String, Object> existing = TeamEngine.contextFromSession(session);
-        if (existing != null && !existing.isEmpty()) {
-            return existing;
-        }
-        try {
-            TeamEngine engine = new TeamEngine(workspace);
-            TeamSession latest = engine.loadLatestActiveSession();
-            return latest != null ? engine.contextSnapshot(latest.id()) : Map.of();
-        } catch (Exception ignored) {
-            return Map.of();
-        }
     }
 
     private Map<String, Object> workspaceContext(Session session) {

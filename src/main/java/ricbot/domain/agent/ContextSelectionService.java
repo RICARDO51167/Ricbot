@@ -425,8 +425,9 @@ final class ContextSelectionService {
             return List.of();
         }
 
-        // 计算需要保留的最近消息数量，至少6条，最多为窗口大小的一半或总历史大小
-        int suffixTarget = Math.min(Math.max(6, historyWindowMessages / 2), history.size());
+        // Reserve half the budget for a legal recent suffix and half for relevant older turns.
+        int suffixTarget = Math.min(Math.max(2, historyWindowMessages / 2),
+                Math.min(historyWindowMessages, history.size()));
         
         // 找到合法的最近消息起始索引，确保工具调用的完整性
         int suffixStart = findLegalSuffixStart(history, suffixTarget);

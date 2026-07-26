@@ -1,10 +1,10 @@
 package ricbot.domain.agent;
 
 import ricbot.domain.config.ProviderCapability;
-import ricbot.domain.team.TeamTask;
-import ricbot.domain.team.TeamWorkerResult;
-import ricbot.domain.team.TeamWorkerRunner;
-import ricbot.domain.team.TeamWorkerStatus;
+import ricbot.domain.task.TaskWorkerRequest;
+import ricbot.domain.task.TaskWorkerResult;
+import ricbot.domain.task.TaskWorkerRunner;
+import ricbot.domain.task.TaskWorkerStatus;
 import ricbot.domain.workspace.RuntimeArtifactFilter;
 import ricbot.domain.workspace.WorkspaceLifecycleService;
 import ricbot.domain.workspace.WorkspaceSession;
@@ -26,7 +26,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-public class AgentTeamWorkerRunner implements TeamWorkerRunner {
+public class AgentTeamWorkerRunner implements TaskWorkerRunner {
     public static final List<String> ALLOWED_TOOLS = List.of(
             "list_dir",
             "read_file",
@@ -73,21 +73,21 @@ public class AgentTeamWorkerRunner implements TeamWorkerRunner {
     }
 
     @Override
-    public TeamWorkerResult run(TeamTask task, WorkspaceSession workspaceSession, Path workspaceRoot) {
+    public TaskWorkerResult run(TaskWorkerRequest task, WorkspaceSession workspaceSession, Path workspaceRoot) {
         Instant started = Instant.now();
         if (task == null) {
-            return TeamWorkerResult.failed("team task is required", 0);
+            return TaskWorkerResult.failed("task is required", 0);
         }
         if (runner == null) {
-            return TeamWorkerResult.failed("AgentRunner is unavailable for team worker", 0);
+            return TaskWorkerResult.failed("Agent Runtime is unavailable for task worker", 0);
         }
         Path root;
         try {
             root = safeWorktreeRoot(workspaceSession, workspaceRoot);
         } catch (Exception e) {
-            return TeamWorkerResult.failed(e.getMessage(), 0);
+            return TaskWorkerResult.failed(e.getMessage(), 0);
         }
-        String sessionKey = "team-worker-" + task.id();
+        String sessionKey = "task-worker-" + task.taskId();
         try {
             WorkspaceLifecycleService lifecycle = new WorkspaceLifecycleService(baseWorkspace);
             WorkspaceLifecycleService.WorkspaceDiff beforeDiff = lifecycle.diff(workspaceSession.id());
@@ -103,17 +103,17 @@ public class AgentTeamWorkerRunner implements TeamWorkerRunner {
             String noChangesReason = changedFiles.isEmpty()
                     ? noChangesReason(result, toolCallNames, rawGitStatus(root))
                     : "";
-            TeamWorkerStatus status = statusFor(result, changedFiles, hasToolErrors);
+            TaskWorkerStatus status = statusFor(result, changedFiles, hasToolErrors);
             List<String> debugLines = debugLines(task, workspaceSession, root, sessionKey, result, beforeDiff, diff, rawGitStatus(root), noChangesReason);
             String summary = !clean(result.getFinalContent()).isBlank()
                     ? clean(result.getFinalContent())
-                    : status == TeamWorkerStatus.APPLIED
+                    : status == TaskWorkerStatus.APPLIED
                     ? "Team worker applied changes: " + String.join(", ", changedFiles)
                     : "Team worker completed but produced no user changes.";
-            String error = status == TeamWorkerStatus.FAILED && clean(result.getError()).isBlank()
+            String error = status == TaskWorkerStatus.FAILED && clean(result.getError()).isBlank()
                     ? (!noChangesReason.isBlank() ? noChangesReason : "team worker failed")
                     : clean(result.getError());
-            return new TeamWorkerResult(
+            return new TaskWorkerResult(
                     status,
                     changedFiles,
                     summary,
@@ -125,15 +125,15 @@ public class AgentTeamWorkerRunner implements TeamWorkerRunner {
                     debugLines
             );
         } catch (Exception e) {
-            return TeamWorkerResult.failed(e.getMessage(), Duration.between(started, Instant.now()).toMillis());
+            return TaskWorkerResult.failed(e.getMessage(), Duration.between(started, Instant.now()).toMillis());
         }
     }
 
-    AgentRunSpec workerSpec(TeamTask task, WorkspaceSession workspaceSession, Path root, String sessionKey) {
+    AgentRunSpec workerSpec(TaskWorkerRequest task, WorkspaceSession workspaceSession, Path root, String sessionKey) {
         Map<String, Object> metadata = new LinkedHashMap<>();
         metadata.put("mode", "team-worker");
-        metadata.put("taskId", task.id());
-        metadata.put("teamSessionId", task.sessionId());
+        metadata.put("taskId", task.taskId());
+        metadata.put("parentRunId", task.parentRunId());
         metadata.put("workspaceSessionId", workspaceSession != null ? workspaceSession.id() : "");
         metadata.put("workspaceRoot", root.toString());
         return new AgentRunSpec()
@@ -155,7 +155,7 @@ public class AgentTeamWorkerRunner implements TeamWorkerRunner {
                 .setAllowedTools(ALLOWED_TOOLS);
     }
 
-    private List<Map<String, Object>> workerMessages(TeamTask task, Path root) {
+    private List<Map<String, Object>> workerMessages(TaskWorkerRequest task, Path root) {
         String system = """
                 You are Ricbot Team worker.
                 You run inside a managed git worktree and must use the available file tools to make real file changes when the task requires changes.
@@ -166,7 +166,7 @@ public class AgentTeamWorkerRunner implements TeamWorkerRunner {
                 After the write tool succeeds, stop and output a short summary plus changed files.
                 Do not claim a file changed unless a tool changed it.
                 Do not call tools that are not provided or invent tools.
-                Do not modify runtime artifacts such as .git, .ricbot, .team, .traces, .changesets, .workspaces, notes, session.json, target, or logs.
+                Do not modify runtime artifacts such as .git, .ricbot, .workspaces, notes, session.json, target, or logs.
                 """;
         String user = "Current task: " + task.goal()
                 + "\nWorkspace root: " + root
@@ -210,14 +210,14 @@ public class AgentTeamWorkerRunner implements TeamWorkerRunner {
         return value != null ? value.trim() : "";
     }
 
-    private TeamWorkerStatus statusFor(AgentRunResult result, List<String> changedFiles, boolean hasToolErrors) {
+    private TaskWorkerStatus statusFor(AgentRunResult result, List<String> changedFiles, boolean hasToolErrors) {
         if ("no_exposed_tools".equalsIgnoreCase(clean(result.getStopReason()))) {
-            return TeamWorkerStatus.FAILED;
+            return TaskWorkerStatus.FAILED;
         }
         if (!changedFiles.isEmpty()) {
-            return TeamWorkerStatus.APPLIED;
+            return TaskWorkerStatus.APPLIED;
         }
-        return hasToolErrors ? TeamWorkerStatus.FAILED : TeamWorkerStatus.NO_CHANGES;
+        return hasToolErrors ? TaskWorkerStatus.FAILED : TaskWorkerStatus.NO_CHANGES;
     }
 
     private String noChangesReason(AgentRunResult result, List<String> toolCallNames, String rawStatus) {
@@ -238,7 +238,7 @@ public class AgentTeamWorkerRunner implements TeamWorkerRunner {
     }
 
     private List<String> debugLines(
-            TeamTask task,
+            TaskWorkerRequest task,
             WorkspaceSession workspaceSession,
             Path root,
             String sessionKey,
@@ -251,7 +251,7 @@ public class AgentTeamWorkerRunner implements TeamWorkerRunner {
         List<String> out = new ArrayList<>();
         out.add("debug:workerSessionKey=" + sessionKey);
         out.add("debug:workerWorkspaceRoot=" + root);
-        out.add("debug:workerTaskId=" + task.id());
+        out.add("debug:workerTaskId=" + task.taskId());
         out.add("debug:workerWorkspaceSessionId=" + workspaceSession.id());
         out.add("debug:allowedTools=" + String.join(",", ALLOWED_TOOLS));
         out.add("debug:registeredTools=" + String.join(",", valuesFromExposure(result, "registered_tools")));
@@ -362,13 +362,11 @@ public class AgentTeamWorkerRunner implements TeamWorkerRunner {
         }
 
         @Override
-        public List<ToolParam> getParams() {
-            return delegate.getParams();
-        }
+        public ricbot.tool.api.ToolEffectPolicy effectPolicy() { return delegate.effectPolicy(); }
 
         @Override
-        public boolean isReadOnly() {
-            return delegate.isReadOnly();
+        public List<ToolParam> getParams() {
+            return delegate.getParams();
         }
 
         @Override

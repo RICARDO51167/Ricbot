@@ -1,6 +1,6 @@
 package ricbot.domain.agent;
 
-import ricbot.domain.memory.Consolidator;
+import ricbot.domain.agent.context.StructuredContextService;
 import ricbot.domain.memory.MemoryStore;
 import ricbot.domain.security.ApprovalService;
 import ricbot.domain.trace.TraceStore;
@@ -12,15 +12,12 @@ public record AgentRuntimeCore(
         ContextBuilder contextBuilder,
         AgentPersistenceComponents persistence,
         OpenTelemetryRuntime telemetryRuntime,
-        RunEventSink runEventSink,
         TraceStore traceStore,
         SideEffectStore sideEffectStore,
         MemoryStore memoryStore,
-        Consolidator consolidator,
+        StructuredContextService contextCompaction,
         ApprovalService approvalService,
         SideEffectApplicationService sideEffectApplicationService,
-        AutoCompact autoCompact,
-        SpawnWorkerService spawnWorkers,
         ToolRegistry tools,
         GraphRunService runner
 ) {

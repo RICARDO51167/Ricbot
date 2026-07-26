@@ -11,21 +11,11 @@ public abstract class Tool {
 
     public abstract String getDescription();
 
+    /** Undeclared tools are intentionally refused by the runtime. */
+    public ToolEffectPolicy effectPolicy() { return ToolEffectPolicy.undeclared(); }
+
     public List<ToolParam> getParams() {
         return List.of();
-    }
-
-    public boolean isReadOnly() {
-        return false;
-    }
-
-    public boolean isExclusive() {
-        return false;
-    }
-
-    /** Whether this tool can reverse a previously successful side effect. */
-    public boolean supportsCompensation() {
-        return false;
     }
 
     /**
@@ -105,6 +95,11 @@ public abstract class Tool {
 
     public Object execute(Map<String, Object> params) throws Exception {
         throw new UnsupportedOperationException("工具 '" + getName() + "' 未实现 execute(Map) 方法。");
+    }
+
+    /** Evaluates risk before the tool is allowed to produce a side effect. */
+    public ToolRiskDecision assessRisk(Map<String, Object> params) {
+        return ToolRiskDecision.allow();
     }
 
     public static final class ToolExecutionContext {

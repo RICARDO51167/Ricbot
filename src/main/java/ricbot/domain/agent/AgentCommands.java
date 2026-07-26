@@ -1,16 +1,10 @@
 package ricbot.domain.agent;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import ricbot.application.team.TeamReportApplicationService;
-import ricbot.application.team.TeamRunApplicationService;
-import ricbot.application.team.TeamSessionApplicationService;
-import ricbot.application.team.TeamStepApplicationService;
-import ricbot.application.team.TeamTaskApplicationService;
-import ricbot.application.team.TeamToolApplicationService;
-import ricbot.application.team.TeamWorkerApplicationService;
 import ricbot.application.workspace.WorkspaceApplicationService;
 import ricbot.domain.change.ChangeSetRenderer;
 import ricbot.domain.change.ChangeSetService;
+import ricbot.domain.change.ChangeActionGraphService;
 import ricbot.domain.change.GitChangeSet;
 import ricbot.domain.change.GitChangeSetStatus;
 import ricbot.domain.change.PendingChangeAction;
@@ -27,19 +21,9 @@ import ricbot.domain.security.ApprovalApplicationService;
 import ricbot.domain.security.ApprovalRequest;
 import ricbot.domain.security.ApprovalService;
 import ricbot.domain.security.CommandRiskLevel;
-import ricbot.domain.security.PendingToolCall;
 import ricbot.domain.security.RiskAssessment;
-import ricbot.domain.team.TeamArtifact;
-import ricbot.domain.team.TeamEngine;
-import ricbot.domain.team.TeamRole;
-import ricbot.domain.team.TeamSession;
-import ricbot.domain.team.TeamTask;
-import ricbot.domain.team.TeamWorkerRunner;
-import ricbot.domain.team.PendingImplementationStep;
-import ricbot.domain.team.StepAuditEventType;
-import ricbot.domain.team.StepAuditRecord;
-import ricbot.domain.team.VerificationResult;
-import ricbot.domain.team.WorkerExecutionResult;
+import ricbot.domain.task.TaskRole;
+import ricbot.domain.task.TaskWorkerRunner;
 import ricbot.domain.trace.TraceEvent;
 import ricbot.domain.trace.TraceEventType;
 import ricbot.domain.trace.TraceRenderer;
@@ -50,12 +34,28 @@ import ricbot.domain.workspace.WorkspaceLifecycleService;
 import ricbot.domain.workspace.WorkspaceSession;
 import ricbot.domain.workspace.WorkspaceSessionStore;
 import ricbot.integration.command.CommandRouter;
+import ricbot.integration.llm.api.LLMProvider;
+import ricbot.domain.agent.graph.BuiltinGraphExecutors;
+import ricbot.domain.agent.graph.GraphExecutionState;
+import ricbot.domain.agent.graph.GraphRunCoordinator;
+import ricbot.domain.agent.graph.LocalTeamGraphService;
+import ricbot.infra.runtime.SqliteRuntimeStore;
+import ricbot.domain.task.LocalTaskScheduler;
+import ricbot.domain.task.LocalTaskSchedulerConfig;
+import ricbot.domain.task.TaskRecord;
+import ricbot.domain.task.TeamPlanModelPlanner;
+import ricbot.domain.task.TeamPlan;
+import ricbot.domain.task.TaskDelivery;
+import ricbot.domain.task.TaskResult;
+import ricbot.domain.verification.VerificationReport;
+import ricbot.domain.verification.WorkspaceVerificationService;
 import ricbot.tool.api.ToolRegistry;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Future;
 import java.util.function.BiConsumer;
@@ -72,17 +72,11 @@ final class AgentCommands {
     private final BiConsumer<String, String> sessionInterruptMarker;
     private final ApprovalService approvalService;
     private final ToolRegistry toolRegistry;
-    private final TeamWorkerRunner teamWorkerRunner;
-    private final TeamEngine teamEngine;
+    private final TaskWorkerRunner teamWorkerRunner;
     private final TraceStore traceStore;
     private final WorkspaceApplicationService workspaceApplication;
-    private final TeamSessionApplicationService teamSessions;
-    private final TeamReportApplicationService teamReports;
-    private final TeamTaskApplicationService teamTasks;
-    private final TeamStepApplicationService teamSteps;
-    private final TeamRunApplicationService teamRuns;
-    private final TeamWorkerApplicationService teamWorkers;
-    private final TeamToolApplicationService teamTools;
+    private final LLMProvider provider;
+    private final RuntimeQueryService runtime;
 
     AgentCommands(
             SessionManager sessionManager,
@@ -120,7 +114,7 @@ final class AgentCommands {
             ToolRegistry toolRegistry
     ) {
         this(sessionManager, model, workspace, sessionKeyResolver,
-                activeTaskRemover, sessionInterruptMarker, approvalService, toolRegistry, null);
+                activeTaskRemover, sessionInterruptMarker, approvalService, toolRegistry, null, null);
     }
 
     AgentCommands(
@@ -132,7 +126,23 @@ final class AgentCommands {
             BiConsumer<String, String> sessionInterruptMarker,
             ApprovalService approvalService,
             ToolRegistry toolRegistry,
-            TeamWorkerRunner teamWorkerRunner
+            TaskWorkerRunner teamWorkerRunner
+    ) {
+        this(sessionManager, model, workspace, sessionKeyResolver, activeTaskRemover, sessionInterruptMarker,
+                approvalService, toolRegistry, teamWorkerRunner, null);
+    }
+
+    AgentCommands(
+            SessionManager sessionManager,
+            String model,
+            Path workspace,
+            Function<InboundMessage, String> sessionKeyResolver,
+            Function<String, List<Future<?>>> activeTaskRemover,
+            BiConsumer<String, String> sessionInterruptMarker,
+            ApprovalService approvalService,
+            ToolRegistry toolRegistry,
+            TaskWorkerRunner teamWorkerRunner,
+            LLMProvider provider
     ) {
         this.sessionManager = sessionManager;
         this.model = model;
@@ -145,18 +155,10 @@ final class AgentCommands {
         this.approvalService.setTraceStore(this.traceStore);
         this.toolRegistry = toolRegistry;
         this.teamWorkerRunner = teamWorkerRunner;
-        this.teamEngine = new TeamEngine(this.workspace, this.traceStore);
+        this.provider = provider;
+        this.runtime = new RuntimeQueryService(this.workspace);
         this.workspaceApplication = new WorkspaceApplicationService(this.workspace, this.sessionManager, this.traceStore);
-        this.teamSessions = new TeamSessionApplicationService(this.sessionManager, this.teamEngine);
-        this.teamReports = new TeamReportApplicationService(this.teamEngine, this.teamSessions);
-        this.teamTasks = new TeamTaskApplicationService(this.workspace, this.teamEngine, this.teamSessions);
-        this.teamSteps = new TeamStepApplicationService(this.workspace, this.teamEngine, this.teamSessions, this.traceStore);
-        this.teamRuns = new TeamRunApplicationService(this.workspace, this.teamEngine, this.teamWorkerRunner,
-                this.teamSessions, this.workspaceApplication);
-        this.teamWorkers = new TeamWorkerApplicationService(this.workspace, this.sessionManager, this.teamEngine,
-                this.teamSessions, this.traceStore);
-        this.teamTools = new TeamToolApplicationService(this.workspace, this.sessionManager, this.teamEngine,
-                this.teamSessions, this.teamWorkers, this.toolRegistry, this.approvalService, this.traceStore);
+        recoverRuntimeOnStartup();
     }
 
     void register(CommandRouter router) {
@@ -177,8 +179,10 @@ final class AgentCommands {
         router.prefix("/trace ", this::trace);
         router.exact("/policy", this::policy);
         router.prefix("/policy ", this::policy);
-        router.exact("/team", this::team);
-        router.prefix("/team ", this::team);
+        router.exact("/run", this::run);
+        router.prefix("/run ", this::run);
+        router.exact("/task", this::taskV2);
+        router.prefix("/task ", this::taskV2);
         router.prefix("/approve ", this::approve);
         router.prefix("/reject ", this::reject);
     }
@@ -214,7 +218,12 @@ final class AgentCommands {
     }
 
     private CompletableFuture<OutboundMessage> help(CommandRouter.CommandContext ctx) {
-        return completedReply(ctx, "ricbot 命令：\n/new — 开始新对话\n/stop — 停止当前任务\n/summary — 查看当前任务摘要\n/team start|status|list|resume|archive|suggest|suggest-current|task|auto-verify|verifier-report|verify|events|whiteboard|abort — TeamEngine 状态机\n/workspace create|status|list|use|diff|cleanup — Local/Worktree workspace session\n/change create|status|diff|commit-message|approve|commit|rollback — GitChangeSet 工作流\n/trace last|list|show|events|export — Coding Harness trace\n/help — 查看可用命令");
+        return completedReply(ctx, "ricbot 命令：\n/new — 开始新对话\n/stop — 停止当前任务"
+                + "\n/run start <goal> [--mode agent|team] — 启动 Graph Run"
+                + "\n/run list|status|report|graph|events|resume|cancel <runId> — Run 管理"
+                + "\n/task list <runId> | /task show|retry|cancel <taskId> — Task 管理"
+                + "\n/summary — 查看当前任务摘要\n/workspace — Workspace 管理\n/change — ChangeSet 管理"
+                + "\n/trace — Trace 管理\n/approve <requestId> | /reject <requestId> — 审批\n/help — 查看可用命令");
     }
 
     private CompletableFuture<OutboundMessage> status(CommandRouter.CommandContext ctx) {
@@ -265,7 +274,6 @@ final class AgentCommands {
 
     private CompletableFuture<OutboundMessage> summary(CommandRouter.CommandContext ctx) {
         Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
-        resolveActiveTeamSessionId(session);
         TaskSummaryService.TaskSummary summary = new TaskSummaryService().summarizeCurrentTask(session);
         traceEvent(session, TraceEventType.TASK_SUMMARY_CREATED, "agent", "task summary created", Map.of(
                 "changedFiles", summary.changedFiles(),
@@ -326,14 +334,14 @@ final class AgentCommands {
                     yield completedReply(ctx, renderer.renderRole(engine.policy(), parseTeamRole(roleRaw)));
                 }
                 case "check" -> {
-                    TeamRole role = parseTeamRole(commandArg(args, 1));
+                    TaskRole role = parseTeamRole(commandArg(args, 1));
                     String toolName = commandArg(args, 2);
                     PolicyDecision decision = engine.evaluate(role, toolName, Map.of(), null);
                     tracePolicy(session, decision);
                     yield completedReply(ctx, renderer.renderDecision(decision));
                 }
                 case "check-command" -> {
-                    TeamRole role = parseTeamRole(commandArg(args, 1));
+                    TaskRole role = parseTeamRole(commandArg(args, 1));
                     String command = afterNthArg(args, 2);
                     if (command.isBlank()) {
                         throw new IllegalArgumentException("missing command");
@@ -389,10 +397,9 @@ final class AgentCommands {
         String args = trim(rawArgs);
         boolean json = containsFlag(args, "--json");
         String targetToken = stripFlags(args, "--json");
-        rejectTeamSessionIdArgument(targetToken, "/change create 需要 taskId 或 workspaceId，例如 teamtask_xxx。");
         Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
-        String teamSessionId = resolveActiveTeamSessionId(session);
-        String taskId = latestTeamTaskId(teamSessionId);
+        String teamSessionId = "";
+        String taskId = "";
         String developerTaskId = session.getMetadata() != null && session.getMetadata().get(SessionRuntimeKeys.DEVELOPER_TASK_ID_KEY) != null
                 ? String.valueOf(session.getMetadata().get(SessionRuntimeKeys.DEVELOPER_TASK_ID_KEY)).trim()
                 : "";
@@ -418,10 +425,6 @@ final class AgentCommands {
         GitChangeSet changeSet = fromWorkspace
                 ? service.createFromWorkspace(activeWorkspace.id(), Path.of(activeWorkspace.workspacePath()), ctx.getKey(), teamSessionId, taskId)
                 : service.createFromWorkingTree(ctx.getKey(), teamSessionId, taskId);
-        if (!teamSessionId.isBlank()) {
-            String path = ".changesets/" + changeSet.id() + "/changeset.json";
-            teamEngine.recordArtifact(teamSessionId, new TeamArtifact(null, taskId, path, "ChangeSet " + changeSet.id(), "changeset", null));
-        }
         storeChangeSetContext(session, changeSet, renderer);
         traceEvent(session, fromWorkspace ? TraceEventType.CHANGESET_CREATED_FROM_WORKSPACE : TraceEventType.CHANGESET_CREATED, "change", fromWorkspace ? "changeset created from workspace" : "changeset created", Map.of(
                 "status", changeSet.status().name(),
@@ -430,13 +433,6 @@ final class AgentCommands {
                 "workspaceSessionId", changeSet.workspaceSessionId(),
                 "workspacePath", changeSet.workspacePath()
         ), changeSet.teamSessionId(), changeSet.id(), "");
-        if (!changeSet.teamSessionId().isBlank() && !changeSet.taskId().isBlank()) {
-            teamEngine.recordStepAudit(new StepAuditRecord(null, "", changeSet.taskId(), changeSet.teamSessionId(),
-                    StepAuditEventType.STEP_CHANGESET_LINKED, "", "",
-                    "ChangeSet linked to implementation task.", "", "", "", changeSet.id(), "", "", null,
-                    Map.of("changedFiles", changeSet.changedFiles(), "workspaceSessionId", changeSet.workspaceSessionId())));
-            storeTeamContext(session, changeSet.teamSessionId());
-        }
         if (json) {
             try {
                 return completedReply(ctx, MAPPER.writeValueAsString(changeSet.toMap()));
@@ -446,8 +442,8 @@ final class AgentCommands {
         }
         return completedReply(ctx, "changeset created\n"
                 + "id: " + changeSet.id() + "\n"
-                + "path: .changesets/" + changeSet.id() + "/changeset.json\n"
-                + "diff: .changesets/" + changeSet.id() + "/diff.patch\n\n"
+                + "record: sqlite:.ricbot/runtime.db#changesets/" + changeSet.id() + "\n"
+                + "diff: stored in the immutable ChangeSet event payload\n\n"
                 + renderer.renderStatus(changeSet));
     }
 
@@ -509,7 +505,8 @@ final class AgentCommands {
                 message,
                 assessment
         );
-        ApprovalRequest request = approvalService.createChangeActionRequest(assessment, action);
+        ChangeActionGraphService.Result graph = new ChangeActionGraphService(workspace, approvalService).start(action, assessment);
+        ApprovalRequest request = approvalService.find(graph.requestId());
         Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
         traceEvent(session, TraceEventType.CHANGESET_COMMIT_REQUESTED, "change", "changeset commit requested", Map.of(
                 "commitMessage", message,
@@ -518,6 +515,7 @@ final class AgentCommands {
         return completedReply(ctx, "change commit requires approval\n"
                 + "requestId: " + request.requestId() + "\n"
                 + "riskLevel: " + assessment.riskLevel() + "\n"
+                + "runId: " + graph.runId() + "\n"
                 + "changeSetId: " + changeSet.id() + "\n"
                 + "commitMessage:\n" + message + "\n\n"
                 + "Run: /approve " + request.requestId());
@@ -546,7 +544,8 @@ final class AgentCommands {
                 "",
                 assessment
         );
-        ApprovalRequest request = approvalService.createChangeActionRequest(assessment, action);
+        ChangeActionGraphService.Result graph = new ChangeActionGraphService(workspace, approvalService).start(action, assessment);
+        ApprovalRequest request = approvalService.find(graph.requestId());
         Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
         traceEvent(session, TraceEventType.CHANGESET_ROLLBACK_REQUESTED, "change", "changeset rollback requested", Map.of(
                 "commands", changeSet.rollbackCommands()
@@ -554,6 +553,7 @@ final class AgentCommands {
         return completedReply(ctx, "change rollback requires approval\n"
                 + "requestId: " + request.requestId() + "\n"
                 + "riskLevel: " + assessment.riskLevel() + "\n"
+                + "runId: " + graph.runId() + "\n"
                 + "changeSetId: " + changeSet.id() + "\n"
                 + "commands:\n- " + String.join("\n- ", changeSet.rollbackCommands()) + "\n\n"
                 + "Run: /approve " + request.requestId());
@@ -606,21 +606,6 @@ final class AgentCommands {
         sessionManager.save(session);
     }
 
-    private void recordChangeSetTeamArtifact(GitChangeSet changeSet, String action) {
-        if (changeSet == null || changeSet.teamSessionId().isBlank()) {
-            return;
-        }
-        String path = ".changesets/" + changeSet.id() + "/changeset.json";
-        teamEngine.recordArtifact(changeSet.teamSessionId(), new TeamArtifact(
-                null,
-                changeSet.taskId(),
-                path,
-                "ChangeSet " + changeSet.id() + " " + action + " status=" + changeSet.status(),
-                "changeset",
-                null
-        ));
-    }
-
     private TraceEvent traceEvent(
             Session session,
             TraceEventType type,
@@ -663,56 +648,164 @@ final class AgentCommands {
         }
     }
 
-    private String latestTeamTaskId(String teamSessionId) {
-        if (teamSessionId == null || teamSessionId.isBlank()) {
-            return "";
-        }
-        TeamSession session = teamEngine.findSession(teamSessionId);
-        if (session == null || session.tasks().isEmpty()) {
-            return "";
-        }
-        return session.tasks().get(session.tasks().size() - 1).id();
-    }
-
-    private CompletableFuture<OutboundMessage> team(CommandRouter.CommandContext ctx) {
+    private CompletableFuture<OutboundMessage> run(CommandRouter.CommandContext ctx) {
         String args = trim(ctx.getArgs());
-        String action = args.isBlank() ? "status" : args.split("\\s+")[0].toLowerCase(java.util.Locale.ROOT);
-        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
+        String action = args.isBlank() ? "list" : args.split("\\s+", 2)[0].toLowerCase(java.util.Locale.ROOT);
+        String rest = afterCommand(args);
         try {
             return switch (action) {
-                case "start", "status", "list", "resume", "archive", "suggest", "suggest-current",
-                        "events", "whiteboard", "abort" -> completedReply(ctx,
-                        teamSessions.execute(session, action, afterCommand(args)));
-                case "run" -> completedReply(ctx, teamRuns.run(session, afterCommand(args)));
-                case "run-worker", "run-verifier" -> completedReply(ctx,
-                        teamWorkers.execute(session, action, afterCommand(args)));
-                case "worker-report", "report", "verifier-report", "step-timeline", "task-timeline", "audit" ->
-                        completedReply(ctx, teamReports.execute(session, action, afterCommand(args)));
-                case "tool-call", "apply-step" -> completedReply(ctx,
-                        teamTools.execute(session, action, afterCommand(args)));
-                case "plan-steps", "steps", "show-step", "next-step", "update-step", "reject-step" ->
-                        completedReply(ctx, teamSteps.execute(session, action, afterCommand(args)));
-                case "auto-verify", "task", "verify" -> completedReply(ctx,
-                        teamTasks.execute(session, action, afterCommand(args)));
-                default -> completedReply(ctx, "用法：/team start <goal>|status|list|resume <sessionId>|archive <sessionId>|suggest <goal>|suggest-current|run <task> [--worktree] [--verify]|task <role> <goal>|run-worker <taskId>|run-verifier <taskId>|worker-report <taskId>|report <taskId>|tool-call <taskId> <toolName> <jsonArgs>|plan-steps <taskId>|steps <taskId>|show-step <stepId>|next-step <taskId>|update-step <stepId> <jsonUpdate>|apply-step <stepId>|reject-step <stepId>|step-timeline <stepId>|task-timeline <taskId>|audit <taskId>|auto-verify <taskId>|verifier-report <taskId>|verify <taskId> pass|reject|needs-human <reason>|events|whiteboard|abort <taskId>");
+                case "start" -> startRun(ctx, rest);
+                case "list" -> completedReply(ctx, MAPPER.writerWithDefaultPrettyPrinter()
+                        .writeValueAsString(runtime.runs()));
+                case "status", "report", "graph" -> completedReply(ctx, MAPPER.writerWithDefaultPrettyPrinter()
+                        .writeValueAsString(runtime.report(requiredArgument(rest, "runId"))));
+                case "events" -> completedReply(ctx, MAPPER.writerWithDefaultPrettyPrinter()
+                        .writeValueAsString(runtime.events(requiredArgument(rest, "runId"))));
+                case "replay" -> completedReply(ctx, MAPPER.writerWithDefaultPrettyPrinter()
+                        .writeValueAsString(replayRun(rest)));
+                case "fork" -> completedReply(ctx, MAPPER.writerWithDefaultPrettyPrinter()
+                        .writeValueAsString(forkRun(rest)));
+                case "cancel" -> completedReply(ctx, MAPPER.writerWithDefaultPrettyPrinter()
+                        .writeValueAsString(runtime.cancelRun(requiredArgument(rest, "runId"), "cancelled from CLI")));
+                case "resume" -> resumeRun(ctx, requiredArgument(rest, "runId"));
+                default -> completedReply(ctx, "用法：/run start <goal> [--mode agent|team] [--worktree] [--verify]"
+                        + " | /run list | /run status|report|graph|events|resume|cancel <runId>"
+                        + " | /run replay <runId> [eventSequence] | /run fork <runId> [eventSequence] [newRunId]");
             };
-        } catch (IllegalArgumentException | IllegalStateException e) {
-            return completedReply(ctx, "team error: " + e.getMessage());
+        } catch (Exception e) {
+            return completedReply(ctx, "run error: " + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()));
         }
     }
 
-    private void rejectTeamSessionIdArgument(String value, String commandHint) {
-        String id = value != null ? value.trim() : "";
-        if (id.startsWith("team_") && !id.startsWith("teamtask_")) {
-            throw new IllegalArgumentException("你传入的是 teamSessionId：" + id + "。\n"
-                    + commandHint + "\n"
-                    + "请使用最近输出中的 taskId；也可以用 /trace show " + id + " 查看相关事件。");
+    private Object replayRun(String raw) {
+        String[] parts = trim(raw).split("\\s+");
+        if (parts.length == 0 || parts[0].isBlank()) throw new IllegalArgumentException("runId is required");
+        long sequence = parts.length > 1 ? Long.parseLong(parts[1]) : Long.MAX_VALUE;
+        return runtime.replay(parts[0], sequence);
+    }
+
+    private Object forkRun(String raw) {
+        String[] parts = trim(raw).split("\\s+");
+        if (parts.length == 0 || parts[0].isBlank()) throw new IllegalArgumentException("runId is required");
+        long sequence = parts.length > 1 ? Long.parseLong(parts[1]) : Long.MAX_VALUE;
+        String newRunId = parts.length > 2 ? parts[2] : "fork-" + java.util.UUID.randomUUID();
+        return runtime.fork(parts[0], sequence, newRunId);
+    }
+
+    private CompletableFuture<OutboundMessage> startRun(CommandRouter.CommandContext ctx, String raw) throws Exception {
+        String mode = raw.contains("--mode team") ? "team" : "agent";
+        String goal = raw.replace("--mode team", "").replace("--mode agent", "")
+                .replace("--worktree", "").replace("--verify", "").trim();
+        if (goal.isBlank()) throw new IllegalArgumentException("goal is required");
+        if ("agent".equals(mode)) {
+            if (!(ctx.getLoop() instanceof AgentLoop loop)) throw new IllegalStateException("agent loop is unavailable");
+            InboundMessage message = ctx.getMsg();
+            OutboundMessage response = loop.processDirect(goal, ctx.getKey(), message.getChannel(), message.getChatId(),
+                    message.getMetadata(), List.of());
+            return CompletableFuture.completedFuture(response);
+        }
+        return completedReply(ctx, runTeamGraph(goal, null));
+    }
+
+    private CompletableFuture<OutboundMessage> resumeRun(CommandRouter.CommandContext ctx, String runId) {
+        GraphExecutionState state = runtime.run(runId);
+        if (state == null) throw new IllegalArgumentException("run not found: " + runId);
+        if (!ricbot.domain.agent.graph.DefaultTeamGraph.GRAPH_ID.equals(state.graphId())) {
+            return completedReply(ctx, "该 Agent Run 需要原始会话上下文恢复；请发送普通消息继续，或查看 /run report " + runId);
+        }
+        return completedReply(ctx, runTeamGraph(String.valueOf(state.channels().getOrDefault("goal", "")), runId));
+    }
+
+    private String runTeamGraph(String goal, String existingRunId) {
+        if (provider == null || teamWorkerRunner == null) throw new IllegalStateException("team runtime is unavailable");
+        SqliteRuntimeStore graphStore = new SqliteRuntimeStore(workspace);
+        try (LocalTaskScheduler scheduler = new LocalTaskScheduler(workspace, graphStore, graphStore,
+                LocalTaskSchedulerConfig.defaults(), Set.copyOf(AgentTeamWorkerRunner.ALLOWED_TOOLS))) {
+            LocalTeamTaskExecutor executor = new LocalTeamTaskExecutor(workspace, teamWorkerRunner);
+            for (TaskRole role : TaskRole.values()) scheduler.register(role, executor);
+            scheduler.recover();
+            BuiltinGraphExecutors.Verifier verifier = (state, input) -> verifyIntegration(state);
+            try (LocalTeamGraphService service = new LocalTeamGraphService(workspace, scheduler,
+                    new TeamPlanModelPlanner(provider, model), verifier, approvalService);
+                 GraphRunCoordinator coordinator = existingRunId == null ? service.start(goal) : service.open(existingRunId, goal)) {
+                GraphExecutionState state = coordinator.awaitTerminalOrHumanPause(java.time.Duration.ofHours(2));
+                return "runId: " + state.runId() + "\ngraphId: " + state.graphId() + "\nstatus: " + state.status()
+                        + "\nsuperstep: " + state.superstep() + (state.waits().isEmpty() ? "" : "\nwaits: " + state.waits());
+            }
         }
     }
 
-    private TeamRole parseTeamRole(String raw) {
+    private BuiltinGraphExecutors.VerificationDecision verifyIntegration(GraphExecutionState state) {
+        String path = String.valueOf(state.channels().getOrDefault("integrationWorkspace", ""));
+        if (path.isBlank()) return new BuiltinGraphExecutors.VerificationDecision("needs_human",
+                Map.of("reason", "integration workspace is missing"));
         try {
-            return TeamRole.valueOf(trim(raw).replace('-', '_').toUpperCase(java.util.Locale.ROOT));
+            TeamPlan plan = value(state.channels().get("teamPlan"), TeamPlan.class);
+            List<TaskResult> results = taskResults(state.channels().get("workerResults"));
+            VerificationReport report = new WorkspaceVerificationService(workspace)
+                    .verify(state.runId(), Path.of(path), plan, results,
+                            String.valueOf(state.channels().getOrDefault("verificationProfileDigest", "")));
+            return new BuiltinGraphExecutors.VerificationDecision(report.outcome(), report.toMap());
+        } catch (Exception e) {
+            return new BuiltinGraphExecutors.VerificationDecision("needs_human", Map.of("reason", e.getMessage()));
+        }
+    }
+
+    private static <T> T value(Object raw, Class<T> type) {
+        if (type.isInstance(raw)) return type.cast(raw);
+        if (raw instanceof Map<?, ?>) return MAPPER.convertValue(raw, type);
+        return null;
+    }
+
+    private static List<TaskResult> taskResults(Object raw) {
+        if (!(raw instanceof List<?> list)) return List.of();
+        return list.stream().map(item -> item instanceof TaskDelivery delivery ? delivery.result() : item)
+                .map(item -> item instanceof TaskResult result ? result
+                        : item instanceof Map<?, ?> ? MAPPER.convertValue(item, TaskResult.class) : null)
+                .filter(java.util.Objects::nonNull).toList();
+    }
+
+    private CompletableFuture<OutboundMessage> taskV2(CommandRouter.CommandContext ctx) {
+        String args = trim(ctx.getArgs());
+        String action = args.isBlank() ? "list" : args.split("\\s+", 2)[0].toLowerCase(java.util.Locale.ROOT);
+        String id = afterCommand(args);
+        try {
+            return switch (action) {
+                case "list" -> completedReply(ctx, MAPPER.writerWithDefaultPrettyPrinter()
+                        .writeValueAsString(runtime.tasks(requiredArgument(id, "runId"))));
+                case "show" -> {
+                    TaskRecord task = runtime.task(requiredArgument(id, "taskId"));
+                    if (task == null) throw new IllegalArgumentException("task not found: " + id);
+                    yield completedReply(ctx, MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(Map.of(
+                            "task", task, "result", runtime.result(task.spec().taskId()))));
+                }
+                case "cancel" -> completedReply(ctx, MAPPER.writerWithDefaultPrettyPrinter()
+                        .writeValueAsString(runtime.cancelTask(requiredArgument(id, "taskId"), "cancelled from CLI")));
+                case "retry" -> {
+                    TaskRecord retry = runtime.retryTask(requiredArgument(id, "taskId"));
+                    GraphExecutionState parent = runtime.run(retry.spec().parentRunId());
+                    if (parent != null && ricbot.domain.agent.graph.DefaultTeamGraph.GRAPH_ID.equals(parent.graphId()) && !parent.status().terminal()) {
+                        CompletableFuture.runAsync(() -> runTeamGraph(
+                                String.valueOf(parent.channels().getOrDefault("goal", "")), parent.runId()));
+                    }
+                    yield completedReply(ctx, MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(retry));
+                }
+                default -> completedReply(ctx, "用法：/task list <runId> | /task show|retry|cancel <taskId>");
+            };
+        } catch (Exception e) {
+            return completedReply(ctx, "task error: " + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()));
+        }
+    }
+
+    private static String requiredArgument(String value, String name) {
+        String clean = value != null ? value.trim().split("\\s+")[0] : "";
+        if (clean.isBlank()) throw new IllegalArgumentException(name + " is required");
+        return clean;
+    }
+
+    private TaskRole parseTeamRole(String raw) {
+        try {
+            return TaskRole.valueOf(trim(raw).replace('-', '_').toUpperCase(java.util.Locale.ROOT));
         } catch (Exception e) {
             throw new IllegalArgumentException("unknown team role: " + raw);
         }
@@ -722,28 +815,6 @@ final class AgentCommands {
         if (session == null || session.getMetadata() == null) return "";
         Object raw = session.getMetadata().get(SessionRuntimeKeys.ACTIVE_WORKSPACE_SESSION_ID_KEY);
         return raw != null ? String.valueOf(raw).trim() : "";
-    }
-
-    private void traceImplementationStep(Session session, TraceEventType type, PendingImplementationStep step) {
-        if (step == null) {
-            return;
-        }
-        Map<String, Object> payload = new java.util.LinkedHashMap<>();
-        payload.put("stepId", step.id());
-        payload.put("taskId", step.taskId());
-        payload.put("teamSessionId", step.teamSessionId());
-        payload.put("type", step.type().name());
-        payload.put("targetPath", step.targetPath());
-        payload.put("command", step.command());
-        payload.put("status", step.status().name());
-        payload.put("orderIndex", step.orderIndex());
-        payload.put("blockedBy", step.blockedBy());
-        payload.put("blockedReason", step.blockedReason());
-        payload.put("requiredBeforeApply", step.requiredBeforeApply());
-        payload.put("lastUpdatedBy", step.lastUpdatedBy());
-        payload.put("updateReason", step.updateReason());
-        payload.put("validationErrors", step.validationErrors());
-        traceEvent(session, type, "team", "implementation step lifecycle", payload, step.teamSessionId(), "", "");
     }
 
     private void tracePolicy(Session session, PolicyDecision decision) {
@@ -766,173 +837,60 @@ final class AgentCommands {
         ), "", "", "");
     }
 
-    private String stringArg(Map<String, Object> map, String key) {
-        Object value = map != null ? map.get(key) : null;
-        return value != null ? String.valueOf(value).trim() : "";
-    }
-
-    private List<String> changedFilesFromApprovedArgs(Map<String, Object> args) {
-        String path = stringArg(args, "path");
-        return path.isBlank() ? List.of() : List.of(path);
-    }
-
-    private String resolveActiveTeamSessionId(Session session) {
-        return teamSessions.resolveActiveSessionId(session);
-    }
-
-    private void storeTeamContext(Session session, String teamSessionId) {
-        teamSessions.storeContext(session, teamSessionId);
-    }
-
     private CompletableFuture<OutboundMessage> approve(CommandRouter.CommandContext ctx) {
         String requestId = trim(ctx.getArgs()).split("\\s+")[0];
-        ApprovalApplicationService.ApprovalActionResult approvalResult;
+        ApprovalRequest existing = approvalService.find(requestId);
+        if (existing == null) return completedReply(ctx, "未找到审批请求：" + requestId);
+        if (existing.binding() == null || !existing.binding().bound()) {
+            return completedReply(ctx, "该审批没有绑定 Runtime Activation，已拒绝提交。");
+        }
         try {
-            approvalResult = new ApprovalApplicationService(approvalService, toolRegistry, workspace).approveAndExecute(requestId);
+            ApprovalRequest request = new SqliteRuntimeStore(workspace).decideApprovalAndSignal(requestId, true);
+            approvalService.acceptCommitted(request);
+            Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
+            traceEvent(session, TraceEventType.APPROVAL_APPROVED, "approval", "approval signal committed", Map.of(
+                    "status", request.status().name(), "runId", request.binding().runId()
+            ), "", "", request.requestId());
+            return completedReply(ctx, "审批 Signal 已提交：" + request.requestId()
+                    + "\nstatus: " + request.status()
+                    + "\nrunId: " + request.binding().runId()
+                    + "\nRuntime 将从审批节点恢复；命令路径未直接执行任何副作用。");
         } catch (IllegalStateException | IllegalArgumentException e) {
             return completedReply(ctx, "无法处理审批请求：" + requestId + "\n" + e.getMessage());
         }
-        if (!approvalResult.found()) {
-            return completedReply(ctx, "未找到审批请求：" + requestId);
-        }
-        ApprovalRequest request = approvalResult.request();
-        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
-        traceEvent(session, TraceEventType.APPROVAL_APPROVED, "approval", "approval approved", Map.of(
-                "status", request.status().name(),
-                "hasChangeAction", request.pendingChangeAction() != null,
-                "hasToolCall", request.pendingToolCall() != null
-        ), "", request.pendingChangeAction() != null ? request.pendingChangeAction().changeSetId() : "", request.requestId());
-        if ("CHANGE_ACTION".equals(approvalResult.executionType())) {
-            PendingChangeAction action = approvalResult.pendingChangeAction();
-            GitChangeSet result = approvalResult.changeSet();
-            ChangeSetRenderer renderer = new ChangeSetRenderer();
-            storeChangeSetContext(session, result, renderer);
-            recordChangeSetTeamArtifact(result, action.actionType().name().toLowerCase(java.util.Locale.ROOT));
-            TraceEventType eventType = action.actionType() == PendingChangeAction.ActionType.COMMIT
-                    ? TraceEventType.CHANGESET_COMMITTED
-                    : TraceEventType.CHANGESET_ROLLED_BACK;
-            traceEvent(session, eventType, "change", "changeset action executed", Map.of(
-                    "action", action.actionType().name(),
-                    "status", result.status().name(),
-                    "commitHash", result.commitHash(),
-                    "rollbackStatus", result.rollbackStatus()
-            ), result.teamSessionId(), result.id(), request.requestId());
-            String actionResult = action.actionType() == PendingChangeAction.ActionType.COMMIT
-                    ? "commitHash: " + result.commitHash()
-                    : "rollbackStatus: " + result.rollbackStatus();
-            return completedReply(ctx, "已批准并执行变更动作：" + request.requestId()
-                    + "\naction: " + action.actionType()
-                    + "\nchangeSetId: " + result.id()
-                    + "\nstatus: " + result.status()
-                    + "\n" + actionResult);
-        }
-        if ("TOOL_CALL".equals(approvalResult.executionType())) {
-            PendingToolCall pendingToolCall = approvalResult.pendingToolCall();
-            Object result = approvalResult.executionResult();
-            String developerHint = recordApprovedDeveloperToolCall(session, pendingToolCall, result, request.requestId());
-            return completedReply(ctx, "已批准并恢复执行：" + request.requestId()
-                    + "\ntool: " + pendingToolCall.toolName()
-                    + "\n\n" + String.valueOf(result)
-                    + developerHint);
-        }
-        return completedReply(ctx, "已批准审批请求：" + request.requestId()
-                + "\nstatus: " + request.status()
-                + "\n" + approvalResult.message());
-    }
-
-    private String recordApprovedDeveloperToolCall(
-            Session session,
-            PendingToolCall pendingToolCall,
-            Object result,
-            String requestId
-    ) {
-        Map<String, Object> arguments = pendingToolCall != null ? pendingToolCall.arguments() : Map.of();
-        String role = stringArg(arguments, "__role");
-        String taskId = stringArg(arguments, "__task_id");
-        if (!"DEVELOPER".equalsIgnoreCase(role) || taskId.isBlank()) {
-            return "";
-        }
-        TeamTask task = teamEngine.findTask(taskId);
-        if (task == null) {
-            return "";
-        }
-        String workspaceSessionId = stringArg(arguments, "__workspace_session_id");
-        String workspacePath = stringArg(arguments, "__workspace_path");
-        String stepId = stringArg(arguments, "__implementation_step_id");
-        if (workspacePath.isBlank()) {
-            workspacePath = workspace.toString();
-        }
-        String summary = abbreviate(String.valueOf(result), 420);
-        WorkerExecutionResult report = new WorkerExecutionResult(
-                task.id(),
-                task.sessionId(),
-                task.role(),
-                task.goal(),
-                workspacePath,
-                teamEngine.whiteboard(task.sessionId()).readSummary(),
-                List.of(),
-                List.of(),
-                "Developer approved tool applied: " + pendingToolCall.toolName(),
-                List.of("tool=" + pendingToolCall.toolName(), "tool result=" + summary),
-                List.of(),
-                List.of(),
-                List.of(new TeamArtifact(
-                        null,
-                        task.id(),
-                        ".team/" + task.sessionId() + "/workers.jsonl",
-                        "Developer tool applied for " + task.id(),
-                        "developer_tool_call",
-                        null
-                )),
-                List.of("role=DEVELOPER", "tool=" + pendingToolCall.toolName(), "decision=APPROVED", "requestId=" + requestId),
-                List.of(),
-                List.of(pendingToolCall.toolName() + " approved requestId=" + requestId),
-                List.of("/change create", "/team run-verifier " + task.id(), "/summary"),
-                "Approved changes were applied. Run /change create, then /team run-verifier " + task.id() + ".",
-                0.74d,
-                "APPLIED",
-                null
-        );
-        teamEngine.recordRoleToolCall(task.id(), report);
-        if (!stepId.isBlank()) {
-            PendingImplementationStep applied = teamEngine.applyImplementationStep(stepId);
-            teamEngine.recordStepAudit(new StepAuditRecord(null, applied.id(), applied.taskId(), applied.teamSessionId(),
-                    StepAuditEventType.STEP_APPROVED, "", applied.status().name(),
-                    "Implementation step approval consumed.", requestId, pendingToolCall.toolName(), "",
-                    "", "", "", null, Map.of()));
-            teamEngine.recordStepAudit(new StepAuditRecord(null, applied.id(), applied.taskId(), applied.teamSessionId(),
-                    StepAuditEventType.STEP_TOOL_APPLIED, "", applied.status().name(),
-                    "Approved tool call applied.", requestId, pendingToolCall.toolName(), summary,
-                    "", "", "", null, Map.of("changedFiles", changedFilesFromApprovedArgs(arguments))));
-            traceImplementationStep(session, TraceEventType.IMPLEMENTATION_STEP_APPLIED, applied);
-        }
-        storeTeamContext(session, task.sessionId());
-        traceEvent(session, TraceEventType.DEVELOPER_TOOL_APPLIED, "developer", "developer approved tool applied", Map.of(
-                "taskId", task.id(),
-                "teamSessionId", task.sessionId(),
-                "toolName", pendingToolCall.toolName(),
-                "requestId", requestId,
-                "workspaceSessionId", workspaceSessionId,
-                "workspacePath", workspacePath,
-                "stepId", stepId,
-                "changedFiles", changedFilesFromApprovedArgs(arguments)
-        ), task.sessionId(), "", requestId);
-        return "\n\nnext: /change create\nnext: /team run-verifier " + task.id() + "\nnext: /summary";
     }
 
     private CompletableFuture<OutboundMessage> reject(CommandRouter.CommandContext ctx) {
         String requestId = trim(ctx.getArgs()).split("\\s+")[0];
-        ApprovalApplicationService.ApprovalActionResult result =
-                new ApprovalApplicationService(approvalService, toolRegistry, workspace).reject(requestId);
-        if (!result.found()) {
-            return completedReply(ctx, "未找到审批请求：" + requestId);
+        ApprovalRequest existing = approvalService.find(requestId);
+        if (existing == null) return completedReply(ctx, "未找到审批请求：" + requestId);
+        if (existing.binding() == null || !existing.binding().bound()) {
+            return completedReply(ctx, "该审批没有绑定 Runtime Activation，已拒绝提交。");
         }
-        ApprovalRequest request = result.request();
+        ApprovalRequest request = new SqliteRuntimeStore(workspace).decideApprovalAndSignal(requestId, false);
+        approvalService.acceptCommitted(request);
         Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
-        traceEvent(session, TraceEventType.APPROVAL_REJECTED, "approval", "approval rejected", Map.of(
+        traceEvent(session, TraceEventType.APPROVAL_REJECTED, "approval", "approval rejection signal committed", Map.of(
                 "status", request.status().name()
         ), "", "", request.requestId());
-        return completedReply(ctx, "已拒绝审批请求：" + request.requestId() + "\nstatus: " + request.status());
+        return completedReply(ctx, "拒绝 Signal 已提交：" + request.requestId() + "\nstatus: " + request.status()
+                + "\nRuntime 将从审批节点恢复；命令路径未直接执行任何副作用。");
+    }
+
+    private void recoverRuntimeOnStartup() {
+        if (runtime.hasLegacyData()) {
+            org.slf4j.LoggerFactory.getLogger(AgentCommands.class).info(
+                    "Legacy Ricbot runtime data is retained read-only and cannot be resumed by the unified runtime");
+        }
+        if (provider == null || teamWorkerRunner == null) return;
+        for (GraphExecutionState state : runtime.runs()) {
+            boolean recoverable = ricbot.domain.agent.graph.DefaultTeamGraph.GRAPH_ID.equals(state.graphId()) && !state.status().terminal()
+                    && state.waits().stream().anyMatch(wait -> "tasks".equals(wait.type()));
+            if (recoverable) {
+                CompletableFuture.runAsync(() -> runTeamGraph(
+                        String.valueOf(state.channels().getOrDefault("goal", "")), state.runId()));
+            }
+        }
     }
 
     private String afterCommand(String args) {

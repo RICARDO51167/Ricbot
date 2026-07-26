@@ -12,11 +12,9 @@
 
 ## 直接文件
 
-- `Consolidator.java`：Consolidator：本包内的领域类型或协作组件。
 - `MemoryEntry.java`：Memory Entry：本包内的领域类型或协作组件。
 - `MemoryRetriever.java`：Memory Retriever：本包内的领域类型或协作组件。
 - `MemoryStore.java`：Memory Store：负责状态持久化、读取或查询。
 - `MemoryType.java`：Memory Type：本包内的领域类型或协作组件。
 - `MemoryWritePolicy.java`：Memory Write Policy：本包内的领域类型或协作组件。
 - `TenantMemoryService.java`：Tenant Memory Service：封装该领域用例或业务规则。
-

@@ -5,7 +5,7 @@ import ricbot.domain.security.ApprovalService;
 import ricbot.domain.security.CommandRiskLevel;
 import ricbot.domain.security.PendingToolCall;
 import ricbot.domain.security.RiskAssessment;
-import ricbot.domain.team.TeamRole;
+import ricbot.domain.task.TaskRole;
 import ricbot.domain.trace.TraceEvent;
 import ricbot.domain.trace.TraceEventType;
 import ricbot.domain.trace.TraceStore;
@@ -37,7 +37,7 @@ public class PolicyAwareToolExecutor {
     }
 
     public PolicyToolResult execute(
-            TeamRole role,
+            TaskRole role,
             String toolName,
             Map<String, Object> args,
             WorkspaceSession workspaceSession,
@@ -77,7 +77,7 @@ public class PolicyAwareToolExecutor {
         return new PolicyToolResult(decision, routedArgs, true, "", summarize(result), result, "executed");
     }
 
-    private PolicyDecision decision(TeamRole role, String toolName, Map<String, Object> args, WorkspaceSession workspaceSession) {
+    private PolicyDecision decision(TaskRole role, String toolName, Map<String, Object> args, WorkspaceSession workspaceSession) {
         String tool = normalizeTool(toolName);
         if ("exec".equals(tool)) {
             Object command = args != null ? args.get("command") : null;
@@ -89,7 +89,7 @@ public class PolicyAwareToolExecutor {
         return policyEngine.evaluate(role, tool, args, workspaceSession);
     }
 
-    private PathRouting routeWorkspaceArgs(TeamRole role, String toolName, Map<String, Object> args, WorkspaceSession workspaceSession) {
+    private PathRouting routeWorkspaceArgs(TaskRole role, String toolName, Map<String, Object> args, WorkspaceSession workspaceSession) {
         if (workspaceSession == null || workspaceSession.workspacePath().isBlank() || args == null) {
             return new PathRouting(null);
         }
@@ -107,7 +107,7 @@ public class PolicyAwareToolExecutor {
         } catch (IllegalArgumentException e) {
             PolicyDecision denied = new PolicyDecision(
                     PolicyDecisionType.DENY,
-                    role != null ? role : TeamRole.LEADER,
+                    role != null ? role : TaskRole.LEADER,
                     tool,
                     List.of("workspace path routing denied: " + e.getMessage()),
                     CommandRiskLevel.BLOCKED,
@@ -155,7 +155,7 @@ public class PolicyAwareToolExecutor {
 
     private Map<String, Object> pendingArgs(
             Map<String, Object> routedArgs,
-            TeamRole role,
+            TaskRole role,
             String teamSessionId,
             String taskId,
             WorkspaceSession workspaceSession

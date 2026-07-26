@@ -83,9 +83,8 @@ class ToolExecutionPolicyTest {
                 return name;
             }
 
-            @Override
-            public boolean isReadOnly() {
-                return true;
+            @Override public ToolEffectPolicy effectPolicy() {
+                return ToolEffectPolicy.readOnly(java.time.Duration.ofSeconds(30));
             }
         };
     }
@@ -100,6 +99,10 @@ class ToolExecutionPolicyTest {
             @Override
             public String getDescription() {
                 return name;
+            }
+            @Override public ToolEffectPolicy effectPolicy() {
+                return ToolEffectPolicy.atMostOnce(java.time.Duration.ofMinutes(1),
+                        ToolEffectPolicy.Concurrency.SERIAL_PER_RUN, ToolEffectPolicy.Approval.RISK_BASED);
             }
         };
     }

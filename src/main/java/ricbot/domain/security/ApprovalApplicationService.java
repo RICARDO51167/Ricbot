@@ -1,6 +1,5 @@
 package ricbot.domain.security;
 
-import ricbot.domain.change.ChangeSetService;
 import ricbot.domain.change.GitChangeSet;
 import ricbot.domain.change.PendingChangeAction;
 import ricbot.domain.trace.TraceRecorder;
@@ -14,8 +13,6 @@ import java.util.Map;
 
 public class ApprovalApplicationService {
     private final ApprovalService approvalService;
-    private final ToolRegistry toolRegistry;
-    private final Path workspace;
     private final TraceRecorder traceRecorder;
 
     public ApprovalApplicationService(ApprovalService approvalService, ToolRegistry toolRegistry, Path workspace) {
@@ -32,8 +29,6 @@ public class ApprovalApplicationService {
             throw new IllegalArgumentException("approvalService is required");
         }
         this.approvalService = approvalService;
-        this.toolRegistry = toolRegistry;
-        this.workspace = workspace;
         this.traceRecorder = traceRecorder != null ? traceRecorder : TraceRecorder.forRunEvents(new ArrayList<>());
     }
 
@@ -58,44 +53,6 @@ public class ApprovalApplicationService {
                     "status", "approved",
                     "message", message
             ));
-            return result;
-        } catch (RuntimeException e) {
-            recordApprovalError(requestId, e);
-            throw e;
-        }
-    }
-
-    public ApprovalActionResult approveAndExecute(String requestId) {
-        try {
-            ApprovalRequest existing = approvalService.find(requestId);
-            if (existing == null) {
-                ApprovalActionResult result = ApprovalActionResult.notFound(requestId);
-                recordApprovalEvent("approval_approve_execute", requestId, Map.of(
-                        "approvalId", requestId != null ? requestId : "",
-                        "executed", false,
-                        "executionType", "NONE",
-                        "success", false,
-                        "errorMessage", result.message()
-                ));
-                return result;
-            }
-            if (existing.status() != ApprovalRequest.ApprovalStatus.PENDING) {
-                if (existing.consumed()) {
-                    throw new IllegalStateException("审批请求已消费，不能重复执行：" + existing.requestId());
-                }
-                throw new IllegalStateException("审批请求已处理，当前状态：" + existing.status());
-            }
-
-            ApprovalRequest approved = approvalService.approve(existing.requestId());
-            ApprovalActionResult result;
-            if (approved.pendingChangeAction() != null) {
-                result = executeChangeAction(approved);
-            } else if (approved.pendingToolCall() != null) {
-                result = executeToolCall(approved);
-            } else {
-                result = ApprovalActionResult.notExecuted(approved, "approval approved but no executable action is attached");
-            }
-            recordApproveExecute(result);
             return result;
         } catch (RuntimeException e) {
             recordApprovalError(requestId, e);
@@ -129,56 +86,6 @@ public class ApprovalApplicationService {
         }
     }
 
-    private ApprovalActionResult executeToolCall(ApprovalRequest approved) {
-        if (toolRegistry == null) {
-            return ApprovalActionResult.notExecuted(approved, "approval approved but no ToolRegistry is available for execution");
-        }
-        PendingToolCall pendingToolCall = approvalService.consumeApprovedToolCall(approved.requestId());
-        Object result = toolRegistry.executeApproved(pendingToolCall.toolName(), pendingToolCall.arguments(), approved.requestId());
-        ApprovalRequest consumed = approvalService.find(approved.requestId());
-        return ApprovalActionResult.executedTool(consumed, pendingToolCall, result);
-    }
-
-    private ApprovalActionResult executeChangeAction(ApprovalRequest approved) {
-        if (workspace == null) {
-            return ApprovalActionResult.notExecuted(approved, "approval approved but no workspace is available for change execution");
-        }
-        PendingChangeAction action = approvalService.consumeApprovedChangeAction(approved.requestId());
-        try {
-            ChangeSetService service = new ChangeSetService(workspace);
-            GitChangeSet result = switch (action.actionType()) {
-                case COMMIT -> service.commit(action.changeSetId(), action.commitMessage());
-                case ROLLBACK -> service.rollback(action.changeSetId());
-            };
-            ApprovalRequest consumed = approvalService.find(approved.requestId());
-            return ApprovalActionResult.executedChange(consumed, action, result);
-        } catch (IllegalArgumentException | IllegalStateException e) {
-            ApprovalRequest consumed = approvalService.find(approved.requestId());
-            return ApprovalActionResult.notExecuted(consumed, "执行变更动作失败：" + e.getMessage(), action);
-        }
-    }
-
-    private void recordApproveExecute(ApprovalActionResult result) {
-        if (result == null) {
-            return;
-        }
-        Map<String, Object> metadata = new LinkedHashMap<>();
-        metadata.put("approvalId", result.requestId());
-        metadata.put("executed", result.executed());
-        metadata.put("executionType", result.executionType());
-        metadata.put("success", result.executed());
-        metadata.put("message", result.message());
-        if (!result.executed()) {
-            metadata.put("errorMessage", result.message());
-        }
-        if (result.pendingToolCall() != null) {
-            metadata.put("toolName", result.pendingToolCall().toolName());
-        }
-        if (result.pendingChangeAction() != null) {
-            metadata.put("action", result.pendingChangeAction().actionType().name());
-        }
-        recordApprovalEvent("approval_approve_execute", result.requestId(), metadata);
-    }
 
     private void recordApprovalError(String requestId, RuntimeException error) {
         String errorType = approvalErrorType(error);
@@ -226,6 +133,9 @@ public class ApprovalApplicationService {
         ApprovalRequest existing = approvalService.find(requestId);
         if (existing == null) {
             throw new IllegalArgumentException("审批请求不存在或已过期：" + requestId);
+        }
+        if (existing.consumed()) {
+            throw new IllegalStateException("审批请求已消费，不能重复执行：" + requestId);
         }
         if (existing.status() != ApprovalRequest.ApprovalStatus.PENDING) {
             throw new IllegalStateException("审批请求已处理，当前状态：" + existing.status());

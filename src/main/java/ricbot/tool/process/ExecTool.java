@@ -3,6 +3,7 @@ package ricbot.tool.process;
 import ricbot.tool.api.Tool;
 import ricbot.tool.api.Tool.ToolExecutionContext;
 import ricbot.tool.api.ToolParam;
+import ricbot.tool.api.ToolRiskDecision;
 import ricbot.infra.config.RuntimePaths;
 import ricbot.infra.security.NetworkSecurity;
 import ricbot.domain.security.ApprovalRequest;
@@ -40,6 +41,11 @@ import java.util.regex.Pattern;
  * 5. 控制 timeout / output 长度
  */
 public class ExecTool extends Tool {
+    @Override public ricbot.tool.api.ToolEffectPolicy effectPolicy() {
+        return ricbot.tool.api.ToolEffectPolicy.atMostOnce(java.time.Duration.ofSeconds(MAX_TIMEOUT),
+                ricbot.tool.api.ToolEffectPolicy.Concurrency.EXCLUSIVE_WORKSPACE,
+                ricbot.tool.api.ToolEffectPolicy.Approval.RISK_BASED);
+    }
 
     // 判断当前操作系统是否为 Windows
     private static final boolean IS_WINDOWS =
@@ -159,11 +165,6 @@ public class ExecTool extends Tool {
         );
     }
 
-    @Override
-    public boolean isExclusive() {
-        return true;
-    }
-
     /**
      * 执行入口方法，处理参数映射
      *
@@ -199,6 +200,25 @@ public class ExecTool extends Tool {
         }
 
         return execute(cmd, workingDirOverride, timeoutOverride, context != null && context.approved());
+    }
+
+    @Override
+    public ToolRiskDecision assessRisk(Map<String, Object> params) {
+        if (riskAnalyzer == null) return ToolRiskDecision.allow();
+        String command = params != null && params.get("command") != null ? String.valueOf(params.get("command")) : "";
+        String override = params != null && params.get("working_dir") != null
+                ? String.valueOf(params.get("working_dir")) : null;
+        String cwd = firstNonBlank(override, this.workingDir, System.getProperty("user.dir"));
+        if (command.isBlank()) {
+            return new ToolRiskDecision(ToolRiskDecision.Decision.DENY, null, "command is required");
+        }
+        RiskAssessment assessment = riskAnalyzer.analyzeExec(command, cwd);
+        if (!assessment.blocked() && (assessment.riskLevel() == CommandRiskLevel.MEDIUM
+                || assessment.riskLevel() == CommandRiskLevel.HIGH)) {
+            assessment = new RiskAssessment(assessment.riskLevel(), assessment.reasons(), assessment.command(),
+                    assessment.toolName(), assessment.affectedPaths(), true, false);
+        }
+        return ToolRiskDecision.from(assessment);
     }
 
     /**

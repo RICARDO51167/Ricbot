@@ -66,7 +66,7 @@ class ContextAssemblerTest {
     }
 
     @Test
-    void buildBundle_preservesTeamContextWhenAvailable(@TempDir Path workspace) {
+    void buildBundle_ignoresLegacyTeamMetadata(@TempDir Path workspace) {
         MemoryStore memoryStore = new MemoryStore(workspace);
         Session session = new Session("cli:direct");
         session.getMetadata().put(SessionRuntimeKeys.TEAM_CONTEXT_KEY, Map.of(
@@ -79,8 +79,8 @@ class ContextAssemblerTest {
         ContextAssembler.AssembledContext assembled = assembler(workspace, memoryStore)
                 .buildInteractiveContext(message("继续 team 任务"), prepared(session), 20);
 
-        assertTrue(assembled.bundle().render().contains("team_1"), assembled.bundle().render());
-        assertTrue(assembled.combinedContext().contains("完成上下文抽离"), assembled.combinedContext());
+        assertFalse(assembled.bundle().render().contains("team_1"), assembled.bundle().render());
+        assertFalse(assembled.combinedContext().contains("完成上下文抽离"), assembled.combinedContext());
     }
 
     @Test

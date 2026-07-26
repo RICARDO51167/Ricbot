@@ -1,7 +1,6 @@
 package ricbot.domain.agent;
 
 import ricbot.domain.session.Session;
-import ricbot.domain.team.TeamEngine;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -15,7 +14,7 @@ public final class TaskSummaryService {
     public TaskSummary summarizeCurrentTask(Session session) {
         TaskState taskState = TaskState.fromSession(session);
         List<Map<String, Object>> toolTrace = readTrace(session, SessionRuntimeKeys.TOOL_TRACE_KEY);
-        Map<String, Object> teamContext = TeamEngine.contextFromSession(session);
+        Map<String, Object> teamContext = Map.of();
         return summarizeCurrentTask(
                 taskState,
                 toolTrace,

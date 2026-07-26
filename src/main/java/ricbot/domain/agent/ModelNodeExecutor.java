@@ -23,15 +23,7 @@ public final class ModelNodeExecutor {
             return provider.chatStream(messages, toolDefinitions, spec.getModel(),
                     null, null, null, null, onDelta, onEnd);
         }
-        if (skipRetry(spec.getProviderRetryMode())) {
-            return provider.chat(messages, toolDefinitions, spec.getModel(), null, null, null, null);
-        }
-        return provider.chatWithRetry(messages, toolDefinitions, spec.getModel());
-    }
-
-    private static boolean skipRetry(String retryMode) {
-        String mode = retryMode != null ? retryMode.trim() : "";
-        return "none".equalsIgnoreCase(mode) || "off".equalsIgnoreCase(mode)
-                || "disabled".equalsIgnoreCase(mode);
+        // The graph node retry policy is the sole retry owner.
+        return provider.chat(messages, toolDefinitions, spec.getModel(), null, null, null, null);
     }
 }

@@ -793,11 +793,11 @@ public final class CliCommands {
             // 初始化标志字符串
             String flags = "";
             // 如果是只读工具，添加 read-only 标志
-            if (tool.isReadOnly()) {
+            if (tool.effectPolicy().readOnly()) {
                 flags = flags.isEmpty() ? "(read-only" : flags + ", read-only";
             }
             // 如果是独占工具，添加 exclusive 标志
-            if (tool.isExclusive()) {
+            if (tool.effectPolicy().concurrency() == ricbot.tool.api.ToolEffectPolicy.Concurrency.EXCLUSIVE_WORKSPACE) {
                 flags = flags.isEmpty() ? "(exclusive" : flags + ", exclusive";
             }
             // 如果有标志，闭合括号

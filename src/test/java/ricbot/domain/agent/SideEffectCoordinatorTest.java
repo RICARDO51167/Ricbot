@@ -8,6 +8,7 @@ import ricbot.domain.security.ApprovalRequest;
 import ricbot.domain.security.ApprovalService;
 import ricbot.domain.trace.TraceEventType;
 import ricbot.domain.trace.TraceStore;
+import ricbot.infra.runtime.SqliteRuntimeStore;
 
 import java.nio.file.Path;
 import java.util.List;
@@ -21,7 +22,7 @@ class SideEffectCoordinatorTest {
     void reusesDurablyCompletedEffectWithoutExecutingAgain(@TempDir Path workspace) {
         AtomicInteger executions = new AtomicInteger();
         ToolRegistry tools = registry(new CountingTool(executions, false));
-        SideEffectCoordinator coordinator = new SideEffectCoordinator(new FileSideEffectStore(workspace));
+        SideEffectCoordinator coordinator = new SideEffectCoordinator(new SqliteRuntimeStore(workspace).sideEffectStore());
 
         SideEffectOutcome first = coordinator.execute(
                 tools, "session", "key-1", "write", Map.of("value", "x"), false, ignored -> true);
@@ -36,7 +37,7 @@ class SideEffectCoordinatorTest {
 
     @Test
     void uncertainEffectRequiresExplicitRetryAuthorization(@TempDir Path workspace) {
-        FileSideEffectStore store = new FileSideEffectStore(workspace);
+        SideEffectStore store = new SqliteRuntimeStore(workspace).sideEffectStore();
         SideEffectCoordinator coordinator = new SideEffectCoordinator(store);
         ToolRegistry tools = registry(new CountingTool(new AtomicInteger(), false));
         Map<String, Object> args = Map.of("value", "x");
@@ -58,7 +59,7 @@ class SideEffectCoordinatorTest {
         AtomicInteger executions = new AtomicInteger();
         CountingTool tool = new CountingTool(executions, true);
         ToolRegistry tools = registry(tool);
-        SideEffectCoordinator coordinator = new SideEffectCoordinator(new FileSideEffectStore(workspace));
+        SideEffectCoordinator coordinator = new SideEffectCoordinator(new SqliteRuntimeStore(workspace).sideEffectStore());
         Map<String, Object> args = Map.of("value", "x");
         coordinator.execute(tools, "session", "key-3", "write", args, false, ignored -> true);
 
@@ -74,7 +75,7 @@ class SideEffectCoordinatorTest {
     @Test
     void retryAndCompensationRequireBoundOneShotApprovals(@TempDir Path workspace) {
         TraceStore traces = new TraceStore(workspace);
-        SideEffectStore store = new AuditedSideEffectStore(new FileSideEffectStore(workspace), traces);
+        SideEffectStore store = new AuditedSideEffectStore(new SqliteRuntimeStore(workspace).sideEffectStore(), traces);
         ApprovalService approvals = new ApprovalService(traces);
         SideEffectApplicationService service = new SideEffectApplicationService(store, approvals);
         CountingTool tool = new CountingTool(new AtomicInteger(), true);
@@ -126,7 +127,14 @@ class SideEffectCoordinatorTest {
             return Map.of("ok", true, "count", executions.incrementAndGet(),
                     "idempotency_key", context.idempotencyKey());
         }
-        public boolean supportsCompensation() { return compensatable; }
+        @Override public ricbot.tool.api.ToolEffectPolicy effectPolicy() {
+            return compensatable
+                    ? ricbot.tool.api.ToolEffectPolicy.compensatable(java.time.Duration.ofSeconds(30),
+                        ricbot.tool.api.ToolEffectPolicy.Approval.RISK_BASED)
+                    : ricbot.tool.api.ToolEffectPolicy.atMostOnce(java.time.Duration.ofSeconds(30),
+                        ricbot.tool.api.ToolEffectPolicy.Concurrency.SERIAL_PER_RUN,
+                        ricbot.tool.api.ToolEffectPolicy.Approval.RISK_BASED);
+        }
         public Object compensate(Map<String, Object> params, Object result, ToolExecutionContext context) {
             return Map.of("ok", true, "compensations", compensations.incrementAndGet());
         }

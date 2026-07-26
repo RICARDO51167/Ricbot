@@ -20,10 +20,8 @@
 - `session/`：对话 Session 模型、管理与持久化契约。
 - `team/`：Team 任务、计划步骤、验证、产物和 Worker 协作领域规则。
 - `trace/`：只读 Trace 投影、检索和导出；不作为运行事实源。
-- `worker/`：持久 Worker 状态、Mailbox、Ack、Join、Handoff、Cancel 与 Recover。
 - `workspace/`：Local/Worktree 工作区会话、差异和清理领域模型。
 
 ## 直接文件
 
 除本说明外无直接文件；实现位于上列子目录。
-

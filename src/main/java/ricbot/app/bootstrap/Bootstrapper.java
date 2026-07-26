@@ -39,10 +39,6 @@ public class Bootstrapper {
         return config;
     }
 
-    public MessageBus createBus() {
-        return new MessageBus();
-    }
-
     public LLMProvider createProvider(Config config) {
         return ProviderFactory.makeProvider(config);
     }
@@ -64,7 +60,7 @@ public class Bootstrapper {
         );
         RuntimeToolPacks.registerAll(core.tools(), config.getWorkspacePath(),
                 config.getTools().isRestrictToWorkspace(), config.getTools().getExec(),
-                core.approvalService(), core.spawnWorkers());
+                core.approvalService());
 
         AgentLoop loop = new AgentLoop(
                 bus,

@@ -1,8 +1,5 @@
 package ricbot.infra.persistence;
 
-import ricbot.domain.agent.RunEventType;
-import ricbot.domain.team.StepAuditEventType;
-import ricbot.domain.team.TeamEvent;
 import ricbot.domain.trace.TraceEventType;
 
 import java.util.Collections;
@@ -11,7 +8,6 @@ import java.util.Map;
 
 /** Migration catalog that prevents diagnostic and projection data becoming a source of truth. */
 public final class EventClassificationCatalog {
-    public static final String RUN = "run";
     public static final String TRACE = "trace";
     public static final String TEAM = "team";
     public static final String STEP_AUDIT = "step_audit";
@@ -35,26 +31,6 @@ public final class EventClassificationCatalog {
 
     private static Map<String, Classification> build() {
         Map<String, Classification> values = new LinkedHashMap<>();
-
-        durable(values, RUN,
-                RunEventType.RUN_STARTED,
-                RunEventType.RUN_FORKED,
-                RunEventType.CHECKPOINT_RESTORED,
-                RunEventType.MODEL_RESPONSE_RECEIVED,
-                RunEventType.MODEL_FAILED,
-                RunEventType.TOOL_CALL_STARTED,
-                RunEventType.TOOL_CALL_COMPLETED,
-                RunEventType.TOOL_CALL_FAILED,
-                RunEventType.TOOL_RETRY_STARTED,
-                RunEventType.TOOL_RETRY_COMPLETED,
-                RunEventType.TOOL_RETRY_FAILED,
-                RunEventType.RUN_PAUSED,
-                RunEventType.RUN_FINISHED);
-        diagnostic(values, RUN,
-                RunEventType.NODE_STARTED,
-                RunEventType.NODE_TRANSITIONED,
-                RunEventType.MODEL_REQUESTED,
-                RunEventType.TOOL_BATCH_COMPLETED);
 
         diagnostic(values, TRACE,
                 TraceEventType.SESSION_STARTED,
@@ -111,35 +87,6 @@ public final class EventClassificationCatalog {
                 TraceEventType.VERIFICATION_RESULT,
                 TraceEventType.WORKSPACE_DIFFED,
                 TraceEventType.EVAL_RESULT);
-
-        put(values, TEAM, TeamEvent.TEAM_STARTED, Classification.DURABLE_FACT);
-        put(values, TEAM, TeamEvent.TASK_CREATED, Classification.DURABLE_FACT);
-        put(values, TEAM, TeamEvent.TASK_PRODUCING, Classification.DURABLE_FACT);
-        put(values, TEAM, TeamEvent.WORKER_RESULT_SUBMITTED, Classification.DURABLE_FACT);
-        put(values, TEAM, TeamEvent.VERIFICATION_STARTED, Classification.DURABLE_FACT);
-        put(values, TEAM, TeamEvent.VERIFICATION_PASSED, Classification.DURABLE_FACT);
-        put(values, TEAM, TeamEvent.VERIFICATION_REJECTED, Classification.DURABLE_FACT);
-        put(values, TEAM, TeamEvent.REVISION_REQUESTED, Classification.DURABLE_FACT);
-        put(values, TEAM, TeamEvent.HUMAN_NEEDED, Classification.DURABLE_FACT);
-        put(values, TEAM, TeamEvent.TASK_ABORTED, Classification.DURABLE_FACT);
-        put(values, TEAM, TeamEvent.TEAM_ARCHIVED, Classification.DURABLE_FACT);
-        put(values, TEAM, TeamEvent.TEAM_RESUMED, Classification.DURABLE_FACT);
-        put(values, TEAM, TeamEvent.ARTIFACT_RECORDED, Classification.DURABLE_FACT);
-
-        diagnostic(values, STEP_AUDIT,
-                StepAuditEventType.STEP_CREATED,
-                StepAuditEventType.STEP_UPDATED,
-                StepAuditEventType.STEP_READY,
-                StepAuditEventType.STEP_BLOCKED,
-                StepAuditEventType.STEP_APPLY_REQUESTED);
-        durable(values, STEP_AUDIT,
-                StepAuditEventType.STEP_APPROVAL_REQUIRED,
-                StepAuditEventType.STEP_APPROVED,
-                StepAuditEventType.STEP_TOOL_APPLIED,
-                StepAuditEventType.STEP_REJECTED,
-                StepAuditEventType.STEP_FAILED,
-                StepAuditEventType.STEP_CHANGESET_LINKED,
-                StepAuditEventType.STEP_VERIFIED);
 
         put(values, EVIDENCE, "DiffEvidence", Classification.IMMUTABLE_ARTIFACT);
         put(values, EVIDENCE, "ExecutedTestEvidence", Classification.IMMUTABLE_ARTIFACT);

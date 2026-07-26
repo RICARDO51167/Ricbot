@@ -36,9 +36,12 @@ public final class AuditedSideEffectStore implements SideEffectStore {
         SideEffectRecord saved = delegate.save(record);
         TraceEventType type = switch (saved.status()) {
             case RESERVED -> TraceEventType.SIDE_EFFECT_RESERVED;
+            case EXECUTING -> TraceEventType.SIDE_EFFECT_RESERVED;
+            case AWAITING_APPROVAL -> TraceEventType.SIDE_EFFECT_RESERVED;
             case RETRY_AUTHORIZED -> TraceEventType.SIDE_EFFECT_RETRY_AUTHORIZED;
             case SUCCEEDED -> TraceEventType.SIDE_EFFECT_SUCCEEDED;
             case FAILED -> TraceEventType.SIDE_EFFECT_FAILED;
+            case UNKNOWN -> TraceEventType.SIDE_EFFECT_FAILED;
             case COMPENSATED -> TraceEventType.SIDE_EFFECT_COMPENSATED;
         };
         trace(saved, type, "side effect " + saved.status().name().toLowerCase(java.util.Locale.ROOT));

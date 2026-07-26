@@ -57,9 +57,8 @@ public class ReadFileTool extends Tool {
         return "读取文本文件。支持按行切片读取：offset（从 1 开始）与可选的 limit。";
     }
 
-    @Override
-    public boolean isReadOnly() {
-        return true;
+    @Override public ricbot.tool.api.ToolEffectPolicy effectPolicy() {
+        return ricbot.tool.api.ToolEffectPolicy.readOnly(java.time.Duration.ofSeconds(30));
     }
 
     @Override

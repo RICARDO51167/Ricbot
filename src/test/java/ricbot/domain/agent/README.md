@@ -18,7 +18,6 @@
 - `AgentHookFactoryTest.java`：验证 Agent Hook Factory Test 的行为与边界。
 - `AgentLoopTest.java`：验证 Agent Loop Test 的行为与边界。
 - `AgentLoopToolCallTest.java`：验证 Agent Loop Tool Call Test 的行为与边界。
-- `AgentNodeSchedulerTest.java`：验证 Agent Node Scheduler Test 的行为与边界。
 - `AgentRetryPolicyTest.java`：验证 Agent Retry Policy Test 的行为与边界。
 - `AgentRunnerCheckpointResumeTest.java`：验证 Agent Runner Checkpoint Resume Test 的行为与边界。
 - `AgentRunnerTest.java`：验证 Agent Runner Test 的行为与边界。
@@ -43,4 +42,3 @@
 - `TaskStateTest.java`：验证 Task State Test 的行为与边界。
 - `TaskSummaryServiceTest.java`：验证 Task Summary Service Test 的行为与边界。
 - `ToolContextInjectorTest.java`：验证 Tool Context Injector Test 的行为与边界。
-

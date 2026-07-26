@@ -6,15 +6,15 @@ import lombok.Setter;
 import lombok.experimental.Accessors;
 import ricbot.domain.config.ProviderCapability;
 import ricbot.domain.hook.AgentHook;
+import ricbot.domain.security.ApprovalService;
 import ricbot.tool.api.ToolRegistry;
 
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.*;
-import java.util.function.Consumer;
 
 /**
- * AgentRunner 的运行参数
+ * Agent Runtime 的不可变运行参数
  *
  * 主要目标：
  * 1. 封装一次 runner.run(...) 所需的全部参数
@@ -65,29 +65,11 @@ public class AgentRunSpec {
     private Map<String, Object> metadata = new LinkedHashMap<>();
     // 适配层声明的允许工具名；实际限制由传入的 ToolRegistry 决定。
     private List<String> allowedTools = new ArrayList<>();
-    /**
-     * checkpoint 回调，用于保存中间状态
-     */
-    private Consumer<Map<String, Object>> checkpointCallback;
-
-    /** Typed durable event sink; invoked synchronously before unsafe boundaries. */
-    private RunEventSink runEventSink = RunEventSink.disabled();
-
-    /** Existing CREATED branch state used to continue an executable journal fork. */
-    private RunState initialRunState;
-
-    /** Historical checkpoint whose exact node boundary should be continued. */
-    private RunCheckpoint resumeCheckpoint;
-
     /** Durable protocol store for write-tool idempotency and compensation. */
     private SideEffectStore sideEffectStore = SideEffectStore.disabled();
 
-    /**
-     * Index of the first message produced by this logical request. A retry can
-     * start with messages produced by an earlier runner invocation, while all
-     * of them still belong to the same recoverable request.
-     */
-    private Integer checkpointMessageOffset;
+    /** Persistent approval authority used by the graph approval node. */
+    private ApprovalService approvalService;
 
     /**
      * 进度回调，用于报告执行进度

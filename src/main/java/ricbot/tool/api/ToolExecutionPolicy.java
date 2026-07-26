@@ -16,14 +16,15 @@ public final class ToolExecutionPolicy {
         if (tool == null) {
             return new ToolRegistry.ToolPolicy(name, false, false, true, "missing");
         }
-        boolean readOnly = tool.isReadOnly();
-        boolean exclusive = tool.isExclusive();
+        ToolEffectPolicy effect = tool.effectPolicy();
+        boolean readOnly = effect.readOnly();
+        boolean exclusive = effect.concurrency() == ToolEffectPolicy.Concurrency.EXCLUSIVE_WORKSPACE;
         return new ToolRegistry.ToolPolicy(
                 name,
                 readOnly,
                 exclusive,
                 !exclusive && readOnly,
-                readOnly ? "read_only" : "side_effect"
+                effect.effect().name().toLowerCase(java.util.Locale.ROOT)
         );
     }
 

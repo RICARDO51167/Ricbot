@@ -23,6 +23,8 @@ CONFIG_STATUS="NOT_RUN"
 SMOKE_STATUS="NOT_RUN"
 COMPARE_STATUS="SKIPPED"
 BASELINE_STATUS="MISSING"
+ARCHITECTURE_STATUS="NOT_RUN"
+TEAM_RUNTIME_STATUS="NOT_RUN"
 CONFIG_OUTPUT=""
 SMOKE_OUTPUT=""
 COMPARE_OUTPUT=""
@@ -105,6 +107,8 @@ write_report() {
     echo "| config doctor | $CONFIG_STATUS |"
     echo "| eval smoke | $SMOKE_STATUS |"
     echo "| eval compare | $COMPARE_STATUS |"
+    echo "| architecture hard-cut | $ARCHITECTURE_STATUS |"
+    echo "| team runtime golden | $TEAM_RUNTIME_STATUS |"
     echo
     echo "## Baseline"
     echo
@@ -185,6 +189,56 @@ else
   exit 1
 fi
 
+ARCHITECTURE_LOG="$REPORT_DIR/release-check-architecture.log"
+FORBIDDEN_TYPES="AgentRunner.java SpawnWorkerService.java SpawnTool.java AutoCompact.java Consolidator.java RuntimeV2QueryService.java RunCheckpoint.java RunCheckpointStore.java RunJournalStore.java RunEventSink.java RunResumeService.java RunRecoveryCoordinator.java RunEventReplayService.java"
+: >"$ARCHITECTURE_LOG"
+for forbidden_type in $FORBIDDEN_TYPES; do
+  found="$(find src/main/java -name "$forbidden_type" -print)"
+  if [ -n "$found" ]; then
+    printf '%s\n' "$found" >>"$ARCHITECTURE_LOG"
+  fi
+done
+for removed_dir in src/main/java/ricbot/application/team src/main/java/ricbot/domain/team src/main/java/ricbot/domain/worker; do
+  if [ -d "$removed_dir" ] && find "$removed_dir" -type f -print -quit | grep -q .; then
+    echo "$removed_dir" >>"$ARCHITECTURE_LOG"
+  fi
+done
+if grep -R -n '/team' src/main/java --include='*.java' >>"$ARCHITECTURE_LOG" 2>/dev/null; then
+  :
+fi
+if grep -R -n -E 'isReadOnly\(|isExclusive\(|supportsCompensation\(|preflight\(' \
+    src/main/java --include='*.java' >>"$ARCHITECTURE_LOG" 2>/dev/null; then
+  :
+fi
+if grep -R -n 'runtime-v2' src/main/java README.md --include='*.java' --include='*.md' \
+    | grep -v 'LegacyRuntimeMigrator.java' >>"$ARCHITECTURE_LOG" 2>/dev/null; then
+  :
+fi
+if [ -s "$ARCHITECTURE_LOG" ]; then
+  ARCHITECTURE_STATUS="FAIL"
+  mark_fail
+  append_final_reason "architecture hard-cut check found forbidden legacy runtime types"
+  write_report
+  echo "release-check failed: architecture hard-cut"
+  echo "report: $REPORT"
+  exit 1
+fi
+ARCHITECTURE_STATUS="PASS"
+
+TEAM_LOG="$REPORT_DIR/release-check-team-runtime.log"
+if run_capture "team runtime golden" "$TEAM_LOG" sh ./mvnw -q \
+  -Dtest=LocalTeamGraphServiceTest,LocalTaskSchedulerTest,PatchLedgerServiceTest,SqliteTaskClaimConcurrencyTest test; then
+  TEAM_RUNTIME_STATUS="PASS"
+else
+  TEAM_RUNTIME_STATUS="FAIL"
+  mark_fail
+  append_final_reason "team runtime golden scenarios failed"
+  write_report
+  echo "release-check failed: team runtime golden"
+  echo "report: $REPORT"
+  exit 1
+fi
+
 PACKAGE_LOG="$REPORT_DIR/release-check-package.log"
 if run_capture "package" "$PACKAGE_LOG" sh ./mvnw -q -DskipTests package; then
   PACKAGE_STATUS="PASS"
@@ -203,7 +257,7 @@ CONFIG_LOG="$REPORT_DIR/release-check-config-doctor.log"
 if run_capture "config doctor" "$CONFIG_LOG" java -jar "$JAR" config doctor -c "$CONFIG_PATH"; then
   :
 else
-  append_warning "config doctor command returned non-zero; treated as diagnostic warning"
+  :
 fi
 CONFIG_OUTPUT="$(cat "$CONFIG_LOG")"
 CONFIG_STATUS="$(printf "%s\n" "$CONFIG_OUTPUT" | awk -F': ' '/^status:/ {print $2; exit}')"
@@ -211,13 +265,15 @@ if [ -z "$CONFIG_STATUS" ]; then
   CONFIG_STATUS="UNKNOWN"
   append_warning "config doctor status was not found in output"
 elif [ "$CONFIG_STATUS" != "OK" ]; then
-  append_warning "config doctor reported $CONFIG_STATUS; missing local API keys do not fail release-check"
   if printf "%s\n" "$CONFIG_OUTPUT" | grep -qi "api key"; then
-    append_warning_reason "config doctor missing API key"
+    CONFIG_STATUS="OPTIONAL_CREDENTIALS_MISSING"
+    WARNINGS="${WARNINGS}- optional local API credentials are not configured; fixed smoke uses no real key
+"
   else
+    append_warning "config doctor reported $CONFIG_STATUS"
     append_warning_reason "config doctor reported $CONFIG_STATUS"
+    append_final_reason "config doctor reported $CONFIG_STATUS, treated as warning"
   fi
-  append_final_reason "config doctor reported $CONFIG_STATUS, treated as warning"
 fi
 
 SMOKE_LOG="$REPORT_DIR/release-check-eval-smoke.log"
@@ -292,11 +348,11 @@ if [ -d "$BASELINE_DIR" ] && [ -f "$BASELINE_DIR/summary.json" ] && [ -f "$BASEL
     append_compare_warning "eval compare case count changed: baseline=$baseline_total candidate=$candidate_total"
   fi
 else
-  COMPARE_STATUS="SKIPPED"
+  COMPARE_STATUS="FAIL"
   COMPARE_OUTPUT="baseline not found: $BASELINE_DIR"
-  append_compare_warning "eval compare skipped because baseline was not found: $BASELINE_DIR"
+  mark_fail
   append_warning_reason "baseline missing"
-  append_final_reason "baseline missing, compare skipped"
+  append_final_reason "fixed golden baseline is missing"
 fi
 
 write_report

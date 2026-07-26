@@ -22,6 +22,9 @@ import java.util.regex.Pattern;
  * 4. 跳过二进制文件
  */
 public class GrepTool extends Tool {
+    @Override public ricbot.tool.api.ToolEffectPolicy effectPolicy() {
+        return ricbot.tool.api.ToolEffectPolicy.readOnly(java.time.Duration.ofSeconds(60));
+    }
 
     // 工作空间根路径
     private final Path workspace;
@@ -58,16 +61,6 @@ public class GrepTool extends Tool {
     @Override
     public String getDescription() {
         return "在目录下的文件中搜索文本或正则表达式。";
-    }
-
-    /**
-     * 判断工具是否为只读操作
-     *
-     * @return true，因为 grep 只是搜索，不修改文件
-     */
-    @Override
-    public boolean isReadOnly() {
-        return true;
     }
 
     /**

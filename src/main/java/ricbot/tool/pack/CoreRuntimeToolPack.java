@@ -1,11 +1,9 @@
 package ricbot.tool.pack;
 
-import ricbot.domain.agent.SpawnWorkerService;
 import ricbot.domain.security.ApprovalService;
 import ricbot.infra.config.Config;
 import ricbot.tool.api.BuiltinToolRegistrar;
 import ricbot.tool.api.ToolRegistry;
-import ricbot.tool.process.SpawnTool;
 
 import java.nio.file.Path;
 
@@ -19,8 +17,7 @@ public final class CoreRuntimeToolPack {
             Path workspace,
             boolean restrictToWorkspace,
             Config.ExecToolConfig execConfig,
-            ApprovalService approvals,
-            SpawnWorkerService spawnWorkers
+            ApprovalService approvals
     ) {
         Config.ExecToolConfig safeExec = execConfig != null ? execConfig : new Config.ExecToolConfig();
         Path allowedDir = BuiltinToolRegistrar.allowedDir(workspace, restrictToWorkspace, safeExec);
@@ -33,9 +30,6 @@ public final class CoreRuntimeToolPack {
             BuiltinToolRegistrar.registerExecTool(
                     tools, workspace, restrictToWorkspace, safeExec, toolApprovals
             );
-            if (spawnWorkers != null) {
-                tools.register(new SpawnTool(spawnWorkers));
-            }
         }
     }
 }

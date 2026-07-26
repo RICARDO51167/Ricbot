@@ -138,6 +138,10 @@ public class ToolRegistry {
         if (tool == null) {
             return new PrepareResult(null, rawParams, toolNotFoundMessage(name));
         }
+        if (!tool.effectPolicy().declared()) {
+            return new PrepareResult(tool, rawParams,
+                    "Error: Tool '" + name + "' has no ToolEffectPolicy and is refused by default");
+        }
 
         // 验证参数是否为 Map 类型
         if (!(rawParams instanceof Map<?, ?>)) {
@@ -214,7 +218,7 @@ public class ToolRegistry {
     ) {
         Tool tool = get(name);
         if (tool == null) return toolNotFoundMessage(name);
-        if (!tool.supportsCompensation()) {
+        if (!tool.effectPolicy().compensation()) {
             return "Error: tool '" + name + "' does not support compensation";
         }
         ToolExecutionContext context = ToolExecutionContext.protocol(idempotencyKey, approvalId);

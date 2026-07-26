@@ -420,6 +420,9 @@ public class ContextBuilder {
             if (msg == null) {
                 continue;
             }
+            if (ricbot.domain.agent.context.ContextCompactor.compressed(msg)) {
+                continue;
+            }
             Object role = msg.get("role");
             if (!(role instanceof String) || ((String) role).isBlank()) {
                 continue;

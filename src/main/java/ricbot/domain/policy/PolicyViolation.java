@@ -1,6 +1,6 @@
 package ricbot.domain.policy;
 
-import ricbot.domain.team.TeamRole;
+import ricbot.domain.task.TaskRole;
 
-public record PolicyViolation(TeamRole role, String toolName, String reason, PolicyDecision decision) {
+public record PolicyViolation(TaskRole role, String toolName, String reason, PolicyDecision decision) {
 }

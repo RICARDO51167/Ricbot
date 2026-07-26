@@ -30,7 +30,11 @@ public record GitChangeSet(
         String workspacePath,
         GitChangeSetStatus status,
         String createdAt,
-        String updatedAt
+        String updatedAt,
+        String verificationReportId,
+        String verificationReportDigest,
+        String verifiedDiffDigest,
+        String verificationArtifact
 ) {
     public GitChangeSet {
         id = id != null && !id.isBlank() ? id : newId();
@@ -57,6 +61,23 @@ public record GitChangeSet(
         String now = Instant.now().toString();
         createdAt = createdAt != null && !createdAt.isBlank() ? createdAt : now;
         updatedAt = updatedAt != null && !updatedAt.isBlank() ? updatedAt : now;
+        verificationReportId = clean(verificationReportId);
+        verificationReportDigest = clean(verificationReportDigest);
+        verifiedDiffDigest = clean(verifiedDiffDigest);
+        verificationArtifact = clean(verificationArtifact);
+    }
+
+    public GitChangeSet(String id, String sessionId, String teamSessionId, String taskId, String baseCommit,
+                        List<String> changedFiles, String diffSummary, String diffPatch, List<String> diffReviews,
+                        List<String> suggestedTests, List<String> executedTests, String verifierStatus,
+                        List<String> verifierReasons, String taskSummary, String commitMessage,
+                        List<String> rollbackCommands, String commitHash, String rollbackStatus,
+                        String workspaceSessionId, String workspacePath, GitChangeSetStatus status,
+                        String createdAt, String updatedAt) {
+        this(id, sessionId, teamSessionId, taskId, baseCommit, changedFiles, diffSummary, diffPatch, diffReviews,
+                suggestedTests, executedTests, verifierStatus, verifierReasons, taskSummary, commitMessage,
+                rollbackCommands, commitHash, rollbackStatus, workspaceSessionId, workspacePath, status,
+                createdAt, updatedAt, "", "", "", "");
     }
 
     public GitChangeSet(
@@ -91,14 +112,16 @@ public record GitChangeSet(
         return new GitChangeSet(id, sessionId, teamSessionId, taskId, baseCommit, changedFiles, diffSummary, diffPatch,
                 diffReviews, suggestedTests, executedTests, verifierStatus, verifierReasons, taskSummary,
                 nextCommitMessage, rollbackCommands, commitHash, rollbackStatus, workspaceSessionId, workspacePath,
-                status, createdAt, Instant.now().toString());
+                status, createdAt, Instant.now().toString(), verificationReportId, verificationReportDigest,
+                verifiedDiffDigest, verificationArtifact);
     }
 
     public GitChangeSet withStatus(GitChangeSetStatus nextStatus) {
         return new GitChangeSet(id, sessionId, teamSessionId, taskId, baseCommit, changedFiles, diffSummary, diffPatch,
                 diffReviews, suggestedTests, executedTests, verifierStatus, verifierReasons, taskSummary,
                 commitMessage, rollbackCommands, commitHash, rollbackStatus, workspaceSessionId, workspacePath,
-                nextStatus, createdAt, Instant.now().toString());
+                nextStatus, createdAt, Instant.now().toString(), verificationReportId, verificationReportDigest,
+                verifiedDiffDigest, verificationArtifact);
     }
 
     public GitChangeSet withVerifier(String status, List<String> reasons) {
@@ -111,28 +134,42 @@ public record GitChangeSet(
         return new GitChangeSet(id, sessionId, teamSessionId, taskId, baseCommit, changedFiles, diffSummary, diffPatch,
                 diffReviews, suggestedTests, executedTests, status, reasons, taskSummary,
                 commitMessage, rollbackCommands, commitHash, rollbackStatus, workspaceSessionId, workspacePath,
-                nextStatus, createdAt, Instant.now().toString());
+                nextStatus, createdAt, Instant.now().toString(), "", "", "", "");
+    }
+
+    public GitChangeSet withVerificationReport(String nextVerifierStatus, List<String> reasons, String reportId,
+                                               String reportDigest, String diffDigest, String artifact) {
+        GitChangeSetStatus nextStatus = "PASS".equalsIgnoreCase(nextVerifierStatus)
+                && status != GitChangeSetStatus.APPROVED && status != GitChangeSetStatus.COMMITTED
+                && status != GitChangeSetStatus.ROLLED_BACK ? GitChangeSetStatus.VERIFIED : status;
+        return new GitChangeSet(id, sessionId, teamSessionId, taskId, baseCommit, changedFiles, diffSummary, diffPatch,
+                diffReviews, suggestedTests, executedTests, nextVerifierStatus, reasons, taskSummary,
+                commitMessage, rollbackCommands, commitHash, rollbackStatus, workspaceSessionId, workspacePath,
+                nextStatus, createdAt, Instant.now().toString(), reportId, reportDigest, diffDigest, artifact);
     }
 
     public GitChangeSet withCommitResult(String nextCommitHash) {
         return new GitChangeSet(id, sessionId, teamSessionId, taskId, baseCommit, changedFiles, diffSummary, diffPatch,
                 diffReviews, suggestedTests, executedTests, verifierStatus, verifierReasons, taskSummary,
                 commitMessage, rollbackCommands, nextCommitHash, rollbackStatus, workspaceSessionId, workspacePath,
-                GitChangeSetStatus.COMMITTED, createdAt, Instant.now().toString());
+                GitChangeSetStatus.COMMITTED, createdAt, Instant.now().toString(), verificationReportId,
+                verificationReportDigest, verifiedDiffDigest, verificationArtifact);
     }
 
     public GitChangeSet withRollbackResult(String nextRollbackStatus) {
         return new GitChangeSet(id, sessionId, teamSessionId, taskId, baseCommit, changedFiles, diffSummary, diffPatch,
                 diffReviews, suggestedTests, executedTests, verifierStatus, verifierReasons, taskSummary,
                 commitMessage, rollbackCommands, commitHash, nextRollbackStatus, workspaceSessionId, workspacePath,
-                GitChangeSetStatus.ROLLED_BACK, createdAt, Instant.now().toString());
+                GitChangeSetStatus.ROLLED_BACK, createdAt, Instant.now().toString(), verificationReportId,
+                verificationReportDigest, verifiedDiffDigest, verificationArtifact);
     }
 
     public GitChangeSet withWorkspace(String nextWorkspaceSessionId, String nextWorkspacePath) {
         return new GitChangeSet(id, sessionId, teamSessionId, taskId, baseCommit, changedFiles, diffSummary, diffPatch,
                 diffReviews, suggestedTests, executedTests, verifierStatus, verifierReasons, taskSummary,
                 commitMessage, rollbackCommands, commitHash, rollbackStatus, nextWorkspaceSessionId, nextWorkspacePath,
-                status, createdAt, Instant.now().toString());
+                status, createdAt, Instant.now().toString(), verificationReportId, verificationReportDigest,
+                verifiedDiffDigest, verificationArtifact);
     }
 
     public Map<String, Object> toMap() {
@@ -160,6 +197,10 @@ public record GitChangeSet(
         out.put("status", status.name());
         out.put("createdAt", createdAt);
         out.put("updatedAt", updatedAt);
+        out.put("verificationReportId", verificationReportId);
+        out.put("verificationReportDigest", verificationReportDigest);
+        out.put("verifiedDiffDigest", verifiedDiffDigest);
+        out.put("verificationArtifact", verificationArtifact);
         return out;
     }
 
@@ -190,7 +231,11 @@ public record GitChangeSet(
                 string(raw.get("workspacePath")),
                 parseStatus(raw.get("status")),
                 string(raw.get("createdAt")),
-                string(raw.get("updatedAt"))
+                string(raw.get("updatedAt")),
+                string(raw.get("verificationReportId")),
+                string(raw.get("verificationReportDigest")),
+                string(raw.get("verifiedDiffDigest")),
+                string(raw.get("verificationArtifact"))
         );
     }
 

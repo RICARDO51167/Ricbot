@@ -158,8 +158,9 @@ public class AgentLoopTest {
         assertTrue(removedSubagentCommand.getContent().contains("command error: unknown command"));
         assertEquals(0, modelCalls.get());
 
-        OutboundMessage missingReport = loop.processDirect("/team report teamtask_missing", "cli:direct");
-        assertTrue(missingReport.getContent().contains("team error:"), missingReport.getContent());
+        OutboundMessage removedTeamCommand = loop.processDirect("/" + "team report old", "cli:direct");
+        assertTrue(removedTeamCommand.getContent().contains("command error: unknown command"),
+                removedTeamCommand.getContent());
         assertEquals(0, modelCalls.get());
 
         OutboundMessage unknownSlash = loop.processDirect("/definitely-unknown", "cli:direct");

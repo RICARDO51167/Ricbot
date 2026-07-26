@@ -1,6 +1,6 @@
 # graph
 
-通用 Agent Graph 的节点、边、条件路由、游标和执行状态。
+统一 Runtime 的确定性 Agent Graph、持久化 Superstep 与内置节点。
 
 ## 边界
 
@@ -10,16 +10,12 @@
 
 无直接子目录。
 
-## 直接文件
+## 执行语义
 
-- `AgentGraphDefinition.java`：Agent Graph Definition：本包内的领域类型或协作组件。
-- `AgentGraphRuntime.java`：Agent Graph Runtime：驱动对应执行生命周期。
-- `GraphCondition.java`：Graph Condition：本包内的领域类型或协作组件。
-- `GraphConditionRegistry.java`：Graph Condition Registry：本包内的领域类型或协作组件。
-- `GraphEdge.java`：Graph Edge：本包内的领域类型或协作组件。
-- `GraphExecutionState.java`：Graph Execution State：执行结果、报告或状态值对象。
-- `GraphExecutionStatus.java`：Graph Execution Status：执行结果、报告或状态值对象。
-- `GraphNodeExecutor.java`：Graph Node Executor：本包内的领域类型或协作组件。
-- `GraphNodeRegistry.java`：Graph Node Registry：本包内的领域类型或协作组件。
-- `GraphNodeResult.java`：Graph Node Result：执行结果、报告或状态值对象。
+- 同一 Superstep 的 `activeNodes` 读取同一 Channel 快照并行执行。
+- Node Write 先独立持久化，再按 `planOrder/nodeId/activationId` 排序归并。
+- Channel 必须在 `GraphStateSchema` 声明；未知 Channel 和 Reducer 冲突直接失败。
+- 每步提交完整 Checkpoint；恢复时复用 Pending Write，只重跑未完成 Activation。
+- 静态边显式选择 `FIRST_MATCH` 或 `FAN_OUT`，动态分支使用稳定 `GraphSend`。
 
+`BuiltinGraphExecutors` 提供 Model、Tool、Approval、Worker、Join、ApplyChangeSet 和 Verifier 适配器；`DefaultTeamGraph` 定义本地 Team 的默认执行闭环。

@@ -165,6 +165,10 @@ public class ToolRegistryTest {
                 return "echo";
             }
 
+            @Override public ToolEffectPolicy effectPolicy() {
+                return ToolEffectPolicy.readOnly(java.time.Duration.ofSeconds(30));
+            }
+
             @Override
             public Object execute(Map<String, Object> params) {
                 return "value=" + params.get("value");
@@ -200,6 +204,10 @@ public class ToolRegistryTest {
             @Override
             public String getDescription() {
                 return "context";
+            }
+
+            @Override public ToolEffectPolicy effectPolicy() {
+                return ToolEffectPolicy.readOnly(java.time.Duration.ofSeconds(30));
             }
 
             @Override
@@ -348,6 +356,9 @@ public class ToolRegistryTest {
             public String getDescription() {
                 return "test";
             }
+            @Override public ToolEffectPolicy effectPolicy() {
+                return ToolEffectPolicy.readOnly(java.time.Duration.ofSeconds(30));
+            }
         };
     }
 
@@ -363,9 +374,8 @@ public class ToolRegistryTest {
                 return name;
             }
 
-            @Override
-            public boolean isReadOnly() {
-                return true;
+            @Override public ToolEffectPolicy effectPolicy() {
+                return ToolEffectPolicy.readOnly(java.time.Duration.ofSeconds(30));
             }
 
             @Override

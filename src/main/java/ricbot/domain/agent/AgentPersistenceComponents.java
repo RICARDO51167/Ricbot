@@ -1,53 +1,22 @@
 package ricbot.domain.agent;
 
 import ricbot.domain.session.SessionManager;
-import ricbot.domain.session.SharedSessionManager;
-import ricbot.infra.persistence.FileSharedStateStore;
-import ricbot.infra.persistence.SharedStateStore;
+import ricbot.infra.runtime.SqliteRuntimeStore;
+import ricbot.infra.runtime.SqliteSessionManager;
 
 import java.nio.file.Path;
 import java.util.Objects;
 
-/** Coherent persistence bundle used by one agent runtime. */
-public record AgentPersistenceComponents(
-        SessionManager sessionManager,
-        RunCheckpointStore checkpointStore,
-        RunJournalStore journalStore,
-        SideEffectStore sideEffectStore,
-        SharedStateStore sharedStateStore,
-        String backend
-) {
+/** SQLite-backed persistence components for the single runtime. */
+public record AgentPersistenceComponents(SessionManager sessionManager, SideEffectStore sideEffectStore) {
     public AgentPersistenceComponents {
         Objects.requireNonNull(sessionManager, "sessionManager");
-        Objects.requireNonNull(checkpointStore, "checkpointStore");
-        Objects.requireNonNull(journalStore, "journalStore");
         Objects.requireNonNull(sideEffectStore, "sideEffectStore");
-        Objects.requireNonNull(sharedStateStore, "sharedStateStore");
-        backend = backend != null && !backend.isBlank() ? backend : "local";
     }
 
-    public static AgentPersistenceComponents local(Path workspace, SessionManager providedSessionManager) {
-        SharedStateStore shared = new FileSharedStateStore(workspace);
+    public static AgentPersistenceComponents unified(Path workspace, SessionManager supplied) {
+        SqliteRuntimeStore runtime = new SqliteRuntimeStore(workspace);
         return new AgentPersistenceComponents(
-                providedSessionManager != null ? providedSessionManager : new SessionManager(workspace),
-                new FileRunCheckpointStore(workspace),
-                new FileRunJournalStore(workspace),
-                new FileSideEffectStore(workspace),
-                shared,
-                "local"
-        );
-    }
-
-    public static AgentPersistenceComponents shared(Path workspace, SessionManager providedSessionManager,
-                                                     SharedStateStore shared) {
-        Objects.requireNonNull(shared, "shared");
-        return new AgentPersistenceComponents(
-                providedSessionManager != null ? providedSessionManager : new SharedSessionManager(workspace, shared),
-                new SharedRunCheckpointStore(shared),
-                new SharedRunJournalStore(shared),
-                new SharedSideEffectStore(shared),
-                shared,
-                "shared"
-        );
+                supplied != null ? supplied : new SqliteSessionManager(workspace, runtime), runtime.sideEffectStore());
     }
 }

@@ -49,10 +49,28 @@ class RuntimeBoundaryTest {
                 "ricbot/integration/api/RuntimeConstants.java",
                 "ricbot/integration/api/console/ConsoleController.java",
                 "ricbot/integration/api/RicbotWebUiHandler.java",
-                "ricbot/integration/llm/azure/AzureOpenAIProvider.java"
+                "ricbot/integration/llm/azure/AzureOpenAIProvider.java",
+                "ricbot/domain/agent/AgentRunner.java",
+                "ricbot/domain/agent/SpawnWorkerService.java",
+                "ricbot/tool/agent/SpawnTool.java",
+                "ricbot/domain/agent/AutoCompact.java",
+                "ricbot/domain/memory/Consolidator.java"
         )) {
             assertFalse(Files.exists(MAIN.resolve(removed)), "removed runtime type returned: " + removed);
         }
+        for (String removedDirectory : List.of(
+                "ricbot/application/team",
+                "ricbot/domain/team",
+                "ricbot/domain/worker"
+        )) {
+            assertFalse(Files.exists(MAIN.resolve(removedDirectory)),
+                    "removed orchestration directory returned: " + removedDirectory);
+        }
+    }
+
+    @Test
+    void legacyTeamCommandIsAbsentFromProductionSources() throws Exception {
+        assertNoImports(MAIN, List.of("/team"));
     }
 
     private static void assertNoImports(Path root, List<String> forbidden) throws Exception {

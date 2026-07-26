@@ -11,6 +11,9 @@ import java.util.List;
  * 列出指定目录下的文件和子目录的工具类。
  */
 public class ListDirTool extends Tool {
+    @Override public ricbot.tool.api.ToolEffectPolicy effectPolicy() {
+        return ricbot.tool.api.ToolEffectPolicy.readOnly(java.time.Duration.ofSeconds(30));
+    }
 
     private final Path workspace;
 
@@ -29,11 +32,6 @@ public class ListDirTool extends Tool {
     @Override
     public String getDescription() {
         return "列出某个目录下的文件与子目录。";
-    }
-
-    @Override
-    public boolean isReadOnly() {
-        return true;
     }
 
     @Override

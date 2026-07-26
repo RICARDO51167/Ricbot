@@ -4,10 +4,10 @@ Ricbot 是一个面向长任务与多智能体协作的 CLI-first Java Agent Run
 
 ## 核心能力
 
-- Agent Graph：节点注册、条件路由、暂停、cursor 恢复。
-- Durable Run：Journal、Checkpoint、状态重建、事件补发与 Run Fork。
-- Side Effect Safety：幂等 reservation、一次性审批、失败关闭、重试授权和补偿。
-- Multi-Agent：持久 Worker、Mailbox、Ack、Join、Handoff、Cancel、Recover。
+- Unified Agent Graph：`INGEST → CONTEXT → COMPACT? → MODEL → TOOLS/APPROVAL → STEERING → CONTEXT`，支持 Superstep、类型化 Channel、确定性 Reducer、暂停与恢复。
+- Durable Run：`.ricbot/runtime.db` 中的版本化事件事实、原子投影、Replay Digest 校验与安全提交点 Fork。
+- Side Effect Safety：`RESERVED → EXECUTING → SUCCEEDED/FAILED/UNKNOWN → COMPENSATED`，幂等领取、审批 Signal、失败关闭和人工重试授权。
+- Multi-Agent：持久 Task DAG、统一 LocalTaskScheduler、Fan-out/Join、Cancel/Recover 与父 Run 自动唤醒。
 - Workspace Isolation：Local workspace、受管 Git worktree、Diff、ChangeSet 和 Verification。
 - Memory：结构化长期记忆、显式审批、Tenant 隔离和共享 CAS 存储。
 - Execution：Local 与 Docker 后端；Docker 默认断网，不允许静默回退。
@@ -16,11 +16,12 @@ Ricbot 是一个面向长任务与多智能体协作的 CLI-first Java Agent Run
 ## 核心闭环
 
 ```text
-/team run <task> --worktree --verify
-  -> /team report <taskId>
-  -> /workspace diff <taskId>
-  -> /change create <taskId>
-  -> /trace show <taskId>
+/run start <goal> --mode team --worktree --verify
+  -> LeaderPlan -> Worker Tasks -> Join -> ApplyChangeSets -> Verifier
+  -> /run report <runId>
+  -> /task list <runId>
+  -> /workspace
+  -> /change
 ```
 
 Worker 在受管 worktree 中通过受限 AgentRun 执行，Verifier 检查结果，ChangeSet 作为人工审阅边界。Ricbot 不会自动把未审阅修改合并或提交到主工作区。
@@ -45,7 +46,7 @@ sh scripts/smoke.sh
 sh scripts/release-check.sh
 ```
 
-门禁依次执行测试、打包、Config Doctor、固定 Smoke Eval，并在 baseline 存在时执行 compare。报告写入 `target/release-check-report.md`。
+门禁依次执行测试、架构硬切检查、Team Runtime Golden、打包、Config Doctor、固定 Smoke Eval 和 Baseline Compare。Baseline 缺失会直接失败；报告写入 `target/release-check-report.md`。
 
 ## 配置诊断
 
@@ -72,28 +73,35 @@ java -jar target/Ricbot-1.0-SNAPSHOT.jar agent \
 java -jar target/Ricbot-1.0-SNAPSHOT.jar agent
 ```
 
-主要命令包括：
+统一 Runtime 主要命令包括：
 
 ```text
-/team run <task> --worktree --verify
-/team report <taskId>
-/workspace diff <taskId>
-/change create <taskId>
-/trace show <taskId>
+/run start <goal> [--mode agent|team] [--worktree] [--verify]
+/run list
+/run status|report|graph|events|resume|cancel <runId>
+/run replay <runId> [eventSequence]
+/run fork <runId> [eventSequence] [newRunId]
+/task list <runId>
+/task show|retry|cancel <taskId>
+/approve <requestId>
+/reject <requestId>
+/workspace
+/change
+/trace
 ```
 
 CLI 能力边界：
 
 | 操作 | 当前入口 | 覆盖情况 |
 |---|---|---|
-| 创建 | 普通消息、`/new`、`/team start`、`/team run`、`/workspace create` | 已覆盖 |
-| 恢复 | 同一 Session 自动从 Checkpoint 恢复；`/team resume <sessionId>` 恢复 Team | 部分覆盖；没有显式 Run resume/fork 命令 |
+| 创建 | 普通消息、`/run start` | 已覆盖 |
+| 恢复 | 启动扫描、父 Run Wake、`/run resume <runId>` | 已覆盖 |
 | 审批 | `/approve <requestId>`、`/reject <requestId>`、`/change approve` | 已覆盖 |
-| Worker 协作 | `/team run`、`task`、`run-worker`、`run-verifier`、`report`、`verify` | 工作流已覆盖；Mailbox/Ack/Join/Handoff/Recover 没有独立 CLI 命令 |
+| Worker 协作 | `/run start --mode team`、`/task`、`/run report` | Task DAG、Delivery Outbox 与后台唤醒统一由 Runtime 管理 |
 | Memory | Agent 上下文自动召回已审批 Memory | 仅运行时使用；没有查询、写入或治理命令 |
 | Eval | `eval`、`lint`、`smoke`、`matrix`、`compare`、`replay` | 已覆盖 |
 
-Run Fork、Worker 底层协作原语和 Memory 管理目前是领域能力，不应被描述为可直接操作的 CLI 命令。
+新 Run、Session、Task、Delivery、Approval 与 SideEffect 统一写入 SQLite WAL 数据库 `.ricbot/runtime.db`。首次启动会原子导入可恢复的旧状态，校验 Replay Digest 后将源目录归档到 `.ricbot/archive/<migration-id>`；历史写入口不再注册。
 
 ## Eval
 
@@ -120,7 +128,7 @@ java -jar target/Ricbot-1.0-SNAPSHOT.jar eval matrix \
 - Docker 默认断网，后端失败不会静默回退到 Local。
 - Worktree 修改通过 Diff 与 ChangeSet 收口。
 - Memory 只召回已审批内容；租户数据相互隔离。
-- Trace、Telemetry 和报告是投影，不能覆盖 Journal 中的执行事实。
+- Trace、Telemetry 和报告由统一事件投影，不能覆盖 Runtime 事件事实。
 
 ## 文档
 

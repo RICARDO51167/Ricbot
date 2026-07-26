@@ -11,7 +11,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * AgentRunner 运行结果
+ * Agent Runtime 运行结果
  *
  * 对应 Python runner.run(...) 的返回对象语义
  */

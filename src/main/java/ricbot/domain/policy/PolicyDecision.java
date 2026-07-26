@@ -1,14 +1,14 @@
 package ricbot.domain.policy;
 
 import ricbot.domain.security.CommandRiskLevel;
-import ricbot.domain.team.TeamRole;
+import ricbot.domain.task.TaskRole;
 
 import java.util.List;
 import java.util.Map;
 
 public record PolicyDecision(
         PolicyDecisionType decisionType,
-        TeamRole role,
+        TaskRole role,
         String toolName,
         List<String> reasons,
         CommandRiskLevel riskLevel,
@@ -19,7 +19,7 @@ public record PolicyDecision(
 ) {
     public PolicyDecision {
         decisionType = decisionType != null ? decisionType : PolicyDecisionType.DENY;
-        role = role != null ? role : TeamRole.LEADER;
+        role = role != null ? role : TaskRole.LEADER;
         toolName = toolName != null ? toolName.trim() : "";
         reasons = reasons != null ? reasons.stream().filter(v -> v != null && !v.isBlank()).map(String::trim).distinct().toList() : List.of();
         riskLevel = riskLevel != null ? riskLevel : CommandRiskLevel.SAFE;

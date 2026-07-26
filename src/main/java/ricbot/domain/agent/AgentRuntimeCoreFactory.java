@@ -1,6 +1,6 @@
 package ricbot.domain.agent;
 
-import ricbot.domain.memory.Consolidator;
+import ricbot.domain.agent.context.StructuredContextService;
 import ricbot.domain.memory.MemoryStore;
 import ricbot.domain.security.ApprovalService;
 import ricbot.domain.session.SessionManager;
@@ -9,6 +9,9 @@ import ricbot.infra.config.Config;
 import ricbot.infra.telemetry.OpenTelemetryRuntime;
 import ricbot.integration.llm.api.LLMProvider;
 import ricbot.tool.api.ToolRegistry;
+import ricbot.infra.runtime.SqliteRuntimeStore;
+import ricbot.infra.runtime.SqliteSessionManager;
+import ricbot.infra.runtime.LegacyRuntimeMigrator;
 
 import java.nio.file.Path;
 import java.util.List;
@@ -25,22 +28,21 @@ public final class AgentRuntimeCoreFactory {
                                           String timezone, int sessionTtlMinutes) {
         Path workspace = rawWorkspace.toAbsolutePath().normalize();
         ContextBuilder contextBuilder = new ContextBuilder(workspace, timezone);
-        AgentPersistenceComponents persistence = AgentPersistenceFactory.create(workspace, suppliedSessions);
+        SqliteRuntimeStore runtimeStore = new SqliteRuntimeStore(workspace);
+        new LegacyRuntimeMigrator(workspace, runtimeStore).migrateIfNeeded();
+        SessionManager runtimeSessions = suppliedSessions != null ? suppliedSessions
+                : new SqliteSessionManager(workspace, runtimeStore);
+        AgentPersistenceComponents persistence = AgentPersistenceFactory.create(workspace, runtimeSessions);
         OpenTelemetryRuntime telemetry = OpenTelemetryRuntime.fromEnvironment();
-        RunEventSink events = RunEventSink.durableWithDiagnostics(persistence.journalStore(),
-                new OpenTelemetryRunEventSink(telemetry.tracer("ricbot.agent", "1.0")));
         TraceStore traces = new TraceStore(workspace);
-        SideEffectStore sideEffects = new AuditedSideEffectStore(persistence.sideEffectStore(), traces);
+        SideEffectStore sideEffects = new AuditedSideEffectStore(runtimeStore.sideEffectStore(), traces);
         MemoryStore memory = new MemoryStore(workspace);
-        Consolidator compactor = new Consolidator(memory, provider, model, persistence.sessionManager(),
-                contextWindowTokens, 4096);
-        ApprovalService approvals = new ApprovalService(traces);
+        StructuredContextService compactor = new StructuredContextService(provider, model,
+                persistence.sessionManager(), contextWindowTokens, 4096);
+        ApprovalService approvals = new ApprovalService(runtimeStore.approvalStore(), traces);
         SideEffectApplicationService sideEffectApplication = new SideEffectApplicationService(sideEffects, approvals);
-        AutoCompact autoCompact = new AutoCompact(persistence.sessionManager(), compactor, sessionTtlMinutes);
-        SpawnWorkerService workers = new SpawnWorkerService(provider, workspace, maxToolResultChars, model,
-                execConfig, restrictToWorkspace);
-        return new AgentRuntimeCore(contextBuilder, persistence, telemetry, events, traces, sideEffects,
-                memory, compactor, approvals, sideEffectApplication, autoCompact, workers,
+        return new AgentRuntimeCore(contextBuilder, persistence, telemetry, traces, sideEffects,
+                memory, compactor, approvals, sideEffectApplication,
                 new ToolRegistry(), new GraphRunService(provider));
     }
 }

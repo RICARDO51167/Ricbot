@@ -1,6 +1,5 @@
 package ricbot.tool.pack;
 
-import ricbot.domain.agent.SpawnWorkerService;
 import ricbot.domain.security.ApprovalService;
 import ricbot.infra.config.Config;
 import ricbot.tool.api.ToolRegistry;
@@ -17,11 +16,10 @@ public final class RuntimeToolPacks {
             Path workspace,
             boolean restrictToWorkspace,
             Config.ExecToolConfig execConfig,
-            ApprovalService approvals,
-            SpawnWorkerService spawnWorkers
+            ApprovalService approvals
     ) {
         CoreRuntimeToolPack.register(
-                tools, workspace, restrictToWorkspace, execConfig, approvals, spawnWorkers
+                tools, workspace, restrictToWorkspace, execConfig, approvals
         );
     }
 }

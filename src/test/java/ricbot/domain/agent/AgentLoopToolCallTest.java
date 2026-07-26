@@ -120,7 +120,7 @@ public class AgentLoopToolCallTest {
         boolean sawErrorTool = s2.getMessages().stream().anyMatch(m ->
                 "tool".equals(m.get("role"))
                         && "missing_tool".equals(m.get("name"))
-                        && String.valueOf(m.get("content")).startsWith("Error: Tool 'missing_tool' not found.")
+                        && String.valueOf(m.get("content")).contains("Tool 'missing_tool' not found")
         );
         assertTrue(sawErrorTool);
     }

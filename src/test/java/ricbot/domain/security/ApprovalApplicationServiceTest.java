@@ -63,34 +63,9 @@ class ApprovalApplicationServiceTest {
     }
 
     @Test
-    void approveAndExecute_recordsApprovalTraceWithExecutedTrue(@TempDir Path workspace) {
-        List<Map<String, Object>> events = new ArrayList<>();
-        ApprovalService approvalService = new ApprovalService(Duration.ofMinutes(30), FIXED_CLOCK);
-        ApprovalRequest request = approvalService.createRequest(
-                assessment("execute"),
-                "echo_tool",
-                Map.of("value", "ok"),
-                "session-1"
-        );
-        ToolRegistry tools = new ToolRegistry();
-        tools.register(tool("echo_tool", Map.of("ok", true)));
-        ApprovalApplicationService app = new ApprovalApplicationService(
-                approvalService,
-                tools,
-                workspace,
-                TraceRecorder.forRunEvents(events)
-        );
-
-        ApprovalApplicationService.ApprovalActionResult result = app.approveAndExecute(request.requestId());
-
-        assertTrue(result.executed());
-        assertTrue(events.stream().anyMatch(event ->
-                "approval_approve_execute".equals(event.get("type"))
-                        && request.requestId().equals(event.get("approvalId"))
-                        && Boolean.TRUE.equals(event.get("executed"))
-                        && Boolean.TRUE.equals(event.get("success"))
-                        && "TOOL_CALL".equals(event.get("executionType"))
-                        && "echo_tool".equals(event.get("toolName"))));
+    void approvalApplicationHasNoExecuteBypass() {
+        assertThrows(NoSuchMethodException.class,
+                () -> ApprovalApplicationService.class.getMethod("approveAndExecute", String.class));
     }
 
     @Test
@@ -173,12 +148,7 @@ class ApprovalApplicationServiceTest {
         );
         app.reject(request.requestId());
 
-        assertThrows(IllegalStateException.class, () -> app.approveAndExecute(request.requestId()));
-
-        assertTrue(events.stream().anyMatch(event ->
-                "approval_invalid_state".equals(event.get("type"))
-                        && request.requestId().equals(event.get("approvalId"))
-                        && "approval_invalid_state".equals(event.get("errorType"))));
+        assertThrows(IllegalStateException.class, () -> app.approveOnly(request.requestId()));
     }
 
     private static RiskAssessment assessment(String reason) {

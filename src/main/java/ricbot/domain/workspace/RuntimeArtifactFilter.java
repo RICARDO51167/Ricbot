@@ -9,7 +9,6 @@ public final class RuntimeArtifactFilter {
             ".team/",
             ".traces/",
             ".ricbot/",
-            ".changesets/",
             ".workspaces/",
             "target/",
             "logs/"

@@ -1,0 +1,11 @@
+package ricbot.domain.runtime;
+
+public interface AgentRuntime {
+    RunView start(RunRequest request);
+    RunView resume(String runId);
+    RunView signal(String runId, RuntimeSignal signal);
+    RunView cancel(String runId, String reason);
+    ReplayView replay(String runId, long throughEventSequence);
+    ReplayView fork(String runId, long throughEventSequence, String newRunId);
+    AutoCloseable subscribe(RuntimeEventSubscriber subscriber);
+}

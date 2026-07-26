@@ -4,10 +4,13 @@ public enum GraphExecutionStatus {
     READY,
     RUNNING,
     PAUSED,
+    WAITING,
+    RECOVERING,
     COMPLETED,
-    FAILED;
+    FAILED,
+    CANCELLED;
 
     public boolean terminal() {
-        return this == COMPLETED || this == FAILED;
+        return this == COMPLETED || this == FAILED || this == CANCELLED;
     }
 }

@@ -25,7 +25,7 @@ class ScriptFilesTest {
         assertTrue(content.contains("## Eval Compare"));
         assertTrue(content.contains("## Final Decision"));
         assertTrue(content.contains("warning_reasons"));
-        assertTrue(content.contains("config doctor missing API key"));
+        assertTrue(content.contains("OPTIONAL_CREDENTIALS_MISSING"));
         assertTrue(content.contains("eval compare has new cases"));
         assertTrue(content.contains("baseline missing"));
         Process process = new ProcessBuilder("sh", "-n", script.toString()).start();

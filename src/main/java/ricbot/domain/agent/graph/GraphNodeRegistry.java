@@ -14,4 +14,5 @@ public final class GraphNodeRegistry {
         if (executor == null) throw new IllegalStateException("graph node executor is not registered: " + nodeId);
         return executor;
     }
+    public boolean contains(String nodeId) { return executors.containsKey(nodeId); }
 }

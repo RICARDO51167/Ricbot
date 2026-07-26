@@ -4,7 +4,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import ricbot.domain.security.ApprovalRequest;
 import ricbot.domain.security.ApprovalService;
-import ricbot.domain.team.TeamRole;
+import ricbot.domain.task.TaskRole;
 import ricbot.domain.trace.TraceEventType;
 import ricbot.domain.trace.TraceStore;
 import ricbot.domain.workspace.WorkspaceBackendType;
@@ -33,7 +33,7 @@ class PolicyAwareToolExecutorTest {
         PolicyAwareToolExecutor executor = executor(workspace, new ApprovalService(), registry(workspace), new TraceStore(workspace));
 
         PolicyAwareToolExecutor.PolicyToolResult result = executor.execute(
-                TeamRole.EXPLORER,
+                TaskRole.EXPLORER,
                 "read_file",
                 Map.of("path", "a.txt", "offset", 1, "limit", 20),
                 null,
@@ -52,7 +52,7 @@ class PolicyAwareToolExecutorTest {
         PolicyAwareToolExecutor executor = executor(workspace, new ApprovalService(), registry(workspace), new TraceStore(workspace));
 
         PolicyAwareToolExecutor.PolicyToolResult result = executor.execute(
-                TeamRole.EXPLORER,
+                TaskRole.EXPLORER,
                 "write_file",
                 Map.of("path", "a.txt", "content", "blocked"),
                 null,
@@ -72,7 +72,7 @@ class PolicyAwareToolExecutorTest {
         PolicyAwareToolExecutor executor = executor(workspace, approvalService, registry(workspace), new TraceStore(workspace));
 
         PolicyAwareToolExecutor.PolicyToolResult result = executor.execute(
-                TeamRole.DEVELOPER,
+                TaskRole.DEVELOPER,
                 "edit_file",
                 Map.of("path", "a.txt", "old_text", "a", "new_text", "b"),
                 null,
@@ -97,7 +97,7 @@ class PolicyAwareToolExecutorTest {
         PolicyAwareToolExecutor executor = executor(workspace, new ApprovalService(), registry(workspace), new TraceStore(workspace));
 
         PolicyAwareToolExecutor.PolicyToolResult result = executor.execute(
-                TeamRole.DEVELOPER,
+                TaskRole.DEVELOPER,
                 "read_file",
                 Map.of("path", "a.txt", "offset", 1, "limit", 20),
                 null,
@@ -116,7 +116,7 @@ class PolicyAwareToolExecutorTest {
         PolicyAwareToolExecutor executor = executor(workspace, new ApprovalService(), registry(workspace), new TraceStore(workspace));
 
         PolicyAwareToolExecutor.PolicyToolResult commit = executor.execute(
-                TeamRole.DEVELOPER,
+                TaskRole.DEVELOPER,
                 "commit",
                 Map.of(),
                 null,
@@ -125,7 +125,7 @@ class PolicyAwareToolExecutorTest {
                 "task-1"
         );
         PolicyAwareToolExecutor.PolicyToolResult rollback = executor.execute(
-                TeamRole.DEVELOPER,
+                TaskRole.DEVELOPER,
                 "rollback",
                 Map.of(),
                 null,
@@ -145,7 +145,7 @@ class PolicyAwareToolExecutorTest {
         PolicyAwareToolExecutor executor = executor(workspace, new ApprovalService(), registry(workspace), new TraceStore(workspace));
 
         PolicyAwareToolExecutor.PolicyToolResult result = executor.execute(
-                TeamRole.TESTER,
+                TaskRole.TESTER,
                 "exec",
                 Map.of("command", "rm -rf /"),
                 null,
@@ -179,7 +179,7 @@ class PolicyAwareToolExecutorTest {
         PolicyAwareToolExecutor executor = executor(workspace, new ApprovalService(), registry(workspace), new TraceStore(workspace));
 
         PolicyAwareToolExecutor.PolicyToolResult result = executor.execute(
-                TeamRole.EXPLORER,
+                TaskRole.EXPLORER,
                 "read_file",
                 Map.of("path", "README.md", "offset", 1, "limit", 20),
                 session,
@@ -200,7 +200,7 @@ class PolicyAwareToolExecutorTest {
         TraceStore traceStore = new TraceStore(workspace);
         PolicyAwareToolExecutor executor = executor(workspace, new ApprovalService(), registry(workspace), traceStore);
 
-        executor.execute(TeamRole.EXPLORER, "read_file", Map.of("path", "a.txt"), null, "session-1", "team-1", "task-1");
+        executor.execute(TaskRole.EXPLORER, "read_file", Map.of("path", "a.txt"), null, "session-1", "team-1", "task-1");
 
         assertTrue(traceStore.loadEvents(traceStore.traceIdForSession("session-1")).stream()
                 .anyMatch(event -> event.type() == TraceEventType.POLICY_EVALUATED), traceStore.loadEvents(traceStore.traceIdForSession("session-1")).toString());
