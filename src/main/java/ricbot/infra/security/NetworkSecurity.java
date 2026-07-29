@@ -3,14 +3,13 @@ package ricbot.infra.security;
 import java.net.InetAddress;
 import java.net.URI;
 import java.net.UnknownHostException;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * 网络安全工具类，提供 SSRF 防护、URL 校验及 CIDR 白名单支持。
+ * 网络安全工具类，提供 SSRF 防护和 URL 校验。
  */
 public final class NetworkSecurity {
 
@@ -30,22 +29,7 @@ public final class NetworkSecurity {
             new CidrBlock("fe80::/10")
     );
 
-    private static volatile List<CidrBlock> allowedNetworks = new ArrayList<>();
-
     private NetworkSecurity() {
-    }
-
-    public static void configureSsrfWhitelist(List<String> cidrs) {
-        List<CidrBlock> nets = new ArrayList<>();
-        if (cidrs != null) {
-            for (String cidr : cidrs) {
-                try {
-                    nets.add(new CidrBlock(cidr));
-                } catch (Exception ignored) {
-                }
-            }
-        }
-        allowedNetworks = nets;
     }
 
     public static ValidationResult validateUrlTarget(String url) {
@@ -88,43 +72,6 @@ public final class NetworkSecurity {
         return ValidationResult.success();
     }
 
-    public static ValidationResult validateResolvedUrl(String url) {
-        URI uri;
-        try {
-            uri = URI.create(url);
-        } catch (Exception e) {
-            return ValidationResult.success();
-        }
-
-        String host = uri.getHost();
-        if (host == null || host.isBlank()) {
-            return ValidationResult.success();
-        }
-
-        InetAddress directIp = parseLiteralIp(host);
-        if (directIp != null) {
-            if (isPrivate(directIp)) {
-                return ValidationResult.fail("重定向目标是私有地址: " + directIp.getHostAddress());
-            }
-            return ValidationResult.success();
-        }
-
-        try {
-            InetAddress[] addresses = InetAddress.getAllByName(host);
-            for (InetAddress address : addresses) {
-                if (isPrivate(address)) {
-                    return ValidationResult.fail(
-                            "重定向目标 " + host + " 解析为私有地址 " + address.getHostAddress()
-                    );
-                }
-            }
-        } catch (UnknownHostException ignored) {
-            return ValidationResult.success();
-        }
-
-        return ValidationResult.success();
-    }
-
     public static boolean containsInternalUrl(String command) {
         if (command == null || command.isBlank()) {
             return false;
@@ -142,31 +89,12 @@ public final class NetworkSecurity {
     }
 
     private static boolean isPrivate(InetAddress address) {
-        List<CidrBlock> currentAllow = allowedNetworks;
-        if (currentAllow != null && !currentAllow.isEmpty()) {
-            for (CidrBlock net : currentAllow) {
-                if (net.contains(address)) {
-                    return false;
-                }
-            }
-        }
-
         for (CidrBlock blocked : BLOCKED_NETWORKS) {
             if (blocked.contains(address)) {
                 return true;
             }
         }
         return false;
-    }
-
-    private static InetAddress parseLiteralIp(String host) {
-        try {
-            if (host.contains(":") || host.matches("^\\d+\\.\\d+\\.\\d+\\.\\d+$")) {
-                return InetAddress.getByName(host);
-            }
-        } catch (Exception ignored) {
-        }
-        return null;
     }
 
     public record ValidationResult(boolean ok, String message) {

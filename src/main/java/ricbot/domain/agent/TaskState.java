@@ -8,7 +8,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-final class TaskState {
+public final class TaskState {
 
     static final String STATUS_ACTIVE = "active";
     static final String STATUS_BLOCKED = "blocked";
@@ -29,7 +29,7 @@ final class TaskState {
     private List<TaskTransition> transitions = new ArrayList<>();
     private List<ParallelTask> parallelTasks = new ArrayList<>();
 
-    static TaskState fromSession(Session session) {
+    public static TaskState fromSession(Session session) {
         if (session == null) {
             return new TaskState();
         }
@@ -78,7 +78,7 @@ final class TaskState {
         return out;
     }
 
-    void persist(Session session) {
+    public void persist(Session session) {
         if (session == null) {
             return;
         }
@@ -86,7 +86,7 @@ final class TaskState {
         session.getMetadata().put(SessionRuntimeKeys.TASK_STATE_KEY, toMap());
     }
 
-    void beginTurn(String userMessage) {
+    public void beginTurn(String userMessage) {
         String normalized = userMessage != null ? userMessage.trim() : "";
         if (!normalized.isBlank()) {
             if (goal.isBlank() || STATUS_COMPLETED.equals(status) || STATUS_ABANDONED.equals(status)) {
@@ -508,14 +508,6 @@ final class TaskState {
 
     String nextAction() {
         return nextAction;
-    }
-
-    String lastToolName() {
-        return lastToolName;
-    }
-
-    String lastToolOutcome() {
-        return lastToolOutcome;
     }
 
     private List<Map<String, Object>> renderSteps() {

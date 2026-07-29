@@ -51,39 +51,6 @@ public class ContextBuilder {
     }
 
     /**
-     * 获取时区
-     * @return 时区字符串
-     */
-    public String getTimezone() {
-        return timezone;
-    }
-
-    /**
-     * 构建消息列表（完整版）
-     * 补全版，兼容你前面 AgentLoop 用法
-     *
-     * @param history 历史消息列表
-     * @param currentMessage 当前用户消息
-     * @param media 媒体文件列表（当前未使用，保留接口兼容性）
-     * @param channel 渠道信息
-     * @param chatId 聊天ID
-     * @param sessionSummary 会话摘要
-     * @param currentRole 当前消息的角色
-     * @return 组装好的消息列表
-     */
-    public List<Map<String, Object>> buildMessages(
-            List<Map<String, Object>> history,
-            String currentMessage,
-            List<String> media,
-            String channel,
-            String chatId,
-            String sessionSummary,
-            String currentRole
-    ) {
-        return buildMessages(history, currentMessage, media, channel, chatId, sessionSummary, currentRole, null);
-    }
-
-    /**
      * 构建消息列表（完整版）
      * 包含历史消息、系统提示、当前用户消息以及运行时上下文
      *

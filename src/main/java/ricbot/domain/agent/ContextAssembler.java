@@ -1,8 +1,9 @@
 package ricbot.domain.agent;
 
+import ricbot.domain.agent.dto.PreparedSessionContext;
 import ricbot.domain.message.InboundMessage;
 import ricbot.domain.session.Session;
-import ricbot.domain.workspace.WorkspaceSession;
+import ricbot.domain.workspace.dto.WorkspaceSession;
 import ricbot.domain.workspace.WorkspaceSessionStore;
 
 import java.nio.file.Path;
@@ -11,12 +12,12 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-final class ContextAssembler {
+public final class ContextAssembler {
     private final Path workspace;
     private final ContextBuilder contextBuilder;
     private final ContextSelectionService contextSelectionService;
 
-    ContextAssembler(
+    public ContextAssembler(
             Path workspace,
             ContextBuilder contextBuilder,
             ContextSelectionService contextSelectionService
@@ -26,7 +27,7 @@ final class ContextAssembler {
         this.contextSelectionService = contextSelectionService;
     }
 
-    AssembledContext buildInteractiveContext(
+    public AssembledContext buildInteractiveContext(
             InboundMessage msg,
             PreparedSessionContext prepared,
             int historyWindowMessages
@@ -141,7 +142,7 @@ final class ContextAssembler {
         return ricbot.infra.common.JsonMapUtils.copyObjectMap(raw);
     }
 
-    record AssembledContext(
+    public record AssembledContext(
             String combinedContext,
             PromptContextBundle bundle,
             List<Map<String, Object>> history,

@@ -178,8 +178,7 @@ public class EvalHarness {
                         result.getSessionKey(),
                         "eval",
                         scenario.getId(),
-                        turnMetadata(scenario, turn, i),
-                        List.of()
+                        turnMetadata(scenario, turn, i)
                 );
                 String response = outbound != null ? outbound.getContent() : "";
                 result.setResponse(response);

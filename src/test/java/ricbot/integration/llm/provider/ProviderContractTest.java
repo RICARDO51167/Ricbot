@@ -26,7 +26,7 @@ class ProviderContractTest {
     void azureConfigurationUsesTheOpenAiCompatibleAdapter() {
         Config config = new Config();
         config.getAgents().getDefaults().setModel("azure_openai/deployment");
-        Config.ProviderConfig azure = config.getProviders().get("azure_openai");
+        Config.ProviderConfig azure = config.getProviders().getOrCreate("azure_openai");
         azure.setApiBase("https://example.openai.azure.com/openai/v1");
         azure.setExtraHeaders(Map.of("api-key", "key"));
 
@@ -43,7 +43,7 @@ class ProviderContractTest {
 
         try {
             String root = "http://127.0.0.1:" + server.getAddress().getPort();
-            ProviderSpec custom = new ProviderSpec("custom", List.of(), "", "Custom", "openai_compat")
+            ProviderSpec custom = new ProviderSpec("custom", List.of(), "", "openai_compat")
                     .setDirect(true);
 
             assertNormalized(new OpenAICompatProvider("key", root, "test-model", Map.of(), custom));

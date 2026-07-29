@@ -6,10 +6,10 @@ Ricbot 是一个面向长任务与多智能体协作的 CLI-first Java Agent Run
 
 - Unified Agent Graph：`INGEST → CONTEXT → COMPACT? → MODEL → TOOLS/APPROVAL → STEERING → CONTEXT`，支持 Superstep、类型化 Channel、确定性 Reducer、暂停与恢复。
 - Durable Run：`.ricbot/runtime.db` 中的版本化事件事实、原子投影、Replay Digest 校验与安全提交点 Fork。
-- Side Effect Safety：`RESERVED → EXECUTING → SUCCEEDED/FAILED/UNKNOWN → COMPENSATED`，幂等领取、审批 Signal、失败关闭和人工重试授权。
+- Side Effect Safety：`RESERVED → EXECUTING → SUCCEEDED/FAILED/UNKNOWN`，幂等领取、审批 Signal、失败关闭和人工重试授权。
 - Multi-Agent：持久 Task DAG、统一 LocalTaskScheduler、Fan-out/Join、Cancel/Recover 与父 Run 自动唤醒。
 - Workspace Isolation：Local workspace、受管 Git worktree、Diff、ChangeSet 和 Verification。
-- Memory：结构化长期记忆、显式审批、Tenant 隔离和共享 CAS 存储。
+- Memory：结构化长期记忆、会话摘要、历史召回和 Tenant 隔离。
 - Execution：Local 与 Docker 后端；Docker 默认断网，不允许静默回退。
 - Eval：deterministic smoke、matrix、baseline、compare、replay 和发布门禁。
 
@@ -25,6 +25,8 @@ Ricbot 是一个面向长任务与多智能体协作的 CLI-first Java Agent Run
 ```
 
 Worker 在受管 worktree 中通过受限 AgentRun 执行，Verifier 检查结果，ChangeSet 作为人工审阅边界。Ricbot 不会自动把未审阅修改合并或提交到主工作区。
+
+Runtime v4 的真实 Qwen 端到端演示见 [docs/guides/full-runtime-demo.md](docs/guides/full-runtime-demo.md)。演示使用 `examples/order-fulfillment-demo/` 种子，并由 `scripts/prepare-full-runtime-demo.sh` 创建不污染本仓库的独立 Git 工作区。
 
 ## 环境要求
 
@@ -55,7 +57,7 @@ java -jar target/Ricbot-1.0-SNAPSHOT.jar config doctor \
   -c config/ricbot.config.json
 ```
 
-Config Doctor 检查 workspace、Provider、模型能力、API Key、执行后端和未生效配置，并对敏感字段脱敏。
+Config Doctor 检查 workspace、Provider、模型能力、API Key 和执行后端，并对敏感字段脱敏。
 
 ## CLI
 
@@ -84,7 +86,7 @@ java -jar target/Ricbot-1.0-SNAPSHOT.jar agent
 /task list <runId>
 /task show|retry|cancel <taskId>
 /side-effect list
-/side-effect show|retry|compensate <idempotencyKey>
+/side-effect show|retry <idempotencyKey>
 /approve <requestId>
 /reject <requestId>
 /workspace
@@ -100,10 +102,10 @@ CLI 能力边界：
 | 恢复 | 启动扫描、父 Run Wake、`/run resume <runId>` | 已覆盖 |
 | 审批 | `/approve <requestId>`、`/reject <requestId>`、`/change approve` | 已覆盖 |
 | Worker 协作 | `/run start --mode team`、`/task`、`/run report` | Task DAG、Delivery Outbox 与后台唤醒统一由 Runtime 管理 |
-| Memory | Agent 上下文自动召回已审批 Memory | 仅运行时使用；没有查询、写入或治理命令 |
+| Memory | Agent 上下文自动召回结构化 Memory 和历史摘要 | 仅运行时使用；没有治理命令 |
 | Eval | `eval`、`lint`、`smoke`、`matrix`、`compare`、`replay` | 已覆盖 |
 
-新 Run、Session、Task、Delivery、Approval 与 SideEffect 统一写入 SQLite WAL 数据库 `.ricbot/runtime.db`。首次 Schema v2 启动会在文件锁和 SQLite 排他锁下校验并备份旧数据库，将其归档到 `.ricbot/archive/<migration-id>`，再创建全新的执行库。归档 Run 仅支持 list、status、events 和 Legacy Replay；不能 resume、signal、cancel、retry 或 fork。
+Run、Session、Task、Delivery、Approval 与 SideEffect 统一写入 SQLite WAL 数据库 `.ricbot/runtime.db`。Ricbot 只接受空数据库或当前 Schema v2；旧版本及未知版本会直接拒绝启动，且不会改写、迁移或归档原文件。`/run replay` 只回放当前数据库中的 Run。
 
 进程通过 5 秒 heartbeat 和 30 秒 lease 注册实例；Activation、Task 与 SideEffect 均以 owner、lease、version 和 CAS 领取。只有租约过期且原 owner 已确认死亡的 `EXECUTING` 副作用才会转入 `UNKNOWN`。Runtime 退避只使用数据库 `availableAt`，执行路径不进行内存睡眠。
 
@@ -131,7 +133,7 @@ java -jar target/Ricbot-1.0-SNAPSHOT.jar eval matrix \
 - 文件、命令和网络工具受 workspace、审批与风险策略限制。
 - Docker 默认断网，后端失败不会静默回退到 Local。
 - Worktree 修改通过 Diff 与 ChangeSet 收口。
-- Memory 只召回已审批内容；租户数据相互隔离。
+- Memory 只召回当前结构化内容和历史摘要；租户数据相互隔离。
 - Trace、Telemetry 和报告由统一事件投影，不能覆盖 Runtime 事件事实。
 
 ## 文档

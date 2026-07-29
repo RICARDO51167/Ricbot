@@ -4,6 +4,8 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import ricbot.domain.workspace.dto.WorkspaceSession;
+import ricbot.domain.workspace.enump.WorkspaceSessionStatus;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;

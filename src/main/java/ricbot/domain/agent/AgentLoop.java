@@ -1,13 +1,15 @@
 package ricbot.domain.agent;
 
+import ricbot.domain.agent.dto.*;
+import ricbot.domain.agent.interfacep.AgentInvocationRuntime;
+import ricbot.domain.agent.interfacep.SideEffectStore;
 import ricbot.tool.pack.RuntimeToolPacks;
-import ricbot.domain.agent.context.StructuredContextService;
 import ricbot.domain.memory.MemoryStore;
 import ricbot.domain.config.ProviderCapability;
 import ricbot.domain.config.ProviderCapabilityResolver;
+import ricbot.domain.config.ModelCard;
 import ricbot.domain.security.ApprovalService;
 import ricbot.domain.trace.TraceStore;
-import ricbot.domain.hook.AgentHook;
 import ricbot.tool.api.ToolRegistry;
 import ricbot.integration.command.CommandRouter;
 import ricbot.domain.message.InboundMessage;
@@ -72,19 +74,19 @@ public class AgentLoop implements AutoCloseable {
     private ProviderCapability providerCapability;
     /** 会话自动归档 TTL（分钟），0 表示禁用 */
     private final int sessionTtlMinutes;
+    private final Config.BudgetConfig budgetConfig;
+    private final Config.ContextOffloadConfig offloadConfig;
 
     /** 上下文构建器，用于构建发送给 LLM 的消息上下文 */
     private final ContextBuilder contextBuilder;
     /** 会话管理器，负责会话的创建、加载和保存 */
     private final SessionManager sessionManager;
     private final OpenTelemetryRuntime telemetryRuntime;
-    /** Durable write-tool idempotency and compensation ledger. */
+    /** Durable write-tool idempotency ledger. */
     private final SideEffectStore sideEffectStore;
     private final SideEffectApplicationService sideEffectApplicationService;
     /** 记忆存储，用于长期记忆管理 */
     private final MemoryStore memoryStore;
-    /** 记忆整合器，用于压缩和整理历史消息 */
-    private final StructuredContextService contextCompaction;
     private final ApprovalService approvalService;
     private final TraceStore traceStore;
     /** 工具注册表，管理所有可用工具 */
@@ -122,8 +124,6 @@ public class AgentLoop implements AutoCloseable {
     private volatile boolean running = false;
     private final AtomicBoolean backgroundStarted = new AtomicBoolean(false);
     private final AtomicBoolean loopThreadStarted = new AtomicBoolean(false);
-    /** 额外的 Agent 钩子列表 */
-    private final List<AgentHook> extraHooks = new ArrayList<>();
 
     /**
      * 构造 AgentLoop 实例。
@@ -185,6 +185,20 @@ public class AgentLoop implements AutoCloseable {
             int sessionTtlMinutes,
             AgentRuntimeCore suppliedCore
     ) {
+        this(bus, provider, workspace, model, maxIterations, contextWindowTokens, contextBlockLimit,
+                maxToolResultChars, providerRetryMode, execConfig, restrictToWorkspace, sessionManager,
+                timezone, unifiedSession, sessionTtlMinutes, suppliedCore,
+                new Config.BudgetConfig(), new Config.ContextOffloadConfig());
+    }
+
+    public AgentLoop(
+            MessageBus bus, LLMProvider provider, Path workspace, String model,
+            Integer maxIterations, Integer contextWindowTokens, Integer contextBlockLimit,
+            Integer maxToolResultChars, String providerRetryMode, Config.ExecToolConfig execConfig,
+            boolean restrictToWorkspace, SessionManager sessionManager, String timezone,
+            boolean unifiedSession, int sessionTtlMinutes, AgentRuntimeCore suppliedCore,
+            Config.BudgetConfig budgetConfig, Config.ContextOffloadConfig offloadConfig
+    ) {
         // 获取默认配置
         Config.AgentDefaults defaults = new Config.AgentDefaults();
 
@@ -207,6 +221,8 @@ public class AgentLoop implements AutoCloseable {
                 ? providerRetryMode
                 : defaults.getProviderRetryMode();
         this.sessionTtlMinutes = sessionTtlMinutes > 0 ? sessionTtlMinutes : defaults.getSessionTtlMinutes();
+        this.budgetConfig = budgetConfig != null ? budgetConfig : new Config.BudgetConfig();
+        this.offloadConfig = offloadConfig != null ? offloadConfig : new Config.ContextOffloadConfig();
         this.providerCapability = new ProviderCapabilityResolver().resolve(
                 null,
                 this.model,
@@ -225,15 +241,13 @@ public class AgentLoop implements AutoCloseable {
         this.traceStore = core.traceStore();
         this.sideEffectStore = core.sideEffectStore();
         this.memoryStore = core.memoryStore();
-        this.contextCompaction = core.contextCompaction();
         this.approvalService = core.approvalService();
         this.sideEffectApplicationService = core.sideEffectApplicationService();
         this.tools = core.tools();
         this.runner = core.runner();
         this.agentRuntime = core.agentRuntime();
-        ToolContextApplier toolContextApplier = new ToolContextInjector(this.tools);
-        this.hookFactory = new AgentHookFactory(this.bus, toolContextApplier);
-        this.sessionPreparationService = new SessionPreparationService(this.sessionManager, this.contextCompaction);
+        this.hookFactory = new AgentHookFactory(this.bus);
+        this.sessionPreparationService = new SessionPreparationService(this.sessionManager);
         ContextSelectionService contextSelectionService = new ContextSelectionService(
                 this.memoryStore,
                 new ToolTraceSummarizer(),
@@ -243,10 +257,7 @@ public class AgentLoop implements AutoCloseable {
         this.agentContextService = new AgentContextService(
                 this.workspace,
                 this.contextBuilder,
-                this.memoryStore,
                 this.hookFactory,
-                toolContextApplier,
-                this.extraHooks,
                 contextSelectionService
         );
         this.agentExecutionService = new AgentExecutionService(
@@ -261,9 +272,10 @@ public class AgentLoop implements AutoCloseable {
                 this.contextBlockLimit,
                 this.providerCapability,
                 this.sideEffectStore,
-                this.approvalService
+                this.approvalService,
+                budgetPolicy(this.budgetConfig, ""), this.offloadConfig, timezone
         );
-        this.sessionPersistenceService = new SessionPersistenceService(this.sessionManager, this.maxToolResultChars, this.memoryStore);
+        this.sessionPersistenceService = new SessionPersistenceService(this.sessionManager, this.maxToolResultChars);
         this.commandRouter = new CommandRouter();
         this.agentCommands = new AgentCommands(
                 this.sessionManager,
@@ -308,10 +320,20 @@ public class AgentLoop implements AutoCloseable {
         }
     }
 
+    private static ricbot.domain.agent.budget.BudgetPolicy budgetPolicy(Config.BudgetConfig config, String parentRunId) {
+        Config.BudgetConfig value = config != null ? config : new Config.BudgetConfig();
+        return new ricbot.domain.agent.budget.BudgetPolicy(value.getMaxTotalTokens(), value.getMaxCostMicrousd(),
+                value.getMaxActiveSeconds(), value.getMaxToolCalls(), value.getFinalizationTokens(), parentRunId);
+    }
+
     public void setProviderCapability(ProviderCapability providerCapability) {
         if (providerCapability != null) {
             this.providerCapability = providerCapability;
         }
+    }
+
+    public void setModelPricing(ModelCard.Pricing pricing) {
+        this.agentExecutionService.setModelPricing(pricing);
     }
 
     private static ExecutorService createWorkerExecutor() {
@@ -435,12 +457,6 @@ public class AgentLoop implements AutoCloseable {
 
     public SessionManager getSessions() { return sessionManager; }
     public ToolRegistry getTools() { return tools; }
-    public ApprovalService getApprovalService() { return approvalService; }
-    public SideEffectApplicationService getSideEffectApplicationService() { return sideEffectApplicationService; }
-    public MessageBus getBus() { return bus; }
-
-    public MemoryStore getMemoryStore() { return memoryStore; }
-    public StructuredContextService getContextCompaction() { return contextCompaction; }
 
     // ---------------------------------------------------------------------
     // Dispatch / processing
@@ -456,7 +472,7 @@ public class AgentLoop implements AutoCloseable {
         String sessionKey = effectiveSessionKey(msg);
         try {
             withSessionLock(sessionKey, () -> {
-                OutboundMessage response = processMessage(msg, sessionKey, List.of());
+                OutboundMessage response = processMessage(msg, sessionKey);
                 if (response != null) {
                     bus.publishOutbound(response);
                 } else if ("cli".equals(msg.getChannel())) {
@@ -477,11 +493,10 @@ public class AgentLoop implements AutoCloseable {
      *
      * @param msg          入站消息，包含用户发送的原始内容、渠道、发送者等信息
      * @param sessionKey   会话键，用于标识和隔离不同的对话上下文
-     * @param requestHooks 请求级别的 Agent 钩子列表，用于在请求处理过程中插入自定义逻辑
      * @return 出站消息响应，包含 Agent 生成的回复内容
      * @throws Exception 处理过程中可能抛出的异常，如 LLM 调用失败、持久化错误等
      */
-    private OutboundMessage processMessage(InboundMessage msg, String sessionKey, List<AgentHook> requestHooks) throws Exception {
+    private OutboundMessage processMessage(InboundMessage msg, String sessionKey) throws Exception {
         // 检查消息渠道是否为系统通道（system），如果是则委托给系统消息处理器
         if ("system".equals(msg.getChannel())) {
             return processSystemMessage(msg);
@@ -513,13 +528,12 @@ public class AgentLoop implements AutoCloseable {
         AgentRequestContext request = agentContextService.buildInteractiveRequest(
                 msg,
                 persisted,
-                requestHooks,
                 historyWindowAsMessages() // 计算历史消息窗口大小
         );
         
         // 执行交互式 Agent 循环：调用 LLM，处理工具调用，直到得出最终结论或达到最大迭代次数
         // 传入一个回调函数，用于在执行过程中保存运行时检查点（如任务状态）
-        ExecutionOutcome outcome = agentExecutionService.executeInteractive(request, null);
+        ExecutionOutcome outcome = agentExecutionService.executeInteractive(request);
         
         // 持久化交互式轮次的结果：将 Agent 的回复、工具调用记录等保存到会话存储中
         PersistenceResult persistence = sessionPersistenceService.persistInteractiveTurn(request, outcome);
@@ -566,7 +580,7 @@ public class AgentLoop implements AutoCloseable {
 
         // 执行系统级的 Agent 逻辑
         // 调用 LLM 进行处理，可能涉及工具调用或状态更新，但不一定产生直接的用户可见回复
-        ExecutionOutcome outcome = agentExecutionService.executeSystem(request, null);
+        ExecutionOutcome outcome = agentExecutionService.executeSystem(request);
 
         // 持久化系统轮次的处理结果
         // 将 LLM 的输出、状态变更等保存回会话存储，并生成最终的出站消息对象
@@ -597,11 +611,11 @@ public class AgentLoop implements AutoCloseable {
             String channel,
             String chatId
     ) throws Exception {
-        return processDirect(content, sessionKey, channel, chatId, Map.of(), List.of());
+        return processDirect(content, sessionKey, channel, chatId, Map.of());
     }
 
     /**
-     * 直接调用 Agent 处理逻辑，支持自定义元数据和请求级钩子。
+     * 直接调用 Agent 处理逻辑，支持自定义元数据。
      * 该方法绕过消息总线，同步执行消息处理流程，适用于测试或内部直接调用场景。
      *
      * @param content      用户输入的内容
@@ -609,7 +623,6 @@ public class AgentLoop implements AutoCloseable {
      * @param channel      通信渠道，例如 "cli", "web" 等
      * @param chatId       聊天 ID，用于区分同一渠道下的不同对话
      * @param metadata     附加的元数据映射，可包含额外的上下文信息
-     * @param requestHooks 请求级别的 Agent 钩子列表，用于在请求处理过程中插入自定义逻辑
      * @return 出站消息，包含 Agent 的回复内容
      * @throws Exception 处理过程中可能抛出的异常，如 LLM 调用失败、持久化错误等
      */
@@ -618,8 +631,7 @@ public class AgentLoop implements AutoCloseable {
             String sessionKey,
             String channel,
             String chatId,
-            Map<String, Object> metadata,
-            List<AgentHook> requestHooks
+            Map<String, Object> metadata
     ) throws Exception {
         // 创建入站消息对象，封装用户输入及上下文信息
         InboundMessage msg = newDirectMessage(content, sessionKey, channel, chatId, metadata);
@@ -627,11 +639,7 @@ public class AgentLoop implements AutoCloseable {
         // 计算有效的会话键，处理统一会话模式或覆盖逻辑
         String effectiveKey = effectiveSessionKey(msg);
 
-        // 处理消息并返回结果，如果请求钩子为 null 则使用空列表
-        return withSessionLock(
-                effectiveKey,
-                () -> processMessage(msg, effectiveKey, requestHooks != null ? requestHooks : List.of())
-        );
+        return withSessionLock(effectiveKey, () -> processMessage(msg, effectiveKey));
     }
 
     /**
@@ -730,7 +738,7 @@ public class AgentLoop implements AutoCloseable {
             Map<String, Object> metadata
     ) {
         // 调用 InboundMessages 工厂方法创建消息，发送者固定为 "user"，附件列表为空，时间戳为 null
-        return InboundMessages.of(channel, "user", chatId, content, List.of(), metadata, sessionKey, null);
+        return InboundMessages.of(channel, "user", chatId, content, List.of(), metadata, sessionKey);
     }
 
     /**
@@ -897,31 +905,6 @@ public class AgentLoop implements AutoCloseable {
             sessionManager.save(session);
         } catch (Exception e) {
             log.debug("记录会话中断原因失败: sessionKey={}, reason={}", sessionKey, reason, e);
-        }
-    }
-
-    // ---------------------------------------------------------------------
-    // extra hooks
-    // ---------------------------------------------------------------------
-
-    /**
-     * 获取额外的钩子列表。
-     *
-     * @return 钩子列表
-     */
-    public List<AgentHook> getExtraHooks() {
-        return extraHooks;
-    }
-
-    /**
-     * 设置额外的钩子列表。
-     *
-     * @param extraHooks 钩子列表
-     */
-    public void setExtraHooks(List<AgentHook> extraHooks) {
-        this.extraHooks.clear();
-        if (extraHooks != null) {
-            this.extraHooks.addAll(extraHooks);
         }
     }
 

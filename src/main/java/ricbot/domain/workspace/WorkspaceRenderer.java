@@ -1,5 +1,7 @@
 package ricbot.domain.workspace;
 
+import ricbot.domain.workspace.dto.WorkspaceSession;
+
 import java.nio.file.Path;
 import java.util.List;
 

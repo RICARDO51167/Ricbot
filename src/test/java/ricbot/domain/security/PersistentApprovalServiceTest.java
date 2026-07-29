@@ -2,6 +2,7 @@ package ricbot.domain.security;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import ricbot.infra.runtime.SqliteRuntimeStore;
 
 import java.nio.file.Path;
 import java.util.List;
@@ -15,11 +16,12 @@ class PersistentApprovalServiceTest {
     @Test
     void approvalDecisionSurvivesServiceRestart() {
         RiskAssessment risk = RiskAssessment.of(CommandRiskLevel.HIGH, List.of("write"), "write", "tool", List.of("a.txt"));
-        ApprovalService first = new ApprovalService(workspace);
+        SqliteRuntimeStore runtime = new SqliteRuntimeStore(workspace);
+        ApprovalService first = new ApprovalService(runtime.approvalStore());
         ApprovalRequest request = first.createRequest(risk);
         first.approve(request.requestId());
 
-        ApprovalService restored = new ApprovalService(workspace);
+        ApprovalService restored = new ApprovalService(runtime.approvalStore());
         assertNotNull(restored.find(request.requestId()));
         assertEquals(ApprovalRequest.ApprovalStatus.APPROVED, restored.find(request.requestId()).status());
     }

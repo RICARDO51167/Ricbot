@@ -2,16 +2,16 @@ package ricbot.domain.agent;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import ricbot.domain.agent.dto.PreparedSessionContext;
 import ricbot.domain.memory.MemoryEntry;
 import ricbot.domain.memory.MemoryStore;
 import ricbot.domain.message.InboundMessage;
 import ricbot.domain.session.Session;
-import ricbot.domain.workspace.WorkspaceBackendType;
-import ricbot.domain.workspace.WorkspaceSession;
-import ricbot.domain.workspace.WorkspaceSessionStatus;
+import ricbot.domain.workspace.enump.WorkspaceBackendType;
+import ricbot.domain.workspace.dto.WorkspaceSession;
+import ricbot.domain.workspace.enump.WorkspaceSessionStatus;
 import ricbot.domain.workspace.WorkspaceSessionStore;
 
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;

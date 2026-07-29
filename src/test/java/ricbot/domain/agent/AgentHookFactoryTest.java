@@ -21,30 +21,14 @@ class AgentHookFactoryTest {
     @Test
     void create_combinesStreamingProgressAndExternalHooks() throws Exception {
         MessageBus bus = new MessageBus();
-        List<String> invocations = new ArrayList<>();
-        AgentHookFactory factory = new AgentHookFactory(bus, (channel, chatId, messageId) ->
-                invocations.add("ctx:" + channel + ":" + chatId + ":" + messageId)
-        );
+        AgentHookFactory factory = new AgentHookFactory(bus);
         InboundMessage msg = new InboundMessage("cli", "user", "direct", "hello");
         msg.setMetadata(new HashMap<>(Map.of(
                 "_wants_stream", true,
                 "message_id", "m-1"
         )));
 
-        AgentHook globalHook = new AgentHook() {
-            @Override
-            public void beforeExecuteTools(AgentHookContext context) {
-                invocations.add("global");
-            }
-        };
-        AgentHook requestHook = new AgentHook() {
-            @Override
-            public void beforeExecuteTools(AgentHookContext context) {
-                invocations.add("request");
-            }
-        };
-
-        AgentHook hook = factory.create(msg, List.of(globalHook), List.of(requestHook));
+        AgentHook hook = factory.create(msg);
         assertTrue(hook.wantsStreaming());
 
         hook.onStream(new AgentHookContext(), "hello");
@@ -62,7 +46,6 @@ class AgentHookFactoryTest {
         assertNotNull(progress);
         assertEquals(Boolean.TRUE, progress.getMetadata().get("_progress"));
         assertEquals(Boolean.TRUE, progress.getMetadata().get("_tool_hint"));
-        assertEquals(List.of("ctx:cli:direct:m-1", "global", "request"), invocations);
 
         hook.onStreamEnd(new AgentHookContext(), false);
         OutboundMessage end = bus.pollOutboundNow();

@@ -6,215 +6,63 @@ import ricbot.infra.common.HelperUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.IOException;
 import java.io.BufferedReader;
+import java.io.IOException;
 import java.io.InputStream;
-import java.nio.file.*;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.time.Instant;
-import java.util.*;
-import java.util.regex.Pattern;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
 
-/**
- * 纯文件 I/O 记忆层。
- *
- * 对应 Python MemoryStore。:contentReference[oaicite:4]{index=4}
- */
-public class MemoryStore {
-
-    // 日志记录器，用于记录类运行时的日志信息
+/** File-backed structured memory and current history recall. */
+public final class MemoryStore {
     private static final Logger log = LoggerFactory.getLogger(MemoryStore.class);
-    // JSON 对象映射器，用于处理 JSON 序列化与反序列化
     private static final ObjectMapper MAPPER = new ObjectMapper().findAndRegisterModules();
 
-    // 默认最大历史记录条目数
-    private static final int DEFAULT_MAX_HISTORY = 1000;
-    // 用于匹配旧版历史记录条目开头的正则表达式模式
-    private static final Pattern LEGACY_ENTRY_START_RE =
-            Pattern.compile("^\\[(\\d{4}-\\d{2}-\\d{2}[^\\]]*)\\]\\s*");
-
-    // 工作空间根路径
-    private final Path workspace;
-    // 最大历史记录条目数限制
-    private final int maxHistoryEntries;
-
-    // 记忆目录路径 (memory/)
-    private final Path memoryDir;
-    // 主记忆文件路径 (memory/MEMORY.md)
     private final Path memoryFile;
-    // 结构化记忆文件路径 (memory/memory_entries.jsonl)
     private final Path memoryEntriesFile;
-    private final Path memoryCandidatesFile;
-    private final Path memoryAuditFile;
-    // 历史记录文件路径 (memory/history.jsonl)
     private final Path historyFile;
-    // 旧版历史记录文件路径 (memory/HISTORY.md)
-    private final Path legacyHistoryFile;
-    // Soul 文件路径 (SOUL.md)
     private final Path soulFile;
-    // 用户文件路径 (USER.md)
     private final Path userFile;
-    // 当前游标文件路径 (memory/.cursor)
     private final Path cursorFile;
     private final MemoryRetriever memoryRetriever = new MemoryRetriever();
+    private final Object historyLock = new Object();
 
-    // 用于同步访问游标文件的锁对象
-    private final Object cursorLock = new Object();
-
-    /**
-     * 构造函数，使用默认最大历史记录数
-     * @param workspace 工作空间路径
-     */
     public MemoryStore(Path workspace) {
-        this(workspace, DEFAULT_MAX_HISTORY);
-    }
-
-    /**
-     * 构造函数，指定最大历史记录数
-     * @param workspace 工作空间路径
-     * @param maxHistoryEntries 最大历史记录条目数
-     */
-    public MemoryStore(Path workspace, int maxHistoryEntries) {
-        this.workspace = workspace;
-        this.maxHistoryEntries = maxHistoryEntries;
-        // 初始化记忆目录并确保其存在
-        this.memoryDir = HelperUtils.ensureDir(workspace.resolve("memory"));
-        // 初始化各文件路径
-        this.memoryFile = memoryDir.resolve("MEMORY.md");
-        this.memoryEntriesFile = memoryDir.resolve("memory_entries.jsonl");
-        this.memoryCandidatesFile = memoryDir.resolve("candidates.jsonl");
-        this.memoryAuditFile = memoryDir.resolve("memory_audit.jsonl");
-        this.historyFile = memoryDir.resolve("history.jsonl");
-        this.legacyHistoryFile = memoryDir.resolve("HISTORY.md");
-        this.soulFile = workspace.resolve("SOUL.md");
-        this.userFile = workspace.resolve("USER.md");
-        this.cursorFile = memoryDir.resolve(".cursor");
+        Path root = workspace.toAbsolutePath().normalize();
+        Path memoryDir = HelperUtils.ensureDir(root.resolve("memory"));
+        memoryFile = memoryDir.resolve("MEMORY.md");
+        memoryEntriesFile = memoryDir.resolve("memory_entries.jsonl");
+        historyFile = memoryDir.resolve("history.jsonl");
+        cursorFile = memoryDir.resolve(".cursor");
+        soulFile = root.resolve("SOUL.md");
+        userFile = root.resolve("USER.md");
         ensureSeedFile(memoryFile, "templates/memory/MEMORY.md");
         ensureSeedFile(userFile, "templates/USER.md");
         ensureSeedFile(soulFile, "templates/SOUL.md");
-        // 尝试迁移旧版历史记录
-        maybeMigrateLegacyHistory();
     }
 
-    /**
-     * 获取工作空间路径
-     * @return 工作空间 Path
-     */
-    public Path getWorkspace() { return workspace; }
-
-    /**
-     * 读取文件内容为字符串
-     * @param path 文件路径
-     * @return 文件内容，如果出错返回空字符串
-     */
-    public static String readFile(Path path) {
-        try {
-            return Files.readString(path);
-        } catch (IOException e) {
-            log.debug("读取文件失败: {}", path, e);
-            return "";
-        }
-    }
-
-    /**
-     * 确保种子文件存在，如果不存在则从资源中复制
-     * @param target 目标文件路径
-     * @param resourcePath 资源路径
-     */
-    private void ensureSeedFile(Path target, String resourcePath) {
-        try {
-            if (target == null || Files.exists(target)) {
-                return;
-            }
-            Path parent = target.getParent();
-            if (parent != null) {
-                Files.createDirectories(parent);
-            }
-            try (InputStream in = MemoryStore.class.getClassLoader().getResourceAsStream(resourcePath)) {
-                if (in != null) {
-                    Files.write(target, in.readAllBytes());
-                } else {
-                    Files.writeString(target, "");
-                }
-            }
-        } catch (Exception e) {
-            log.debug("初始化默认文件失败: {} <- {}", target, resourcePath, e);
-        }
-    }
-
-    /**
-     * 读取记忆文件内容
-     * @return 记忆内容
-     */
     public String readMemory() { return readFile(memoryFile); }
 
-    /**
-     * 读取 Soul 文件内容
-     * @return Soul 内容
-     */
-    public String readSoul() { return readFile(soulFile); }
-
-    /**
-     * 读取用户文件内容
-     * @return 用户内容
-     */
     public String readUser() { return readFile(userFile); }
 
-    /**
-     * 获取 MEMORY.md 内容别名
-     * @return 记忆内容
-     */
-    public String getMemoryMd() { return readMemory(); }
-
-    /**
-     * 获取 USER.md 内容别名
-     * @return 用户内容
-     */
-    public String getUserMd() { return readUser(); }
-
-    /**
-     * 获取 SOUL.md 内容别名
-     * @return Soul 内容
-     */
-    public String getSoulMd() { return readSoul(); }
-
-    /**
-     * 更新记忆文件内容
-     * @param content 新内容
-     * @throws IOException IO 异常
-     */
-    private void updateMemoryMd(String content) throws IOException { Files.writeString(memoryFile, content); }
-
-    /**
-     * 更新用户文件内容
-     * @param content 新内容
-     * @throws IOException IO 异常
-     */
-    private void updateUserMd(String content) throws IOException { Files.writeString(userFile, content); }
-
-    /**
-     * 更新 Soul 文件内容
-     * @param content 新内容
-     * @throws IOException IO 异常
-     */
-    private void updateSoulMd(String content) throws IOException { Files.writeString(soulFile, content); }
-
-    /**
-     * 读取结构化记忆条目
-     * @return 记忆条目列表
-     */
     public List<MemoryEntry> readMemoryEntries() {
-        if (!Files.exists(memoryEntriesFile)) {
-            return new ArrayList<>();
-        }
+        if (!Files.exists(memoryEntriesFile)) return new ArrayList<>();
         List<MemoryEntry> entries = new ArrayList<>();
         try (BufferedReader reader = Files.newBufferedReader(memoryEntriesFile)) {
             String line;
             while ((line = reader.readLine()) != null) {
-                if (line.isBlank()) {
-                    continue;
+                if (!line.isBlank()) {
+                    Map<String, Object> value = MAPPER.readValue(line, new TypeReference<>() {});
+                    entries.add(MemoryEntry.fromMap(value));
                 }
-                Map<String, Object> parsed = MAPPER.readValue(line, new TypeReference<>() {});
-                entries.add(MemoryEntry.fromMap(parsed));
             }
         } catch (Exception e) {
             log.warn("读取结构化记忆失败: {}", memoryEntriesFile, e);
@@ -222,777 +70,226 @@ public class MemoryStore {
         return entries;
     }
 
-    public void appendMemoryCandidates(List<MemoryEntry> candidates) {
-        if (candidates == null || candidates.isEmpty()) {
-            return;
-        }
-        try {
-            Files.createDirectories(memoryCandidatesFile.getParent());
-            Map<String, MemoryEntry> byKey = new LinkedHashMap<>();
-            for (MemoryEntry existing : readMemoryCandidates()) {
-                byKey.put(existing.dedupeKey(), existing);
-            }
-            for (MemoryEntry candidate : candidates) {
-                if (candidate == null || candidate.getSummary() == null || candidate.getSummary().isBlank()) {
-                    continue;
-                }
-                applyCandidateGovernance(candidate);
-                MemoryEntry current = byKey.get(candidate.dedupeKey());
-                if (current == null) {
-                    byKey.put(candidate.dedupeKey(), candidate);
-                } else {
-                    current.setImportance(Math.max(current.getImportance(), candidate.getImportance()));
-                    current.setConfidence(Math.max(current.getConfidence(), candidate.getConfidence()));
-                    if (current.getDetails().isBlank() && !candidate.getDetails().isBlank()) {
-                        current.setDetails(candidate.getDetails());
-                    }
-                    current.getTags().addAll(candidate.getTags());
-                    current.setTags(current.getTags().stream().distinct().toList());
-                    if (MemoryEntry.SENSITIVITY_SENSITIVE.equals(candidate.getSensitivity())) {
-                        current.setSensitivity(MemoryEntry.SENSITIVITY_SENSITIVE);
-                        current.setApprovalStatus(MemoryEntry.APPROVAL_PENDING);
-                    }
-                    current.touch();
-                }
-            }
-            StringBuilder sb = new StringBuilder();
-            for (MemoryEntry candidate : byKey.values()) {
-                if (candidate == null || candidate.getSummary() == null || candidate.getSummary().isBlank()) {
-                    continue;
-                }
-                sb.append(MAPPER.writeValueAsString(candidate.toMap())).append("\n");
-            }
-            Files.writeString(memoryCandidatesFile, sb.toString(), StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
-        } catch (IOException e) {
-            throw new RuntimeException("写入即时记忆候选失败: " + memoryCandidatesFile, e);
-        }
-    }
-
-    public List<MemoryEntry> readMemoryCandidates() {
-        if (!Files.exists(memoryCandidatesFile)) {
-            return List.of();
-        }
-        List<MemoryEntry> entries = new ArrayList<>();
-        try (BufferedReader reader = Files.newBufferedReader(memoryCandidatesFile)) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                if (line.isBlank()) {
-                    continue;
-                }
-                Map<String, Object> parsed = MAPPER.readValue(line, new TypeReference<>() {});
-                MemoryEntry entry = MemoryEntry.fromMap(parsed);
-                if (entry.getSummary() != null && !entry.getSummary().isBlank()) {
-                    entries.add(entry);
-                }
-            }
-        } catch (Exception e) {
-            log.warn("读取即时记忆候选失败: {}", memoryCandidatesFile, e);
-        }
-        return entries;
-    }
-
-    public boolean approveMemoryCandidate(String id) {
-        if (id == null || id.isBlank()) {
-            return false;
-        }
-        List<MemoryEntry> candidates = new ArrayList<>(readMemoryCandidates());
-        MemoryEntry approved = candidates.stream()
-                .filter(candidate -> id.equals(candidate.getId()))
-                .findFirst()
-                .orElse(null);
-        if (approved == null || approved.isExpired()) {
-            return false;
-        }
-        approved.setApprovalStatus(MemoryEntry.APPROVAL_APPROVED);
-        approved.touch();
-        mergeMemoryEntries(List.of(approved));
-        candidates.removeIf(candidate -> id.equals(candidate.getId()));
-        try {
-            writeMemoryCandidateFile(candidates);
-        } catch (IOException e) {
-            throw new RuntimeException("更新即时记忆候选失败: " + memoryCandidatesFile, e);
-        }
-        appendMemoryAudit("approved_and_promoted", approved);
-        return true;
-    }
-
-    public boolean rejectMemoryCandidate(String id) {
-        boolean rejected = updateMemoryCandidateApproval(id, MemoryEntry.APPROVAL_REJECTED);
-        if (rejected) {
-            readMemoryCandidates().stream()
-                    .filter(candidate -> id.equals(candidate.getId()))
-                    .findFirst()
-                    .ifPresent(candidate -> appendMemoryAudit("rejected", candidate));
-        }
-        return rejected;
-    }
-
-    public Map<String, Object> memoryGovernanceReport() {
-        List<MemoryEntry> entries = readMemoryEntries();
-        List<MemoryEntry> candidates = readMemoryCandidates();
-        Map<String, Object> out = new LinkedHashMap<>();
-        out.put("entries_count", entries.size());
-        out.put("active_count", entries.stream().filter(MemoryEntry::isActive).count());
-        out.put("expired_count", entries.stream().filter(MemoryEntry::isExpired).count());
-        out.put("memory_type_counts", memoryTypeCounts(entries));
-        out.put("candidates_count", candidates.size());
-        out.put("pending_candidates", candidates.stream().filter(MemoryEntry::requiresApproval).count());
-        out.put("sensitive_candidates", candidates.stream()
-                .filter(entry -> MemoryEntry.SENSITIVITY_SENSITIVE.equals(entry.getSensitivity()))
-                .count());
-        out.put("candidates", candidates.stream().map(MemoryEntry::toMap).toList());
-        return out;
-    }
-
-    private boolean updateMemoryCandidateApproval(String id, String approvalStatus) {
-        if (id == null || id.isBlank()) {
-            return false;
-        }
-        List<MemoryEntry> candidates = new ArrayList<>(readMemoryCandidates());
-        boolean updated = false;
-        for (MemoryEntry candidate : candidates) {
-            if (id.equals(candidate.getId())) {
-                candidate.setApprovalStatus(approvalStatus);
-                candidate.touch();
-                updated = true;
-            }
-        }
-        if (!updated) {
-            return false;
-        }
-        try {
-            writeMemoryCandidateFile(candidates);
-        } catch (IOException e) {
-            throw new RuntimeException("更新即时记忆候选失败: " + memoryCandidatesFile, e);
-        }
-        return true;
-    }
-
-    private void writeMemoryCandidateFile(List<MemoryEntry> candidates) throws IOException {
-        Files.createDirectories(memoryCandidatesFile.getParent());
-        StringBuilder sb = new StringBuilder();
-        for (MemoryEntry candidate : candidates != null ? candidates : List.<MemoryEntry>of()) {
-            if (candidate == null || candidate.getSummary() == null || candidate.getSummary().isBlank()) {
-                continue;
-            }
-            sb.append(MAPPER.writeValueAsString(candidate.toMap())).append("\n");
-        }
-        Files.writeString(memoryCandidatesFile, sb.toString(), StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
-    }
-
-    /**
-     * 写入结构化记忆条目
-     * @param entries 记忆条目列表
-     */
     public void writeMemoryEntries(List<MemoryEntry> entries) {
-        List<MemoryEntry> normalized = entries != null ? entries : List.of();
         try {
-            Files.createDirectories(memoryEntriesFile.getParent());
-            StringBuilder sb = new StringBuilder();
-            for (MemoryEntry entry : normalized) {
-                if (entry == null) {
-                    continue;
-                }
-                sb.append(MAPPER.writeValueAsString(entry.toMap())).append("\n");
+            StringBuilder out = new StringBuilder();
+            for (MemoryEntry entry : entries != null ? entries : List.<MemoryEntry>of()) {
+                if (entry != null) out.append(MAPPER.writeValueAsString(entry.toMap())).append('\n');
             }
-            Files.writeString(memoryEntriesFile, sb.toString(), StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+            Files.writeString(memoryEntriesFile, out.toString(), StandardOpenOption.CREATE,
+                    StandardOpenOption.TRUNCATE_EXISTING);
         } catch (IOException e) {
-            throw new RuntimeException("写入结构化记忆失败: " + memoryEntriesFile, e);
+            throw new IllegalStateException("写入结构化记忆失败: " + memoryEntriesFile, e);
         }
     }
 
-    private void appendMemoryAudit(String action, MemoryEntry entry) {
-        Map<String, Object> row = new LinkedHashMap<>();
-        row.put("timestamp", Instant.now().toString());
-        row.put("action", action);
-        row.put("memoryId", entry.getId());
-        row.put("source", entry.getSource());
-        row.put("confidence", entry.getConfidence());
-        row.put("approvalStatus", entry.getApprovalStatus());
-        try {
-            Files.createDirectories(memoryAuditFile.getParent());
-            Files.writeString(
-                    memoryAuditFile,
-                    MAPPER.writeValueAsString(row) + "\n",
-                    StandardOpenOption.CREATE,
-                    StandardOpenOption.APPEND
-            );
-        } catch (IOException e) {
-            log.warn("写入记忆审计失败: {}", memoryAuditFile, e);
-        }
-    }
-
-    public List<Map<String, Object>> readMemoryAudit() {
-        if (!Files.exists(memoryAuditFile)) {
-            return List.of();
-        }
-        List<Map<String, Object>> out = new ArrayList<>();
-        try (BufferedReader reader = Files.newBufferedReader(memoryAuditFile)) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                if (line.isBlank()) {
-                    continue;
-                }
-                out.add(MAPPER.readValue(line, new TypeReference<>() {}));
-            }
-        } catch (Exception e) {
-            log.warn("读取记忆审计失败: {}", memoryAuditFile, e);
-        }
-        return out;
-    }
-
-    /**
-     * 合并候选记忆条目到现有记忆中
-     * @param candidates 候选记忆条目列表
-     * @return 合并后的记忆条目列表
-     */
-    public List<MemoryEntry> mergeMemoryEntries(List<MemoryEntry> candidates) {
-        // 读取现有的所有记忆条目
-        List<MemoryEntry> existing = readMemoryEntries();
-        // 使用 LinkedHashMap 保持插入顺序，以 dedupeKey 为键存储记忆条目
-        Map<String, MemoryEntry> byKey = new LinkedHashMap<>();
-        for (MemoryEntry entry : existing) {
-            byKey.put(entry.dedupeKey(), entry);
-        }
-
-        // 遍历候选记忆条目，如果 candidates 为 null 则使用空列表
-        for (MemoryEntry candidate : candidates != null ? candidates : List.<MemoryEntry>of()) {
-            // 跳过无效或摘要为空的候选条目
-            if (candidate == null || candidate.getSummary() == null || candidate.getSummary().isBlank()) {
-                continue;
-            }
-            if (!MemoryEntry.APPROVAL_APPROVED.equals(candidate.getApprovalStatus()) || candidate.isExpired()) {
-                continue;
-            }
-            // 获取候选条目的去重键
-            String key = candidate.dedupeKey();
-            // 查找是否存在相同键的现有条目
-            MemoryEntry current = byKey.get(key);
+    public List<MemoryEntry> mergeMemoryEntries(List<MemoryEntry> additions) {
+        Map<String, MemoryEntry> merged = new LinkedHashMap<>();
+        for (MemoryEntry entry : readMemoryEntries()) merged.put(entry.dedupeKey(), entry);
+        for (MemoryEntry addition : additions != null ? additions : List.<MemoryEntry>of()) {
+            if (addition == null || addition.getSummary().isBlank()) continue;
+            MemoryEntry current = merged.get(addition.dedupeKey());
             if (current == null) {
-                // 如果不存在，更新候选条目的时间戳并加入映射
-                candidate.touch();
-                byKey.put(key, candidate);
+                addition.touch();
+                merged.put(addition.dedupeKey(), addition);
                 continue;
             }
-            // 如果存在，合并重要性：取最大值
-            current.setImportance(Math.max(current.getImportance(), candidate.getImportance()));
-            // 合并置信度：取最大值
-            current.setConfidence(Math.max(current.getConfidence(), candidate.getConfidence()));
-            // 如果当前条目详情为空且候选条目详情不为空，则更新详情
-            if (current.getDetails().isBlank() && !candidate.getDetails().isBlank()) {
-                current.setDetails(candidate.getDetails());
-            }
-            // 如果候选条目是长期范围，则更新当前条目的范围
-            if (MemoryEntry.SCOPE_LONG_TERM.equals(candidate.getScope())) {
-                current.setScope(candidate.getScope());
-            }
-            // 如果候选条目状态为已丢弃，则更新当前条目状态为已丢弃
-            if (MemoryEntry.STATUS_DISCARDED.equals(candidate.getStatus())) {
-                current.setStatus(MemoryEntry.STATUS_DISCARDED);
-            }
-            // 合并别名列表，并去重
-            current.getAliases().addAll(candidate.getAliases());
-            current.setAliases(current.getAliases().stream().distinct().toList());
-            // 合并标签列表，并去重
-            current.getTags().addAll(candidate.getTags());
-            current.setTags(current.getTags().stream().distinct().toList());
-            // 更新当前条目的时间戳
+            current.setImportance(Math.max(current.getImportance(), addition.getImportance()));
+            current.setConfidence(Math.max(current.getConfidence(), addition.getConfidence()));
+            if (current.getDetails().isBlank()) current.setDetails(addition.getDetails());
+            if (MemoryEntry.SCOPE_LONG_TERM.equals(addition.getScope())) current.setScope(addition.getScope());
+            if (MemoryEntry.STATUS_DISCARDED.equals(addition.getStatus())) current.setStatus(addition.getStatus());
+            current.setAliases(mergeStrings(current.getAliases(), addition.getAliases()));
+            current.setTags(mergeStrings(current.getTags(), addition.getTags()));
             current.touch();
         }
-
-        // 将映射中的值转换为列表
-        List<MemoryEntry> merged = new ArrayList<>(byKey.values());
-        // 写入合并后的记忆条目到文件
-        writeMemoryEntries(merged);
-        // 重建 Markdown 视图以反映最新变化
-        rebuildMarkdownViews(merged);
-        return merged;
+        List<MemoryEntry> result = new ArrayList<>(merged.values());
+        writeMemoryEntries(result);
+        rebuildMarkdownViews(result);
+        return result;
     }
 
-    /**
-     * 如果需要，重建 Markdown 视图
-     */
     public void rebuildMarkdownViewsIfNeeded() {
-        // 如果结构化记忆文件不存在，直接返回
-        if (!Files.exists(memoryEntriesFile)) {
-            return;
-        }
-        // 检查 Markdown 视图是否需要重建，如果不需要则返回
-        if (!markdownViewsNeedRebuild()) {
-            return;
-        }
-        // 读取所有记忆条目并重建 Markdown 视图
+        if (!Files.exists(memoryEntriesFile) || !markdownViewsNeedRebuild()) return;
         rebuildMarkdownViews(readMemoryEntries());
     }
 
-    /**
-     * 根据记忆条目重建 Markdown 视图
-     * @param entries 记忆条目列表
-     */
-    public void rebuildMarkdownViews(List<MemoryEntry> entries) {
-        // 如果 entries 为 null 则使用空列表
-        List<MemoryEntry> source = entries != null ? entries : List.of();
-        // 初始化用于存储 MEMORY.md、USER.md 和 SOUL.md 内容的行列表
-        List<String> memoryLines = new ArrayList<>();
-        List<String> userLines = new ArrayList<>();
-        List<String> soulLines = new ArrayList<>();
-        for (MemoryEntry entry : source) {
-            // 跳过无效或非活跃的条目
-            if (entry == null || !entry.isActive()) {
-                continue;
-            }
-            // 跳过可丢弃范围的条目
-            if (MemoryEntry.SCOPE_DISCARDABLE.equals(entry.getScope())) {
-                continue;
-            }
-            // 根据条目类型分类添加到对应的行列表
-            if (entry.isSoulEntry()) {
-                soulLines.add(entry.renderLine());
-            } else if (entry.isUserProfile()) {
-                userLines.add(entry.renderLine());
-            } else {
-                memoryLines.add(entry.renderLine());
-            }
-        }
-        try {
-            // 更新 MEMORY.md 文件内容
-            updateMemoryMd(renderMarkdown("MEMORY", memoryLines));
-            // 更新 USER.md 文件内容
-            updateUserMd(renderMarkdown("USER", userLines));
-            // 更新 SOUL.md 文件内容
-            updateSoulMd(renderMarkdown("SOUL", soulLines));
-        } catch (IOException e) {
-            // 如果发生 IO 异常，抛出运行时异常
-            throw new RuntimeException("更新 Markdown 记忆视图失败", e);
-        }
-    }
-
-    /**
-     * 召回相关记忆
-     * @param query 查询字符串
-     * @param taskGoal 任务目标
-     * @param limit 返回数量限制
-     * @return 召回的记忆条目列表
-     */
     public List<MemoryEntry> recallMemories(String query, String taskGoal, int limit) {
         return recallScoredMemories(query, taskGoal, limit).stream()
-                .map(MemoryRetriever.ScoredMemory::entry)
-                .toList();
+                .map(MemoryRetriever.ScoredMemory::entry).toList();
     }
 
     public List<MemoryRetriever.ScoredMemory> recallScoredMemories(String query, String taskGoal, int limit) {
-        List<MemoryEntry> all = readMemoryEntries();
-        if (all.isEmpty()) {
-            return List.of();
-        }
-        List<MemoryRetriever.ScoredMemory> selected = memoryRetriever.score(all, query, taskGoal).stream()
-                .limit(Math.max(0, limit))
-                .toList();
-        // 如果有选中的条目，标记它们为已使用并更新文件
+        List<MemoryEntry> entries = readMemoryEntries();
+        List<MemoryRetriever.ScoredMemory> selected = memoryRetriever.score(entries, query, taskGoal).stream()
+                .limit(Math.max(0, limit)).toList();
         if (!selected.isEmpty()) {
-            List<MemoryEntry> allEntries = new ArrayList<>(all);
-            for (MemoryEntry entry : allEntries) {
-                // 如果当前条目在选中列表中，标记为已使用
-                if (selected.stream().anyMatch(sel -> sel.entry().getId().equals(entry.getId()))) {
-                    entry.markUsed();
-                }
-            }
-            writeMemoryEntries(allEntries);
+            Set<String> selectedIds = new java.util.HashSet<>();
+            selected.forEach(item -> selectedIds.add(item.entry().getId()));
+            entries.forEach(entry -> { if (selectedIds.contains(entry.getId())) entry.markUsed(); });
+            writeMemoryEntries(entries);
         }
         return selected;
     }
 
-    private Map<String, Long> memoryTypeCounts(List<MemoryEntry> entries) {
-        Map<String, Long> out = new LinkedHashMap<>();
-        for (MemoryType type : MemoryType.values()) {
-            out.put(type.name().toLowerCase(Locale.ROOT), 0L);
-        }
-        for (MemoryEntry entry : entries != null ? entries : List.<MemoryEntry>of()) {
-            if (entry == null) {
-                continue;
-            }
-            String key = entry.getMemoryType().name().toLowerCase(Locale.ROOT);
-            out.put(key, out.getOrDefault(key, 0L) + 1L);
-        }
-        return out;
+    public void appendSessionSummary(String content) {
+        appendHistoryEntry("session_summary", content != null ? content : "");
     }
 
-    private void applyCandidateGovernance(MemoryEntry candidate) {
-        if (candidate.getSource() == null || candidate.getSource().isBlank()) {
-            candidate.setSource("candidate");
-        }
-        if (candidate.getSourceDetail() == null || candidate.getSourceDetail().isBlank()) {
-            candidate.setSourceDetail("user_turn");
-        }
-        if (candidate.getCreatedAt() == null || candidate.getCreatedAt().isBlank()) {
-            candidate.setCreatedAt(Instant.now().toString());
-        }
-        if (candidate.getScope().equals(MemoryEntry.SCOPE_SHORT_TERM) && candidate.getExpiresAt() == null) {
-            candidate.setExpiresAt(Instant.now().plus(java.time.Duration.ofDays(7)).toString());
-        }
-        if (isSensitiveMemory(candidate)) {
-            candidate.setSensitivity(MemoryEntry.SENSITIVITY_SENSITIVE);
-            candidate.setApprovalStatus(MemoryEntry.APPROVAL_PENDING);
-            if (!candidate.getTags().contains("sensitive")) {
-                List<String> tags = new ArrayList<>(candidate.getTags());
-                tags.add("sensitive");
-                candidate.setTags(tags);
-            }
-        } else if (candidate.getApprovalStatus() == null || candidate.getApprovalStatus().isBlank()) {
-            candidate.setApprovalStatus(MemoryEntry.APPROVAL_APPROVED);
-        }
+    public void rawArchive(List<Map<String, Object>> messages) {
+        appendHistoryEntry("raw_archive", Map.of(
+                "messages_count", messages != null ? messages.size() : 0,
+                "messages", messages != null ? messages : List.of()));
     }
 
-    private boolean isSensitiveMemory(MemoryEntry entry) {
-        String text = ((entry.getSummary() != null ? entry.getSummary() : "") + " " + (entry.getDetails() != null ? entry.getDetails() : ""))
-                .toLowerCase(Locale.ROOT);
-        return text.contains("api key")
-                || text.contains("apikey")
-                || text.contains("token")
-                || text.contains("password")
-                || text.contains("secret")
-                || text.contains("密钥")
-                || text.contains("密码")
-                || text.contains("令牌")
-                || text.contains("身份证")
-                || text.contains("银行卡");
-    }
-
-    /**
-     * 召回归档历史
-     * @param query 查询字符串
-     * @param limit 返回数量限制
-     * @return 召回的历史记录内容列表
-     */
     public List<String> recallArchivedHistory(String query, int limit) {
-        // 如果查询为空、历史文件不存在或 limit <= 0，返回空列表
-        if (query == null || query.isBlank() || !Files.exists(historyFile) || limit <= 0) {
-            return List.of();
-        }
-        // 对查询字符串进行分词
+        if (query == null || query.isBlank() || limit <= 0 || !Files.exists(historyFile)) return List.of();
         Set<String> queryTokens = tokenize(query);
-        // 初始化带评分的历史记录列表
-        List<ScoredHistory> scored = new ArrayList<>();
+        List<ScoredHistory> matches = new ArrayList<>();
         try (BufferedReader reader = Files.newBufferedReader(historyFile)) {
             String line;
             int order = 0;
             while ((line = reader.readLine()) != null) {
-                // 跳过空行
-                if (line.isBlank()) {
-                    continue;
-                }
-                // 解析 JSONL 行
-                Map<String, Object> parsed = MAPPER.readValue(line, new TypeReference<>() {});
-                String type = String.valueOf(parsed.getOrDefault("type", ""));
-                if (!"text".equals(type) && !"session_summary".equals(type) && !"raw_archive".equals(type)) {
-                    continue;
-                }
-                // 渲染归档历史内容
-                String content = renderArchivedHistoryContent(type, parsed.get("content"));
-                // 如果内容为空，跳过
-                if (content.isBlank()) {
-                    continue;
-                }
-                // 对内容进行分词
-                Set<String> tokens = tokenize(content);
-                // 计算查询 token 在内容 token 中出现的次数
-                long hits = tokens.stream().filter(queryTokens::contains).count();
-                // 如果没有命中，增加顺序计数并跳过
-                if (hits == 0) {
-                    order++;
-                    continue;
-                }
-                // 计算评分：命中数 + 顺序权重
-                double score = hits + (order * 0.001d);
-                scored.add(new ScoredHistory(content, score));
+                if (line.isBlank()) continue;
+                Map<String, Object> row = MAPPER.readValue(line, new TypeReference<>() {});
+                String content = renderHistory(String.valueOf(row.getOrDefault("type", "")), row.get("content"));
+                long hits = tokenize(content).stream().filter(queryTokens::contains).count();
+                if (hits > 0) matches.add(new ScoredHistory(content, hits + order * 0.001d));
                 order++;
             }
         } catch (Exception e) {
-            // 记录读取归档历史失败的警告日志
-            log.warn("读取归档历史召回失败: {}", historyFile, e);
+            log.warn("读取历史召回失败: {}", historyFile, e);
         }
-        // 按评分降序排序，限制数量，截断内容并返回
-        return scored.stream()
-                .sorted((a, b) -> Double.compare(b.score(), a.score()))
-                .limit(limit)
-                .map(item -> HelperUtils.truncateText(item.content(), 260))
-                .toList();
+        return matches.stream().sorted((a, b) -> Double.compare(b.score(), a.score())).limit(limit)
+                .map(item -> HelperUtils.truncateText(item.content(), 260)).toList();
     }
 
-    /**
-     * 追加一条历史记录到 history.jsonl
-     * @param content 历史内容
-     */
-    public void appendHistory(String content) {
-        // 创建历史记录条目映射
-        Map<String, Object> entry = new LinkedHashMap<>();
-        entry.put("type", "text");
-        entry.put("content", content != null ? content : "");
-        // 调用通用方法追加条目
-        appendHistoryEntry(entry);
-    }
-
-    public void appendSessionSummary(String content) {
-        Map<String, Object> entry = new LinkedHashMap<>();
-        entry.put("type", "session_summary");
-        entry.put("content", content != null ? content : "");
-        appendHistoryEntry(entry);
-    }
-
-    /**
-     * 原始归档消息列表（仅记录数量）
-     * @param messages 消息列表
-     */
-    public void rawArchive(List<Map<String, Object>> messages) {
-        // 创建原始归档条目映射
-        Map<String, Object> entry = new LinkedHashMap<>();
-        entry.put("type", "raw_archive");
-        entry.put("content", Map.of(
-                "messages_count", messages != null ? messages.size() : 0,
-                "messages", messages != null ? messages : List.of()
-        ));
-        // 调用通用方法追加条目
-        appendHistoryEntry(entry);
-    }
-
-    /**
-     * 获取最后处理的游标值
-     * @return 游标整数值，默认 0
-     */
-    public int getLastCursor() {
-        synchronized (cursorLock) {
-            try {
-                // 如果游标文件不存在，返回 0
-                if (!Files.exists(cursorFile)) return 0;
-                // 读取并解析游标文件内容
-                return Integer.parseInt(Files.readString(cursorFile).trim());
-            } catch (Exception e) {
-                // 如果发生异常，返回 0
-                return 0;
-            }
+    private void rebuildMarkdownViews(List<MemoryEntry> entries) {
+        List<String> memory = new ArrayList<>();
+        List<String> user = new ArrayList<>();
+        List<String> soul = new ArrayList<>();
+        for (MemoryEntry entry : entries != null ? entries : List.<MemoryEntry>of()) {
+            if (!entry.isActive() || MemoryEntry.SCOPE_DISCARDABLE.equals(entry.getScope())) continue;
+            if (entry.isSoulEntry()) soul.add(entry.renderLine());
+            else if (entry.isUserProfile()) user.add(entry.renderLine());
+            else memory.add(entry.renderLine());
         }
-    }
-
-    /**
-     * 尝试迁移旧版历史记录文件到新版 JSONL 格式
-     */
-    private void maybeMigrateLegacyHistory() {
-        // 如果旧版历史文件不存在，直接返回
-        if (!Files.exists(legacyHistoryFile)) return;
-        // 如果新版历史文件已存在，说明可能已经迁移过，直接返回
-        if (Files.exists(historyFile)) return;
         try {
-            List<String> lines = Files.readAllLines(legacyHistoryFile);
-            StringBuilder current = new StringBuilder();
-            boolean hasAny = false;
-
-            for (String line : lines) {
-                boolean isEntryStart = line != null && LEGACY_ENTRY_START_RE.matcher(line).find();
-                if (isEntryStart && current.length() > 0) {
-                    appendHistory(current.toString().trim());
-                    current.setLength(0);
-                    hasAny = true;
-                }
-                current.append(line != null ? line : "").append("\n");
-            }
-            if (current.length() > 0) {
-                appendHistory(current.toString().trim());
-                hasAny = true;
-            }
-
-            if (hasAny) {
-                log.info("已迁移旧版 HISTORY.md -> history.jsonl");
-            }
+            Files.writeString(memoryFile, renderMarkdown("MEMORY", memory));
+            Files.writeString(userFile, renderMarkdown("USER", user));
+            Files.writeString(soulFile, renderMarkdown("SOUL", soul));
         } catch (IOException e) {
-            log.warn("迁移旧版历史失败: {}", legacyHistoryFile, e);
+            throw new IllegalStateException("更新记忆视图失败", e);
         }
     }
 
-    /**
-     * 追加历史记录条目到文件
-     * @param entry 历史记录条目
-     */
-    private void appendHistoryEntry(Map<String, Object> entry) {
-        synchronized (cursorLock) {
+    private void appendHistoryEntry(String type, Object content) {
+        synchronized (historyLock) {
             try {
-                Files.createDirectories(historyFile.getParent());
-                int nextCursor = getLastCursor() + 1;
-
-                Map<String, Object> lineObj = new LinkedHashMap<>();
-                lineObj.put("cursor", nextCursor);
-                lineObj.put("timestamp", Instant.now().toString());
-                if (entry != null) {
-                    lineObj.putAll(entry);
-                }
-
-                String line = MAPPER.writeValueAsString(lineObj) + "\n";
-                Files.writeString(historyFile, line, StandardOpenOption.CREATE, StandardOpenOption.APPEND);
-                Files.writeString(cursorFile, String.valueOf(nextCursor),
-                        StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+                int cursor = readCursor() + 1;
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("cursor", cursor);
+                row.put("timestamp", Instant.now().toString());
+                row.put("type", type);
+                row.put("content", content);
+                Files.writeString(historyFile, MAPPER.writeValueAsString(row) + '\n',
+                        StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+                Files.writeString(cursorFile, String.valueOf(cursor), StandardOpenOption.CREATE,
+                        StandardOpenOption.TRUNCATE_EXISTING);
             } catch (IOException e) {
-                throw new RuntimeException(e);
+                throw new IllegalStateException("写入历史失败: " + historyFile, e);
             }
         }
     }
 
-    /**
-     * 渲染 Markdown 格式内容
-     * @param title 标题
-     * @param lines 内容行列表
-     * @return Markdown 字符串
-     */
-    private String renderMarkdown(String title, List<String> lines) {
-        StringBuilder sb = new StringBuilder();
-        sb.append("# ").append(title).append("\n\n");
-        if (lines == null || lines.isEmpty()) {
-            sb.append("_暂无结构化记忆条目。_\n");
-            return sb.toString();
+    private int readCursor() {
+        try { return Files.exists(cursorFile) ? Integer.parseInt(Files.readString(cursorFile).trim()) : 0; }
+        catch (Exception ignored) { return 0; }
+    }
+
+    private String renderHistory(String type, Object raw) {
+        if ("session_summary".equals(type)) return "session summary: " + String.valueOf(raw);
+        if (!"raw_archive".equals(type) || !(raw instanceof Map<?, ?> archive)) return "";
+        int count = archive.get("messages_count") instanceof Number number ? number.intValue() : 0;
+        List<String> snippets = new ArrayList<>();
+        if (archive.get("messages") instanceof List<?> messages) {
+            for (Object value : messages) {
+                if (!(value instanceof Map<?, ?> message)) continue;
+                String content = normalizeContent(message.get("content"));
+                Object role = message.containsKey("role") ? message.get("role") : "message";
+                if (!content.isBlank()) snippets.add(String.valueOf(role) + ": " + content);
+                if (snippets.size() == 4) break;
+            }
         }
-        for (String line : lines) {
-            sb.append(line).append("\n");
-        }
-        return sb.toString().trim() + "\n";
+        return "archived session" + (count > 0 ? " (" + count + " messages)" : "")
+                + (snippets.isEmpty() ? "" : ": " + String.join(" | ", snippets));
+    }
+
+    private static String normalizeContent(Object value) {
+        if (value == null) return "";
+        if (value instanceof String text) return HelperUtils.truncateText(text.trim(), 120);
+        return HelperUtils.truncateText(String.valueOf(value).trim(), 120);
     }
 
     private boolean markdownViewsNeedRebuild() {
-        if (!Files.exists(memoryFile) || !Files.exists(userFile) || !Files.exists(soulFile)) {
-            return true;
-        }
         try {
-            long entriesMtime = Files.getLastModifiedTime(memoryEntriesFile).toMillis();
-            return Files.getLastModifiedTime(memoryFile).toMillis() < entriesMtime
-                    || Files.getLastModifiedTime(userFile).toMillis() < entriesMtime
-                    || Files.getLastModifiedTime(soulFile).toMillis() < entriesMtime;
+            long source = Files.getLastModifiedTime(memoryEntriesFile).toMillis();
+            return !Files.exists(memoryFile) || !Files.exists(userFile) || !Files.exists(soulFile)
+                    || Files.getLastModifiedTime(memoryFile).toMillis() < source
+                    || Files.getLastModifiedTime(userFile).toMillis() < source
+                    || Files.getLastModifiedTime(soulFile).toMillis() < source;
         } catch (IOException e) {
-            log.debug("检查记忆 Markdown 视图状态失败: {}", memoryEntriesFile, e);
             return true;
         }
     }
 
-    private String renderArchivedHistoryContent(String type, Object rawContent) {
-        if ("text".equals(type)) {
-            return rawContent != null ? String.valueOf(rawContent) : "";
-        }
-        if ("session_summary".equals(type)) {
-            String content = rawContent != null ? String.valueOf(rawContent) : "";
-            return content.isBlank() ? "" : "session summary: " + content;
-        }
-        if (!"raw_archive".equals(type) || !(rawContent instanceof Map<?, ?> map)) {
-            return rawContent != null ? String.valueOf(rawContent) : "";
-        }
-
-        Object countObj = map.get("messages_count");
-        int count = countObj instanceof Number n ? n.intValue() : 0;
-        List<String> snippets = new ArrayList<>();
-        Object messagesObj = map.get("messages");
-        if (messagesObj instanceof List<?> messages) {
-            for (Object item : messages) {
-                if (!(item instanceof Map<?, ?> rawMessage)) {
-                    continue;
-                }
-                Object roleObj = rawMessage.get("role");
-                String role = roleObj != null ? String.valueOf(roleObj) : "";
-                String content = normalizeArchivedMessageContent(rawMessage.get("content"));
-                if (content.isBlank()) {
-                    continue;
-                }
-                snippets.add((role.isBlank() ? "message" : role) + ": " + content);
-                if (snippets.size() >= 4) {
-                    break;
-                }
-            }
-        }
-
-        StringBuilder sb = new StringBuilder("archived session");
-        if (count > 0) {
-            sb.append(" (").append(count).append(" messages)");
-        }
-        if (!snippets.isEmpty()) {
-            sb.append(": ").append(String.join(" | ", snippets));
-        }
-        return sb.toString();
+    private static String renderMarkdown(String title, List<String> lines) {
+        return "# " + title + "\n\n" + (lines.isEmpty() ? "_暂无结构化记忆条目。_\n"
+                : String.join("\n", lines) + "\n");
     }
 
-    private String normalizeArchivedMessageContent(Object rawContent) {
-        if (rawContent == null) {
-            return "";
-        }
-        if (rawContent instanceof String s) {
-            return HelperUtils.truncateText(s.trim(), 120);
-        }
-        if (rawContent instanceof List<?> list) {
-            List<String> parts = new ArrayList<>();
-            for (Object item : list) {
-                if (item == null) {
-                    continue;
-                }
-                parts.add(String.valueOf(item));
-                if (parts.size() >= 3) {
-                    break;
-                }
-            }
-            return HelperUtils.truncateText(String.join(" ", parts).trim(), 120);
-        }
-        return HelperUtils.truncateText(String.valueOf(rawContent).trim(), 120);
+    private static List<String> mergeStrings(List<String> left, List<String> right) {
+        Set<String> merged = new LinkedHashSet<>(left != null ? left : List.of());
+        if (right != null) merged.addAll(right);
+        return new ArrayList<>(merged);
     }
 
-    /**
-     * 对文本进行分词处理
-     * @param text 输入文本
-     * @return 分词后的集合
-     */
-    private Set<String> tokenize(String text) {
-        Set<String> out = new LinkedHashSet<>();
-        if (text == null || text.isBlank()) {
-            return out;
+    private static String readFile(Path path) {
+        try { return Files.readString(path); }
+        catch (IOException e) { return ""; }
+    }
+
+    private static void ensureSeedFile(Path target, String resource) {
+        if (Files.exists(target)) return;
+        try (InputStream input = MemoryStore.class.getClassLoader().getResourceAsStream(resource)) {
+            Files.createDirectories(target.getParent());
+            Files.write(target, input != null ? input.readAllBytes() : new byte[0]);
+        } catch (IOException e) {
+            throw new IllegalStateException("初始化记忆文件失败: " + target, e);
         }
+    }
+
+    private static Set<String> tokenize(String text) {
+        Set<String> result = new LinkedHashSet<>();
+        if (text == null || text.isBlank()) return result;
         String normalized = text.toLowerCase(Locale.ROOT);
         for (String token : normalized.split("[^\\p{IsAlphabetic}\\p{IsDigit}_]+")) {
-            if (token.length() >= 2) {
-                out.add(token);
-            }
+            if (token.length() >= 2) result.add(token);
         }
-        addCjkNgrams(normalized, out);
-        return out;
-    }
-
-    private void addCjkNgrams(String text, Set<String> out) {
         StringBuilder cjk = new StringBuilder();
-        for (int i = 0; i < text.length(); i++) {
-            char ch = text.charAt(i);
-            if (isCjk(ch)) {
+        for (int i = 0; i <= normalized.length(); i++) {
+            char ch = i < normalized.length() ? normalized.charAt(i) : ' ';
+            if (i < normalized.length() && Character.UnicodeScript.of(ch) == Character.UnicodeScript.HAN) {
                 cjk.append(ch);
             } else {
-                addNgrams(cjk, out);
+                for (int n : List.of(2, 3)) for (int start = 0; start + n <= cjk.length(); start++) {
+                    result.add(cjk.substring(start, start + n));
+                }
                 cjk.setLength(0);
             }
         }
-        addNgrams(cjk, out);
+        return result;
     }
 
-    private void addNgrams(StringBuilder cjk, Set<String> out) {
-        int len = cjk.length();
-        for (int n : List.of(2, 3)) {
-            if (len < n) {
-                continue;
-            }
-            for (int i = 0; i <= len - n; i++) {
-                out.add(cjk.substring(i, i + n));
-            }
-        }
-    }
-
-    private boolean isCjk(char ch) {
-        Character.UnicodeScript script = Character.UnicodeScript.of(ch);
-        return script == Character.UnicodeScript.HAN
-                || script == Character.UnicodeScript.HIRAGANA
-                || script == Character.UnicodeScript.KATAKANA
-                || script == Character.UnicodeScript.HANGUL;
-    }
-
-    /**
-     * 带评分的历史记录记录
-     */
-    private record ScoredHistory(String content, double score) {
-    }
+    private record ScoredHistory(String content, double score) {}
 }

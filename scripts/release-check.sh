@@ -25,7 +25,7 @@ CONFIG_STATUS="NOT_RUN"
 SMOKE_STATUS="NOT_RUN"
 COMPARE_STATUS="SKIPPED"
 REPLAY_STATUS="NOT_RUN"
-MIGRATION_STATUS="NOT_RUN"
+SCHEMA_STATUS="NOT_RUN"
 BASELINE_STATUS="MISSING"
 ARCHITECTURE_STATUS="NOT_RUN"
 TEAM_RUNTIME_STATUS="NOT_RUN"
@@ -114,7 +114,7 @@ write_report() {
     echo "| eval replay | $REPLAY_STATUS |"
     echo "| eval compare | $COMPARE_STATUS |"
     echo "| architecture hard-cut | $ARCHITECTURE_STATUS |"
-    echo "| schema migration/recovery | $MIGRATION_STATUS |"
+    echo "| SQLite schema v2 | $SCHEMA_STATUS |"
     echo "| team runtime golden | $TEAM_RUNTIME_STATUS |"
     echo
     echo "## Baseline"
@@ -233,7 +233,7 @@ if grep -R -n -E 'isReadOnly\(|isExclusive\(|supportsCompensation\(|preflight\('
   :
 fi
 if grep -R -n 'runtime-v2' src/main/java README.md --include='*.java' --include='*.md' \
-    | grep -v 'RuntimeSchemaV2Migrator.java' >>"$ARCHITECTURE_LOG" 2>/dev/null; then
+    >>"$ARCHITECTURE_LOG" 2>/dev/null; then
   :
 fi
 if grep -R -n 'GraphRunService\|AgentApprovalGraphResumeService\|runTeamGraph' \
@@ -241,8 +241,7 @@ if grep -R -n 'GraphRunService\|AgentApprovalGraphResumeService\|runTeamGraph' \
   :
 fi
 if grep -R -n 'new SqliteRuntimeStore' src/main/java --include='*.java' \
-    | grep -v 'RuntimeStoreRegistry.java' \
-    | grep -v 'RuntimeSchemaV2Migrator.java' >>"$ARCHITECTURE_LOG" 2>/dev/null; then
+    | grep -v 'RuntimeStoreRegistry.java' >>"$ARCHITECTURE_LOG" 2>/dev/null; then
   :
 fi
 if grep -R -n 'Thread\.sleep' src/main/java/ricbot/application/runtime \
@@ -267,16 +266,16 @@ if [ -s "$ARCHITECTURE_LOG" ]; then
 fi
 ARCHITECTURE_STATUS="PASS"
 
-MIGRATION_LOG="$LOG_DIR/schema-migration-recovery.log"
-if run_capture "schema migration and recovery" "$MIGRATION_LOG" sh ./mvnw -q \
-  -Dtest=RuntimeSchemaV2MigratorTest,SqliteRuntimeStoreTest test; then
-  MIGRATION_STATUS="PASS"
+SCHEMA_LOG="$LOG_DIR/sqlite-schema-v2.log"
+if run_capture "SQLite schema v2" "$SCHEMA_LOG" sh ./mvnw -q \
+  -Dtest=SqliteRuntimeStoreTest test; then
+  SCHEMA_STATUS="PASS"
 else
-  MIGRATION_STATUS="FAIL"
+  SCHEMA_STATUS="FAIL"
   mark_fail
-  append_final_reason "schema migration or recovery tests failed"
+  append_final_reason "SQLite schema v2 tests failed"
   write_report
-  echo "release-check failed: schema migration/recovery"
+  echo "release-check failed: SQLite schema v2"
   echo "report: $REPORT"
   exit 1
 fi

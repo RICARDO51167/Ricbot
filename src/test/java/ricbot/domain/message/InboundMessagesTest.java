@@ -2,7 +2,6 @@ package ricbot.domain.message;
 
 import org.junit.jupiter.api.Test;
 
-import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 
@@ -14,7 +13,6 @@ public class InboundMessagesTest {
 
     @Test
     void of_copiesCollectionsAndOptionalFields() {
-        LocalDateTime ts = LocalDateTime.of(2025, 1, 2, 3, 4, 5);
         InboundMessage msg = InboundMessages.of(
                 "cli",
                 "user",
@@ -22,8 +20,7 @@ public class InboundMessagesTest {
                 "hello",
                 List.of("a.png"),
                 Map.of("k", "v"),
-                "session-1",
-                ts
+                "session-1"
         );
 
         assertEquals("cli", msg.getChannel());
@@ -33,7 +30,6 @@ public class InboundMessagesTest {
         assertEquals(List.of("a.png"), msg.getMedia());
         assertEquals(Map.of("k", "v"), msg.getMetadata());
         assertEquals("session-1", msg.getSessionKeyOverride());
-        assertEquals(ts, msg.getTimestamp());
     }
 
     @Test

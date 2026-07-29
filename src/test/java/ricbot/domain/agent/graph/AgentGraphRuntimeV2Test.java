@@ -2,6 +2,8 @@ package ricbot.domain.agent.graph;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import ricbot.domain.agent.graph.dto.*;
+import ricbot.domain.agent.graph.enump.GraphExecutionStatus;
 import ricbot.infra.runtime.SqliteRuntimeStore;
 
 import java.nio.file.Path;

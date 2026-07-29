@@ -1,6 +1,8 @@
 package ricbot.tool.process;
 
 import org.junit.jupiter.api.Test;
+import ricbot.testsupport.InMemoryApprovalRequestStore;
+import ricbot.tool.api.Tool;
 import org.junit.jupiter.api.io.TempDir;
 import ricbot.domain.security.ApprovalService;
 import ricbot.domain.security.CommandRiskAnalyzer;
@@ -15,20 +17,22 @@ import static org.junit.jupiter.api.Assertions.*;
 public class ExecToolTest {
 
     @Test
-    void largeOutput_doesNotDeadlockOrFalseTimeout(@TempDir Path workspace) {
+    void largeOutput_doesNotDeadlockOrFalseTimeout(@TempDir Path workspace) throws Exception {
         ExecTool tool = new ExecTool(5, workspace.toString(), null, null, true, "", "", List.of());
 
-        String result = tool.execute("i=0; while [ \"$i\" -lt 5000 ]; do echo line-$i; i=$((i+1)); done", null, 5);
+        String result = String.valueOf(tool.execute(java.util.Map.of(
+                "command", "i=0; while [ \"$i\" -lt 5000 ]; do echo line-$i; i=$((i+1)); done", "timeout", 5)));
 
         assertFalse(result.startsWith("错误：命令执行超时"), result);
         assertTrue(result.contains("line-0"), result);
     }
 
     @Test
-    void hugeOutput_isDrainedButNotFullyCaptured(@TempDir Path workspace) {
+    void hugeOutput_isDrainedButNotFullyCaptured(@TempDir Path workspace) throws Exception {
         ExecTool tool = new ExecTool(5, workspace.toString(), null, null, true, "", "", List.of());
 
-        String result = tool.execute("i=0; while [ \"$i\" -lt 20000 ]; do echo line-$i; i=$((i+1)); done", null, 5);
+        String result = String.valueOf(tool.execute(java.util.Map.of(
+                "command", "i=0; while [ \"$i\" -lt 20000 ]; do echo line-$i; i=$((i+1)); done", "timeout", 5)));
 
         assertFalse(result.startsWith("错误：命令执行超时"), result);
         assertTrue(result.contains("line-0"), result);
@@ -36,17 +40,17 @@ public class ExecToolTest {
     }
 
     @Test
-    void longRunningCommand_stillTimesOut(@TempDir Path workspace) {
+    void longRunningCommand_stillTimesOut(@TempDir Path workspace) throws Exception {
         ExecTool tool = new ExecTool(1, workspace.toString(), null, null, true, "", "", List.of());
 
-        String result = tool.execute("sleep 2", null, 1);
+        String result = String.valueOf(tool.execute(java.util.Map.of("command", "sleep 2", "timeout", 1)));
 
         assertTrue(result.startsWith("错误：命令执行超时"), result);
     }
 
     @Test
-    void riskAnalyzerBlocksDangerousCommandsAndRequestsApproval(@TempDir Path workspace) {
-        ApprovalService approvalService = new ApprovalService();
+    void riskAnalyzerBlocksDangerousCommandsAndRequestsApproval(@TempDir Path workspace) throws Exception {
+        ApprovalService approvalService = new ApprovalService(new InMemoryApprovalRequestStore());
         ExecTool tool = new ExecTool(
                 5,
                 workspace.toString(),
@@ -60,25 +64,25 @@ public class ExecToolTest {
                 approvalService
         );
 
-        String blocked = tool.execute("sudo rm file", null, 5);
+        String blocked = String.valueOf(tool.execute(java.util.Map.of("command", "sudo rm file", "timeout", 5)));
         assertTrue(blocked.contains("风险策略拒绝"), blocked);
         assertTrue(blocked.contains("riskLevel: BLOCKED"), blocked);
 
-        String high = tool.execute("rm build.log", null, 5);
+        String high = String.valueOf(tool.execute(java.util.Map.of("command", "rm build.log", "timeout", 5)));
         assertTrue(high.contains("需要审批后才能执行"), high);
         assertTrue(high.contains("requestId:"), high);
         assertTrue(high.contains("riskLevel: HIGH"), high);
 
-        String medium = tool.execute("mkdir reports", null, 5);
+        String medium = String.valueOf(tool.execute(java.util.Map.of("command", "mkdir reports", "timeout", 5)));
         assertTrue(medium.contains("riskLevel: MEDIUM"), medium);
 
-        String safe = tool.execute("pwd", null, 5);
+        String safe = String.valueOf(tool.execute(java.util.Map.of("command", "pwd", "timeout", 5)));
         assertFalse(safe.contains("需要审批"), safe);
     }
 
     @Test
     void highRiskCommandCreatesPendingCallAndApprovedExecutionBypassesRiskGate(@TempDir Path workspace) {
-        ApprovalService approvalService = new ApprovalService();
+        ApprovalService approvalService = new ApprovalService(new InMemoryApprovalRequestStore());
         ExecTool tool = new ExecTool(
                 5,
                 workspace.toString(),
@@ -100,7 +104,8 @@ public class ExecToolTest {
 
         approvalService.approve(requestId);
         PendingToolCall call = approvalService.consumeApprovedToolCall(requestId);
-        String result = String.valueOf(registry.executeApproved(call.toolName(), call.arguments()));
+        String result = String.valueOf(registry.execute(call.toolName(), call.arguments(),
+                Tool.ToolExecutionContext.approvedContext()));
 
         assertFalse(result.contains("需要审批后才能执行"), result);
         assertTrue(java.nio.file.Files.exists(workspace.resolve("approved.txt")));

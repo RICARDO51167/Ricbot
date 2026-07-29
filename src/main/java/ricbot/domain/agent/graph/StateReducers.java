@@ -1,5 +1,9 @@
 package ricbot.domain.agent.graph;
 
+import ricbot.domain.agent.graph.dto.GraphChannelWrite;
+import ricbot.domain.agent.graph.interfacep.StateReducer;
+import ricbot.domain.agent.usage.UsageLedger;
+
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -38,6 +42,41 @@ public final class StateReducers {
             }
             return Collections.unmodifiableList(merged);
         };
+    }
+
+    /** Adds typed UsageDelta/UsageLedger values and also accepts their JSON map representation on resume. */
+    public static StateReducer sumUsage() {
+        return (current, writes) -> {
+            UsageLedger ledger = UsageLedger.from(current);
+            for (GraphChannelWrite write : writes) ledger = ledger.plus(UsageLedger.from(write.value()));
+            return ledger;
+        };
+    }
+
+    /** Append-only artifact references, deduplicated by artifactId across retries. */
+    public static StateReducer artifactsById() {
+        return (current, writes) -> {
+            Map<String, Object> values = new LinkedHashMap<>();
+            if (current instanceof Collection<?> collection) collection.forEach(value -> putArtifact(values, value));
+            else if (current != null) throw new GraphReductionException("artifactRefs current value is not a collection");
+            for (GraphChannelWrite write : writes) {
+                if (write.value() instanceof Collection<?> collection) collection.forEach(value -> putArtifact(values, value));
+                else putArtifact(values, write.value());
+            }
+            return List.copyOf(values.values());
+        };
+    }
+
+    private static void putArtifact(Map<String, Object> values, Object value) {
+        String id;
+        if (value instanceof ricbot.domain.agent.artifact.ArtifactRef ref) id = ref.artifactId();
+        else if (value instanceof Map<?, ?> map) id = String.valueOf(map.containsKey("artifactId") ? map.get("artifactId") : "");
+        else throw new GraphReductionException("artifact reference has no typed identity");
+        if (id.isBlank()) throw new GraphReductionException("artifactId is required");
+        Object previous = values.putIfAbsent(id, value);
+        if (previous != null && !Objects.equals(previous, value)) {
+            throw new GraphReductionException("conflicting artifact reference: " + id);
+        }
     }
 
     /** Exactly-once delivery reducer keyed by logical task id and attempt. */

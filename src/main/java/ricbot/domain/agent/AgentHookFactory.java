@@ -11,24 +11,19 @@ import ricbot.infra.template.ToolHintFormatter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Map;
 
-final class AgentHookFactory {
+public final class AgentHookFactory {
 
     private static final Logger log = LoggerFactory.getLogger(AgentHookFactory.class);
 
     private final MessageBus bus;
-    private final ToolContextApplier toolContextApplier;
-
-    AgentHookFactory(MessageBus bus, ToolContextApplier toolContextApplier) {
+    public AgentHookFactory(MessageBus bus) {
         this.bus = bus;
-        this.toolContextApplier = toolContextApplier;
     }
 
-    AgentHook create(InboundMessage msg, List<AgentHook> globalHooks, List<AgentHook> requestHooks) {
-        AgentHook baseHook = new AgentHook(true) {
+    public AgentHook create(InboundMessage msg) {
+        return new AgentHook() {
             private final StringBuilder streamBuf = new StringBuilder();
 
             @Override
@@ -89,7 +84,6 @@ final class AgentHookFactory {
                     publishProgress(msg, toolHint, true);
                 }
 
-                toolContextApplier.apply(msg.getChannel(), msg.getChatId(), messageIdOf(msg));
             }
 
             @Override
@@ -110,23 +104,6 @@ final class AgentHookFactory {
                 return HelperUtils.stripThink(content);
             }
         };
-
-        List<AgentHook> hooks = new ArrayList<>();
-        hooks.add(baseHook);
-        appendHooks(hooks, globalHooks);
-        appendHooks(hooks, requestHooks);
-        return hooks.size() == 1 ? baseHook : new AgentHook.CompositeHook(hooks);
-    }
-
-    private void appendHooks(List<AgentHook> target, List<AgentHook> extraHooks) {
-        if (extraHooks == null) {
-            return;
-        }
-        for (AgentHook hook : extraHooks) {
-            if (hook != null) {
-                target.add(hook);
-            }
-        }
     }
 
     private void publishProgress(InboundMessage msg, String content, boolean toolHint) {
@@ -142,11 +119,4 @@ final class AgentHookFactory {
         }
     }
 
-    private String messageIdOf(InboundMessage msg) {
-        if (msg.getMetadata() == null) {
-            return null;
-        }
-        Object value = msg.getMetadata().get("message_id");
-        return value != null ? String.valueOf(value) : null;
-    }
 }

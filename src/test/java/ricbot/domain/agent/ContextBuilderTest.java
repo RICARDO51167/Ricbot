@@ -35,7 +35,8 @@ public class ContextBuilderTest {
                 "cli",
                 "direct",
                 "summary",
-                "user"
+                "user",
+                null
         );
 
         assertEquals("system", messages.get(0).get("role"));
@@ -62,7 +63,8 @@ public class ContextBuilderTest {
                 "cli",
                 "direct",
                 null,
-                "user"
+                "user",
+                null
         );
 
         Object content = messages.get(1).get("content");

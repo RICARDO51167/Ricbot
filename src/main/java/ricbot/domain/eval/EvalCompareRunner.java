@@ -1,6 +1,5 @@
 package ricbot.domain.eval;
 
-import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.PropertyNamingStrategies;
 
@@ -20,9 +19,6 @@ public class EvalCompareRunner {
     private static final ObjectMapper MAPPER = new ObjectMapper()
             .findAndRegisterModules()
             .setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE);
-    private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {
-    };
-
     public EvalComparisonResult compare(Path baselineRunDir, Path candidateRunDir, Path outputDir) throws Exception {
         if (baselineRunDir == null || candidateRunDir == null) {
             throw new IllegalArgumentException("--baseline and --candidate are required");

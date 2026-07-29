@@ -1,6 +1,7 @@
 package ricbot.domain.agent;
 
 import org.junit.jupiter.api.Test;
+import ricbot.domain.agent.dto.ContextSource;
 
 import java.util.List;
 import java.util.Map;

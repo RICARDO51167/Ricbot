@@ -1,6 +1,10 @@
 package ricbot.domain.agent.graph;
 
 import org.junit.jupiter.api.Test;
+import ricbot.domain.agent.graph.dto.GraphExecutionState;
+import ricbot.domain.agent.graph.dto.GraphNodeResult;
+import ricbot.domain.agent.graph.dto.GraphWait;
+import ricbot.domain.agent.graph.enump.GraphExecutionStatus;
 
 import java.util.Map;
 import java.util.concurrent.ExecutorService;

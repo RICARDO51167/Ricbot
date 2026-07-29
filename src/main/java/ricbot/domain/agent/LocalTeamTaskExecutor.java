@@ -11,7 +11,7 @@ import ricbot.domain.task.TaskWorkerRequest;
 import ricbot.domain.task.TaskWorkerResult;
 import ricbot.domain.task.TaskWorkerRunner;
 import ricbot.domain.task.TaskWorkerStatus;
-import ricbot.domain.workspace.WorkspaceSession;
+import ricbot.domain.workspace.dto.WorkspaceSession;
 import ricbot.domain.workspace.WorkspaceSessionStore;
 
 import java.time.Instant;
@@ -39,7 +39,8 @@ public final class LocalTeamTaskExecutor implements TaskExecutor {
         java.nio.file.Path executionRoot = sharedRead ? context.workspace() : lease.path();
         TaskWorkerRequest task = new TaskWorkerRequest(spec.taskId(), spec.parentRunId(),
                 context.task().childRunId(), context.task().attempt(), spec.role(),
-                dependencyPrompt(spec.goal(), context.dependencyResults()), spec.workspaceMode(), spec.allowedTools());
+                dependencyPrompt(spec.goal(), context.dependencyResults()), spec.workspaceMode(), spec.allowedTools(),
+                context.siblingCount());
         TaskWorkerResult worker = runner.run(task, workspaceSession, executionRoot);
         TaskStatus status = worker.status() == TaskWorkerStatus.FAILED ? TaskStatus.FAILED : TaskStatus.SUCCEEDED;
         TaskResult result = new TaskResult(2, spec.taskId(), spec.parentRunId(), context.task().childRunId(), context.task().attempt(), status,

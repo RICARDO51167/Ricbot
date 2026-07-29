@@ -9,6 +9,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -94,7 +95,19 @@ public class GrepTool extends Tool {
      * @param maxResults 最大结果数量
      * @return 搜索结果字符串或错误信息
      */
-    public String execute(
+    @Override
+    public Object execute(Map<String, Object> params) {
+        Map<String, Object> safe = params != null ? params : Map.of();
+        return grep(
+                (String) safe.get("pattern"),
+                (String) safe.get("base_dir"),
+                (String) safe.get("file_glob"),
+                (Boolean) safe.get("ignore_case"),
+                (Integer) safe.get("max_results")
+        );
+    }
+
+    private String grep(
             String pattern,
             String baseDir,
             String fileGlob,

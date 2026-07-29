@@ -1,7 +1,7 @@
 package ricbot.domain.task;
 
-import ricbot.domain.agent.graph.GraphRuntimeEventType;
-import ricbot.domain.agent.graph.GraphRuntimeStore;
+import ricbot.domain.agent.graph.enump.GraphRuntimeEventType;
+import ricbot.domain.agent.graph.interfacep.GraphRuntimeStore;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;

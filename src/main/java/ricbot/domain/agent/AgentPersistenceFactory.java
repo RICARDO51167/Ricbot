@@ -1,5 +1,6 @@
 package ricbot.domain.agent;
 
+import ricbot.domain.agent.dto.AgentPersistenceComponents;
 import ricbot.domain.session.SessionManager;
 import java.nio.file.Path;
 import ricbot.infra.runtime.SqliteRuntimeStore;

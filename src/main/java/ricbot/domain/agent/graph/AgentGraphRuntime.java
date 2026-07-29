@@ -1,5 +1,14 @@
 package ricbot.domain.agent.graph;
 
+import ricbot.domain.agent.graph.dto.*;
+import ricbot.domain.agent.graph.enump.GraphEdgeMode;
+import ricbot.domain.agent.graph.enump.GraphExecutionStatus;
+import ricbot.domain.agent.graph.enump.GraphFailurePolicy;
+import ricbot.domain.agent.graph.enump.GraphRuntimeEventType;
+import ricbot.domain.agent.graph.exceptionp.GraphNonRetryableException;
+import ricbot.domain.agent.graph.interfacep.GraphFatalFailure;
+import ricbot.domain.agent.graph.interfacep.GraphRuntimeStore;
+
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -86,18 +95,19 @@ public final class AgentGraphRuntime implements AutoCloseable {
         for (Map.Entry<NodeActivation, Future<GraphPendingWrite>> entry : futures.entrySet()) {
             NodeActivation activation = entry.getKey();
             GraphNodeSpec spec = definition.nodeSpec(activation.nodeId());
+            long timeoutMillis = effectiveTimeoutMillis(spec, snapshot);
             GraphPendingWrite write;
             try {
-                write = entry.getValue().get(spec.timeout().toMillis(), TimeUnit.MILLISECONDS);
+                write = entry.getValue().get(timeoutMillis, TimeUnit.MILLISECONDS);
             } catch (TimeoutException e) {
                 entry.getValue().cancel(true);
                 GraphRetrySchedule retry = retrySchedule(activation, spec, "timeout",
-                        "node timed out after " + spec.timeout());
+                        "node timed out after " + timeoutMillis + "ms");
                 if (retry != null) {
                     retries.add(retry);
                     continue;
                 }
-                write = failedWrite(activation, "timeout", "node timed out after " + spec.timeout(), e);
+                write = failedWrite(activation, "timeout", "node timed out after " + timeoutMillis + "ms", e);
             } catch (InterruptedException e) {
                 entry.getValue().cancel(true);
                 Thread.currentThread().interrupt();
@@ -145,6 +155,18 @@ public final class AgentGraphRuntime implements AutoCloseable {
             if (state.status() == GraphExecutionStatus.FAILED) throw failure;
             return failGraph("superstep commit failed: " + message(failure), failure);
         }
+    }
+
+    private static long effectiveTimeoutMillis(GraphNodeSpec spec, GraphExecutionState state) {
+        long configured = Math.max(1, spec.timeout().toMillis());
+        Object raw = state.channels().get("budgetState");
+        long remaining = Long.MAX_VALUE;
+        if (raw instanceof ricbot.domain.agent.budget.BudgetSnapshot snapshot) {
+            remaining = snapshot.remainingActiveMillis();
+        } else if (raw instanceof Map<?, ?> map && map.get("remainingActiveMillis") instanceof Number number) {
+            remaining = number.longValue();
+        }
+        return remaining == Long.MAX_VALUE ? configured : Math.max(1, Math.min(configured, remaining));
     }
 
     public synchronized GraphExecutionState resume(Map<String, Object> signals) {

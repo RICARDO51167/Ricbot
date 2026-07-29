@@ -8,6 +8,8 @@ import ricbot.domain.message.MessageBus;
 import ricbot.domain.session.Session;
 import ricbot.domain.session.SessionManager;
 import ricbot.infra.config.Config;
+import ricbot.infra.runtime.SqliteRuntimeStore;
+import ricbot.infra.runtime.SqliteSessionManager;
 import ricbot.integration.llm.api.LLMProvider;
 import ricbot.integration.llm.api.LLMResponse;
 import ricbot.integration.llm.api.ToolCallRequest;
@@ -29,7 +31,7 @@ public class AgentLoopToolCallTest {
     @Test
     void toolCall_isExecuted_andToolFailureIsRecorded(@TempDir Path workspace) throws Exception {
         MessageBus bus = new MessageBus();
-        SessionManager sessions = new SessionManager(workspace);
+        SessionManager sessions = new SqliteSessionManager(new SqliteRuntimeStore(workspace));
 
         AtomicInteger call = new AtomicInteger(0);
         LLMProvider provider = new LLMProvider("k", "http://localhost") {
@@ -79,7 +81,7 @@ public class AgentLoopToolCallTest {
 
         Session s = sessions.getOrCreate(sessionKey);
         boolean sawTool = s.getMessages().stream().anyMatch(m -> "tool".equals(m.get("role")) && "list_dir".equals(m.get("name")));
-        assertTrue(sawTool);
+        assertTrue(sawTool, s.getMessages().toString());
 
         AtomicInteger call2 = new AtomicInteger(0);
         LLMProvider provider2 = new LLMProvider("k", "http://localhost") {
@@ -134,7 +136,7 @@ public class AgentLoopToolCallTest {
     @Test
     void multiTurn_historyIsProvidedToProvider(@TempDir Path workspace) throws Exception {
         MessageBus bus = new MessageBus();
-        SessionManager sessions = new SessionManager(workspace);
+        SessionManager sessions = new SqliteSessionManager(new SqliteRuntimeStore(workspace));
 
         AtomicInteger call = new AtomicInteger(0);
         LLMProvider provider = new LLMProvider("k", "http://localhost") {
@@ -184,7 +186,7 @@ public class AgentLoopToolCallTest {
     @Test
     void statusCommand_readsTaskState(@TempDir Path workspace) throws Exception {
         MessageBus bus = new MessageBus();
-        SessionManager sessions = new SessionManager(workspace);
+        SessionManager sessions = new SqliteSessionManager(new SqliteRuntimeStore(workspace));
         LLMProvider provider = new LLMProvider("k", "http://localhost") {
             @Override
             public LLMResponse chat(
@@ -229,7 +231,7 @@ public class AgentLoopToolCallTest {
     @Test
     void contextCommand_readsLastContextTrace(@TempDir Path workspace) throws Exception {
         MessageBus bus = new MessageBus();
-        SessionManager sessions = new SessionManager(workspace);
+        SessionManager sessions = new SqliteSessionManager(new SqliteRuntimeStore(workspace));
         LLMProvider provider = new LLMProvider("k", "http://localhost") {
             @Override
             public LLMResponse chat(

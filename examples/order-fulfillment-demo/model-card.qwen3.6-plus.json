@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "id": "demo-dashscope-qwen3.6-plus",
+  "version": "2026-07-29",
+  "provider": "dashscope",
+  "modelPattern": "qwen3.6-plus",
+  "apiMode": "openai_compat",
+  "capabilities": {
+    "toolCalling": true,
+    "streaming": true,
+    "vision": false,
+    "jsonMode": true,
+    "reasoningEffort": false
+  },
+  "limits": {"contextWindowTokens": 32768, "maxOutputTokens": 4096},
+  "pricing": {
+    "currency": "USD",
+    "unitTokens": 1000000,
+    "inputUsd": 0.48,
+    "outputUsd": 1.44,
+    "cachedInputUsd": null
+  },
+  "source": "Demo estimate for Singapore; verify the applicable DashScope invoice price before use.",
+  "effectiveAt": "2026-07-29T00:00:00Z"
+}

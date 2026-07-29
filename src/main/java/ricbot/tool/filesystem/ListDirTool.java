@@ -6,6 +6,7 @@ import ricbot.tool.api.ToolParam;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 列出指定目录下的文件和子目录的工具类。
@@ -41,7 +42,13 @@ public class ListDirTool extends Tool {
         );
     }
 
-    public String execute(String path) {
+    @Override
+    public Object execute(Map<String, Object> params) {
+        Map<String, Object> safe = params != null ? params : Map.of();
+        return list((String) safe.get("path"));
+    }
+
+    private String list(String path) {
         try {
             String targetPath = (path == null || path.isBlank()) ? "." : path;
             Path dir = FileToolSupport.resolvePath(workspace, targetPath);

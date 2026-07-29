@@ -2,6 +2,7 @@ package ricbot.domain.agent;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import ricbot.domain.agent.dto.ContextQualityReport;
 
 import java.nio.file.Path;
 import java.util.List;

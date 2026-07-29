@@ -25,7 +25,6 @@ final class WorkspaceDiff {
             ".traces",
             "target",
             "sessions",
-            "legacy_sessions",
             "memory"
     );
     private static final Set<String> SKIP_ROOT_FILES = Set.of("notes/index.json");

@@ -1,0 +1,59 @@
+{
+  "agents": {
+    "defaults": {
+      "workspace": "target/ricbot-full-demo",
+      "model": "qwen3.6-plus",
+      "max_tokens": 4096,
+      "max_tool_iterations": 30,
+      "context_window_tokens": 32768,
+      "context_block_limit": 80,
+      "max_tool_result_chars": 900,
+      "timezone": "Asia/Shanghai",
+      "budget": {
+        "max_total_tokens": 120000,
+        "max_cost_microusd": 500000,
+        "max_active_seconds": 1800,
+        "max_tool_calls": 180,
+        "finalization_tokens": 4096,
+        "worker": {
+          "allocation": "equal_share",
+          "max_total_tokens": null,
+          "max_cost_microusd": null,
+          "max_active_seconds": null,
+          "max_tool_calls": null
+        }
+      },
+      "context_offload": {
+        "enabled": true,
+        "preview_chars": 500,
+        "read_chunk_chars": 4000
+      }
+    }
+  },
+  "providers": {
+    "dashscope": {
+      "api_key": "${DASHSCOPE_API_KEY}",
+      "api_base": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "extra_headers": {}
+    }
+  },
+  "model_cards": {
+    "paths": ["target/ricbot-full-demo/model-card.qwen3.6-plus.json"]
+  },
+  "tools": {
+    "restrictToWorkspace": true,
+    "exec": {
+      "enable": true,
+      "timeout": 120,
+      "sandbox": true,
+      "approval_enabled": true,
+      "backend": "local",
+      "fallback_backend": "local",
+      "allow_backend_fallback": false,
+      "docker_image": "eclipse-temurin:17-jdk",
+      "docker_network_enabled": false,
+      "path_append": "",
+      "allowed_env_keys": []
+    }
+  }
+}

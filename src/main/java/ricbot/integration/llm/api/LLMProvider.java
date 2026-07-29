@@ -22,9 +22,6 @@ public abstract class LLMProvider {
     protected static final TypeReference<Map<String, Object>> JSON_OBJECT_TYPE = new TypeReference<>() {
     };
 
-    // 聊天重试的延迟时间列表（秒），分别为第1、2、3次重试的等待时间
-    protected static final List<Integer> CHAT_RETRY_DELAYS = List.of(1, 2, 4);
-
     // 可重试的 HTTP 状态码集合：408 (请求超时), 409 (冲突), 429 (请求过多)
     protected static final Set<Integer> RETRYABLE_STATUS_CODES = Set.of(408, 409, 429);
     // 瞬态错误类型集合，通常表示网络或临时性问题
@@ -144,17 +141,6 @@ public abstract class LLMProvider {
             String reasoningEffort,               // 推理努力程度
             Object toolChoice                     // 工具选择策略
     ) throws Exception;
-
-    /**
-     * 执行聊天请求，带自动重试。
-     */
-    public LLMResponse chatWithRetry(
-            List<Map<String, Object>> messages,
-            List<Map<String, Object>> tools,
-            String model
-    ) throws Exception {
-        return LLMFailureException.requireSuccess(chat(messages, tools, model, null, null, null, null));
-    }
 
     /**
      * 对应 Python chat_stream(...)

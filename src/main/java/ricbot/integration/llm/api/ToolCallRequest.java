@@ -19,9 +19,6 @@ public class ToolCallRequest {
     private Map<String, Object> arguments = new LinkedHashMap<>();
 
 
-    public ToolCallRequest() {
-    }
-
     public ToolCallRequest(String id, String name, Map<String, Object> arguments) {
         this.id = id;
         this.name = name;
@@ -32,27 +29,12 @@ public class ToolCallRequest {
         return id;
     }
 
-    public ToolCallRequest setId(String id) {
-        this.id = id;
-        return this;
-    }
-
     public String getName() {
         return name;
     }
 
-    public ToolCallRequest setName(String name) {
-        this.name = name;
-        return this;
-    }
-
     public Map<String, Object> getArguments() {
         return arguments;
-    }
-
-    public ToolCallRequest setArguments(Map<String, Object> arguments) {
-        this.arguments = arguments != null ? arguments : new LinkedHashMap<>();
-        return this;
     }
 
     public Map<String, Object> toOpenAIToolCall() {

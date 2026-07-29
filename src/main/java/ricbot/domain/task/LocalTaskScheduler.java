@@ -209,7 +209,8 @@ public final class LocalTaskScheduler implements AutoCloseable {
             List<TaskResult> dependencies = runningRecord.spec().dependsOn().stream()
                     .map(store::loadResult).flatMap(java.util.Optional::stream)
                     .sorted(Comparator.comparingInt(TaskResult::planOrder)).toList();
-            result = taskExecutor.execute(new TaskExecutionContext(runningRecord, dependencies, workspace));
+            result = taskExecutor.execute(new TaskExecutionContext(runningRecord, dependencies, workspace,
+                    store.listByParent(runningRecord.spec().parentRunId()).size()));
             validateResult(runningRecord, result);
         } catch (Throwable failure) {
             result = Thread.currentThread().isInterrupted()

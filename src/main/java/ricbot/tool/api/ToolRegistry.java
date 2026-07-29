@@ -1,67 +1,28 @@
 package ricbot.tool.api;
 
-import lombok.RequiredArgsConstructor;
-import ricbot.tool.filesystem.ListDirTool;
-import ricbot.tool.filesystem.ReadFileTool;
-import ricbot.tool.process.ExecTool;
-import ricbot.tool.search.GlobTool;
-import ricbot.tool.search.GrepTool;
-
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import ricbot.tool.api.Tool.ToolExecutionContext;
 
 public class ToolRegistry {
-    private static final List<LegacyToolExecutor<? extends Tool>> LEGACY_EXECUTORS = List.of(
-            new LegacyToolExecutor<>(
-                    ReadFileTool.class,
-                    (tool, params) -> tool.execute(
-                            (String) params.get("path"),
-                            (Integer) params.get("offset"),
-                            (Integer) params.get("limit")
-                    )
-            ),
-            new LegacyToolExecutor<>(
-                    ListDirTool.class,
-                    (tool, params) -> tool.execute((String) params.get("path"))
-            ),
-            new LegacyToolExecutor<>(
-                    GlobTool.class,
-                    (tool, params) -> tool.execute(
-                            (String) params.get("pattern"),
-                            (String) params.get("base_dir")
-                    )
-            ),
-            new LegacyToolExecutor<>(
-                    GrepTool.class,
-                    (tool, params) -> tool.execute(
-                            (String) params.get("pattern"),
-                            (String) params.get("base_dir"),
-                            (String) params.get("file_glob"),
-                            (Boolean) params.get("ignore_case"),
-                            (Integer) params.get("max_results")
-                    )
-            )
-    );
-
     // 存储已注册的工具，键为工具名称，值为工具实例
     private final Map<String, Tool> tools = new ConcurrentHashMap<>();
-    private final ToolExecutionPolicy executionPolicy;
-
-    public ToolRegistry() {
-        this(ToolExecutionPolicy.defaultPolicy());
-    }
-
-    public ToolRegistry(ToolExecutionPolicy executionPolicy) {
-        this.executionPolicy = executionPolicy != null ? executionPolicy : ToolExecutionPolicy.defaultPolicy();
-    }
+    private final Map<String, ToolGroup> groups = new ConcurrentHashMap<>();
+    private volatile ToolExposure exposure = ToolExposure.all();
+    public ToolRegistry() {}
 
     /**
      * 注册一个工具到注册表中
      * @param tool 要注册的工具实例
      */
     public void register(Tool tool) {
+        register(tool, defaultGroup(tool.getName()));
+    }
+
+    public void register(Tool tool, ToolGroup group) {
+        Objects.requireNonNull(tool, "tool");
         tools.put(tool.getName(), tool);
+        groups.put(tool.getName(), group != null ? group : ToolGroup.ADMIN);
     }
 
     /**
@@ -70,6 +31,7 @@ public class ToolRegistry {
      */
     public void unregister(String name) {
         tools.remove(name);
+        groups.remove(name);
     }
 
     /**
@@ -81,16 +43,30 @@ public class ToolRegistry {
         return tools.get(name);
     }
 
+    public ToolExposure exposure() { return exposure; }
+    public void setExposure(ToolExposure exposure) { this.exposure = exposure != null ? exposure : ToolExposure.all(); }
+    public ToolGroup groupFor(String name) { return groups.getOrDefault(name, ToolGroup.ADMIN); }
+    public boolean visible(String name) { return exposure.activeGroups().contains(groupFor(name)); }
+
+    public ToolRegistry copy() {
+        ToolRegistry copy = new ToolRegistry();
+        tools.forEach((name, tool) -> copy.register(tool, groupFor(name)));
+        copy.setExposure(exposure);
+        return copy;
+    }
+
     public ToolPolicy policyFor(String name) {
-        return executionPolicy.policyFor(name, tools.get(name));
+        Tool tool = tools.get(name);
+        if (tool == null) return new ToolPolicy(name, false, false, true, "missing");
+        ToolEffectPolicy effect = tool.effectPolicy();
+        boolean readOnly = effect.readOnly();
+        boolean exclusive = effect.concurrency() == ToolEffectPolicy.Concurrency.EXCLUSIVE_WORKSPACE;
+        return new ToolPolicy(name, readOnly, exclusive, !exclusive && readOnly,
+                effect.effect().name().toLowerCase(java.util.Locale.ROOT));
     }
 
     public boolean canRunConcurrently(Collection<String> names) {
-        return executionPolicy.canRunConcurrently(names, this::policyFor);
-    }
-
-    public ToolExecutionPolicy executionPolicy() {
-        return executionPolicy;
+        return names == null || names.stream().map(this::policyFor).allMatch(ToolPolicy::concurrentSafe);
     }
 
     /**
@@ -116,7 +92,7 @@ public class ToolRegistry {
         // 收集所有工具的原始定义
         List<Map<String, Object>> definitions = new ArrayList<>();
         for (String toolName : sortedToolNames()) {
-            Tool tool = tools.get(toolName);
+            Tool tool = visible(toolName) ? tools.get(toolName) : null;
             if (tool != null) {
                 definitions.add(tool.toSchema());
             }
@@ -133,6 +109,9 @@ public class ToolRegistry {
      * @return 准备结果，包含工具实例、转换后的参数或错误信息
      */
     public PrepareResult prepareCall(String name, Object rawParams) {
+        if (!visible(name)) {
+            return new PrepareResult(null, rawParams, "Error: Tool '" + name + "' is not active for this run");
+        }
         // 查找工具
         Tool tool = tools.get(name);
         if (tool == null) {
@@ -192,67 +171,19 @@ public class ToolRegistry {
         return execute(name, params, ToolExecutionContext.normal());
     }
 
-    public Object executeApproved(String name, java.util.Map<String, Object> params) {
-        return executeApproved(name, params, "");
-    }
-
-    public Object executeApproved(String name, java.util.Map<String, Object> params, String approvalId) {
-        return execute(name, params, ToolExecutionContext.approved(approvalId));
-    }
-
-    public Object executeProtocol(
-            String name,
-            java.util.Map<String, Object> params,
-            String idempotencyKey,
-            String approvalId
-    ) {
-        return execute(name, params, ToolExecutionContext.protocol(idempotencyKey, approvalId));
-    }
-
     /** Checked protocol execution used by the runtime's timeout and lease boundary. */
     public Object executeProtocolChecked(String name, java.util.Map<String, Object> params,
-                                         String idempotencyKey, String approvalId) throws Exception {
+                                         boolean approved) throws Exception {
         PrepareResult prepared = prepareCall(name, params);
         if (prepared.error() != null) throw new IllegalArgumentException(prepared.error());
         @SuppressWarnings("unchecked") Map<String, Object> cast = (Map<String, Object>) prepared.params();
-        ToolExecutionContext context = ToolExecutionContext.protocol(idempotencyKey, approvalId);
-        try (ToolExecutionContext.Scope ignored = ToolExecutionContext.activate(context)) {
-            return executeTool(prepared.tool(), cast, context);
-        }
+        ToolExecutionContext context = approved
+                ? ToolExecutionContext.approvedContext() : ToolExecutionContext.normal();
+        return executeTool(prepared.tool(), cast, context);
     }
 
-    public ToolStateProbe probeProtocolChecked(String name, java.util.Map<String, Object> params,
-                                               String idempotencyKey) throws Exception {
-        PrepareResult prepared = prepareCall(name, params);
-        if (prepared.error() != null) throw new IllegalArgumentException(prepared.error());
-        @SuppressWarnings("unchecked") Map<String, Object> cast = (Map<String, Object>) prepared.params();
-        ToolExecutionContext context = ToolExecutionContext.protocol(idempotencyKey, "");
-        try (ToolExecutionContext.Scope ignored = ToolExecutionContext.activate(context)) {
-            return prepared.tool().probe(cast, context);
-        }
-    }
-
-    public Object compensate(
-            String name,
-            java.util.Map<String, Object> params,
-            Object previousResult,
-            String idempotencyKey,
-            String approvalId
-    ) {
-        Tool tool = get(name);
-        if (tool == null) return toolNotFoundMessage(name);
-        if (!tool.effectPolicy().compensation()) {
-            return "Error: tool '" + name + "' does not support compensation";
-        }
-        ToolExecutionContext context = ToolExecutionContext.protocol(idempotencyKey, approvalId);
-        try (ToolExecutionContext.Scope ignored = ToolExecutionContext.activate(context)) {
-            return tool.compensate(params, previousResult, context);
-        } catch (Exception e) {
-            return executionFailedMessage(name + " compensation", e);
-        }
-    }
-
-    private Object execute(String name, java.util.Map<String, Object> params, ToolExecutionContext context) {
+    public Object execute(String name, java.util.Map<String, Object> params, ToolExecutionContext context) {
+        if (!visible(name)) return "Error: Tool '" + name + "' is not active for this run";
         // 再次获取工具实例以防万一
         Tool tool = get(name);
         if (tool == null) {
@@ -268,12 +199,9 @@ public class ToolRegistry {
         }
 
         try {
-            try (ToolExecutionContext.Scope ignored = ToolExecutionContext.activate(context)) {
-                Object result = executeTool(tool, params, context);
-                // 如果结果是字符串且以错误或错误开头，直接返回
-                if (result instanceof String s && (s.startsWith("Error") || s.startsWith("错误"))) return s;
-                return result;
-            }
+            Object result = executeTool(tool, params, context != null ? context : ToolExecutionContext.normal());
+            if (result instanceof String s && (s.startsWith("Error") || s.startsWith("错误"))) return s;
+            return result;
         } catch (Exception e) {
             // 捕获执行过程中的异常并返回错误信息
             return executionFailedMessage(name, e);
@@ -288,6 +216,10 @@ public class ToolRegistry {
         return sortedToolNames();
     }
 
+    public List<String> visibleToolNames() {
+        return sortedToolNames().stream().filter(this::visible).toList();
+    }
+
     private List<String> sortedToolNames() {
         List<String> names = new ArrayList<>(tools.keySet());
         names.sort(String::compareTo);
@@ -295,23 +227,7 @@ public class ToolRegistry {
     }
 
     private Object executeTool(Tool tool, Map<String, Object> params, ToolExecutionContext context) throws Exception {
-        LegacyToolExecutor<? extends Tool> legacyExecutor = findLegacyExecutor(tool);
-        if (legacyExecutor != null) {
-            return legacyExecutor.executeUnchecked(tool, params);
-        }
         return tool.execute(params, context);
-    }
-
-    private LegacyToolExecutor<? extends Tool> findLegacyExecutor(Tool tool) {
-        if (tool instanceof ExecTool) {
-            return null;
-        }
-        for (LegacyToolExecutor<? extends Tool> executor : LEGACY_EXECUTORS) {
-            if (executor.supports(tool)) {
-                return executor;
-            }
-        }
-        return null;
     }
 
     private String toolNotFoundMessage(String name) {
@@ -351,22 +267,15 @@ public class ToolRegistry {
         return out;
     }
 
-    @RequiredArgsConstructor
-    private static final class LegacyToolExecutor<T extends Tool> {
-        private final Class<T> toolType;
-        private final LegacyToolInvoker<T> invoker;
-
-        private boolean supports(Tool tool) {
-            return toolType.isInstance(tool);
-        }
-
-        private Object executeUnchecked(Tool tool, Map<String, Object> params) throws Exception {
-            return invoker.execute(toolType.cast(tool), params);
-        }
+    private static ToolGroup defaultGroup(String name) {
+        if (name == null) return ToolGroup.ADMIN;
+        return switch (name) {
+            case "read_file", "list_dir", "grep", "glob", "artifact_list", "artifact_read",
+                    "artifact_grep", "manage_tool_groups" -> ToolGroup.BASIC;
+            case "write_file", "edit_file" -> ToolGroup.CODING;
+            case "exec" -> ToolGroup.VERIFICATION;
+            default -> ToolGroup.ADMIN;
+        };
     }
 
-    @FunctionalInterface
-    private interface LegacyToolInvoker<T extends Tool> {
-        Object execute(T tool, Map<String, Object> params) throws Exception;
-    }
 }

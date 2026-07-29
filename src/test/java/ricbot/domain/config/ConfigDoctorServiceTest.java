@@ -184,6 +184,23 @@ class ConfigDoctorServiceTest {
         assertTrue(report.getWarnings().stream().anyMatch(s -> s.contains("sandbox-exec") && s.contains("bwrap")), report.getWarnings().toString());
     }
 
+    @Test
+    void costBudgetWithoutModelPrice_isRejected(@TempDir Path tempDir) throws Exception {
+        Path configPath = writeConfig(tempDir, """
+                {
+                  "agents": {"defaults": {"model": "gpt-4o-mini", "workspace": "%s",
+                    "budget": {"max_cost_microusd": 10000}}},
+                  "providers": {"openai": {"api_key": "sk-test"}},
+                  "tools": {"restrictToWorkspace": true, "exec": {"enable": false}}
+                }
+                """.formatted(jsonPath(tempDir.resolve("workspace"))));
+
+        ConfigDoctorReport report = doctor().diagnose(ConfigLoader.loadConfig(configPath), configPath);
+
+        assertEquals("ERROR", report.status());
+        assertTrue(report.getErrorCodes().contains("MISSING_MODEL_PRICE"), report.getErrors().toString());
+    }
+
     private static ConfigDoctorService doctor() {
         return new ConfigDoctorService(name -> null, command -> true);
     }

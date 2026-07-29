@@ -2,6 +2,7 @@ package ricbot.domain.agent;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import ricbot.domain.agent.dto.ContextSource;
 import ricbot.domain.memory.MemoryEntry;
 import ricbot.domain.memory.MemoryRetriever;
 import ricbot.domain.memory.MemoryStore;
@@ -23,7 +24,7 @@ import java.util.stream.Collectors;
 /**
  * 上下文选择服务类，负责从会话历史、记忆存储和工具调用轨迹中选择相关的上下文信息。
  */
-final class ContextSelectionService {
+public final class ContextSelectionService {
     private static final Logger log = LoggerFactory.getLogger(ContextSelectionService.class);
 
     // 用于分割文本为 token 的正则表达式模式，匹配非字母、非数字和非下划线的字符
@@ -51,7 +52,7 @@ final class ContextSelectionService {
         this(memoryStore, toolTraceSummarizer, contextWindowTokens, null);
     }
 
-    ContextSelectionService(
+    public ContextSelectionService(
             MemoryStore memoryStore,
             ToolTraceSummarizer toolTraceSummarizer,
             int contextWindowTokens,
@@ -72,7 +73,7 @@ final class ContextSelectionService {
      * @param historyWindowMessages 历史消息窗口大小
      * @return 选择结果，包含筛选后的历史消息和上下文 bundle
      */
-    SelectionResult select(
+    public SelectionResult select(
             SessionPreparedInputs preparedInputs,
             List<Map<String, Object>> sessionMessages,
             String currentMessage,
@@ -334,30 +335,6 @@ final class ContextSelectionService {
             }
         } catch (Exception e) {
             log.warn("skip context trace write", e);
-        }
-    }
-
-    private List<String> relatedFiles(String currentMessage, List<Map<String, Object>> toolTrace) {
-        List<String> out = new ArrayList<>();
-        addPathLike(out, currentMessage);
-        for (Map<String, Object> trace : toolTrace != null ? toolTrace : List.<Map<String, Object>>of()) {
-            addPathLike(out, String.valueOf(trace.getOrDefault("arguments_summary", "")));
-            addPathLike(out, String.valueOf(trace.getOrDefault("result_summary", "")));
-        }
-        return out.stream().distinct().limit(12).toList();
-    }
-
-    private void addPathLike(List<String> out, String text) {
-        if (text == null || text.isBlank()) {
-            return;
-        }
-        String cleaned = text.replace("{", " ").replace("}", " ").replace(",", " ");
-        for (String token : cleaned.split("\\s+")) {
-            String value = token.replace("\"", "").replace("'", "").trim();
-            if (value.contains("/") || value.endsWith(".java") || value.endsWith(".md") || value.endsWith(".json")
-                    || value.endsWith(".yml") || value.endsWith(".yaml") || value.endsWith(".txt")) {
-                out.add(value);
-            }
         }
     }
 
@@ -676,7 +653,7 @@ final class ContextSelectionService {
      * @param taskState       任务状态
      * @param toolTrace       工具调用轨迹
      */
-    record SessionPreparedInputs(
+    public record SessionPreparedInputs(
             String sessionId,
             String archivedSummary,
             TaskState taskState,
@@ -684,13 +661,13 @@ final class ContextSelectionService {
             Map<String, Object> teamContext,
             Map<String, Object> workspaceContext
     ) {
-        SessionPreparedInputs {
+        public SessionPreparedInputs {
             toolTrace = toolTrace != null ? List.copyOf(toolTrace) : List.of();
             teamContext = teamContext != null ? Map.copyOf(teamContext) : Map.of();
             workspaceContext = workspaceContext != null ? Map.copyOf(workspaceContext) : Map.of();
         }
 
-        SessionPreparedInputs(String sessionId, String archivedSummary, TaskState taskState, List<Map<String, Object>> toolTrace) {
+        public SessionPreparedInputs(String sessionId, String archivedSummary, TaskState taskState, List<Map<String, Object>> toolTrace) {
             this(sessionId, archivedSummary, taskState, toolTrace, Map.of(), Map.of());
         }
 
@@ -704,7 +681,7 @@ final class ContextSelectionService {
             this(sessionId, archivedSummary, taskState, toolTrace, teamContext, Map.of());
         }
 
-        SessionPreparedInputs(String archivedSummary, TaskState taskState, List<Map<String, Object>> toolTrace) {
+        public SessionPreparedInputs(String archivedSummary, TaskState taskState, List<Map<String, Object>> toolTrace) {
             this("", archivedSummary, taskState, toolTrace, Map.of(), Map.of());
         }
     }
@@ -715,7 +692,7 @@ final class ContextSelectionService {
      * @param history 筛选后的历史消息
      * @param bundle  上下文 bundle
      */
-    record SelectionResult(List<Map<String, Object>> history, PromptContextBundle bundle) {
+    public record SelectionResult(List<Map<String, Object>> history, PromptContextBundle bundle) {
     }
 
     /**

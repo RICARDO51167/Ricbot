@@ -90,10 +90,6 @@ public final class ProviderFactory {
             return;
         }
 
-        if (spec.isOauth()) {
-            return;
-        }
-
         if (apiKey == null || apiKey.isBlank()) {
             throw new IllegalStateException(
                     "Provider '" + spec.getName() + "' 未配置 API Key"

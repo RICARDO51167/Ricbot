@@ -1,6 +1,5 @@
 package ricbot.domain.verification;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import ricbot.domain.task.TaskResult;
 import ricbot.domain.task.TeamPlan;
 import ricbot.infra.execution.ExecutionBackend;
@@ -23,7 +22,6 @@ import java.util.UUID;
 
 /** Executes deterministic verification stages and commits bounded evidence to the runtime database. */
 public final class WorkspaceVerificationService {
-    private static final ObjectMapper MAPPER = new ObjectMapper().findAndRegisterModules();
     private final Path trustedWorkspace;
     private final ExecutionBackend backend;
     private final ricbot.infra.runtime.SqliteRuntimeStore runtime;

@@ -24,8 +24,29 @@ public final class ProviderCapabilityResolver {
         String apiBase = config != null ? config.getApiBase(model) : null;
         Integer contextWindow = defaults != null ? defaults.getContextWindowTokens() : null;
         Integer maxOutput = defaults != null ? defaults.getMaxTokens() : null;
-        ProviderCapability inferred = resolve(providerName, model, apiBase, contextWindow, maxOutput);
+        String resolvedProvider = resolveProviderName(providerName, model, apiBase);
+        ProviderCapability inferred = new ModelCardResolver().resolve(config, resolvedProvider, model)
+                .map(card -> configuredLimits(card.capability(model), contextWindow, maxOutput))
+                .orElseGet(() -> conservative(resolvedProvider, model, contextWindow, maxOutput));
         return applyOverride(inferred, config, providerName, model);
+    }
+
+    private static ProviderCapability conservative(String provider, String model, Integer contextWindow,
+                                                     Integer maxOutput) {
+        return new ProviderCapability(provider != null && !provider.isBlank() ? provider : UNKNOWN,
+                new ModelCapability(model != null ? model : "", UNKNOWN, UNKNOWN, UNKNOWN, UNKNOWN, UNKNOWN,
+                        contextWindow != null ? contextWindow : -1, maxOutput != null ? maxOutput : -1, UNKNOWN),
+                ProviderCapability.SOURCE_STATIC);
+    }
+
+    private static ProviderCapability configuredLimits(ProviderCapability capability, Integer contextWindow,
+                                                        Integer maxOutput) {
+        ModelCapability value = capability.modelCapability();
+        return new ProviderCapability(capability.providerName(), new ModelCapability(value.model(),
+                value.supportsToolCalling(), value.supportsStreaming(), value.supportsVision(), value.supportsJsonMode(),
+                value.supportsReasoningEffort(), value.contextWindowTokens() > 0 ? value.contextWindowTokens()
+                : contextWindow != null ? contextWindow : -1, value.maxOutputTokens() > 0 ? value.maxOutputTokens()
+                : maxOutput != null ? maxOutput : -1, value.apiMode()), capability.source());
     }
 
     public ProviderCapability resolve(

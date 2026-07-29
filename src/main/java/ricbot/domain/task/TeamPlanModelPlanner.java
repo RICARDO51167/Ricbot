@@ -2,17 +2,20 @@ package ricbot.domain.task;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import ricbot.domain.agent.graph.GraphExecutionState;
-import ricbot.domain.task.TaskRole;
+import ricbot.domain.agent.graph.dto.GraphExecutionState;
 import ricbot.integration.llm.api.LLMProvider;
 import ricbot.integration.llm.api.LLMResponse;
+import ricbot.domain.agent.structured.StructuredOutputService;
+import ricbot.domain.agent.structured.StructuredRequest;
+import ricbot.domain.agent.usage.UsageLedger;
+import ricbot.domain.config.ModelCard;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
-import ricbot.domain.runtime.RuntimeDigest;
+
+import ricbot.domain.runtime.dto.RuntimeDigest;
 
 /** Converts a leader model's schema-constrained tool call into an untrusted TeamPlan. */
 public final class TeamPlanModelPlanner {
@@ -20,10 +23,17 @@ public final class TeamPlanModelPlanner {
     private static final TypeReference<Map<String, Object>> MAP = new TypeReference<>() {};
     private final LLMProvider provider;
     private final String model;
+    private final ModelCard.Pricing pricing;
+    private UsageLedger lastUsage = UsageLedger.empty();
 
     public TeamPlanModelPlanner(LLMProvider provider, String model) {
+        this(provider, model, null);
+    }
+
+    public TeamPlanModelPlanner(LLMProvider provider, String model, ModelCard.Pricing pricing) {
         this.provider = java.util.Objects.requireNonNull(provider, "provider");
         this.model = model != null && !model.isBlank() ? model : provider.getDefaultModel();
+        this.pricing = pricing;
     }
 
     public TeamPlan plan(GraphExecutionState state) throws Exception {
@@ -39,13 +49,18 @@ public final class TeamPlanModelPlanner {
                         + "\nPrior results: " + state.channels().getOrDefault("joinedWorkerContext", List.of())
                         + "\nStructured verification evidence: " + state.channels().getOrDefault("verification", Map.of()) : ""))
         );
-        LLMResponse response = provider.chat(messages, List.of(schema()), model, 4096, 0d, null,
-                Map.of("type", "function", "function", Map.of("name", "submit_team_plan")));
-        Map<String, Object> payload;
-        if (response.hasToolCalls()) payload = response.getToolCalls().get(0).getArguments();
-        else payload = MAPPER.readValue(response.getContent(), MAP);
+        @SuppressWarnings("unchecked") Class<Map<String, Object>> mapType = (Class<Map<String, Object>>) (Class<?>) Map.class;
+        Map<String, Object> parameters = castMap(castMap(schema().get("function")).get("parameters"));
+        var structured = new StructuredOutputService(provider, pricing).execute(messages, model,
+                new StructuredRequest<>("submit_team_plan", "Submit a validated local task DAG", parameters,
+                        mapType, value -> value != null && value.get("tasks") instanceof List<?>, 1), true, true);
+        if (!structured.valid()) throw new IllegalArgumentException("invalid leader plan: " + structured.error());
+        lastUsage = structured.usage();
+        Map<String, Object> payload = structured.value();
         return convert(state, payload, revision);
     }
+
+    public UsageLedger lastUsage() { return lastUsage; }
 
     private TeamPlan convert(GraphExecutionState state, Map<String, Object> payload, int revision) {
         Object rawTasks = payload.get("tasks");
@@ -131,5 +146,11 @@ public final class TeamPlanModelPlanner {
     private static List<String> strings(Object value) {
         if (!(value instanceof List<?> list)) return List.of();
         return list.stream().map(TeamPlanModelPlanner::text).filter(item -> !item.isBlank()).toList();
+    }
+    private static Map<String, Object> castMap(Object value) {
+        if (!(value instanceof Map<?, ?> raw)) return Map.of();
+        Map<String, Object> out = new LinkedHashMap<>();
+        raw.forEach((key, item) -> out.put(String.valueOf(key), item));
+        return out;
     }
 }

@@ -1,5 +1,6 @@
 package ricbot.domain.agent;
 
+import ricbot.domain.agent.dto.SideEffectExecutionIdentity;
 import ricbot.tool.api.ToolEffectPolicy;
 
 import java.time.Duration;

@@ -2,10 +2,12 @@ package ricbot.domain.agent;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import ricbot.domain.agent.dto.ExecutionOutcome;
+import ricbot.domain.agent.interfacep.AgentInvocationRuntime;
 import ricbot.domain.message.InboundMessage;
 import ricbot.domain.session.Session;
-import ricbot.integration.llm.api.LLMProvider;
-import ricbot.integration.llm.api.LLMResponse;
+import ricbot.domain.security.ApprovalService;
+import ricbot.infra.runtime.SqliteRuntimeStore;
 import ricbot.tool.api.ToolRegistry;
 
 import java.nio.file.Path;
@@ -21,7 +23,7 @@ class AgentExecutionServiceTest {
         StubRunner runner = new StubRunner(new AgentRunResult().setFinalContent("done").setStopReason("stop"));
         AgentExecutionService service = service(runner, workspace);
 
-        ExecutionOutcome outcome = service.executeInteractive(request(), ignored -> fail("legacy callback must not run"));
+        ExecutionOutcome outcome = service.executeInteractive(request());
 
         assertEquals("done", outcome.finalContent());
         assertEquals(1, runner.specs.size());
@@ -32,14 +34,16 @@ class AgentExecutionServiceTest {
     @Test
     void systemExecutionUsesSingleGraphInvocation(@TempDir Path workspace) throws Exception {
         StubRunner runner = new StubRunner(new AgentRunResult().setFinalContent("").setStopReason("stop"));
-        ExecutionOutcome outcome = service(runner, workspace).executeSystem(request(), ignored -> { });
+        ExecutionOutcome outcome = service(runner, workspace).executeSystem(request());
         assertEquals("后台任务已完成。", outcome.finalContent());
         assertEquals(1, runner.specs.size());
     }
 
     private static AgentExecutionService service(AgentInvocationRuntime runner, Path workspace) {
+        SqliteRuntimeStore runtime = new SqliteRuntimeStore(workspace);
         return new AgentExecutionService(runner, new ToolRegistry(), workspace, "model", 4, 4000,
-                "standard", 8000, 24);
+                "standard", 8000, 24, null, runtime.sideEffectStore(),
+                new ApprovalService(runtime.approvalStore()));
     }
 
     private static AgentRequestContext request() {

@@ -2,6 +2,9 @@ package ricbot.domain.workspace;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import ricbot.domain.workspace.dto.WorkspaceSession;
+import ricbot.domain.workspace.enump.WorkspaceBackendType;
+import ricbot.domain.workspace.enump.WorkspaceSessionStatus;
 
 import java.nio.file.Files;
 import java.nio.file.Path;

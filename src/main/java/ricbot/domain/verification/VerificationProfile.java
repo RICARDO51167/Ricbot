@@ -13,7 +13,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
-/** Trusted, baseline-owned verification commands. Model plans may reference ids only. */
+/** Trusted, baseline-owned verification commands. Model plans may reference ids only.
+ * @author rcd*/
 public record VerificationProfile(int version, String digest, List<Check> checks) {
     private static final ObjectMapper MAPPER = new ObjectMapper();
     public VerificationProfile {

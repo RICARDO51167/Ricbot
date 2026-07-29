@@ -78,26 +78,6 @@ public record TraceEvent(
                 approvalRequestId, type, actor, message, payload, createdAt, durationMs);
     }
 
-    public TraceEvent withTeamSessionId(String nextTeamSessionId) {
-        return new TraceEvent(schemaVersion, traceId, eventId, parentEventId, sessionId, nextTeamSessionId, changeSetId,
-                approvalRequestId, type, actor, message, payload, createdAt, durationMs);
-    }
-
-    public TraceEvent withChangeSetId(String nextChangeSetId) {
-        return new TraceEvent(schemaVersion, traceId, eventId, parentEventId, sessionId, teamSessionId, nextChangeSetId,
-                approvalRequestId, type, actor, message, payload, createdAt, durationMs);
-    }
-
-    public TraceEvent withApprovalRequestId(String nextApprovalRequestId) {
-        return new TraceEvent(schemaVersion, traceId, eventId, parentEventId, sessionId, teamSessionId, changeSetId,
-                nextApprovalRequestId, type, actor, message, payload, createdAt, durationMs);
-    }
-
-    public TraceEvent withDurationMs(long nextDurationMs) {
-        return new TraceEvent(schemaVersion, traceId, eventId, parentEventId, sessionId, teamSessionId, changeSetId,
-                approvalRequestId, type, actor, message, payload, createdAt, nextDurationMs);
-    }
-
     public Map<String, Object> toMap() {
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("schemaVersion", schemaVersion);

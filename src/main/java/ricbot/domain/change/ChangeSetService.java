@@ -4,10 +4,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import ricbot.domain.verification.VerificationReport;
 import ricbot.domain.workspace.RuntimeArtifactFilter;
 import ricbot.infra.runtime.SqliteRuntimeStore;
-import ricbot.domain.agent.SideEffectClaim;
-import ricbot.domain.agent.SideEffectRecord;
-import ricbot.domain.agent.SideEffectStatus;
-import ricbot.domain.agent.SideEffectStore;
+import ricbot.domain.agent.dto.SideEffectClaim;
+import ricbot.domain.agent.dto.SideEffectRecord;
+import ricbot.domain.agent.eump.SideEffectStatus;
+import ricbot.domain.agent.interfacep.SideEffectStore;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -629,10 +629,6 @@ public class ChangeSetService {
             throw new IllegalStateException("workspacePath must stay under " + root + ": " + path);
         }
         return path;
-    }
-
-    private String git(String... args) {
-        return git(workspace, args);
     }
 
     private String git(Path directory, String... args) {

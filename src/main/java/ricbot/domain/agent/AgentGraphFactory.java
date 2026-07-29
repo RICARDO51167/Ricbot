@@ -4,13 +4,40 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ricbot.application.runtime.RuntimeDriver;
 import ricbot.application.runtime.LocalAgentRuntime;
-import ricbot.domain.agent.context.ContextCompactionResult;
+import ricbot.domain.agent.context.dto.ContextCompactionResult;
 import ricbot.domain.agent.context.ContextCompactor;
+import ricbot.domain.agent.context.dto.StructuredContextSummary;
+import ricbot.domain.agent.dto.SideEffectExecutionIdentity;
+import ricbot.domain.agent.dto.SideEffectOutcome;
+import ricbot.domain.agent.dto.SideEffectRecord;
+import ricbot.domain.agent.dto.ToolInvocationRecord;
+import ricbot.domain.agent.eump.AgentNodeType;
+import ricbot.domain.agent.eump.SideEffectStatus;
 import ricbot.domain.agent.graph.*;
-import ricbot.domain.hook.AgentHook;
+import ricbot.domain.agent.graph.dto.*;
+import ricbot.domain.agent.graph.enump.GraphExecutionStatus;
+import ricbot.domain.agent.graph.enump.GraphRuntimeEventType;
+import ricbot.domain.agent.graph.exceptionp.GraphNonRetryableException;
+import ricbot.domain.agent.graph.interfacep.GraphRuntimeStore;
+import ricbot.domain.agent.interfacep.SideEffectStore;
+import ricbot.domain.agent.artifact.ArtifactRef;
+import ricbot.domain.agent.artifact.ArtifactStore;
+import ricbot.domain.agent.event.AgentEvent;
+import ricbot.domain.agent.event.AgentEventReconstructor;
+import ricbot.domain.agent.budget.BudgetPolicy;
+import ricbot.domain.agent.budget.BudgetSnapshot;
+import ricbot.domain.agent.budget.BudgetReservation;
+import ricbot.domain.agent.budget.BudgetCoordinator;
+import ricbot.domain.agent.hint.RuntimeHint;
+import ricbot.domain.agent.usage.UsageDelta;
+import ricbot.domain.agent.usage.UsageLedger;
+import ricbot.domain.agent.usage.UsagePricer;
+import ricbot.domain.agent.structured.StructuredOutputService;
+import ricbot.domain.agent.structured.StructuredRequest;
+import ricbot.domain.agent.middleware.AgentMiddleware;
+import ricbot.domain.agent.middleware.AgentMiddlewareChain;
 import ricbot.domain.hook.AgentHookContext;
 import ricbot.domain.security.*;
-import ricbot.infra.runtime.SqliteRuntimeStore;
 import ricbot.integration.llm.api.LLMProvider;
 import ricbot.integration.llm.api.LLMFailureException;
 import ricbot.integration.llm.api.LLMFailureKind;
@@ -19,6 +46,12 @@ import ricbot.integration.llm.api.ToolCallRequest;
 import ricbot.tool.api.ToolEffectPolicy;
 import ricbot.tool.api.ToolRiskDecision;
 import ricbot.tool.api.ToolRegistry;
+import ricbot.tool.api.ToolExposure;
+import ricbot.tool.api.ToolGroup;
+import ricbot.tool.api.ManageToolGroupsTool;
+import ricbot.tool.artifact.ArtifactGrepTool;
+import ricbot.tool.artifact.ArtifactListTool;
+import ricbot.tool.artifact.ArtifactReadTool;
 
 import java.nio.file.Path;
 import java.time.Instant;
@@ -28,14 +61,13 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.ConcurrentHashMap;
-import ricbot.domain.runtime.RunRequest;
+import ricbot.domain.runtime.dto.RunRequest;
 
 /**
  * Concrete production Agent graph factory. Scheduling belongs exclusively to
  * {@link AgentGraphRuntime}; this class supplies node executors and projects results.
  */
 public class AgentGraphFactory implements LocalAgentRuntime.GraphFactory, AutoCloseable {
-    public static final int MAX_INJECTIONS_PER_TURN = 3;
     private static final ObjectMapper MAPPER = new ObjectMapper().findAndRegisterModules();
     private static final ExecutorService SHARED_EXECUTOR = Executors.newFixedThreadPool(4, new ThreadFactory() {
         private final AtomicInteger sequence = new AtomicInteger();
@@ -54,23 +86,15 @@ public class AgentGraphFactory implements LocalAgentRuntime.GraphFactory, AutoCl
     private final ApprovalService defaultApprovals;
     private final Map<String, Execution> preparedExecutions = new ConcurrentHashMap<>();
 
-    public AgentGraphFactory(LLMProvider provider) {
-        this(provider, SHARED_EXECUTOR, false, null, SideEffectStore.disabled(), null);
-    }
-
-    public AgentGraphFactory(LLMProvider provider, ExecutorService executor, boolean ownsExecutor) {
-        this(provider, executor, ownsExecutor, null, SideEffectStore.disabled(), null);
-    }
-
     public AgentGraphFactory(LLMProvider provider, ExecutorService executor, boolean ownsExecutor,
                            ToolRegistry defaultTools, SideEffectStore defaultSideEffects,
                            ApprovalService defaultApprovals) {
         this.provider = Objects.requireNonNull(provider, "provider");
         this.executor = executor != null ? executor : SHARED_EXECUTOR;
         this.ownsExecutor = ownsExecutor;
-        this.defaultTools = defaultTools;
-        this.defaultSideEffects = defaultSideEffects != null ? defaultSideEffects : SideEffectStore.disabled();
-        this.defaultApprovals = defaultApprovals;
+        this.defaultTools = Objects.requireNonNull(defaultTools, "defaultTools");
+        this.defaultSideEffects = Objects.requireNonNull(defaultSideEffects, "defaultSideEffects");
+        this.defaultApprovals = Objects.requireNonNull(defaultApprovals, "defaultApprovals");
     }
 
     /** In-package harness for graph node tests; production invocations enter through AgentRuntime. */
@@ -78,8 +102,8 @@ public class AgentGraphFactory implements LocalAgentRuntime.GraphFactory, AutoCl
         Objects.requireNonNull(spec, "spec");
         Instant started = Instant.now();
         String runId = UUID.randomUUID().toString();
-        GraphRuntimeStore store = spec.getWorkspace() != null
-                ? ricbot.app.bootstrap.RuntimeStoreRegistry.shared(spec.getWorkspace()) : new InMemoryGraphRuntimeStore();
+        GraphRuntimeStore store = ricbot.app.bootstrap.RuntimeStoreRegistry.shared(
+                Objects.requireNonNull(spec.getWorkspace(), "workspace"));
         Execution execution = new Execution(spec, runId, store);
         AgentGraphDefinition definition = AgentGraphRuntimeFactory.definition(spec.getMaxIterations());
         GraphExecutionState seed = GraphExecutionState.initial(definition.graphId(), runId,
@@ -89,7 +113,6 @@ public class AgentGraphFactory implements LocalAgentRuntime.GraphFactory, AutoCl
                 new GraphConditionRegistry(), AgentGraphRuntimeFactory.schema(), store, executor, seed)) {
             state = new RuntimeDriver().drive(runtime);
         } catch (Exception failure) {
-            execution.notifyError(failure);
             return execution.failedResult(started, failure, store.events(runId));
         }
         return execution.result(started, state, store.events(runId));
@@ -98,8 +121,8 @@ public class AgentGraphFactory implements LocalAgentRuntime.GraphFactory, AutoCl
     public void prepare(String runId, AgentRunSpec spec) {
         Objects.requireNonNull(spec, "spec");
         Path runtimeWorkspace = spec.getRuntimeWorkspace() != null ? spec.getRuntimeWorkspace() : spec.getWorkspace();
-        GraphRuntimeStore store = runtimeWorkspace != null
-                ? ricbot.app.bootstrap.RuntimeStoreRegistry.shared(runtimeWorkspace) : new InMemoryGraphRuntimeStore();
+        GraphRuntimeStore store = ricbot.app.bootstrap.RuntimeStoreRegistry.shared(
+                Objects.requireNonNull(runtimeWorkspace, "runtimeWorkspace"));
         Execution previous = preparedExecutions.putIfAbsent(runId, new Execution(spec, runId, store));
         if (previous != null) throw new IllegalStateException("run is already prepared: " + runId);
     }
@@ -107,9 +130,8 @@ public class AgentGraphFactory implements LocalAgentRuntime.GraphFactory, AutoCl
     @Override public AgentGraphRuntime open(RunRequest request, GraphExecutionState checkpoint) {
         Execution execution = preparedExecutions.computeIfAbsent(request.runId(), ignored -> {
             AgentRunSpec restored = restoreSpec(request, checkpoint);
-            GraphRuntimeStore store = request.workspace() != null
-                    ? ricbot.app.bootstrap.RuntimeStoreRegistry.shared(request.workspace())
-                    : new InMemoryGraphRuntimeStore();
+            GraphRuntimeStore store = ricbot.app.bootstrap.RuntimeStoreRegistry.shared(
+                    Objects.requireNonNull(request.workspace(), "runtime workspace"));
             return new Execution(restored, request.runId(), store);
         });
         AgentGraphDefinition definition = AgentGraphRuntimeFactory.definition(execution.spec.getMaxIterations());
@@ -127,7 +149,6 @@ public class AgentGraphFactory implements LocalAgentRuntime.GraphFactory, AutoCl
 
     public AgentRunResult failedResult(String runId, Instant started, Exception failure) {
         Execution execution = requireExecution(runId);
-        execution.notifyError(failure);
         return execution.failedResult(started, failure, execution.graphStore.events(runId));
     }
 
@@ -161,6 +182,16 @@ public class AgentGraphFactory implements LocalAgentRuntime.GraphFactory, AutoCl
                 .setTools(defaultTools != null ? defaultTools : new ToolRegistry())
                 .setSideEffectStore(defaultSideEffects)
                 .setApprovalService(defaultApprovals);
+        Object budget = config.get("budgetPolicy");
+        if (budget != null) spec.setBudgetPolicy(MAPPER.convertValue(budget, BudgetPolicy.class));
+        Object rootBudget = config.get("rootBudgetPolicy");
+        if (rootBudget != null) spec.setRootBudgetPolicy(MAPPER.convertValue(rootBudget, BudgetPolicy.class));
+        Object pricing = config.get("modelPricing");
+        if (pricing != null) spec.setModelPricing(MAPPER.convertValue(pricing, ricbot.domain.config.ModelCard.Pricing.class));
+        spec.setContextOffloadEnabled(!Boolean.FALSE.equals(config.get("contextOffloadEnabled")))
+                .setOffloadPreviewChars(Math.max(0, number(config.getOrDefault("offloadPreviewChars", 1200))))
+                .setArtifactReadChunkChars(Math.max(1, number(config.getOrDefault("artifactReadChunkChars", 16000))))
+                .setTimezone(clean(string(config.get("timezone")), "UTC"));
         Object allowed = config.get("allowedTools");
         if (allowed instanceof List<?> list) spec.setAllowedTools(list.stream().map(String::valueOf).toList());
         Object metadata = config.get("metadata");
@@ -181,24 +212,56 @@ public class AgentGraphFactory implements LocalAgentRuntime.GraphFactory, AutoCl
         private final ApprovalService approvals;
         private final List<String> toolsUsed = new ArrayList<>();
         private final List<Map<String, Object>> toolEvents = new ArrayList<>();
-        private boolean hadInjections;
+        private final List<ArtifactRef> newArtifactRefs = new ArrayList<>();
+        private final List<AgentEvent> agentEvents = new java.util.concurrent.CopyOnWriteArrayList<>();
+        private final java.util.concurrent.atomic.AtomicLong agentEventSequence = new java.util.concurrent.atomic.AtomicLong();
+        private final ArtifactStore artifacts;
+        private final AgentMiddlewareChain middleware;
+        private final BudgetCoordinator budgetCoordinator;
+        private final String rootRunId;
+        private final String taskId;
+        private final Map<String, List<BudgetReservation>> toolReservations = new HashMap<>();
+        private final Map<String, Long> toolStartedAt = new HashMap<>();
+        private UsageLedger nodeToolUsage = UsageLedger.empty();
+        private UsageLedger lastStructuredUsage = UsageLedger.empty();
 
         private Execution(AgentRunSpec spec, String runId, GraphRuntimeStore graphStore) {
             this.spec = spec;
             this.runId = runId;
             this.graphStore = graphStore;
-            this.tools = spec.getTools() != null ? spec.getTools() : new ToolRegistry();
+            this.tools = spec.getTools() != null ? spec.getTools().copy() : new ToolRegistry();
             Path runtimeWorkspace = spec.getRuntimeWorkspace() != null ? spec.getRuntimeWorkspace() : spec.getWorkspace();
-            SideEffectStore sideEffects = spec.getSideEffectStore() != null
-                    && spec.getSideEffectStore() != SideEffectStore.disabled()
-                    ? spec.getSideEffectStore() : defaultSideEffects;
-            this.effects = runtimeWorkspace != null
-                    ? new SideEffectCoordinator(sideEffects,
-                    ricbot.app.bootstrap.RuntimeStoreRegistry.lifecycle(runtimeWorkspace).instance().instanceId(),
-                    java.time.Duration.ofSeconds(30))
-                    : new SideEffectCoordinator(sideEffects);
+            String parentRunId = spec.getMetadata() != null ? string(spec.getMetadata().get("parentRunId")) : "";
+            String taskId = spec.getMetadata() != null ? string(spec.getMetadata().get("taskId")) : "";
+            this.rootRunId = parentRunId.isBlank() ? runId : parentRunId;
+            this.taskId = taskId;
+            this.artifacts = new ArtifactStore(Objects.requireNonNull(runtimeWorkspace, "runtimeWorkspace"),
+                    rootRunId, runId, taskId);
+            this.tools.register(new ArtifactListTool(artifacts), ToolGroup.BASIC);
+            this.tools.register(new ArtifactReadTool(artifacts, spec.getArtifactReadChunkChars()), ToolGroup.BASIC);
+            this.tools.register(new ArtifactGrepTool(artifacts), ToolGroup.BASIC);
+            this.tools.register(new ManageToolGroupsTool(this.tools), ToolGroup.BASIC);
+            if ("team-worker".equals(spec.getMetadata() != null ? spec.getMetadata().get("mode") : null)) {
+                boolean writable = this.tools.toolNames().contains("write_file") || this.tools.toolNames().contains("edit_file");
+                Set<ToolGroup> groups = writable ? Set.of(ToolGroup.BASIC, ToolGroup.CODING) : Set.of(ToolGroup.BASIC);
+                this.tools.setExposure(new ToolExposure(groups, groups));
+            }
+            SideEffectStore sideEffects = spec.getSideEffectStore() != null ? spec.getSideEffectStore() : defaultSideEffects;
+            this.effects = new SideEffectCoordinator(sideEffects,
+                    ricbot.app.bootstrap.RuntimeStoreRegistry.lifecycle(
+                            Objects.requireNonNull(runtimeWorkspace, "runtimeWorkspace")).instance().instanceId(),
+                    java.time.Duration.ofSeconds(30));
             this.approvals = spec.getApprovalService() != null ? spec.getApprovalService()
-                    : spec.getWorkspace() != null ? new ApprovalService(spec.getWorkspace()) : new ApprovalService();
+                    : defaultApprovals;
+            this.middleware = new AgentMiddlewareChain(List.of(
+                    new NamedMiddleware("tracing"), new NamedMiddleware("budget"),
+                    new NamedMiddleware("runtime-hint"), new NamedMiddleware("memory"),
+                    new NamedMiddleware("tool-exposure"), new NamedMiddleware("provider-fallback"),
+                    new NamedMiddleware("context-offload")));
+            this.budgetCoordinator = new BudgetCoordinator(graphStore);
+            if (spec.getBudgetPolicy().maxCostMicrousd() != null && spec.getModelPricing() == null) {
+                throw new IllegalArgumentException("cost budget requires model pricing");
+            }
         }
 
         private Map<String, Object> initialChannels() {
@@ -219,7 +282,12 @@ public class AgentGraphFactory implements LocalAgentRuntime.GraphFactory, AutoCl
             channels.put("contextCompactedAt", "");
             channels.put("stopReason", "");
             channels.put("iterations", 0);
-            channels.put("usage", Map.of());
+            channels.put("usageLedger", UsageLedger.empty());
+            channels.put("budgetState", BudgetSnapshot.evaluate(spec.getBudgetPolicy(), UsageLedger.empty(), false));
+            channels.put("middlewareState", Map.of("schemaVersion", 1, "versions", middleware.stateVersions()));
+            channels.put("runtimeHints", Map.of());
+            channels.put("toolExposure", exposureMap());
+            channels.put("artifactRefs", List.of());
             channels.put("finalContent", "");
             channels.put("error", "");
             channels.put("goal", request != null ? request.goal() : lastUserGoal(spec.getInitialMessages()));
@@ -236,6 +304,13 @@ public class AgentGraphFactory implements LocalAgentRuntime.GraphFactory, AutoCl
             runConfig.put("allowedTools", spec.getAllowedTools() != null ? spec.getAllowedTools() : List.of());
             runConfig.put("toolWorkspace", spec.getWorkspace() != null ? spec.getWorkspace().toString() : "");
             runConfig.put("metadata", serializableMetadata(spec.getMetadata()));
+            runConfig.put("budgetPolicy", spec.getBudgetPolicy());
+            if (spec.getRootBudgetPolicy() != null) runConfig.put("rootBudgetPolicy", spec.getRootBudgetPolicy());
+            if (spec.getModelPricing() != null) runConfig.put("modelPricing", spec.getModelPricing());
+            runConfig.put("contextOffloadEnabled", spec.isContextOffloadEnabled());
+            runConfig.put("offloadPreviewChars", spec.getOffloadPreviewChars());
+            runConfig.put("artifactReadChunkChars", spec.getArtifactReadChunkChars());
+            runConfig.put("timezone", spec.getTimezone());
             if (spec.getMetadata() != null) {
                 runConfig.put("taskId", string(spec.getMetadata().get("taskId")));
                 runConfig.put("parentRunId", string(spec.getMetadata().get("parentRunId")));
@@ -259,8 +334,7 @@ public class AgentGraphFactory implements LocalAgentRuntime.GraphFactory, AutoCl
             ApprovalRequest control = approvals.list().stream()
                     .filter(request -> request.binding() != null && request.binding().bound())
                     .filter(request -> runId.equals(request.binding().runId()))
-                    .filter(request -> SideEffectApplicationService.RETRY_ACTION.equals(request.binding().actionType())
-                            || SideEffectApplicationService.COMPENSATE_ACTION.equals(request.binding().actionType()))
+                    .filter(request -> SideEffectApplicationService.RETRY_ACTION.equals(request.binding().actionType()))
                     .filter(request -> request.status() == ApprovalRequest.ApprovalStatus.APPROVED
                             || request.status() == ApprovalRequest.ApprovalStatus.CLAIMED)
                     .filter(request -> !request.consumed())
@@ -280,12 +354,16 @@ public class AgentGraphFactory implements LocalAgentRuntime.GraphFactory, AutoCl
                     Map.of("contextUtilization", ratio));
         }
 
-        private GraphNodeResult compact(GraphExecutionState state, Map<String, Object> ignored) {
+        private GraphNodeResult compact(GraphExecutionState state, Map<String, Object> ignored) throws Exception {
+            long activeStarted = System.nanoTime();
+            lastStructuredUsage = UsageLedger.empty();
             int budget = Math.max(1, spec.getContextWindowTokens() != null ? spec.getContextWindowTokens() : 128_000);
             boolean forced = Boolean.TRUE.equals(state.channels().get("compactRequested"));
             String compactModel = clean(spec.getCompactModel(), clean(spec.getModel(), provider.getDefaultModel()));
-            ContextCompactionResult result = new ContextCompactor().compact(messages(state), budget,
-                    compactModel, this::summarize, forced);
+            ContextCompactionResult result = (ContextCompactionResult) middleware.compression(
+                    new AgentMiddleware.CompressionContext(middlewareContext(state), messages(state), compactModel),
+                    request -> new ContextCompactor().compact(request.messages(), budget,
+                            request.model(), this::summarize, forced));
             if (result.compacted()) {
                 graphStore.append(runId, state.superstep(), GraphRuntimeEventType.CONTEXT_COMPACTED,
                         Map.of("messages", result.eventMessages(), "sourceMessageIds", result.sourceMessageIds(),
@@ -305,40 +383,107 @@ public class AgentGraphFactory implements LocalAgentRuntime.GraphFactory, AutoCl
             writes.put("compactRequested", false);
             writes.put("contextUtilization", result.resultTokens() / (double) budget);
             writes.put("contextCompactedAt", Instant.now().toString());
+            if (result.compacted() && spec.isContextOffloadEnabled()) {
+                try {
+                    ArtifactRef ref = artifacts.writeText(json(result.eventMessages()),
+                            "context-compaction:" + state.superstep(), spec.getOffloadPreviewChars());
+                    writes.put("artifactRefs", List.of(artifactMap(ref)));
+                    graphStore.append(runId, state.superstep(), GraphRuntimeEventType.ARTIFACT_OFFLOADED,
+                            MAPPER.convertValue(ref, new TypeReference<>() { }), "artifact:" + ref.artifactId());
+                } catch (Exception failure) {
+                    throw new IllegalStateException("cannot offload compacted context", failure);
+                }
+            }
+            UsageDelta compactUsage = lastStructuredUsage.modelCalls() + lastStructuredUsage.repairCalls() > 0
+                    ? new UsageDelta(lastStructuredUsage.inputTokens(), lastStructuredUsage.outputTokens(),
+                    lastStructuredUsage.totalTokens(), 0, 1, lastStructuredUsage.repairCalls(), 0,
+                    lastStructuredUsage.activeMillis(), lastStructuredUsage.costMicrousd(), compactModel,
+                    lastStructuredUsage.costKnown())
+                    : UsagePricer.price(UsageDelta.compression(compactModel, Map.of(),
+                    elapsedMillis(activeStarted)), spec.getModelPricing());
+            writes.put("usageLedger", UsageLedger.empty().plus(compactUsage));
             return GraphNodeResult.next("next", writes);
         }
 
-        private ricbot.domain.agent.context.StructuredContextSummary summarize(
+        private StructuredContextSummary summarize(
                 List<Map<String, Object>> source, String prompt) throws Exception {
-            LLMResponse response = LLMFailureException.requireSuccess(provider.chat(
-                    List.of(Map.of("role", "system", "content", prompt)), List.of(),
+            Map<String, Object> schema = Map.of("type", "object", "additionalProperties", false,
+                    "required", List.of("taskOverview", "currentState", "importantDiscoveries", "nextSteps", "contextToPreserve"),
+                    "properties", Map.of(
+                            "taskOverview", Map.of("type", "string"),
+                            "currentState", Map.of("type", "string"),
+                            "importantDiscoveries", Map.of("type", "array", "items", Map.of("type", "string")),
+                            "nextSteps", Map.of("type", "array", "items", Map.of("type", "string")),
+                            "contextToPreserve", Map.of("type", "array", "items", Map.of("type", "string"))));
+            var result = new StructuredOutputService(provider, spec.getModelPricing()).execute(
+                    List.of(Map.of("role", "system", "content", prompt)),
                     clean(spec.getCompactModel(), clean(spec.getModel(), provider.getDefaultModel())),
-                    null, null, null, null));
-            String content = response.getContent() != null ? response.getContent().trim() : "";
-            if (content.startsWith("```")) {
-                content = content.replaceFirst("^```(?:json)?\\s*", "").replaceFirst("\\s*```$", "");
-            }
-            if (content.isBlank()) throw new IllegalStateException("compact model returned an empty summary");
-            return MAPPER.readValue(content, ricbot.domain.agent.context.StructuredContextSummary.class);
+                    new StructuredRequest<>("submit_context_summary", "Submit the compact context summary", schema,
+                            StructuredContextSummary.class, Objects::nonNull, 1), false, true);
+            if (!result.valid()) throw new IllegalStateException("compact model returned invalid summary: " + result.error());
+            lastStructuredUsage = result.usage();
+            return result.value();
         }
 
         private GraphNodeResult model(GraphExecutionState state, Map<String, Object> ignored) throws Exception {
             int iteration = number(state.channels().get("iterations")) + 1;
             List<Map<String, Object>> messages = messages(state);
-            AgentHookContext context = hookContext(messages, iteration);
-            invokeHook(() -> spec.getHook().beforeIteration(context));
-            LLMResponse response;
+            UsageLedger ledger = UsageLedger.from(state.channels().get("usageLedger"));
+            BudgetSnapshot budget = BudgetSnapshot.evaluate(spec.getBudgetPolicy(), ledger, false);
+            boolean finalizing = budget.exhausted();
+            String reservationId = runId + ":model:" + state.superstep() + ":" + iteration;
+            long inputEstimate = Math.max(1, json(messages).length() / 4L);
+            long outputEstimate = finalizing ? spec.getBudgetPolicy().finalizationTokens() : 1024L;
+            UsageDelta estimated = UsagePricer.price(new UsageDelta(inputEstimate, outputEstimate,
+                    inputEstimate + outputEstimate, 1, 0, 0, 0, 0, 0,
+                    clean(spec.getModel(), provider.getDefaultModel()), false), spec.getModelPricing());
+            List<BudgetReservation> reservations;
             try {
-                if (spec.getHook() != null && spec.getHook().wantsStreaming()) {
-                    response = LLMFailureException.requireSuccess(provider.chatStream(messages,
-                            tools.getDefinitions(), spec.getModel(), null, null, null,
-                            null, delta -> invokeHook(() -> spec.getHook().onStream(context, delta)),
-                            end -> invokeHook(() -> spec.getHook().onStreamEnd(context, end.hasToolCalls()))));
-                } else {
-                    // Node retry policy is the only automatic retry owner.
-                    response = LLMFailureException.requireSuccess(provider.chat(messages,
-                            tools.getDefinitions(), spec.getModel(), null, null, null, null));
+                reservations = reserveBudget(reservationId, estimated, 0, finalizing);
+            } catch (BudgetCoordinator.BudgetExhaustedException exhausted) {
+                finalizing = true;
+                budget = new BudgetSnapshot(spec.getBudgetPolicy(), ledger, true, exhausted.reason(),
+                        budget.remainingTokens(), budget.remainingCostMicrousd(), budget.remainingActiveMillis(),
+                        budget.remainingToolCalls(), true);
+                try {
+                    UsageDelta finalEstimate = UsagePricer.price(new UsageDelta(inputEstimate,
+                            spec.getBudgetPolicy().finalizationTokens(),
+                            inputEstimate + spec.getBudgetPolicy().finalizationTokens(), 1, 0, 0, 0,
+                            0, 0, clean(spec.getModel(), provider.getDefaultModel()), false), spec.getModelPricing());
+                    reservations = reserveBudget(reservationId + ":final", finalEstimate, 0, true);
+                } catch (BudgetCoordinator.BudgetExhaustedException noFinalizationBudget) {
+                    return GraphNodeResult.next("terminal", Map.of("stopReason", "budget_exhausted",
+                            "finalContent", deterministicBudgetSummary(budget), "budgetState", budget));
                 }
+            }
+            Map<String, Object> hints = runtimeHints(state, budget);
+            List<Map<String, Object>> modelMessages = new ArrayList<>(messages);
+            modelMessages.add(Map.of("role", "system", "name", "ricbot_runtime",
+                    "content", runtimeHintText(hints, finalizing)));
+            AgentHookContext context = hookContext(messages, iteration);
+            LLMResponse response;
+            long activeStarted = System.nanoTime();
+            String messageId = runId + ":assistant:" + iteration + ":" + UUID.randomUUID();
+            emit(new AgentEvent.ModelCall(meta(), "started", spec.getModel(), Map.of()));
+            emit(new AgentEvent.MessageStart(meta(), messageId), context);
+            try {
+                AgentMiddleware.MiddlewareContext runtime = middlewareContext(state);
+                List<Map<String, Object>> definitions = middleware.tools(runtime,
+                        finalizing ? List.of() : tools.getDefinitions());
+                response = middleware.model(new AgentMiddleware.ModelCallContext(runtime, modelMessages,
+                        definitions, spec.getModel(), finalizing), request -> {
+                    if (spec.getHook() != null && spec.getHook().wantsStreaming()) {
+                        return LLMFailureException.requireSuccess(provider.chatStream(request.messages(),
+                                request.tools(), request.model(), null, null, null, null, delta -> {
+                                    emit(new AgentEvent.MessageDelta(meta(), messageId, delta), context);
+                                }, end -> {
+                                    emit(new AgentEvent.MessageEnd(meta(), messageId,
+                                            clean(end.getFinishReason(), end.hasToolCalls() ? "tool_calls" : "stop")), context);
+                                }));
+                    }
+                    return LLMFailureException.requireSuccess(provider.chat(request.messages(), request.tools(),
+                            request.model(), null, null, null, null));
+                });
             } catch (Exception providerFailure) {
                 LLMFailureException failure = LLMFailureException.classify(providerFailure);
                 if (failure.kind() == LLMFailureKind.CONTEXT_OVERFLOW) {
@@ -355,6 +500,13 @@ public class AgentGraphFactory implements LocalAgentRuntime.GraphFactory, AutoCl
                 throw failure;
             }
             context.setResponse(response).setToolCalls(response.getToolCalls()).setUsage(response.getUsage());
+            if (spec.getHook() == null || !spec.getHook().wantsStreaming()) {
+                emit(new AgentEvent.MessageDelta(meta(), messageId,
+                        response.getContent() != null ? response.getContent() : ""), context);
+                emit(new AgentEvent.MessageEnd(meta(), messageId, clean(response.getFinishReason(), "stop")), context);
+            }
+            emit(new AgentEvent.ModelCall(meta(), "completed", spec.getModel(),
+                    response.getUsage() != null ? new LinkedHashMap<>(response.getUsage()) : Map.of()));
             invokeHook(() -> spec.getHook().afterIteration(context));
             Map<String, Object> assistant = assistant(response);
             List<Map<String, Object>> nextMessages = append(messages, assistant);
@@ -364,10 +516,39 @@ public class AgentGraphFactory implements LocalAgentRuntime.GraphFactory, AutoCl
             writes.put("pendingToolCalls", response.getToolCalls().stream().map(ToolCallRequest::toOpenAIToolCall).toList());
             writes.put("stopReason", clean(response.getFinishReason(), "stop"));
             writes.put("iterations", iteration);
-            writes.put("usage", response.getUsage() != null ? response.getUsage() : Map.of());
+            UsageDelta usage = UsagePricer.price(UsageDelta.model(clean(spec.getModel(), provider.getDefaultModel()),
+                    response.getUsage(), elapsedMillis(activeStarted)), spec.getModelPricing());
+            reservations.forEach(reservation -> budgetCoordinator.settle(reservation, usage));
+            writes.put("usageLedger", UsageLedger.empty().plus(usage));
+            UsageLedger nextLedger = ledger.plus(usage);
+            BudgetSnapshot nextBudget = BudgetSnapshot.evaluate(spec.getBudgetPolicy(), nextLedger, finalizing);
+            writes.put("budgetState", nextBudget);
+            writes.put("runtimeHints", hints);
+            writes.put("toolExposure", exposureMap());
+            graphStore.append(runId, state.superstep(), GraphRuntimeEventType.USAGE_RECORDED,
+                    usage.toMap(), "usage:model:" + state.superstep());
+            if (nextBudget.exhausted()) graphStore.append(runId, state.superstep(), GraphRuntimeEventType.BUDGET_EXHAUSTED,
+                    Map.of("reason", nextBudget.reason(), "finalizing", finalizing), "budget-exhausted:" + state.superstep());
+            graphStore.append(runId, state.superstep(), GraphRuntimeEventType.RUNTIME_HINT_UPDATED,
+                    hints, "runtime-hints:" + state.superstep());
+            if (finalizing && response.hasToolCalls()) {
+                writes.put("pendingToolCalls", List.of());
+                writes.put("stopReason", "budget_exhausted");
+                writes.put("finalContent", deterministicBudgetSummary(nextBudget));
+                return GraphNodeResult.next("terminal", writes);
+            }
             if (!response.hasToolCalls()) {
-                String content = response.getContent() != null ? response.getContent() : "";
-                if (spec.getHook() != null) content = spec.getHook().finalizeContent(context, content);
+                String content = new AgentEventReconstructor().reconstruct(List.copyOf(agentEvents), messageId);
+                if (spec.getHook() != null) {
+                    String finalized = spec.getHook().finalizeContent(context, content);
+                    if (!Objects.equals(finalized, content)) {
+                        String finalMessageId = messageId + ":ui-final";
+                        emit(new AgentEvent.MessageStart(meta(), finalMessageId));
+                        emit(new AgentEvent.MessageDelta(meta(), finalMessageId, finalized));
+                        emit(new AgentEvent.MessageEnd(meta(), finalMessageId, "stop"));
+                        content = new AgentEventReconstructor().reconstruct(List.copyOf(agentEvents), finalMessageId);
+                    }
+                }
                 writes.put("finalContent", content);
                 return GraphNodeResult.next("terminal", writes);
             }
@@ -379,11 +560,30 @@ public class AgentGraphFactory implements LocalAgentRuntime.GraphFactory, AutoCl
             List<Map<String, Object>> nextMessages = new ArrayList<>(messages(state));
             List<Map<String, Object>> results = new ArrayList<>();
             List<String> approvalIds = new ArrayList<>();
+            newArtifactRefs.clear();
+            nodeToolUsage = UsageLedger.empty();
             AgentHookContext context = hookContext(nextMessages, number(state.channels().get("iterations")));
             invokeHook(() -> spec.getHook().beforeExecuteTools(context));
             for (StoredCall call : calls) {
-                if (SideEffectApplicationService.RETRY_ACTION.equals(call.name())
-                        || SideEffectApplicationService.COMPENSATE_ACTION.equals(call.name())) {
+                BudgetSnapshot currentBudget = BudgetSnapshot.evaluate(spec.getBudgetPolicy(),
+                        UsageLedger.from(state.channels().get("usageLedger")).plus(nodeToolUsage), false);
+                if (currentBudget.exhausted() || currentBudget.remainingToolCalls() == 0) {
+                    addToolResult(call, "Tool execution disabled because the Run budget is exhausted.", false,
+                            nextMessages, results);
+                    continue;
+                }
+                String toolReservationId = runId + ":tool:" + state.superstep() + ":" + call.id();
+                try {
+                    List<BudgetReservation> toolReservation = reserveBudget(toolReservationId,
+                            new UsageDelta(0, 0, 0, 0, 0, 0, 1, 0, 0, "", true), 1, false);
+                    toolReservations.put(call.id(), toolReservation);
+                    toolStartedAt.put(call.id(), System.nanoTime());
+                } catch (BudgetCoordinator.BudgetExhaustedException exhausted) {
+                    addToolResult(call, "Tool execution disabled because the Run budget is exhausted ("
+                            + exhausted.reason() + ").", false, nextMessages, results);
+                    continue;
+                }
+                if (SideEffectApplicationService.RETRY_ACTION.equals(call.name())) {
                     executeSideEffectControl(state, call, nextMessages, results);
                     continue;
                 }
@@ -476,10 +676,13 @@ public class AgentGraphFactory implements LocalAgentRuntime.GraphFactory, AutoCl
                 Object value;
                 boolean ok;
                 notifyToolStart(call.name(), arguments);
+                emit(new AgentEvent.ToolCall(meta(), "started", call.id(), call.name(), true));
                 try {
-                    SideEffectOutcome outcome = effects.execute(tools, effectIdentity(state, call.id()), key,
-                            call.name(), arguments, policy, AgentGraphFactory::successful,
-                            ignoredResult -> false);
+                    SideEffectOutcome outcome = (SideEffectOutcome) middleware.tool(
+                            new AgentMiddleware.ToolCallContext(middlewareContext(state), call.id(), call.name(), arguments),
+                            request -> effects.execute(tools, effectIdentity(state, request.callId()), key,
+                                    request.tool(), request.arguments(), policy, AgentGraphFactory::successful,
+                                    ignoredResult -> false));
                     value = outcome.result();
                     ok = successful(value);
                     if (approvalRequired) {
@@ -514,15 +717,20 @@ public class AgentGraphFactory implements LocalAgentRuntime.GraphFactory, AutoCl
                     }
                     value = failure.getMessage() != null ? failure.getMessage() : failure.getClass().getSimpleName();
                     ok = false;
-                    if (spec.isFailOnToolError()) throw failure;
                 }
                 addToolResult(call, value, ok, nextMessages, results);
+                emit(new AgentEvent.ToolCall(meta(), "completed", call.id(), call.name(), ok));
             }
-            invokeHook(() -> spec.getHook().afterExecuteTools(context));
             Map<String, Object> writes = new LinkedHashMap<>();
             writes.put("messages", List.copyOf(nextMessages));
             writes.put("toolBatch", Map.of("results", List.copyOf(results)));
             writes.put("approvalRequestIds", List.copyOf(approvalIds));
+            writes.put("usageLedger", nodeToolUsage);
+            writes.put("budgetState", BudgetSnapshot.evaluate(spec.getBudgetPolicy(),
+                    UsageLedger.from(state.channels().get("usageLedger")).plus(nodeToolUsage), false));
+            if (!newArtifactRefs.isEmpty()) {
+                writes.put("artifactRefs", newArtifactRefs.stream().map(this::artifactMap).toList());
+            }
             return GraphNodeResult.next(approvalIds.isEmpty() ? "next" : "approval", writes);
         }
 
@@ -544,26 +752,20 @@ public class AgentGraphFactory implements LocalAgentRuntime.GraphFactory, AutoCl
             }
             SideEffectRecord record = effects.load(key).orElseThrow(() ->
                     new GraphNonRetryableException("side effect does not exist: " + key, null));
-            Object value;
-            if (SideEffectApplicationService.RETRY_ACTION.equals(call.name())) {
-                if (record.status() == SideEffectStatus.UNKNOWN) {
-                    record = effects.authorizeRetry(key, requestId);
-                }
-                ricbot.tool.api.Tool retryTool = tools.get(record.toolName());
-                if (retryTool == null) {
-                    throw new GraphNonRetryableException("tool is unavailable: " + record.toolName(), null);
-                }
-                ToolEffectPolicy policy = retryTool.effectPolicy();
-                SideEffectOutcome outcome = effects.execute(tools,
-                        new SideEffectExecutionIdentity(record.runId(), record.sessionKey(), record.taskId(),
-                        record.activationId()), key, record.toolName(), record.arguments(),
-                        policy, AgentGraphFactory::successful, ignored -> false);
-                value = outcome.result();
-            } else {
-                value = effects.compensate(tools, key, record.arguments(), requestId).result();
+            if (record.status() == SideEffectStatus.UNKNOWN) {
+                record = effects.authorizeRetry(key, requestId);
             }
+            ricbot.tool.api.Tool retryTool = tools.get(record.toolName());
+            if (retryTool == null) {
+                throw new GraphNonRetryableException("tool is unavailable: " + record.toolName(), null);
+            }
+            ToolEffectPolicy policy = retryTool.effectPolicy();
+            SideEffectOutcome outcome = effects.execute(tools,
+                    new SideEffectExecutionIdentity(record.runId(), record.sessionKey(), record.taskId(),
+                    record.activationId()), key, record.toolName(), record.arguments(),
+                    policy, AgentGraphFactory::successful, ignored -> false);
             approvals.completeClaim(requestId);
-            addToolResult(call, value, successful(value), messages, results);
+            addToolResult(call, outcome.result(), successful(outcome.result()), messages, results);
         }
 
         private GraphNodeResult approval(GraphExecutionState state, Map<String, Object> ignored) {
@@ -591,13 +793,6 @@ public class AgentGraphFactory implements LocalAgentRuntime.GraphFactory, AutoCl
 
         private GraphNodeResult steering(GraphExecutionState state, Map<String, Object> ignored) throws Exception {
             List<Map<String, Object>> next = new ArrayList<>(messages(state));
-            if (spec.getInjectionCallback() != null) {
-                List<Map<String, Object>> injected = spec.getInjectionCallback().inject();
-                if (injected != null && !injected.isEmpty()) {
-                    next.addAll(injected.stream().limit(MAX_INJECTIONS_PER_TURN).map(LinkedHashMap::new).toList());
-                    hadInjections = true;
-                }
-            }
             int iterations = number(state.channels().get("iterations"));
             if (iterations >= Math.max(1, spec.getMaxIterations())) return GraphNodeResult.next("terminal", Map.of(
                     "messages", List.copyOf(next), "stopReason", "max_iterations",
@@ -607,7 +802,14 @@ public class AgentGraphFactory implements LocalAgentRuntime.GraphFactory, AutoCl
 
         private void addToolResult(StoredCall call, Object value, boolean ok,
                                    List<Map<String, Object>> messages, List<Map<String, Object>> results) {
-            Object bounded = bound(value, spec.getMaxToolResultChars());
+            List<BudgetReservation> reservations = toolReservations.remove(call.id());
+            Long started = toolStartedAt.remove(call.id());
+            if (reservations != null) {
+                UsageDelta usage = UsageDelta.tool(started != null ? elapsedMillis(started) : 0);
+                reservations.forEach(reservation -> budgetCoordinator.settle(reservation, usage));
+                nodeToolUsage = nodeToolUsage.plus(usage);
+            }
+            Object bounded = offload(call, value);
             Map<String, Object> payload = ok ? Map.of("ok", true, "result", bounded)
                     : Map.of("ok", false, "error", bounded);
             Map<String, Object> message = Map.of("role", "tool", "tool_call_id", clean(call.id(), ""),
@@ -619,6 +821,147 @@ public class AgentGraphFactory implements LocalAgentRuntime.GraphFactory, AutoCl
                     "callId", call.id(), "ok", ok);
             toolEvents.add(event);
             notifyToolFinish(event);
+        }
+
+        private Object offload(StoredCall call, Object value) {
+            String text = value instanceof String string ? string : json(value);
+            int limit = spec.getMaxToolResultChars() > 0 ? spec.getMaxToolResultChars() : 16_000;
+            if (!spec.isContextOffloadEnabled() || text.length() <= limit) return value;
+            try {
+                ArtifactRef ref = artifacts.writeText(text, "tool:" + call.name() + ":" + call.id(),
+                        spec.getOffloadPreviewChars());
+                newArtifactRefs.add(ref);
+                graphStore.append(runId, 0, GraphRuntimeEventType.ARTIFACT_OFFLOADED,
+                        MAPPER.convertValue(ref, new TypeReference<>() { }), "artifact:" + ref.artifactId());
+                return Map.of("offloaded", true, "artifact", ref, "preview", ref.summary(),
+                        "instructions", "Use artifact_read or artifact_grep with uri " + ref.uri()
+                                + " to recover the complete result. The preview is not the complete content.");
+            } catch (Exception failure) {
+                throw new IllegalStateException("cannot offload oversized tool result", failure);
+            }
+        }
+
+        /**
+         * Checkpoint channels are intentionally limited to JSON-stable primitives. In
+         * particular, Jackson's untyped representation of Instant is provider/config
+         * dependent and would otherwise change the checkpoint digest after a restart.
+         */
+        private Map<String, Object> artifactMap(ArtifactRef ref) {
+            Map<String, Object> value = new LinkedHashMap<>();
+            value.put("artifactId", ref.artifactId());
+            value.put("uri", ref.uri());
+            value.put("path", ref.path());
+            value.put("sha256", ref.sha256());
+            value.put("byteSize", ref.byteSize());
+            value.put("charCount", ref.charCount());
+            value.put("summary", ref.summary());
+            value.put("source", ref.source());
+            value.put("rootRunId", ref.rootRunId());
+            value.put("runId", ref.runId());
+            value.put("taskId", ref.taskId());
+            value.put("mediaType", ref.mediaType());
+            value.put("createdAt", ref.createdAt() != null ? ref.createdAt().toString() : "");
+            return Map.copyOf(value);
+        }
+
+        private Map<String, Object> runtimeHints(GraphExecutionState state, BudgetSnapshot budget) {
+            java.time.ZoneId zone;
+            try { zone = java.time.ZoneId.of(clean(spec.getTimezone(), "UTC")); }
+            catch (Exception ignored) { zone = java.time.ZoneOffset.UTC; }
+            Instant minute = Instant.ofEpochSecond((Instant.now().getEpochSecond() / 60) * 60);
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("time", Map.of("time", minute.toString(), "timezone", zone.getId()));
+            result.put("budget", MAPPER.convertValue(budget, new TypeReference<Map<String, Object>>() { }));
+            result.put("context", Map.of("utilization", numberDouble(state.channels().get("contextUtilization")),
+                    "artifacts", collectionSize(state.channels().get("artifactRefs")),
+                    "compactions", state.channels().get("contextCompactedAt") != null
+                            && !string(state.channels().get("contextCompactedAt")).isBlank() ? 1 : 0));
+            result.put("tasks", Map.of("pending", 0, "running", 0, "completed", 0));
+            result.put("workspace", Map.of("path", spec.getWorkspace() != null ? spec.getWorkspace().toString() : "",
+                    "mode", string(spec.getMetadata() != null ? spec.getMetadata().get("mode") : "agent"),
+                    "state", "active"));
+            return Map.copyOf(result);
+        }
+
+        private String runtimeHintText(Map<String, Object> hints, boolean finalizing) {
+            String suffix = finalizing
+                    ? "\nThe Run budget is exhausted. Do not call tools. Give a concise final summary of progress, evidence, and unfinished work."
+                    : "";
+            return "Runtime hints (dynamic; not identity instructions): " + json(hints) + suffix;
+        }
+
+        private Map<String, Object> exposureMap() {
+            List<String> allowed = tools.exposure().allowedGroups().stream().map(Enum::name).sorted().toList();
+            List<String> active = tools.exposure().activeGroups().stream().map(Enum::name).sorted().toList();
+            return Map.of("allowedGroups", allowed, "activeGroups", active,
+                    "visibleTools", tools.visibleToolNames());
+        }
+
+        private AgentMiddleware.MiddlewareContext middlewareContext(GraphExecutionState state) {
+            middleware.validateStateVersions(state.channels().get("middlewareState"));
+            Map<String, Object> middlewareState = state.channels().get("middlewareState") instanceof Map<?, ?> raw
+                    ? MAPPER.convertValue(raw, new TypeReference<>() { }) : Map.of();
+            String taskId = spec.getMetadata() != null ? string(spec.getMetadata().get("taskId")) : "";
+            return new AgentMiddleware.MiddlewareContext(runId, sessionKey(), taskId, middlewareState);
+        }
+
+        private record NamedMiddleware(String id) implements AgentMiddleware { }
+
+        private AgentEvent.EventMeta meta() {
+            String taskId = spec.getMetadata() != null ? string(spec.getMetadata().get("taskId")) : "";
+            return new AgentEvent.EventMeta(UUID.randomUUID().toString(), agentEventSequence.incrementAndGet(), runId,
+                    sessionKey(), taskId, "", runId, Instant.now());
+        }
+
+        private void emit(AgentEvent event) {
+            agentEvents.add(event);
+            graphStore.append(runId, 0, GraphRuntimeEventType.AGENT_EVENT_EMITTED,
+                    MAPPER.convertValue(event, new TypeReference<>() { }), "agent-event:" + event.meta().eventId());
+        }
+
+        private void emit(AgentEvent event, AgentHookContext context) {
+            emit(event);
+            if (spec.getHook() != null && spec.getHook().wantsStreaming()) {
+                try { invokeHook(() -> spec.getHook().onEvent(context, event)); }
+                catch (Exception failure) { throw new IllegalStateException("agent event adapter failed", failure); }
+            }
+        }
+
+        private String deterministicBudgetSummary(BudgetSnapshot snapshot) {
+            return "Run budget exhausted (" + snapshot.reason() + "). Usage: "
+                    + json(snapshot.usage()) + ". Tools are disabled; start a new Run with a larger explicit budget to continue.";
+        }
+
+        private BudgetPolicy withoutFinalizationReserve(BudgetPolicy policy) {
+            BudgetPolicy value = policy != null ? policy : BudgetPolicy.unlimited();
+            return new BudgetPolicy(value.maxTotalTokens(), value.maxCostMicrousd(),
+                    value.maxActiveSeconds(), value.maxToolCalls(), 0, value.parentRunId());
+        }
+
+        private List<BudgetReservation> reserveBudget(String reservationId, UsageDelta estimate,
+                                                      long toolCalls, boolean finalization) {
+            List<BudgetReservation> reservations = new ArrayList<>();
+            BudgetPolicy rootPolicy = spec.getRootBudgetPolicy() != null
+                    ? spec.getRootBudgetPolicy() : spec.getBudgetPolicy();
+            BudgetPolicy effectiveRoot = finalization ? withoutFinalizationReserve(rootPolicy) : rootPolicy;
+            BudgetReservation rootReservation = budgetCoordinator.reserve(rootRunId, runId, taskId,
+                    reservationId + ":root", effectiveRoot, estimate.totalTokens(), estimate.costMicrousd(),
+                    toolCalls, 0);
+            reservations.add(rootReservation);
+            if (!rootRunId.equals(runId)) {
+                try {
+                    BudgetPolicy local = finalization ? withoutFinalizationReserve(spec.getBudgetPolicy())
+                            : spec.getBudgetPolicy();
+                    reservations.add(budgetCoordinator.reserve(runId, runId, taskId,
+                            reservationId + ":worker", local, estimate.totalTokens(), estimate.costMicrousd(),
+                            toolCalls, 0));
+                } catch (RuntimeException rejected) {
+                    budgetCoordinator.settle(rootReservation, new UsageDelta(0, 0, 0, 0, 0, 0,
+                            0, 0, 0, estimate.model(), estimate.costKnown()));
+                    throw rejected;
+                }
+            }
+            return List.copyOf(reservations);
         }
 
         private AgentRunResult result(Instant started, GraphExecutionState state, List<GraphRuntimeEvent> events) {
@@ -633,31 +976,27 @@ public class AgentGraphFactory implements LocalAgentRuntime.GraphFactory, AutoCl
             AgentRunResult result = new AgentRunResult().setRunId(runId).setStartedAt(started.toString())
                     .setEndedAt(Instant.now().toString()).setIterations(number(state.channels().get("iterations")))
                     .setFinalContent(content).setStopReason(stop).setMessages(messages(state))
-                    .setUsage(integerMap(state.channels().get("usage")));
+                    .setUsageLedger(UsageLedger.from(state.channels().get("usageLedger")));
             result.setToolsUsed(List.copyOf(toolsUsed));
-            return result.setToolEvents(List.copyOf(toolEvents)).setHadInjections(hadInjections)
+            return result.setEvents(List.copyOf(agentEvents)).setToolEvents(List.copyOf(toolEvents))
                     .setError(string(state.channels().get("error"))).setRunEvents(runEvents(events));
         }
 
         private AgentRunResult failedResult(Instant started, Exception failure, List<GraphRuntimeEvent> events) {
+            org.slf4j.LoggerFactory.getLogger(AgentGraphFactory.class).error("agent graph run failed: {}", runId, failure);
             AgentRunResult result = new AgentRunResult().setRunId(runId).setStartedAt(started.toString())
                     .setEndedAt(Instant.now().toString()).setFinalContent(spec.getErrorMessage())
                     .setStopReason("error").setError(failure.getMessage()).setMessages(copyMessages(spec.getInitialMessages()));
             result.setToolsUsed(List.copyOf(toolsUsed));
-            return result.setToolEvents(List.copyOf(toolEvents)).setRunEvents(runEvents(events));
+            return result.setEvents(List.copyOf(agentEvents)).setToolEvents(List.copyOf(toolEvents)).setRunEvents(runEvents(events));
         }
 
-        private void notifyError(Exception failure) {
-            if (spec.getHook() == null) return;
-            try { spec.getHook().onError(hookContext(copyMessages(spec.getInitialMessages()), 0), failure); }
-            catch (Exception hookFailure) { if (spec.getHook().isReraise()) throw new RuntimeException(hookFailure); }
-        }
         private AgentHookContext hookContext(List<Map<String, Object>> messages, int iteration) {
             return new AgentHookContext().setMessages(messages).setIteration(iteration).setSessionKey(spec.getSessionKey());
         }
         private void invokeHook(Checked action) throws Exception {
             if (spec.getHook() == null) return;
-            try { action.run(); } catch (Exception failure) { if (spec.getHook().isReraise()) throw failure; }
+            action.run();
         }
         private String sessionKey() { return clean(spec.getSessionKey(), "run:" + runId); }
         private List<Map<String, Object>> runEvents(List<GraphRuntimeEvent> events) {
@@ -754,6 +1093,11 @@ public class AgentGraphFactory implements LocalAgentRuntime.GraphFactory, AutoCl
         try { return MAPPER.writeValueAsString(value); } catch (Exception failure) { return String.valueOf(value); }
     }
     private static int number(Object value) { return value instanceof Number number ? number.intValue() : 0; }
+    private static double numberDouble(Object value) { return value instanceof Number number ? number.doubleValue() : 0d; }
+    private static int collectionSize(Object value) { return value instanceof Collection<?> collection ? collection.size() : 0; }
+    private static long elapsedMillis(long startedNanos) {
+        return Math.max(0, java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedNanos));
+    }
     private static String string(Object value) { return value != null ? String.valueOf(value) : ""; }
     private static String lastUserGoal(List<Map<String, Object>> messages) {
         if (messages != null) {

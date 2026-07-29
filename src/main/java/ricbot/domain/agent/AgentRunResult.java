@@ -9,6 +9,8 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import ricbot.domain.agent.usage.UsageLedger;
+import ricbot.domain.agent.event.AgentEvent;
 
 /**
  * Agent Runtime 运行结果
@@ -41,14 +43,11 @@ public class AgentRunResult {
     private String stopReason = "stop";
 
     /**
-     * 是否发生过注入
-     */
-    private boolean hadInjections = false;
-
-    /**
      * Token 使用情况统计
      */
     private Map<String, Integer> usage = new HashMap<>();
+    private UsageLedger usageLedger = UsageLedger.empty();
+    private List<AgentEvent> events = new ArrayList<>();
 
     /**
      * 错误信息
@@ -84,6 +83,17 @@ public class AgentRunResult {
 
     public AgentRunResult setUsage(Map<String, Integer> usage) {
         this.usage = usage != null ? usage : new HashMap<>();
+        return this;
+    }
+
+    public AgentRunResult setUsageLedger(UsageLedger ledger) {
+        this.usageLedger = ledger != null ? ledger : UsageLedger.empty();
+        this.usage = this.usageLedger.legacyUsage();
+        return this;
+    }
+
+    public AgentRunResult setEvents(List<AgentEvent> events) {
+        this.events = events != null ? new ArrayList<>(events) : new ArrayList<>();
         return this;
     }
 

@@ -70,7 +70,24 @@ public final class ConfigDoctorService {
         diagnoseProvider(rawConfig, resolvedConfig, providerName, spec, model, apiBase, apiKey, report);
         diagnoseTools(resolvedConfig, rawJson, report);
         diagnoseModelCapabilityOverrides(rawJson, resolvedConfig, providerName, model, providerCapability, report);
+        diagnoseCostBudget(resolvedConfig, providerName, model, report);
         return report;
+    }
+
+    private void diagnoseCostBudget(Config config, String provider, String model, ConfigDoctorReport report) {
+        Long limit = config.getAgents().getDefaults().getBudget().getMaxCostMicrousd();
+        if (limit == null) return;
+        ModelCard card;
+        try { card = new ModelCardResolver().resolve(config, provider, model).orElse(null); }
+        catch (RuntimeException failure) {
+            report.addError("INVALID_MODEL_CARD", failure.getMessage());
+            return;
+        }
+        if (card == null || card.pricing() == null || !card.pricing().known()) {
+            report.addError("MISSING_MODEL_PRICE", "已配置费用上限，但模型卡没有完整价格：provider="
+                    + provider + ", model=" + model);
+            report.addSuggestedFix("为该模型配置 JSON v1 模型卡的 inputUsd/outputUsd 价格，或移除 max_cost_microusd。 ");
+        }
     }
 
     private Map<String, Object> readRawJson(Path path) {
@@ -91,7 +108,7 @@ public final class ConfigDoctorService {
                 continue;
             }
             String message = "环境变量未设置：" + ref.name() + "（引用位置：" + ref.path() + "）";
-            if (ref.path().contains(".api_key") || ref.path().contains(".apiKey")) {
+            if (ref.path().contains(".api_key")) {
                 report.addError("MISSING_OPTIONAL_CREDENTIAL", message);
                 report.addSuggestedFix("设置 " + ref.name() + "，或在 provider 配置中填入可用 api_key。");
             } else {
@@ -167,6 +184,9 @@ public final class ConfigDoctorService {
             ConfigDoctorReport report
     ) {
         Map<String, Object> rawOverrides = capabilityOverrides(rawJson);
+        if (!rawOverrides.isEmpty()) {
+            report.addWarning("model_capabilities 已弃用；本版本仍会转换为临时模型卡，请迁移到 model_cards.paths。 ");
+        }
         for (Map.Entry<String, Object> entry : rawOverrides.entrySet()) {
             String key = entry.getKey();
             Map<String, Object> value = copyObjectMap(entry.getValue() instanceof Map<?, ?> map ? map : Map.of());
@@ -187,9 +207,7 @@ public final class ConfigDoctorService {
     }
 
     private Map<String, Object> capabilityOverrides(Map<String, Object> rawJson) {
-        Object value = rawJson.containsKey("model_capabilities")
-                ? rawJson.get("model_capabilities")
-                : rawJson.get("modelCapabilities");
+        Object value = rawJson.get("model_capabilities");
         return copyObjectMap(value instanceof Map<?, ?> map ? map : Map.of());
     }
 
@@ -276,23 +294,9 @@ public final class ConfigDoctorService {
     }
 
     private static boolean requiresApiKey(ProviderSpec spec) {
-        return spec != null && !spec.isLocal() && !spec.isDirect() && !spec.isOauth();
+        return spec != null && !spec.isLocal() && !spec.isDirect();
     }
 
-    private static boolean hasPath(Map<String, Object> map, String... path) {
-        Object cur = map;
-        for (String segment : path) {
-            if (!(cur instanceof Map<?, ?> rawMap)) {
-                return false;
-            }
-            Map<String, Object> objectMap = copyObjectMap(rawMap);
-            if (!objectMap.containsKey(segment)) {
-                return false;
-            }
-            cur = objectMap.get(segment);
-        }
-        return true;
-    }
 
     private static Map<String, Object> copyObjectMap(Map<?, ?> map) {
         Map<String, Object> out = new LinkedHashMap<>();

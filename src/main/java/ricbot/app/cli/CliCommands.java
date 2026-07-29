@@ -55,11 +55,11 @@ import java.util.*; // 导入 Java 集合框架
  * 说明：
  * Python 版用 typer + prompt_toolkit + rich。
  * Java 版这里先用最直接的命令分发风格。
+ * @author rcd
  */
 public final class CliCommands {
 
     private static final Bootstrapper BOOTSTRAPPER = new Bootstrapper(); // 静态初始化 Bootstrapper 实例
-    private static final Logger log = LoggerFactory.getLogger(CliCommands.class);
     private static final ObjectMapper MAPPER = new ObjectMapper()
             .findAndRegisterModules()
             .setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE);
@@ -654,7 +654,6 @@ public final class CliCommands {
                         input,
                         List.of(),
                         Map.of("_wants_stream", true),
-                        null,
                         null
                 );
 
@@ -860,21 +859,11 @@ public final class CliCommands {
         providerLogin(provider, apiKey, apiBase, configPath); // 执行登录逻辑
     }
 
-    /**
-     * 为支持 API Key 的 provider 写入配置；OAuth provider 给出明确提示。
-     *
-     * @param provider 提供商名称
-     */
+    /** 为支持 API Key 的 provider 写入配置。 */
     private static void providerLogin(String provider, String apiKey, String apiBase, Path configPath) {
         ProviderSpec spec = ProviderRegistry.findByName(provider);
         if (spec == null) {
             System.out.println("未知 provider：" + provider);
-            return;
-        }
-
-        if (spec.isOauth()) {
-            System.out.println("Provider '" + provider + "' 依赖 OAuth/浏览器登录。");
-            System.out.println("当前 Java 版本尚未内置该 provider 的 OAuth 流程；如你已经拿到可用 token，可直接写入对应 provider 配置。");
             return;
         }
 
@@ -977,7 +966,6 @@ public final class CliCommands {
 
         appendList(sb, "errors", report.getErrors());
         appendList(sb, "warnings", report.getWarnings());
-        appendList(sb, "ignored / reserved / partially-supported fields", report.getIgnoredFields());
         appendList(sb, "suggested fixes", report.getSuggestedFixes());
         return sb.toString();
     }
@@ -1054,7 +1042,7 @@ public final class CliCommands {
 
         Config.ProviderConfig pc = resolved.getProvider(model); // 获取解析后的提供商配置
         String providerConfigKey = providerName; // 初始化提供商配置键
-        if (!"openai".equalsIgnoreCase(providerName) && pc == resolved.getProviders().getOpenai()) { // 特殊处理 OpenAI 配置键
+        if (!"openai".equalsIgnoreCase(providerName) && pc == resolved.getProviders().get("openai")) { // 特殊处理 OpenAI 配置键
             providerConfigKey = "openai";
         }
         String apiKey = pc != null ? pc.getApiKey() : null; // 获取解析后的 API Key
@@ -1124,8 +1112,7 @@ public final class CliCommands {
                     input,
                     List.of(),
                     new HashMap<>(Map.of("_wants_stream", true)),
-                    sessionKey,
-                    null
+                    sessionKey
             );
 
             bus.publishInbound(inbound); // 发布入站消息
@@ -1294,24 +1281,6 @@ public final class CliCommands {
         if (v == null) return null; // 如果值为 null，返回 null
         try {
             return Integer.parseInt(v); // 尝试解析为整数
-        } catch (Exception e) {
-            return null; // 解析失败返回 null
-        }
-    }
-
-    /**
-     * 从参数列表中获取指定选项的双精度浮点数值。
-     *
-     * @param args    参数列表
-     * @param longOpt 长选项名
-     * @param shortOpt 短选项名
-     * @return 双精度浮点数值，如果未找到或解析失败则返回 null
-     */
-    private static Double optionDoubleValue(List<String> args, String longOpt, String shortOpt) {
-        String v = optionValue(args, longOpt, shortOpt); // 获取选项字符串值
-        if (v == null) return null; // 如果值为 null，返回 null
-        try {
-            return Double.parseDouble(v); // 尝试解析为双精度浮点数
         } catch (Exception e) {
             return null; // 解析失败返回 null
         }

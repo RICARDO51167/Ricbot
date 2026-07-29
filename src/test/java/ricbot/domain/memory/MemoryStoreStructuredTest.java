@@ -14,20 +14,6 @@ import static org.junit.jupiter.api.Assertions.*;
 class MemoryStoreStructuredTest {
 
     @Test
-    void constructorPreservesLegacyDreamData(@TempDir Path workspace) throws Exception {
-        Path memoryDir = Files.createDirectories(workspace.resolve("memory"));
-        Path legacyCursor = memoryDir.resolve(".dream_cursor");
-        Path legacyAudit = memoryDir.resolve("dream_audit.jsonl");
-        Files.writeString(legacyCursor, "17");
-        Files.writeString(legacyAudit, "{\"legacy\":true}\n");
-
-        new MemoryStore(workspace);
-
-        assertEquals("17", Files.readString(legacyCursor));
-        assertEquals("{\"legacy\":true}\n", Files.readString(legacyAudit));
-    }
-
-    @Test
     void mergeMemoryEntries_dedupesAndRebuildsMarkdownViews(@TempDir Path workspace) throws Exception {
         MemoryStore store = new MemoryStore(workspace);
 
@@ -124,58 +110,6 @@ class MemoryStoreStructuredTest {
                 .findFirst()
                 .orElseThrow()
                 .getAccessCount());
-    }
-
-    @Test
-    void appendMemoryCandidates_dedupesPendingCandidates(@TempDir Path workspace) {
-        MemoryStore store = new MemoryStore(workspace);
-
-        store.appendMemoryCandidates(List.of(
-                new MemoryEntry()
-                        .setType(MemoryEntry.TYPE_PREFERENCE)
-                        .setSummary("用户偏好简短回答")
-                        .setDetails("first")
-                        .setImportance(0.6d),
-                new MemoryEntry()
-                        .setType(MemoryEntry.TYPE_PREFERENCE)
-                        .setSummary("用户偏好简短回答")
-                        .setDetails("second")
-                        .setImportance(0.9d)
-        ));
-
-        List<MemoryEntry> candidates = store.readMemoryCandidates();
-        assertEquals(1, candidates.size());
-        assertEquals("用户偏好简短回答", candidates.get(0).getSummary());
-        assertEquals(0.9d, candidates.get(0).getImportance(), 0.001d);
-    }
-
-    @Test
-    void sensitiveMemoryCandidatesRequireApprovalBeforePromotion(@TempDir Path workspace) {
-        MemoryStore store = new MemoryStore(workspace);
-
-        store.appendMemoryCandidates(List.of(
-                new MemoryEntry()
-                        .setType(MemoryEntry.TYPE_FACT)
-                        .setSummary("api key 是 secret-value")
-                        .setDetails("contains token")
-                        .setImportance(0.9d)
-        ));
-
-        List<MemoryEntry> candidates = store.readMemoryCandidates();
-        assertEquals(1, candidates.size());
-        MemoryEntry pending = candidates.get(0);
-        assertEquals(MemoryEntry.SENSITIVITY_SENSITIVE, pending.getSensitivity());
-        assertEquals(MemoryEntry.APPROVAL_PENDING, pending.getApprovalStatus());
-        assertTrue(store.readMemoryEntries().isEmpty());
-
-        assertTrue(store.approveMemoryCandidate(pending.getId()));
-        assertTrue(store.readMemoryCandidates().isEmpty());
-        List<MemoryEntry> promoted = store.readMemoryEntries();
-        assertEquals(1, promoted.size());
-        assertEquals(MemoryEntry.APPROVAL_APPROVED, promoted.get(0).getApprovalStatus());
-        assertTrue(store.readMemoryAudit().stream().anyMatch(event ->
-                "approved_and_promoted".equals(event.get("action"))
-                        && pending.getId().equals(event.get("memoryId"))));
     }
 
     @Test

@@ -2,6 +2,8 @@ package ricbot.domain.agent;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ricbot.application.workspace.WorkspaceApplicationService;
+import ricbot.domain.agent.dto.ContextQualityReport;
+import ricbot.domain.agent.dto.SideEffectRecord;
 import ricbot.domain.change.ChangeSetRenderer;
 import ricbot.domain.change.ChangeSetService;
 import ricbot.domain.change.ChangeActionGraphService;
@@ -15,9 +17,10 @@ import ricbot.domain.policy.PolicyDecision;
 import ricbot.domain.policy.PolicyDecisionType;
 import ricbot.domain.policy.PolicyEngine;
 import ricbot.domain.policy.PolicyRenderer;
+import ricbot.domain.runtime.dto.RunRequest;
+import ricbot.domain.runtime.dto.RunView;
 import ricbot.domain.session.Session;
 import ricbot.domain.session.SessionManager;
-import ricbot.domain.security.ApprovalApplicationService;
 import ricbot.domain.security.ApprovalRequest;
 import ricbot.domain.security.ApprovalService;
 import ricbot.domain.security.CommandRiskLevel;
@@ -31,23 +34,13 @@ import ricbot.domain.trace.TraceStore;
 import ricbot.domain.trace.TraceTimeline;
 import ricbot.domain.trace.TraceViewerService;
 import ricbot.domain.workspace.WorkspaceLifecycleService;
-import ricbot.domain.workspace.WorkspaceSession;
+import ricbot.domain.workspace.dto.WorkspaceSession;
 import ricbot.domain.workspace.WorkspaceSessionStore;
+import ricbot.domain.workspace.enump.WorkspaceSessionStatus;
 import ricbot.integration.command.CommandRouter;
 import ricbot.integration.llm.api.LLMProvider;
-import ricbot.domain.agent.graph.BuiltinGraphExecutors;
-import ricbot.domain.agent.graph.GraphExecutionState;
-import ricbot.domain.agent.graph.GraphRunCoordinator;
-import ricbot.infra.runtime.SqliteRuntimeStore;
-import ricbot.domain.task.LocalTaskScheduler;
-import ricbot.domain.task.LocalTaskSchedulerConfig;
+import ricbot.domain.agent.graph.dto.GraphExecutionState;
 import ricbot.domain.task.TaskRecord;
-import ricbot.domain.task.TeamPlanModelPlanner;
-import ricbot.domain.task.TeamPlan;
-import ricbot.domain.task.TaskDelivery;
-import ricbot.domain.task.TaskResult;
-import ricbot.domain.verification.VerificationReport;
-import ricbot.domain.verification.WorkspaceVerificationService;
 import ricbot.tool.api.ToolRegistry;
 import ricbot.domain.runtime.AgentRuntime;
 
@@ -55,7 +48,6 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Future;
 import java.util.function.BiConsumer;
@@ -86,76 +78,6 @@ final class AgentCommands {
             Path workspace,
             Function<InboundMessage, String> sessionKeyResolver,
             Function<String, List<Future<?>>> activeTaskRemover,
-            BiConsumer<String, String> sessionInterruptMarker
-    ) {
-        this(sessionManager, model, workspace, sessionKeyResolver,
-                activeTaskRemover, sessionInterruptMarker, new ApprovalService(), null, null, null, null);
-    }
-
-    AgentCommands(
-            SessionManager sessionManager,
-            String model,
-            Path workspace,
-            Function<InboundMessage, String> sessionKeyResolver,
-            Function<String, List<Future<?>>> activeTaskRemover,
-            BiConsumer<String, String> sessionInterruptMarker,
-            ApprovalService approvalService
-    ) {
-        this(sessionManager, model, workspace, sessionKeyResolver,
-                activeTaskRemover, sessionInterruptMarker, approvalService, null, null, null, null);
-    }
-
-    AgentCommands(
-            SessionManager sessionManager,
-            String model,
-            Path workspace,
-            Function<InboundMessage, String> sessionKeyResolver,
-            Function<String, List<Future<?>>> activeTaskRemover,
-            BiConsumer<String, String> sessionInterruptMarker,
-            ApprovalService approvalService,
-            ToolRegistry toolRegistry
-    ) {
-        this(sessionManager, model, workspace, sessionKeyResolver,
-                activeTaskRemover, sessionInterruptMarker, approvalService, toolRegistry, null, null, null);
-    }
-
-    AgentCommands(
-            SessionManager sessionManager,
-            String model,
-            Path workspace,
-            Function<InboundMessage, String> sessionKeyResolver,
-            Function<String, List<Future<?>>> activeTaskRemover,
-            BiConsumer<String, String> sessionInterruptMarker,
-            ApprovalService approvalService,
-            ToolRegistry toolRegistry,
-            TaskWorkerRunner teamWorkerRunner
-    ) {
-        this(sessionManager, model, workspace, sessionKeyResolver, activeTaskRemover, sessionInterruptMarker,
-                approvalService, toolRegistry, teamWorkerRunner, null, null);
-    }
-
-    AgentCommands(
-            SessionManager sessionManager,
-            String model,
-            Path workspace,
-            Function<InboundMessage, String> sessionKeyResolver,
-            Function<String, List<Future<?>>> activeTaskRemover,
-            BiConsumer<String, String> sessionInterruptMarker,
-            ApprovalService approvalService,
-            ToolRegistry toolRegistry,
-            TaskWorkerRunner teamWorkerRunner,
-            LLMProvider provider
-    ) {
-        this(sessionManager, model, workspace, sessionKeyResolver, activeTaskRemover, sessionInterruptMarker,
-                approvalService, toolRegistry, teamWorkerRunner, provider, null);
-    }
-
-    AgentCommands(
-            SessionManager sessionManager,
-            String model,
-            Path workspace,
-            Function<InboundMessage, String> sessionKeyResolver,
-            Function<String, List<Future<?>>> activeTaskRemover,
             BiConsumer<String, String> sessionInterruptMarker,
             ApprovalService approvalService,
             ToolRegistry toolRegistry,
@@ -170,7 +92,7 @@ final class AgentCommands {
         this.activeTaskRemover = activeTaskRemover;
         this.sessionInterruptMarker = sessionInterruptMarker;
         this.traceStore = new TraceStore(this.workspace);
-        this.approvalService = approvalService != null ? approvalService : new ApprovalService();
+        this.approvalService = java.util.Objects.requireNonNull(approvalService, "approvalService");
         this.approvalService.setTraceStore(this.traceStore);
         this.toolRegistry = toolRegistry;
         this.teamWorkerRunner = teamWorkerRunner;
@@ -181,12 +103,10 @@ final class AgentCommands {
                 ricbot.app.bootstrap.RuntimeStoreRegistry.shared(this.workspace).sideEffectStore(),
                 this.approvalService);
         this.workspaceApplication = new WorkspaceApplicationService(this.workspace, this.sessionManager, this.traceStore);
-        recoverRuntimeOnStartup();
     }
 
     void register(CommandRouter router) {
         router.priority("/stop", this::stop);
-        router.priority("/restart", this::disabled);
         router.exact("/new", this::startNewSession);
         router.exact("/help", this::help);
         router.exact("/status", this::status);
@@ -225,17 +145,8 @@ final class AgentCommands {
                     requireNonTerminalSideEffectRun(record);
                     yield sideEffects.requestRetry(record.idempotencyKey());
                 }
-                case "compensate" -> {
-                    SideEffectRecord record = sideEffects.status(requiredArgument(key, "idempotencyKey"));
-                    requireNonTerminalSideEffectRun(record);
-                    if (toolRegistry == null || toolRegistry.get(record.toolName()) == null
-                            || !toolRegistry.get(record.toolName()).effectPolicy().compensation()) {
-                        throw new IllegalStateException("tool does not support compensation: " + record.toolName());
-                    }
-                    yield sideEffects.requestCompensation(record.idempotencyKey());
-                }
                 default -> throw new IllegalArgumentException(
-                        "用法：/side-effect list | show|retry|compensate <idempotencyKey>");
+                        "用法：/side-effect list | show|retry <idempotencyKey>");
             };
             return completedReply(ctx, MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(result));
         } catch (Exception failure) {
@@ -271,10 +182,6 @@ final class AgentCommands {
         return completedReply(ctx, cancelled > 0 ? "⏹ 已停止 " + cancelled + " 个任务。" : "没有可停止的任务。");
     }
 
-    private CompletableFuture<OutboundMessage> disabled(CommandRouter.CommandContext ctx) {
-        return completedReply(ctx, "当前运行时未启用该命令。");
-    }
-
     private CompletableFuture<OutboundMessage> startNewSession(CommandRouter.CommandContext ctx) {
         Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
         session.clear();
@@ -305,6 +212,22 @@ final class AgentCommands {
         ContextQualityReport quality = readContextQuality(session);
         if (quality != null) {
             sb.append("\n\n").append(quality.renderStatusBlock());
+        }
+        Object rawRunTrace = session != null && session.getMetadata() != null
+                ? session.getMetadata().get(SessionRuntimeKeys.RUN_TRACE_KEY) : null;
+        if (rawRunTrace instanceof Map<?, ?> runTrace) {
+            String runId = String.valueOf(runTrace.get("run_id") != null ? runTrace.get("run_id") : "").trim();
+            if (!runId.isBlank()) try {
+                Map<String, Object> report = runtime.report(runId);
+                sb.append("\n\nrun: ").append(runId);
+                sb.append("\nbudget: ").append(report.getOrDefault("budget", Map.of()));
+                Object hints = report.get("runtimeHints");
+                if (hints instanceof Map<?, ?> hintMap) {
+                    sb.append("\ncontext: ").append(hintMap.get("context") != null
+                            ? hintMap.get("context") : Map.of());
+                }
+                sb.append("\ntool exposure: ").append(report.getOrDefault("tools", Map.of()));
+            } catch (RuntimeException ignored) { }
         }
         return completedReply(ctx, sb.toString());
     }
@@ -486,7 +409,7 @@ final class AgentCommands {
                 teamSessionId = String.valueOf(workspaceTeamId).trim();
             }
         }
-        boolean fromWorkspace = activeWorkspace != null && activeWorkspace.status() == ricbot.domain.workspace.WorkspaceSessionStatus.ACTIVE;
+        boolean fromWorkspace = activeWorkspace != null && activeWorkspace.status() == WorkspaceSessionStatus.ACTIVE;
         GitChangeSet changeSet = fromWorkspace
                 ? service.createFromWorkspace(activeWorkspace.id(), Path.of(activeWorkspace.workspacePath()), ctx.getKey(), teamSessionId, taskId)
                 : service.createFromWorkingTree(ctx.getKey(), teamSessionId, taskId);
@@ -721,11 +644,11 @@ final class AgentCommands {
             return switch (action) {
                 case "start" -> startRun(ctx, rest);
                 case "list" -> completedReply(ctx, MAPPER.writerWithDefaultPrettyPrinter()
-                        .writeValueAsString(runtime.runListing()));
+                        .writeValueAsString(runtime.runs()));
                 case "status", "report", "graph" -> completedReply(ctx, MAPPER.writerWithDefaultPrettyPrinter()
                         .writeValueAsString(runtime.report(requiredArgument(rest, "runId"))));
                 case "events" -> completedReply(ctx, MAPPER.writerWithDefaultPrettyPrinter()
-                        .writeValueAsString(runtime.eventsAny(requiredArgument(rest, "runId"))));
+                        .writeValueAsString(runtime.events(requiredArgument(rest, "runId"))));
                 case "replay" -> completedReply(ctx, MAPPER.writerWithDefaultPrettyPrinter()
                         .writeValueAsString(replayRun(rest)));
                 case "fork" -> completedReply(ctx, MAPPER.writerWithDefaultPrettyPrinter()
@@ -746,13 +669,12 @@ final class AgentCommands {
         String[] parts = trim(raw).split("\\s+");
         if (parts.length == 0 || parts[0].isBlank()) throw new IllegalArgumentException("runId is required");
         long sequence = parts.length > 1 ? Long.parseLong(parts[1]) : Long.MAX_VALUE;
-        return runtime.replayAny(parts[0], sequence);
+        return runtime.replay(parts[0], sequence);
     }
 
     private Object forkRun(String raw) {
         String[] parts = trim(raw).split("\\s+");
         if (parts.length == 0 || parts[0].isBlank()) throw new IllegalArgumentException("runId is required");
-        runtime.requireExecutionEligible(parts[0]);
         long sequence = parts.length > 1 ? Long.parseLong(parts[1]) : Long.MAX_VALUE;
         String newRunId = parts.length > 2 ? parts[2] : "fork-" + java.util.UUID.randomUUID();
         return requireAgentRuntime().fork(parts[0], sequence, newRunId);
@@ -767,39 +689,23 @@ final class AgentCommands {
             if (!(ctx.getLoop() instanceof AgentLoop loop)) throw new IllegalStateException("agent loop is unavailable");
             InboundMessage message = ctx.getMsg();
             OutboundMessage response = loop.processDirect(goal, ctx.getKey(), message.getChannel(), message.getChatId(),
-                    message.getMetadata(), List.of());
+                    message.getMetadata());
             return CompletableFuture.completedFuture(response);
         }
         String runId = "run-" + java.util.UUID.randomUUID();
-        ricbot.domain.runtime.RunView started = requireAgentRuntime().start(new ricbot.domain.runtime.RunRequest(
-                runId, ctx.getKey(), ricbot.domain.runtime.RunRequest.Mode.TEAM, goal, workspace, 64,
+        RunView started = requireAgentRuntime().start(new RunRequest(
+                runId, ctx.getKey(), RunRequest.Mode.TEAM, goal, workspace, 64,
                 Map.of("cli", true)));
         return completedReply(ctx, MAPPER.valueToTree(started).toPrettyString());
     }
 
     private CompletableFuture<OutboundMessage> resumeRun(CommandRouter.CommandContext ctx, String runId) {
-        runtime.requireExecutionEligible(runId);
         return completedReply(ctx, MAPPER.valueToTree(requireAgentRuntime().resume(runId)).toPrettyString());
     }
 
     private Object cancelRuntime(String raw) {
         String runId = requiredArgument(raw, "runId");
-        runtime.requireExecutionEligible(runId);
         return requireAgentRuntime().cancel(runId, "cancelled from CLI");
-    }
-
-    private static <T> T value(Object raw, Class<T> type) {
-        if (type.isInstance(raw)) return type.cast(raw);
-        if (raw instanceof Map<?, ?>) return MAPPER.convertValue(raw, type);
-        return null;
-    }
-
-    private static List<TaskResult> taskResults(Object raw) {
-        if (!(raw instanceof List<?> list)) return List.of();
-        return list.stream().map(item -> item instanceof TaskDelivery delivery ? delivery.result() : item)
-                .map(item -> item instanceof TaskResult result ? result
-                        : item instanceof Map<?, ?> ? MAPPER.convertValue(item, TaskResult.class) : null)
-                .filter(java.util.Objects::nonNull).toList();
     }
 
     private CompletableFuture<OutboundMessage> taskV2(CommandRouter.CommandContext ctx) {
@@ -917,14 +823,6 @@ final class AgentCommands {
                 + "\nRuntime 将从审批节点恢复；命令路径未直接执行任何副作用。");
     }
 
-    private void recoverRuntimeOnStartup() {
-        if (runtime.hasLegacyData()) {
-            org.slf4j.LoggerFactory.getLogger(AgentCommands.class).info(
-                    "Legacy Ricbot runtime data is retained read-only and cannot be resumed by the unified runtime");
-        }
-        // AgentRuntimeFactory owns startup scanning for every run mode.
-    }
-
     private AgentRuntime requireAgentRuntime() {
         if (agentRuntime == null) throw new IllegalStateException("AgentRuntime is unavailable");
         return agentRuntime;
@@ -945,33 +843,6 @@ final class AgentCommands {
         String value = trim(args);
         int firstSpace = value.indexOf(' ');
         return firstSpace >= 0 ? value.substring(firstSpace + 1).trim() : "";
-    }
-
-    private List<String> contextSourcePaths(Session session) {
-        Object rawTrace = session != null && session.getMetadata() != null
-                ? session.getMetadata().get(SessionRuntimeKeys.CONTEXT_TRACE_KEY)
-                : null;
-        if (!(rawTrace instanceof Map<?, ?> trace)) {
-            return List.of();
-        }
-        Map<?, ?> budget = trace.get("prompt_context_budget") instanceof Map<?, ?> map ? map : Map.of();
-        Map<?, ?> sources = budget.get("sources") instanceof Map<?, ?> map ? map : Map.of();
-        java.util.ArrayList<String> out = new java.util.ArrayList<>();
-        for (Object rawRows : sources.values()) {
-            if (!(rawRows instanceof List<?> rows)) {
-                continue;
-            }
-            for (Object row : rows) {
-                if (row instanceof Map<?, ?> source) {
-                    Object rawPath = source.get("path");
-                    String path = rawPath != null ? String.valueOf(rawPath) : "";
-                    if (!path.isBlank() && !out.contains(path)) {
-                        out.add(path);
-                    }
-                }
-            }
-        }
-        return out.stream().limit(10).toList();
     }
 
     private String appendActiveWorkspaceSource(String rendered, Session session) {
@@ -1004,26 +875,8 @@ final class AgentCommands {
         ));
     }
 
-    private static int parseInt(String s, int def) {
-        try {
-            return s != null ? Integer.parseInt(s) : def;
-        } catch (Exception e) {
-            return def;
-        }
-    }
-
     private static String trim(String s) {
         return s == null ? "" : s.trim();
-    }
-
-    private static String optionValue(String args, String option, String def) {
-        String[] parts = trim(args).split("\\s+");
-        for (int i = 0; i < parts.length - 1; i++) {
-            if (option.equals(parts[i])) {
-                return parts[i + 1];
-            }
-        }
-        return def;
     }
 
     private static String optionQuoted(String args, String option) {
@@ -1050,10 +903,6 @@ final class AgentCommands {
     private static String abbreviate(String value, int maxChars) {
         String safe = value != null ? value.trim().replaceAll("\\s+", " ") : "";
         return safe.length() <= maxChars ? safe : safe.substring(0, Math.max(0, maxChars)) + "...";
-    }
-
-    private static String stringValue(Object value) {
-        return value != null ? String.valueOf(value).trim() : "";
     }
 
     private static String commandArg(String args, int index) {

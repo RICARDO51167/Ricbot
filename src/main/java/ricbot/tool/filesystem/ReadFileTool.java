@@ -7,6 +7,7 @@ import ricbot.tool.api.ToolParam;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 文件读取工具类，对应 Python 端的 ReadFileTool。
@@ -85,7 +86,13 @@ public class ReadFileTool extends Tool {
      * @param limit  最大读取行数，可选
      * @return 读取到的文件内容片段，或错误信息
      */
-    public String execute(String path, Integer offset, Integer limit) {
+    @Override
+    public Object execute(Map<String, Object> params) {
+        Map<String, Object> safe = params != null ? params : Map.of();
+        return read((String) safe.get("path"), (Integer) safe.get("offset"), (Integer) safe.get("limit"));
+    }
+
+    private String read(String path, Integer offset, Integer limit) {
         try {
             // 解析路径并进行安全校验
             Path target = FileToolSupport.resolvePath(workspace, path);

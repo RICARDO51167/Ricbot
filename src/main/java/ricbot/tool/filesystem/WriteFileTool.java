@@ -96,18 +96,7 @@ public class WriteFileTool extends Tool {
         );
     }
 
-    /**
-     * 执行文件写入操作
-     *
-     * @param path 目标文件路径
-     * @param content 要写入的文件内容
-     * @return 操作结果消息，成功时返回写入路径，失败时返回错误信息
-     */
-    public String execute(String path, String content) {
-        return execute(path, content, false);
-    }
-
-    private String execute(String path, String content, boolean approved) {
+    private String write(String path, String content, boolean approved) {
         try {
             // 解析并规范化目标路径
             Path target = FileToolSupport.resolvePath(workspace, path);
@@ -149,7 +138,7 @@ public class WriteFileTool extends Tool {
     public Object execute(Map<String, Object> params, ToolExecutionContext context) {
         String path = params != null ? (String) params.get("path") : null;
         String content = params != null ? (String) params.get("content") : null;
-        return execute(path, content, context != null && context.approved());
+        return write(path, content, context != null && context.approved());
     }
 
     @Override

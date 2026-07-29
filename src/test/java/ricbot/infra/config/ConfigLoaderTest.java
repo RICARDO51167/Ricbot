@@ -42,67 +42,6 @@ class ConfigLoaderTest {
     }
 
     @Test
-    void loadConfig_withRemovedDreamConfigFailsWithMigrationMessage(@TempDir Path tempDir) throws Exception {
-        Path configPath = tempDir.resolve("legacy-dream.json");
-        Files.writeString(configPath, """
-                {
-                  "agents": {
-                    "defaults": {
-                      "dream": {"enabled": true}
-                    }
-                  }
-                }
-                """);
-
-        IllegalArgumentException error = assertThrows(
-                IllegalArgumentException.class,
-                () -> ConfigLoader.loadConfig(configPath)
-        );
-
-        assertTrue(error.getMessage().contains("agents.defaults.dream"));
-        assertTrue(error.getMessage().contains("已删除"));
-    }
-
-    @Test
-    void loadConfig_withRemovedTranscriptionConfigFailsWithMigrationMessage(@TempDir Path tempDir) throws Exception {
-        Path configPath = tempDir.resolve("legacy-transcription.json");
-        Files.writeString(configPath, """
-                {
-                  "channels": {
-                    "transcription_provider": "groq"
-                  }
-                }
-                """);
-
-        IllegalArgumentException error = assertThrows(
-                IllegalArgumentException.class,
-                () -> ConfigLoader.loadConfig(configPath)
-        );
-
-        assertTrue(error.getMessage().contains("channels"));
-        assertTrue(error.getMessage().contains("已删除"));
-    }
-
-    @Test
-    void loadConfig_withRemovedHttpServerConfigFailsWithMigrationMessage(@TempDir Path tempDir) throws Exception {
-        Path configPath = tempDir.resolve("removed-http.json");
-        Files.writeString(configPath, """
-                {
-                  "api": {"host": "127.0.0.1", "port": 8000},
-                  "gateway": {"port": 8000}
-                }
-                """);
-
-        IllegalArgumentException error = assertThrows(
-                IllegalArgumentException.class,
-                () -> ConfigLoader.loadConfig(configPath)
-        );
-
-        assertTrue(error.getMessage().contains("api/gateway"));
-        assertTrue(error.getMessage().contains("仅保留 CLI"));
-    }
-
-    @Test
     void saveConfig_withNullConfigWritesDefaultConfig(@TempDir Path tempDir) throws Exception {
         Path configPath = tempDir.resolve("saved-config.json");
 
@@ -134,11 +73,11 @@ class ConfigLoaderTest {
     @Test
     void resolveConfigEnvVars_keepsMissingPlaceholdersButResolvesPresentOnes() {
         Config config = new Config();
-        config.getProviders().getOpenai().setApiKey("${PATH}");
+        config.getProviders().getOrCreate("openai").setApiKey("${PATH}");
 
         Config resolved = ConfigLoader.resolveConfigEnvVars(config);
 
-        assertNotEquals("${PATH}", resolved.getProviders().getOpenai().getApiKey());
+        assertNotEquals("${PATH}", resolved.getProviders().get("openai").getApiKey());
     }
 
     @Test
@@ -187,7 +126,7 @@ class ConfigLoaderTest {
 
         assertTrue(config.getModelCapabilities().isEmpty());
         assertEquals("gpt-4o-mini", config.getAgents().getDefaults().getModel());
-        assertEquals("sk-test", config.getProviders().getOpenai().getApiKey());
+        assertEquals("sk-test", config.getProviders().get("openai").getApiKey());
     }
 
     @Test

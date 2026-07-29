@@ -2,6 +2,7 @@ package ricbot.domain.agent;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import ricbot.domain.agent.interfacep.AgentInvocationRuntime;
 import ricbot.domain.task.TaskRole;
 import ricbot.domain.task.TaskWorkerRequest;
 import ricbot.domain.task.TaskWorkerStatus;

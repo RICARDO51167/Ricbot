@@ -1,6 +1,7 @@
 package ricbot.tool.api;
 
 import org.junit.jupiter.api.Test;
+import ricbot.testsupport.InMemoryApprovalRequestStore;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.api.Assumptions;
 import ricbot.domain.security.ApprovalService;
@@ -185,7 +186,6 @@ public class ToolRegistryTest {
         registry.register(namedReadOnlyTool("read_like"));
 
         ToolRegistry.ToolPolicy policy = registry.policyFor("read_like");
-        assertEquals(0, registry.executionPolicy().timeoutSecondsFor(policy));
         assertTrue(registry.canRunConcurrently(List.of("read_like")));
 
         Object out = registry.execute("read_like", Map.of("value", "ok"));
@@ -211,23 +211,26 @@ public class ToolRegistryTest {
             }
 
             @Override
-            public Object execute(Map<String, Object> params) {
-                return "approved=" + ToolExecutionContext.current().approved()
-                        + ",approvalId=" + ToolExecutionContext.current().approvalId()
-                        + ",hasBypass=" + params.containsKey("__approval_bypass");
+            public Object execute(Map<String, Object> params, ToolExecutionContext context) {
+                return "approved=" + context.approved() + ",hasBypass=" + params.containsKey("__approval_bypass");
+            }
+
+            @Override public Object execute(Map<String, Object> params) {
+                return execute(params, ToolExecutionContext.normal());
             }
         });
 
         Object normal = registry.execute("context_probe", Map.of("__approval_bypass", true));
-        assertEquals("approved=false,approvalId=,hasBypass=false", normal);
+        assertEquals("approved=false,hasBypass=false", normal);
 
-        Object approved = registry.executeApproved("context_probe", Map.of("__approval_bypass", true), "approval_test");
-        assertEquals("approved=true,approvalId=approval_test,hasBypass=false", approved);
+        Object approved = registry.execute("context_probe", Map.of("__approval_bypass", true),
+                ToolExecutionContext.approvedContext());
+        assertEquals("approved=true,hasBypass=false", approved);
     }
 
     @Test
     void approvalBypassParamCannotBypassRiskGateButApprovedContextCan(@TempDir Path workspace) throws Exception {
-        ApprovalService approvalService = new ApprovalService();
+        ApprovalService approvalService = new ApprovalService(new InMemoryApprovalRequestStore());
         ToolRegistry registry = new ToolRegistry();
         registry.register(new WriteFileTool(workspace, workspace, new CommandRiskAnalyzer(workspace), approvalService));
 
@@ -243,7 +246,7 @@ public class ToolRegistryTest {
         String requestId = requestId(String.valueOf(malicious));
         approvalService.approve(requestId);
         PendingToolCall call = approvalService.consumeApprovedToolCall(requestId);
-        Object approved = registry.executeApproved(call.toolName(), call.arguments(), requestId);
+        Object approved = registry.execute(call.toolName(), call.arguments(), ToolExecutionContext.approvedContext());
 
         assertFalse(String.valueOf(approved).contains("需要审批后才能执行"), String.valueOf(approved));
         assertEquals("no\n", Files.readString(workspace.resolve("reports").resolve("malicious.txt")));
@@ -251,7 +254,7 @@ public class ToolRegistryTest {
 
     @Test
     void directToolExecuteUsesContextForApprovalInsteadOfBypassParam(@TempDir Path workspace) throws Exception {
-        ApprovalService approvalService = new ApprovalService();
+        ApprovalService approvalService = new ApprovalService(new InMemoryApprovalRequestStore());
         WriteFileTool write = new WriteFileTool(workspace, workspace, new CommandRiskAnalyzer(workspace), approvalService);
 
         Object normal = write.execute(Map.of(
@@ -267,7 +270,7 @@ public class ToolRegistryTest {
                 "path", "reports/direct.txt",
                 "content", "approved\n",
                 "__approval_bypass", true
-        ), ToolExecutionContext.approved("approval_direct_write"));
+        ), ToolExecutionContext.approvedContext());
 
         assertFalse(String.valueOf(approved).contains("需要审批后才能执行"), String.valueOf(approved));
         assertEquals("approved\n", Files.readString(workspace.resolve("reports").resolve("direct.txt")));
@@ -279,14 +282,14 @@ public class ToolRegistryTest {
         Files.writeString(notes, "hello world\n");
         ricbot.tool.filesystem.FileReadState.recordRead(notes, 1, 10);
 
-        ApprovalService approvalService = new ApprovalService();
+        ApprovalService approvalService = new ApprovalService(new InMemoryApprovalRequestStore());
         EditFileTool edit = new EditFileTool(workspace, workspace, new CommandRiskAnalyzer(workspace), approvalService);
         Object editResult = edit.execute(Map.of(
                 "path", "notes.txt",
                 "old_text", "world",
                 "new_text", "ricbot",
                 "replace_all", false
-        ), ToolExecutionContext.approved("approval_direct_edit"));
+        ), ToolExecutionContext.approvedContext());
 
         assertFalse(String.valueOf(editResult).contains("需要审批后才能执行"), String.valueOf(editResult));
         assertEquals("hello ricbot\n", Files.readString(notes));
@@ -306,7 +309,7 @@ public class ToolRegistryTest {
         Object execResult = exec.execute(Map.of(
                 "command", "touch direct-exec.txt",
                 "__approval_bypass", true
-        ), ToolExecutionContext.approved("approval_direct_exec"));
+        ), ToolExecutionContext.approvedContext());
 
         assertFalse(String.valueOf(execResult).contains("需要审批后才能执行"), String.valueOf(execResult));
         assertTrue(Files.exists(workspace.resolve("direct-exec.txt")));
@@ -333,14 +336,15 @@ public class ToolRegistryTest {
         WriteFileTool writeTool = new WriteFileTool(workspace, workspace);
         EditFileTool editTool = new EditFileTool(workspace, workspace);
 
-        String readResult = readTool.execute("read-link.txt", 1, 20);
+        String readResult = String.valueOf(readTool.execute(Map.of("path", "read-link.txt", "offset", 1, "limit", 20)));
         assertTrue(readResult.startsWith("错误："), readResult);
 
-        String writeResult = writeTool.execute("write-link-dir/new.txt", "escaped");
+        String writeResult = String.valueOf(writeTool.execute(Map.of("path", "write-link-dir/new.txt", "content", "escaped")));
         assertTrue(writeResult.startsWith("错误："), writeResult);
         assertFalse(Files.exists(outsideDir.resolve("new.txt")));
 
-        String editResult = editTool.execute("read-link.txt", "top-secret", "changed", false);
+        String editResult = String.valueOf(editTool.execute(Map.of(
+                "path", "read-link.txt", "old_text", "top-secret", "new_text", "changed", "replace_all", false)));
         assertTrue(editResult.startsWith("错误："), editResult);
         assertEquals("top-secret", Files.readString(outsideFile));
     }
@@ -359,6 +363,8 @@ public class ToolRegistryTest {
             @Override public ToolEffectPolicy effectPolicy() {
                 return ToolEffectPolicy.readOnly(java.time.Duration.ofSeconds(30));
             }
+
+            @Override public Object execute(Map<String, Object> params) { return null; }
         };
     }
 

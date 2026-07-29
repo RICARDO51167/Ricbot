@@ -10,6 +10,7 @@ public record ProviderCapability(String providerName, ModelCapability modelCapab
     public static final String SOURCE_HEURISTIC = "HEURISTIC";
     public static final String SOURCE_USER_OVERRIDE = "USER_OVERRIDE";
     public static final String SOURCE_MIXED = "MIXED";
+    public static final String SOURCE_MODEL_CARD = "MODEL_CARD";
 
     public ProviderCapability(String providerName, ModelCapability modelCapability) {
         this(providerName, modelCapability, SOURCE_HEURISTIC);

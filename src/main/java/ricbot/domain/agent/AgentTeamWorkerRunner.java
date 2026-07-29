@@ -1,14 +1,19 @@
 package ricbot.domain.agent;
 
+import ricbot.domain.agent.interfacep.AgentInvocationRuntime;
 import ricbot.domain.config.ProviderCapability;
+import ricbot.domain.agent.budget.BudgetPolicy;
+import ricbot.infra.config.Config;
+import ricbot.domain.config.ModelCard;
 import ricbot.domain.task.TaskWorkerRequest;
 import ricbot.domain.task.TaskWorkerResult;
 import ricbot.domain.task.TaskWorkerRunner;
 import ricbot.domain.task.TaskWorkerStatus;
 import ricbot.domain.workspace.RuntimeArtifactFilter;
 import ricbot.domain.workspace.WorkspaceLifecycleService;
-import ricbot.domain.workspace.WorkspaceSession;
+import ricbot.domain.workspace.dto.WorkspaceSession;
 import ricbot.tool.api.Tool;
+import ricbot.tool.api.Tool.ToolExecutionContext;
 import ricbot.tool.api.ToolParam;
 import ricbot.tool.api.ToolRegistry;
 import ricbot.tool.filesystem.EditFileTool;
@@ -46,6 +51,10 @@ public class AgentTeamWorkerRunner implements TaskWorkerRunner {
     private final int contextWindowTokens;
     private final Integer contextBlockLimit;
     private final ProviderCapability providerCapability;
+    private final BudgetPolicy budgetPolicy;
+    private final Config.ContextOffloadConfig offload;
+    private final String timezone;
+    private final ModelCard.Pricing pricing;
 
     public AgentTeamWorkerRunner(Path baseWorkspace, AgentInvocationRuntime runner, String model) {
         this(baseWorkspace, runner, model, 8, 10_000, "standard", 64_000, null, null);
@@ -62,6 +71,27 @@ public class AgentTeamWorkerRunner implements TaskWorkerRunner {
             Integer contextBlockLimit,
             ProviderCapability providerCapability
     ) {
+        this(baseWorkspace, runner, model, maxIterations, maxToolResultChars, providerRetryMode,
+                contextWindowTokens, contextBlockLimit, providerCapability, BudgetPolicy.unlimited(),
+                new Config.ContextOffloadConfig(), "UTC", null);
+    }
+
+    public AgentTeamWorkerRunner(
+            Path baseWorkspace, AgentInvocationRuntime runner, String model, int maxIterations,
+            int maxToolResultChars, String providerRetryMode, int contextWindowTokens,
+            Integer contextBlockLimit, ProviderCapability providerCapability, BudgetPolicy budgetPolicy,
+            Config.ContextOffloadConfig offload, String timezone
+    ) {
+        this(baseWorkspace, runner, model, maxIterations, maxToolResultChars, providerRetryMode,
+                contextWindowTokens, contextBlockLimit, providerCapability, budgetPolicy, offload, timezone, null);
+    }
+
+    public AgentTeamWorkerRunner(
+            Path baseWorkspace, AgentInvocationRuntime runner, String model, int maxIterations,
+            int maxToolResultChars, String providerRetryMode, int contextWindowTokens,
+            Integer contextBlockLimit, ProviderCapability providerCapability, BudgetPolicy budgetPolicy,
+            Config.ContextOffloadConfig offload, String timezone, ModelCard.Pricing pricing
+    ) {
         this.baseWorkspace = baseWorkspace.toAbsolutePath().normalize();
         this.runner = runner;
         this.model = model != null && !model.isBlank() ? model : "model";
@@ -71,6 +101,10 @@ public class AgentTeamWorkerRunner implements TaskWorkerRunner {
         this.contextWindowTokens = Math.max(1_000, contextWindowTokens);
         this.contextBlockLimit = contextBlockLimit;
         this.providerCapability = providerCapability;
+        this.budgetPolicy = budgetPolicy != null ? budgetPolicy : BudgetPolicy.unlimited();
+        this.offload = offload != null ? offload : new Config.ContextOffloadConfig();
+        this.timezone = timezone != null && !timezone.isBlank() ? timezone : "UTC";
+        this.pricing = pricing;
     }
 
     @Override
@@ -150,15 +184,35 @@ public class AgentTeamWorkerRunner implements TaskWorkerRunner {
                 .setProviderRetryMode(providerRetryMode)
                 .setErrorMessage("Team worker failed while calling model.")
                 .setMaxIterationsMessage("Team worker reached the tool iteration limit before completing the task.")
-                .setConcurrentTools(false)
                 .setWorkspace(root)
                 .setRuntimeWorkspace(baseWorkspace)
                 .setSessionKey(sessionKey)
                 .setContextWindowTokens(contextWindowTokens)
                 .setContextBlockLimit(contextBlockLimit)
                 .setProviderCapability(providerCapability)
+                .setModelPricing(pricing)
+                .setRootBudgetPolicy(budgetPolicy)
+                .setBudgetPolicy(workerBudget(task))
+                .setContextOffloadEnabled(offload.isEnabled()).setOffloadPreviewChars(offload.getPreviewChars())
+                .setArtifactReadChunkChars(offload.getReadChunkChars()).setTimezone(timezone)
                 .setMetadata(metadata)
                 .setAllowedTools(workerToolNames(task));
+    }
+
+    private BudgetPolicy workerBudget(TaskWorkerRequest task) {
+        int workers = Math.max(1, task.siblingCount());
+        Long tokens = share(budgetPolicy.maxTotalTokens(), workers);
+        Long cost = share(budgetPolicy.maxCostMicrousd(), workers);
+        Long active = share(budgetPolicy.maxActiveSeconds(), workers);
+        Long tools = share(budgetPolicy.maxToolCalls(), workers);
+        long finalization = tokens != null
+                ? Math.min(budgetPolicy.finalizationTokens(), Math.max(0, tokens - 1))
+                : budgetPolicy.finalizationTokens();
+        return new BudgetPolicy(tokens, cost, active, tools, finalization, task.parentRunId());
+    }
+
+    private static Long share(Long value, int workers) {
+        return value == null ? null : Math.max(1, value / Math.max(1, workers));
     }
 
     private List<Map<String, Object>> workerMessages(TaskWorkerRequest task, Path root) {
@@ -412,43 +466,17 @@ public class AgentTeamWorkerRunner implements TaskWorkerRunner {
 
         @Override
         public Object execute(Map<String, Object> params) throws Exception {
+            return execute(params, ToolExecutionContext.normal());
+        }
+
+        @Override
+        public Object execute(Map<String, Object> params, ToolExecutionContext context) throws Exception {
             String denied = guard(params);
             if (!denied.isBlank()) {
                 return "错误：" + denied;
             }
             Map<String, Object> safe = params != null ? params : Map.of();
-            if (delegate instanceof ListDirTool tool) {
-                return tool.execute((String) safe.get("path"));
-            }
-            if (delegate instanceof ReadFileTool tool) {
-                return tool.execute(
-                        (String) safe.get("path"),
-                        (Integer) safe.get("offset"),
-                        (Integer) safe.get("limit")
-                );
-            }
-            if (delegate instanceof WriteFileTool tool) {
-                return tool.execute(safe);
-            }
-            if (delegate instanceof EditFileTool tool) {
-                return tool.execute(safe);
-            }
-            if (delegate instanceof GrepTool tool) {
-                return tool.execute(
-                        (String) safe.get("pattern"),
-                        (String) safe.get("base_dir"),
-                        (String) safe.get("file_glob"),
-                        (Boolean) safe.get("ignore_case"),
-                        (Integer) safe.get("max_results")
-                );
-            }
-            if (delegate instanceof GlobTool tool) {
-                return tool.execute(
-                        (String) safe.get("pattern"),
-                        (String) safe.get("base_dir")
-                );
-            }
-            return delegate.execute(safe);
+            return delegate.execute(safe, context);
         }
 
         private String guard(Map<String, Object> params) {

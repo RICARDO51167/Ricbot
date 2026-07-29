@@ -16,7 +16,6 @@ public final class ConfigDoctorReport {
     private final List<String> errors = new ArrayList<>();
     private final List<String> errorCodes = new ArrayList<>();
     private final List<String> warnings = new ArrayList<>();
-    private final List<String> ignoredFields = new ArrayList<>();
     private final List<String> suggestedFixes = new ArrayList<>();
     private ProviderCapability providerCapability;
 
@@ -24,7 +23,7 @@ public final class ConfigDoctorReport {
         if (!errors.isEmpty()) {
             return "ERROR";
         }
-        if (!warnings.isEmpty() || !ignoredFields.isEmpty()) {
+        if (!warnings.isEmpty()) {
             return "WARNING";
         }
         return "OK";
@@ -43,7 +42,6 @@ public final class ConfigDoctorReport {
         map.put("errors", errors);
         map.put("errorCodes", errorCodes);
         map.put("warnings", warnings);
-        map.put("ignoredFields", ignoredFields);
         map.put("suggestedFixes", suggestedFixes);
         map.put("providerCapability", providerCapability != null ? providerCapability.toMap() : null);
         return map;
@@ -60,10 +58,6 @@ public final class ConfigDoctorReport {
 
     public void addWarning(String warning) {
         addUnique(warnings, warning);
-    }
-
-    public void addIgnoredField(String field) {
-        addUnique(ignoredFields, field);
     }
 
     public void addSuggestedFix(String fix) {
@@ -140,10 +134,6 @@ public final class ConfigDoctorReport {
 
     public List<String> getWarnings() {
         return warnings;
-    }
-
-    public List<String> getIgnoredFields() {
-        return ignoredFields;
     }
 
     public List<String> getSuggestedFixes() {

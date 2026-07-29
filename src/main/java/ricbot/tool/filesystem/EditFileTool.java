@@ -65,11 +65,7 @@ public class EditFileTool extends Tool {
         );
     }
 
-    public String execute(String path, String oldText, String newText, Boolean replaceAll) {
-        return execute(path, oldText, newText, replaceAll, false);
-    }
-
-    private String execute(String path, String oldText, String newText, Boolean replaceAll, boolean approved) {
+    private String edit(String path, String oldText, String newText, Boolean replaceAll, boolean approved) {
         try {
             Path target = FileToolSupport.resolvePath(workspace, path);
             FileToolSupport.ensureAllowed(target, allowedDir, List.of());
@@ -135,7 +131,7 @@ public class EditFileTool extends Tool {
         String oldText = params != null ? (String) params.get("old_text") : null;
         String newText = params != null ? (String) params.get("new_text") : null;
         Boolean replaceAll = params != null ? (Boolean) params.get("replace_all") : null;
-        return execute(path, oldText, newText, replaceAll, context != null && context.approved());
+        return edit(path, oldText, newText, replaceAll, context != null && context.approved());
     }
 
     @Override

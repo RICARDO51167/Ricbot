@@ -164,14 +164,6 @@ public record GitChangeSet(
                 verificationReportDigest, verifiedDiffDigest, verificationArtifact);
     }
 
-    public GitChangeSet withWorkspace(String nextWorkspaceSessionId, String nextWorkspacePath) {
-        return new GitChangeSet(id, sessionId, teamSessionId, taskId, baseCommit, changedFiles, diffSummary, diffPatch,
-                diffReviews, suggestedTests, executedTests, verifierStatus, verifierReasons, taskSummary,
-                commitMessage, rollbackCommands, commitHash, rollbackStatus, nextWorkspaceSessionId, nextWorkspacePath,
-                status, createdAt, Instant.now().toString(), verificationReportId, verificationReportDigest,
-                verifiedDiffDigest, verificationArtifact);
-    }
-
     public Map<String, Object> toMap() {
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("id", id);

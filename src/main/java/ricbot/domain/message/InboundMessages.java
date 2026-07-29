@@ -1,6 +1,5 @@
 package ricbot.domain.message;
 
-import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -23,7 +22,7 @@ public final class InboundMessages {
      */
     public static InboundMessage of(String channel, String senderId, String chatId, String content) {
         // 调用完整参数的of方法，使用默认值
-        return of(channel, senderId, chatId, content, List.of(), Map.of(), null, null);
+        return of(channel, senderId, chatId, content, List.of(), Map.of(), null);
     }
 
     /**
@@ -36,7 +35,6 @@ public final class InboundMessages {
      * @param media               媒体列表
      * @param metadata            元数据
      * @param sessionKeyOverride  会话密钥覆盖
-     * @param timestamp           时间戳
      * @return InboundMessage 对象
      */
     public static InboundMessage of(
@@ -46,8 +44,7 @@ public final class InboundMessages {
             String content,
             List<String> media,
             Map<String, Object> metadata,
-            String sessionKeyOverride,
-            LocalDateTime timestamp
+            String sessionKeyOverride
     ) {
         // 创建新的InboundMessage实例
         InboundMessage msg = new InboundMessage();
@@ -65,10 +62,6 @@ public final class InboundMessages {
         msg.setMetadata(metadata != null ? new HashMap<>(metadata) : new HashMap<>());
         // 设置会话密钥覆盖
         msg.setSessionKeyOverride(sessionKeyOverride);
-        // 如果时间戳不为null，则设置时间戳
-        if (timestamp != null) {
-            msg.setTimestamp(timestamp);
-        }
         // 返回构建好的消息对象
         return msg;
     }

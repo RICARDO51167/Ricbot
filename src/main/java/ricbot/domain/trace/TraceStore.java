@@ -62,8 +62,6 @@ public class TraceStore {
                 List.copyOf(changeSets), verifierStatuses, commitHash, rollbackStatus, lastEventAt, tracePath(id));
     }
 
-    /** Compatibility query path, now pointing at the unified database instead of a JSONL file. */
-    public Path eventsFile(String traceId) { return runtime.database(); }
     public String tracePath(String traceId) {
         return "sqlite:.ricbot/runtime.db#traces/" + safeTraceId(traceId);
     }

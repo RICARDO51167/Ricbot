@@ -65,7 +65,6 @@ final class EvalRuntimeState {
         out.put("user_md_sha256", fileSha(root != null ? root.resolve("USER.md") : null));
         out.put("soul_md_sha256", fileSha(root != null ? root.resolve("SOUL.md") : null));
         out.put("history_count", jsonlCount(memoryDir != null ? memoryDir.resolve("history.jsonl") : null));
-        out.put("candidate_count", jsonlCount(memoryDir != null ? memoryDir.resolve("candidates.jsonl") : null));
         out.put("entry_count", jsonlCount(memoryDir != null ? memoryDir.resolve("memory_entries.jsonl") : null));
         return out;
     }

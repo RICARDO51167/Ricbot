@@ -1,5 +1,9 @@
 package ricbot.domain.agent.graph;
 
+import ricbot.domain.agent.graph.dto.GraphExecutionState;
+import ricbot.domain.agent.graph.dto.GraphNodeResult;
+import ricbot.domain.agent.graph.dto.GraphWait;
+import ricbot.domain.agent.graph.interfacep.GraphNodeExecutor;
 import ricbot.domain.security.ApprovalRequest;
 import ricbot.domain.security.ApprovalService;
 import ricbot.domain.task.LocalTaskScheduler;
@@ -148,6 +152,8 @@ public final class BuiltinGraphExecutors {
                 .channel("verification", StateReducers.replace())
                 .channel("verificationProfileDigest", StateReducers.replaceOnce())
                 .channel("revision", StateReducers.replace())
+                .channel("usageLedger", StateReducers.sumUsage())
+                .channel("budgetState", StateReducers.replace())
                 .build();
     }
 

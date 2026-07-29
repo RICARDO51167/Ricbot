@@ -7,8 +7,6 @@ import ricbot.integration.llm.provider.ProviderSpec;
 
 import java.nio.file.Path;
 import java.util.*;
-import java.util.function.BiConsumer;
-import java.util.function.Function;
 
 /**
  * 统一承载 ricbot 的运行配置。
@@ -21,10 +19,6 @@ import java.util.function.Function;
  * 设计说明（重要）：
  * - 这是一个“巨型配置类”：agent/provider/tool 等都在此文件中。
  *   这种写法对“快速跑起来/单文件查配置”很友好，但长期维护会面临可读性差、模块边界模糊、修改冲击面大等问题。
- * - 部分字段属于“接口先长出来，主链实现未完全接入”的状态：调用方不要默认认为所有配置都已生效。
- *   例如 ExecToolConfig 的 sandbox 暴露为 String 属于兼容历史接口的折中。
- * - ProvidersConfig 采用“静态枚举式字段”，扩展新 provider 往往需要改这个类与相关 switch/asMap。
- *   这比动态注册式配置更直观，但扩展性较弱。
  */
 @Data
 public class Config {
@@ -35,6 +29,7 @@ public class Config {
     private ProvidersConfig providers = new ProvidersConfig();
     /** 工具配置 */
     private ToolsConfig tools = new ToolsConfig();
+    private ModelCardsConfig modelCards = new ModelCardsConfig();
     /** 用户声明的模型能力覆盖，不做在线探测。 */
     private Map<String, ModelCapabilityOverride> modelCapabilities = new LinkedHashMap<>();
 
@@ -43,6 +38,9 @@ public class Config {
 
     public void setTools(ToolsConfig tools) {
         this.tools = tools != null ? tools : new ToolsConfig();
+    }
+    public void setModelCards(ModelCardsConfig modelCards) {
+        this.modelCards = modelCards != null ? modelCards : new ModelCardsConfig();
     }
 
 
@@ -186,7 +184,6 @@ public class Config {
         return switch (p) {
             case "claude" -> "anthropic";
             case "gpt" -> "openai";
-            case "copilot" -> "github_copilot";
             default -> p;
         };
     }
@@ -248,110 +245,71 @@ public class Config {
         private String timezone = "UTC";
         private boolean unifiedSession = false;
         private int sessionTtlMinutes = 0;
+        private BudgetConfig budget = new BudgetConfig();
+        private ContextOffloadConfig contextOffload = new ContextOffloadConfig();
+        public void setBudget(BudgetConfig budget) { this.budget = budget != null ? budget : new BudgetConfig(); }
+        public void setContextOffload(ContextOffloadConfig value) {
+            this.contextOffload = value != null ? value : new ContextOffloadConfig();
+        }
+    }
+
+    @Data
+    public static class BudgetConfig {
+        private Long maxTotalTokens;
+        private Long maxCostMicrousd;
+        private Long maxActiveSeconds;
+        private Long maxToolCalls;
+        private long finalizationTokens = 1024;
+        private WorkerBudgetConfig worker = new WorkerBudgetConfig();
+        public void setWorker(WorkerBudgetConfig worker) { this.worker = worker != null ? worker : new WorkerBudgetConfig(); }
+    }
+
+    @Data
+    public static class WorkerBudgetConfig {
+        private String allocation = "equal_share";
+        private Long maxTotalTokens;
+        private Long maxCostMicrousd;
+        private Long maxActiveSeconds;
+        private Long maxToolCalls;
+    }
+
+    @Data
+    public static class ContextOffloadConfig {
+        private boolean enabled = true;
+        private int previewChars = 1200;
+        private int readChunkChars = 16000;
+    }
+
+    @Data
+    public static class ModelCardsConfig {
+        private List<String> paths = new ArrayList<>();
+        public void setPaths(List<String> paths) { this.paths = paths != null ? paths : new ArrayList<>(); }
     }
 
     // =========================================================
     // Providers
     // =========================================================
 
-    @Data
     public static class ProvidersConfig {
-        /**
-         * ProvidersConfig 采用“静态字段枚举”的配置形态：
-         * - 优点：结构直观、序列化简单；
-         * - 缺点：扩展新 provider 需要改类字段、get(name) 与 asMap() 的 switch/映射，扩展性一般。
-         */
-        private ProviderConfig openai = new ProviderConfig();
-        private ProviderConfig anthropic = new ProviderConfig();
-        private ProviderConfig azure_openai = new ProviderConfig();
-        private ProviderConfig openai_codex = new ProviderConfig();
-        private ProviderConfig github_copilot = new ProviderConfig();
-        private ProviderConfig openrouter = new ProviderConfig();
-        private ProviderConfig deepseek = new ProviderConfig();
-        private ProviderConfig dashscope = new ProviderConfig();
-        private ProviderConfig moonshot = new ProviderConfig();
-        private ProviderConfig zhipu = new ProviderConfig();
-        private ProviderConfig minimax = new ProviderConfig();
-        private ProviderConfig mistral = new ProviderConfig();
-        private ProviderConfig groq = new ProviderConfig();
-        private ProviderConfig custom = new ProviderConfig();
-        private Map<String, ProviderConfig> extra = new LinkedHashMap<>();
-
-        private static final Map<String, KnownProvider> KNOWN_PROVIDER_INDEX = buildKnownProviderIndex();
+        private final Map<String, ProviderConfig> providers = new LinkedHashMap<>();
 
         public ProviderConfig get(String name) {
             String key = canonicalName(name);
-            if (key == null) {
-                return null;
-            }
-            ProviderConfig known = getKnownProvider(key);
-            if (known != null) {
-                return known;
-            }
-            return extra.get(key);
+            return key != null ? providers.get(key) : null;
         }
 
         public ProviderConfig getOrCreate(String name) {
             String key = canonicalName(name);
-            if (key == null) {
-                return null;
-            }
-            ProviderConfig existing = get(key);
-            if (existing != null) {
-                return existing;
-            }
-            ProviderConfig created = new ProviderConfig();
-            extra.put(key, created);
-            return created;
+            return key != null ? providers.computeIfAbsent(key, ignored -> new ProviderConfig()) : null;
         }
 
         public void put(String name, ProviderConfig config) {
             String key = canonicalName(name);
-            if (key == null) {
-                return;
-            }
-            ProviderConfig value = config != null ? config : new ProviderConfig();
-            if (!setKnownProvider(key, value)) {
-                extra.put(key, value);
-            }
+            if (key != null) providers.put(key, config != null ? config : new ProviderConfig());
         }
 
         public Map<String, ProviderConfig> asMap() {
-            Map<String, ProviderConfig> map = new LinkedHashMap<>();
-            putKnownProviders(map);
-            if (extra != null && !extra.isEmpty()) {
-                for (Map.Entry<String, ProviderConfig> entry : extra.entrySet()) {
-                    String key = canonicalName(entry.getKey());
-                    if (key != null && !isKnownName(key)) {
-                        map.put(key, entry.getValue());
-                    }
-                }
-            }
-            return map;
-        }
-
-        private ProviderConfig getKnownProvider(String key) {
-            KnownProvider provider = KNOWN_PROVIDER_INDEX.get(key);
-            return provider != null ? provider.getter().apply(this) : null;
-        }
-
-        private boolean setKnownProvider(String key, ProviderConfig value) {
-            KnownProvider provider = KNOWN_PROVIDER_INDEX.get(key);
-            if (provider == null) {
-                return false;
-            }
-            provider.setter().accept(this, value);
-            return true;
-        }
-
-        private void putKnownProviders(Map<String, ProviderConfig> target) {
-            for (KnownProvider provider : KnownProvider.values()) {
-                target.put(provider.canonicalName(), provider.getter().apply(this));
-            }
-        }
-
-        private static boolean isKnownName(String key) {
-            return KNOWN_PROVIDER_INDEX.containsKey(key);
+            return Collections.unmodifiableMap(new LinkedHashMap<>(providers));
         }
 
         private static String canonicalName(String name) {
@@ -365,66 +323,6 @@ public class Config {
             return key.toLowerCase(Locale.ROOT);
         }
 
-        private static Map<String, KnownProvider> buildKnownProviderIndex() {
-            Map<String, KnownProvider> index = new LinkedHashMap<>();
-            for (KnownProvider provider : KnownProvider.values()) {
-                index.put(provider.canonicalName(), provider);
-                for (String alias : provider.aliases()) {
-                    index.put(alias, provider);
-                }
-            }
-            return Collections.unmodifiableMap(index);
-        }
-
-        private enum KnownProvider {
-            OPENAI("openai", cfg -> cfg.openai, (cfg, value) -> cfg.openai = value, List.of("openai_compat")),
-            ANTHROPIC("anthropic", cfg -> cfg.anthropic, (cfg, value) -> cfg.anthropic = value, List.of()),
-            AZURE_OPENAI("azure_openai", cfg -> cfg.azure_openai, (cfg, value) -> cfg.azure_openai = value, List.of()),
-            OPENAI_CODEX("openai_codex", cfg -> cfg.openai_codex, (cfg, value) -> cfg.openai_codex = value, List.of()),
-            GITHUB_COPILOT("github_copilot", cfg -> cfg.github_copilot, (cfg, value) -> cfg.github_copilot = value, List.of()),
-            OPENROUTER("openrouter", cfg -> cfg.openrouter, (cfg, value) -> cfg.openrouter = value, List.of()),
-            DEEPSEEK("deepseek", cfg -> cfg.deepseek, (cfg, value) -> cfg.deepseek = value, List.of()),
-            DASHSCOPE("dashscope", cfg -> cfg.dashscope, (cfg, value) -> cfg.dashscope = value, List.of()),
-            MOONSHOT("moonshot", cfg -> cfg.moonshot, (cfg, value) -> cfg.moonshot = value, List.of()),
-            ZHIPU("zhipu", cfg -> cfg.zhipu, (cfg, value) -> cfg.zhipu = value, List.of()),
-            MINIMAX("minimax", cfg -> cfg.minimax, (cfg, value) -> cfg.minimax = value, List.of()),
-            MISTRAL("mistral", cfg -> cfg.mistral, (cfg, value) -> cfg.mistral = value, List.of()),
-            GROQ("groq", cfg -> cfg.groq, (cfg, value) -> cfg.groq = value, List.of()),
-            CUSTOM("custom", cfg -> cfg.custom, (cfg, value) -> cfg.custom = value, List.of());
-
-            private final String canonicalName;
-            private final Function<ProvidersConfig, ProviderConfig> getter;
-            private final BiConsumer<ProvidersConfig, ProviderConfig> setter;
-            private final List<String> aliases;
-
-            KnownProvider(
-                    String canonicalName,
-                    Function<ProvidersConfig, ProviderConfig> getter,
-                    BiConsumer<ProvidersConfig, ProviderConfig> setter,
-                    List<String> aliases
-            ) {
-                this.canonicalName = canonicalName;
-                this.getter = getter;
-                this.setter = setter;
-                this.aliases = aliases;
-            }
-
-            private String canonicalName() {
-                return canonicalName;
-            }
-
-            private Function<ProvidersConfig, ProviderConfig> getter() {
-                return getter;
-            }
-
-            private BiConsumer<ProvidersConfig, ProviderConfig> setter() {
-                return setter;
-            }
-
-            private List<String> aliases() {
-                return aliases;
-            }
-        }
     }
 
     @Data
@@ -491,11 +389,6 @@ public class Config {
 
     @Data
     public static class ExecToolConfig {
-        /**
-         * 兼容说明：
-         * - 字段 sandbox 是 boolean，但 getSandbox() 返回 String，是为了兼容历史上 “sandbox 以字符串表示模式” 的使用方式。
-         * - 建议新代码优先使用 isSandbox()/setSandbox(boolean)。
-         */
         private boolean enable = true;
         private int timeout = 60;
         private boolean sandbox = false;
@@ -509,14 +402,6 @@ public class Config {
         private List<String> allowedEnvKeys = new ArrayList<>();
         public void setAllowedEnvKeys(List<String> allowedEnvKeys) {
             this.allowedEnvKeys = allowedEnvKeys != null ? allowedEnvKeys : new ArrayList<>();
-        }
-
-        public String getSandbox() {
-            return sandbox ? "sandbox" : "";
-        }
-
-        public boolean isSandbox() {
-            return sandbox;
         }
     }
 

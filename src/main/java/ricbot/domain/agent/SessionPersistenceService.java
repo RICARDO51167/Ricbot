@@ -1,9 +1,8 @@
 package ricbot.domain.agent;
 
+import ricbot.domain.agent.dto.ExecutionOutcome;
+import ricbot.domain.agent.dto.PersistenceResult;
 import ricbot.domain.message.InboundMessage;
-import ricbot.domain.memory.MemoryEntry;
-import ricbot.domain.memory.MemoryWritePolicy;
-import ricbot.domain.memory.MemoryStore;
 import ricbot.domain.message.OutboundMessage;
 import ricbot.domain.message.OutboundMessages;
 import ricbot.domain.session.Session;
@@ -27,8 +26,6 @@ final class SessionPersistenceService {
     private final int maxToolResultChars;
     // 工具轨迹摘要器，用于生成工具调用的简要记录
     private final ToolTraceSummarizer toolTraceSummarizer = new ToolTraceSummarizer();
-    private final MemoryStore memoryStore;
-    private final MemoryWritePolicy memoryWritePolicy;
 
     /**
      * 构造函数
@@ -37,23 +34,8 @@ final class SessionPersistenceService {
      * @param maxToolResultChars  工具结果最大字符数限制
      */
     SessionPersistenceService(SessionManager sessionManager, int maxToolResultChars) {
-        this(sessionManager, maxToolResultChars, null);
-    }
-
-    SessionPersistenceService(SessionManager sessionManager, int maxToolResultChars, MemoryStore memoryStore) {
-        this(sessionManager, maxToolResultChars, memoryStore, new MemoryWritePolicy());
-    }
-
-    SessionPersistenceService(
-            SessionManager sessionManager,
-            int maxToolResultChars,
-            MemoryStore memoryStore,
-            MemoryWritePolicy memoryWritePolicy
-    ) {
         this.sessionManager = sessionManager;
         this.maxToolResultChars = maxToolResultChars;
-        this.memoryStore = memoryStore;
-        this.memoryWritePolicy = memoryWritePolicy != null ? memoryWritePolicy : new MemoryWritePolicy();
     }
 
     /**
@@ -76,11 +58,9 @@ final class SessionPersistenceService {
         updateContextTrace(session, request.contextTrace());
         // 更新任务状态（完成或阻塞）
         updateTaskState(session, outcome);
-        appendMemoryCandidates(request.message(), outcome);
 
         // 清理会话元数据中的临时运行时键
         markCheckpointCommitted(session);
-        session.getMetadata().remove(SessionRuntimeKeys.PENDING_USER_TURN_KEY);
         session.getMetadata().remove(SessionRuntimeKeys.RUNTIME_CHECKPOINT_KEY);
         session.getMetadata().remove(SessionRuntimeKeys.RECOVERY_DECISIONS_KEY);
         session.getMetadata().remove("_last_interrupt_reason");
@@ -271,6 +251,8 @@ final class SessionPersistenceService {
         trace.put("error", result.getError());
         trace.put("tools_used", result.getToolsUsed());
         trace.put("usage", result.getUsage());
+        trace.put("usage_ledger", result.getUsageLedger());
+        trace.put("agent_event_count", result.getEvents() != null ? result.getEvents().size() : 0);
 
         List<Map<String, Object>> events = result.getRunEvents() != null ? result.getRunEvents() : List.of();
         int keep = Math.min(80, events.size());
@@ -306,13 +288,4 @@ final class SessionPersistenceService {
         taskState.persist(session);
     }
 
-    private void appendMemoryCandidates(InboundMessage message, ExecutionOutcome outcome) {
-        if (memoryStore == null || message == null || message.getContent() == null) {
-            return;
-        }
-        List<MemoryEntry> candidates = memoryWritePolicy.createCandidates(message.getContent());
-        if (!candidates.isEmpty()) {
-            memoryStore.appendMemoryCandidates(candidates);
-        }
-    }
 }

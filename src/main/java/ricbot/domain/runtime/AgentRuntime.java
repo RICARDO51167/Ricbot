@@ -1,5 +1,10 @@
 package ricbot.domain.runtime;
 
+import ricbot.domain.runtime.dto.ReplayView;
+import ricbot.domain.runtime.dto.RunRequest;
+import ricbot.domain.runtime.dto.RunView;
+import ricbot.domain.runtime.dto.RuntimeSignal;
+
 public interface AgentRuntime extends AutoCloseable {
     RunView start(RunRequest request);
     RunView resume(String runId);

@@ -1,6 +1,6 @@
 package ricbot.domain.task;
 
-import ricbot.domain.workspace.WorkspaceSession;
+import ricbot.domain.workspace.dto.WorkspaceSession;
 import java.nio.file.Path;
 
 @FunctionalInterface

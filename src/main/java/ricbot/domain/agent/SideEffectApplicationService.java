@@ -1,21 +1,22 @@
 package ricbot.domain.agent;
 
+import ricbot.domain.agent.dto.SideEffectRecord;
+import ricbot.domain.agent.eump.SideEffectStatus;
+import ricbot.domain.agent.interfacep.SideEffectStore;
 import ricbot.domain.security.ApprovalRequest;
 import ricbot.domain.security.ApprovalService;
 import ricbot.domain.security.CommandRiskLevel;
 import ricbot.domain.security.PendingToolCall;
 import ricbot.domain.security.RiskAssessment;
 import ricbot.domain.security.ApprovalBinding;
-import ricbot.tool.api.ToolRegistry;
 
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 
-/** Approval-gated control plane for uncertain retries and compensating actions. */
+/** Approval-gated control plane for uncertain retries. */
 public final class SideEffectApplicationService {
     public static final String RETRY_ACTION = "side_effect_retry";
-    public static final String COMPENSATE_ACTION = "side_effect_compensate";
 
     private final SideEffectCoordinator coordinator;
     private final ApprovalService approvals;
@@ -38,54 +39,6 @@ public final class SideEffectApplicationService {
         return boundRequest(RETRY_ACTION, record, Map.of("idempotency_key", record.idempotencyKey()));
     }
 
-    public SideEffectRecord applyApprovedRetry(String approvalId) {
-        PendingToolCall call = requireApprovedAction(approvalId, RETRY_ACTION);
-        String key = requiredArgument(call, "idempotency_key");
-        approvals.consumeApprovedToolCall(approvalId);
-        return coordinator.authorizeRetry(key, approvalId);
-    }
-
-    public ApprovalRequest requestCompensation(String idempotencyKey) {
-        SideEffectRecord record = status(idempotencyKey);
-        if (record.status() != SideEffectStatus.SUCCEEDED) {
-            throw new IllegalStateException("only a successful side effect can request compensation");
-        }
-        return boundRequest(COMPENSATE_ACTION, record, Map.of(
-                "idempotency_key", record.idempotencyKey(),
-                "original_arguments", record.arguments()));
-    }
-
-    public ApprovalRequest requestCompensation(String idempotencyKey, Map<String, Object> originalArguments) {
-        SideEffectRecord record = status(idempotencyKey);
-        if (!record.argumentsDigest().equals(ToolInvocationRecord.argumentsDigest(originalArguments))) {
-            throw new IllegalArgumentException("compensation arguments do not match the original effect");
-        }
-        return requestCompensation(idempotencyKey);
-    }
-
-    public SideEffectRecord applyApprovedCompensation(ToolRegistry tools, String approvalId) {
-        PendingToolCall call = requireApprovedAction(approvalId, COMPENSATE_ACTION);
-        String key = requiredArgument(call, "idempotency_key");
-        Map<String, Object> arguments = objectMap(call.arguments().get("original_arguments"));
-        approvals.consumeApprovedToolCall(approvalId);
-        return coordinator.compensate(tools, key, arguments, approvalId);
-    }
-
-    private PendingToolCall requireApprovedAction(String approvalId, String expectedTool) {
-        ApprovalRequest request = approvals.find(approvalId);
-        if (request == null) throw new IllegalArgumentException("approval does not exist");
-        if (request.isExpired(Instant.now())) throw new IllegalStateException("approval has expired");
-        if (request.status() != ApprovalRequest.ApprovalStatus.APPROVED) {
-            throw new IllegalStateException("approval is not approved");
-        }
-        if (request.consumed()) throw new IllegalStateException("approval was already consumed");
-        PendingToolCall call = request.pendingToolCall();
-        if (call == null || !expectedTool.equals(call.toolName())) {
-            throw new IllegalArgumentException("approval is not for " + expectedTool);
-        }
-        return call;
-    }
-
     private ApprovalRequest boundRequest(String action, SideEffectRecord record, Map<String, Object> arguments) {
         ApprovalBinding binding = new ApprovalBinding(record.runId(), record.activationId(), action,
                 record.idempotencyKey(), record.toolName(), record.argumentsDigest());
@@ -104,17 +57,4 @@ public final class SideEffectApplicationService {
                 action, action, List.of());
     }
 
-    private static String requiredArgument(PendingToolCall call, String name) {
-        Object value = call.arguments().get(name);
-        String clean = value != null ? String.valueOf(value).trim() : "";
-        if (clean.isBlank()) throw new IllegalArgumentException("approval is missing " + name);
-        return clean;
-    }
-
-    private static Map<String, Object> objectMap(Object value) {
-        if (!(value instanceof Map<?, ?> map)) return Map.of();
-        java.util.LinkedHashMap<String, Object> result = new java.util.LinkedHashMap<>();
-        map.forEach((key, item) -> result.put(String.valueOf(key), item));
-        return result;
-    }
 }

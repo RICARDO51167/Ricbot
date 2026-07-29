@@ -8,6 +8,7 @@ import java.io.IOException;
 import java.nio.file.*;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 对应 Python: GlobTool
@@ -76,7 +77,13 @@ public class GlobTool extends Tool {
      * @param baseDir 搜索起始目录
      * @return 匹配结果字符串或错误信息
      */
-    public String execute(String pattern, String baseDir) {
+    @Override
+    public Object execute(Map<String, Object> params) {
+        Map<String, Object> safe = params != null ? params : Map.of();
+        return glob((String) safe.get("pattern"), (String) safe.get("base_dir"));
+    }
+
+    private String glob(String pattern, String baseDir) {
         try {
             // 检查 pattern 是否为空
             if (pattern == null || pattern.isBlank()) {

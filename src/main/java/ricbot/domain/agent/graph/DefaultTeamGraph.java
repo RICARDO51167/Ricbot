@@ -1,5 +1,8 @@
 package ricbot.domain.agent.graph;
 
+import ricbot.domain.agent.graph.dto.GraphRetryPolicy;
+import ricbot.domain.agent.graph.enump.GraphFailurePolicy;
+
 import java.time.Duration;
 
 /** LeaderPlan -> workers -> join -> patch integration -> verifier, with at most two revision loops. */

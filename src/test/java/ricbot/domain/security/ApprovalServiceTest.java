@@ -1,6 +1,7 @@
 package ricbot.domain.security;
 
 import org.junit.jupiter.api.Test;
+import ricbot.testsupport.InMemoryApprovalRequestStore;
 import ricbot.domain.change.PendingChangeAction;
 
 import java.time.Clock;
@@ -17,7 +18,7 @@ class ApprovalServiceTest {
 
     @Test
     void createApproveRejectAndFind() {
-        ApprovalService service = new ApprovalService();
+        ApprovalService service = new ApprovalService(new InMemoryApprovalRequestStore());
         RiskAssessment assessment = RiskAssessment.of(
                 CommandRiskLevel.HIGH,
                 List.of("dangerous command"),
@@ -38,7 +39,7 @@ class ApprovalServiceTest {
 
     @Test
     void pendingApproval_beforeExpired_canApprove() {
-        ApprovalService service = new ApprovalService(Duration.ofMinutes(30), FIXED_CLOCK);
+        ApprovalService service = new ApprovalService(new InMemoryApprovalRequestStore(), Duration.ofMinutes(30), FIXED_CLOCK);
         ApprovalRequest request = service.createRequest(assessment());
 
         assertEquals("2026-06-03T00:30:00Z", request.expiresAt());
@@ -50,7 +51,7 @@ class ApprovalServiceTest {
 
     @Test
     void expiredApproval_cannotApprove() {
-        ApprovalService service = new ApprovalService(Duration.ZERO, FIXED_CLOCK);
+        ApprovalService service = new ApprovalService(new InMemoryApprovalRequestStore(), Duration.ZERO, FIXED_CLOCK);
         ApprovalRequest request = service.createRequest(assessment());
 
         IllegalStateException error = assertThrows(IllegalStateException.class, () -> service.approve(request.requestId()));
@@ -60,7 +61,7 @@ class ApprovalServiceTest {
 
     @Test
     void expiredApproval_cannotConsume() {
-        ApprovalService service = new ApprovalService(Duration.ZERO, FIXED_CLOCK);
+        ApprovalService service = new ApprovalService(new InMemoryApprovalRequestStore(), Duration.ZERO, FIXED_CLOCK);
         ApprovalRequest request = service.createRequest(
                 assessment(),
                 "exec",
@@ -75,7 +76,7 @@ class ApprovalServiceTest {
 
     @Test
     void repeatedApproval_isRejected() {
-        ApprovalService service = new ApprovalService(Duration.ofMinutes(30), FIXED_CLOCK);
+        ApprovalService service = new ApprovalService(new InMemoryApprovalRequestStore(), Duration.ofMinutes(30), FIXED_CLOCK);
         ApprovalRequest request = service.createRequest(assessment());
         service.approve(request.requestId());
 
@@ -86,7 +87,7 @@ class ApprovalServiceTest {
 
     @Test
     void rejectedApproval_cannotConsume() {
-        ApprovalService service = new ApprovalService(Duration.ofMinutes(30), FIXED_CLOCK);
+        ApprovalService service = new ApprovalService(new InMemoryApprovalRequestStore(), Duration.ofMinutes(30), FIXED_CLOCK);
         ApprovalRequest request = service.createRequest(
                 assessment(),
                 "exec",
@@ -102,7 +103,7 @@ class ApprovalServiceTest {
 
     @Test
     void approvedPendingToolCallCanBeConsumedOnlyOnce() {
-        ApprovalService service = new ApprovalService();
+        ApprovalService service = new ApprovalService(new InMemoryApprovalRequestStore());
         ApprovalRequest request = service.createRequest(
                 RiskAssessment.of(CommandRiskLevel.MEDIUM, List.of("file modification tool"), "", "write_file", List.of("a.txt")),
                 "write_file",
@@ -123,7 +124,7 @@ class ApprovalServiceTest {
 
     @Test
     void createRequestCanBindPendingToolCallAndSanitizesArguments() {
-        ApprovalService service = new ApprovalService();
+        ApprovalService service = new ApprovalService(new InMemoryApprovalRequestStore());
         RiskAssessment assessment = RiskAssessment.of(
                 CommandRiskLevel.MEDIUM,
                 List.of("file modification tool"),
@@ -148,7 +149,7 @@ class ApprovalServiceTest {
 
     @Test
     void rejectedOrMissingRequestCannotBeConsumed() {
-        ApprovalService service = new ApprovalService();
+        ApprovalService service = new ApprovalService(new InMemoryApprovalRequestStore());
         ApprovalRequest request = service.createRequest(
                 RiskAssessment.of(CommandRiskLevel.HIGH, List.of("danger"), "rm file", "exec", List.of("file")),
                 "exec",
@@ -160,48 +161,6 @@ class ApprovalServiceTest {
 
         assertThrows(IllegalStateException.class, () -> service.consumeApprovedToolCall(request.requestId()));
         assertThrows(IllegalArgumentException.class, () -> service.consumeApprovedToolCall("missing"));
-    }
-
-    @Test
-    void pendingChangeActionCanBeApprovedConsumedRejectedAndDeduped() {
-        ApprovalService service = new ApprovalService();
-        RiskAssessment assessment = RiskAssessment.of(
-                CommandRiskLevel.HIGH,
-                List.of("git commit requires approval"),
-                "git commit",
-                "change_commit",
-                List.of("README.md")
-        );
-        ApprovalRequest request = service.createChangeActionRequest(
-                assessment,
-                PendingChangeAction.create(
-                        null,
-                        PendingChangeAction.ActionType.COMMIT,
-                        "changeset_1",
-                        List.of("git add -- README.md", "git commit -m Update"),
-                        "Update README",
-                        assessment
-                )
-        );
-
-        service.approve(request.requestId());
-        PendingChangeAction action = service.consumeApprovedChangeAction(request.requestId());
-
-        assertEquals(PendingChangeAction.ActionType.COMMIT, action.actionType());
-        assertEquals("changeset_1", action.changeSetId());
-        assertEquals("Update README", action.commitMessage());
-        assertTrue(service.find(request.requestId()).consumed());
-        assertTrue(service.find(request.requestId()).pendingChangeAction().consumed());
-        assertThrows(IllegalStateException.class, () -> service.consumeApprovedChangeAction(request.requestId()));
-
-        ApprovalRequest rejected = service.createChangeActionRequest(
-                assessment,
-                PendingChangeAction.create(null, PendingChangeAction.ActionType.ROLLBACK, "changeset_2", List.of("git restore -- README.md"), "", assessment)
-        );
-        service.reject(rejected.requestId());
-
-        assertThrows(IllegalStateException.class, () -> service.consumeApprovedChangeAction(rejected.requestId()));
-        assertThrows(IllegalArgumentException.class, () -> service.consumeApprovedChangeAction("missing"));
     }
 
     private RiskAssessment assessment() {

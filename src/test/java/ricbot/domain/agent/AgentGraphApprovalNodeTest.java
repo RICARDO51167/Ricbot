@@ -2,7 +2,9 @@ package ricbot.domain.agent;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import ricbot.domain.agent.graph.GraphExecutionStatus;
+import ricbot.domain.agent.eump.AgentNodeType;
+import ricbot.domain.agent.eump.SideEffectStatus;
+import ricbot.domain.agent.graph.enump.GraphExecutionStatus;
 import ricbot.domain.security.ApprovalRequest;
 import ricbot.domain.security.ApprovalService;
 import ricbot.domain.security.CommandRiskLevel;

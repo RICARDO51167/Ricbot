@@ -8,7 +8,6 @@ import ricbot.domain.trace.TraceStore;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
-import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -25,42 +24,24 @@ public class ApprovalService {
     private final ApprovalRequestStore store;
     private TraceStore traceStore;
 
-    public ApprovalService() {
-        this(null, DEFAULT_TTL, Clock.systemUTC(), null);
-    }
-
-    public ApprovalService(TraceStore traceStore) {
-        this(traceStore, DEFAULT_TTL, Clock.systemUTC(), null);
-    }
-
-    public ApprovalService(Duration ttl, Clock clock) {
-        this(null, ttl, clock, null);
-    }
-
-    public ApprovalService(Path workspace) {
-        this(null, DEFAULT_TTL, Clock.systemUTC(),
-                ricbot.app.bootstrap.RuntimeStoreRegistry.shared(workspace).approvalStore());
-    }
-
-    public ApprovalService(Path workspace, TraceStore traceStore) {
-        this(traceStore, DEFAULT_TTL, Clock.systemUTC(),
-                ricbot.app.bootstrap.RuntimeStoreRegistry.shared(workspace).approvalStore());
-    }
-
     public ApprovalService(ApprovalRequestStore store) {
-        this(null, DEFAULT_TTL, Clock.systemUTC(), store);
+        this(store, null, DEFAULT_TTL, Clock.systemUTC());
     }
 
     public ApprovalService(ApprovalRequestStore store, TraceStore traceStore) {
-        this(traceStore, DEFAULT_TTL, Clock.systemUTC(), store);
+        this(store, traceStore, DEFAULT_TTL, Clock.systemUTC());
     }
 
-    private ApprovalService(TraceStore traceStore, Duration ttl, Clock clock, ApprovalRequestStore store) {
+    public ApprovalService(ApprovalRequestStore store, Duration ttl, Clock clock) {
+        this(store, null, ttl, clock);
+    }
+
+    private ApprovalService(ApprovalRequestStore store, TraceStore traceStore, Duration ttl, Clock clock) {
         this.traceStore = traceStore;
         this.ttl = ttl != null ? ttl : DEFAULT_TTL;
         this.clock = clock != null ? clock : Clock.systemUTC();
-        this.store = store;
-        if (store != null) store.list().forEach(request -> requests.put(request.requestId(), request));
+        this.store = java.util.Objects.requireNonNull(store, "store");
+        store.list().forEach(request -> requests.put(request.requestId(), request));
     }
 
     public void setTraceStore(TraceStore traceStore) {
@@ -320,7 +301,7 @@ public class ApprovalService {
 
     private ApprovalRequest save(ApprovalRequest request) {
         requests.put(request.requestId(), request);
-        if (store != null) store.save(request);
+        store.save(request);
         return request;
     }
 

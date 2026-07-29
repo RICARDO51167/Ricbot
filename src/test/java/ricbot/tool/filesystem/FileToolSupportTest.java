@@ -1,6 +1,8 @@
 package ricbot.tool.filesystem;
 
 import org.junit.jupiter.api.Test;
+import ricbot.testsupport.InMemoryApprovalRequestStore;
+import ricbot.tool.api.Tool;
 import org.junit.jupiter.api.io.TempDir;
 import ricbot.domain.security.ApprovalService;
 import ricbot.domain.security.CommandRiskAnalyzer;
@@ -23,7 +25,7 @@ class FileToolSupportTest {
         Files.writeString(large, "a".repeat((int) FileToolSupport.MAX_TEXT_FILE_BYTES + 1));
 
         ReadFileTool tool = new ReadFileTool(workspace, workspace, List.of());
-        String result = tool.execute("large.txt", 1, 10);
+        String result = String.valueOf(tool.execute(Map.of("path", "large.txt", "offset", 1, "limit", 10)));
 
         assertTrue(result.contains("文件超过文本工具大小限制"), result);
     }
@@ -33,7 +35,7 @@ class FileToolSupportTest {
         WriteFileTool tool = new WriteFileTool(workspace, workspace);
         String content = "a".repeat((int) FileToolSupport.MAX_TEXT_FILE_BYTES + 1);
 
-        String result = tool.execute("large.txt", content);
+        String result = String.valueOf(tool.execute(Map.of("path", "large.txt", "content", content)));
 
         assertTrue(result.contains("写入内容超过文本工具大小限制"), result);
     }
@@ -42,7 +44,8 @@ class FileToolSupportTest {
     void writeFile_allowsNewNestedFileInsideWorkspace(@TempDir Path workspace) throws Exception {
         WriteFileTool tool = new WriteFileTool(workspace, workspace);
 
-        String result = tool.execute("reports/summary.txt", "harness report complete\n");
+        String result = String.valueOf(tool.execute(Map.of(
+                "path", "reports/summary.txt", "content", "harness report complete\n")));
 
         assertTrue(result.contains("文件已写入"), result);
         assertTrue(result.contains("DiffReview"), result);
@@ -54,26 +57,27 @@ class FileToolSupportTest {
 
     @Test
     void writeAndEditCanRequireApprovalWhenRiskGateEnabled(@TempDir Path workspace) throws Exception {
-        ApprovalService approvalService = new ApprovalService();
+        ApprovalService approvalService = new ApprovalService(new InMemoryApprovalRequestStore());
         CommandRiskAnalyzer analyzer = new CommandRiskAnalyzer(workspace);
         WriteFileTool write = new WriteFileTool(workspace, workspace, analyzer, approvalService);
 
-        String gated = write.execute("reports/summary.txt", "hello\n");
+        String gated = String.valueOf(write.execute(Map.of("path", "reports/summary.txt", "content", "hello\n")));
         assertTrue(gated.contains("需要审批后才能执行"), gated);
         assertTrue(gated.contains("riskLevel: MEDIUM"), gated);
 
         WriteFileTool plainWrite = new WriteFileTool(workspace, workspace);
-        plainWrite.execute("reports/summary.txt", "hello world\n");
+        plainWrite.execute(Map.of("path", "reports/summary.txt", "content", "hello world\n"));
         Path file = workspace.resolve("reports").resolve("summary.txt");
         FileReadState.recordRead(file, 1, 10);
         EditFileTool edit = new EditFileTool(workspace, workspace, analyzer, approvalService);
-        String editGated = edit.execute("reports/summary.txt", "world", "ricbot", false);
+        String editGated = String.valueOf(edit.execute(Map.of(
+                "path", "reports/summary.txt", "old_text", "world", "new_text", "ricbot", "replace_all", false)));
         assertTrue(editGated.contains("需要审批后才能执行"), editGated);
     }
 
     @Test
     void writeFileApprovalCanBeRestoredWithDiffReview(@TempDir Path workspace) throws Exception {
-        ApprovalService approvalService = new ApprovalService();
+        ApprovalService approvalService = new ApprovalService(new InMemoryApprovalRequestStore());
         ToolRegistry registry = new ToolRegistry();
         registry.register(new WriteFileTool(workspace, workspace, new CommandRiskAnalyzer(workspace), approvalService));
 
@@ -83,7 +87,8 @@ class FileToolSupportTest {
 
         approvalService.approve(requestId);
         PendingToolCall call = approvalService.consumeApprovedToolCall(requestId);
-        String result = String.valueOf(registry.executeApproved(call.toolName(), call.arguments()));
+        String result = String.valueOf(registry.execute(call.toolName(), call.arguments(),
+                Tool.ToolExecutionContext.approvedContext()));
 
         assertTrue(result.contains("DiffReview"), result);
         assertTrue(result.contains("suspiciousChanges"), result);
@@ -97,7 +102,7 @@ class FileToolSupportTest {
         Path file = workspace.resolve("notes.txt");
         Files.writeString(file, "hello world\n");
         FileReadState.recordRead(file, 1, 10);
-        ApprovalService approvalService = new ApprovalService();
+        ApprovalService approvalService = new ApprovalService(new InMemoryApprovalRequestStore());
         ToolRegistry registry = new ToolRegistry();
         registry.register(new EditFileTool(workspace, workspace, new CommandRiskAnalyzer(workspace), approvalService));
 
@@ -112,7 +117,8 @@ class FileToolSupportTest {
 
         approvalService.approve(requestId);
         PendingToolCall call = approvalService.consumeApprovedToolCall(requestId);
-        String result = String.valueOf(registry.executeApproved(call.toolName(), call.arguments()));
+        String result = String.valueOf(registry.execute(call.toolName(), call.arguments(),
+                Tool.ToolExecutionContext.approvedContext()));
 
         assertTrue(result.contains("DiffReview"), result);
         assertTrue(result.contains("summary:"), result);
@@ -127,8 +133,8 @@ class FileToolSupportTest {
 
         ReadFileTool tool = new ReadFileTool(workspace, workspace, List.of());
 
-        assertEquals("2: beta\n3: gamma", tool.execute("notes.txt", 2, 2));
-        String second = tool.execute("notes.txt", 2, 2);
+        assertEquals("2: beta\n3: gamma", tool.execute(Map.of("path", "notes.txt", "offset", 2, "limit", 2)));
+        String second = String.valueOf(tool.execute(Map.of("path", "notes.txt", "offset", 2, "limit", 2)));
 
         assertTrue(second.startsWith("文件自上次读取后未发生变化。"), second);
         assertTrue(second.endsWith("2: beta\n3: gamma"), second);

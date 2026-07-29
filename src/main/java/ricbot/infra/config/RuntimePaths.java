@@ -38,28 +38,6 @@ public final class RuntimePaths {
     }
 
     /**
-     * 获取指定频道的媒体目录
-     * @param channel 频道名称
-     * @return 频道媒体目录路径
-     */
-    public static Path getMediaDir(String channel) {
-        if (channel == null || channel.isBlank()) {
-            return getMediaDir();
-        }
-        Path dir = getMediaDir().resolve(channel);
-        ensureDir(dir);
-        return dir;
-    }
-
-    /**
-     * 获取日志目录 (~/.ricbot/logs)
-     * @return 日志目录路径
-     */
-    public static Path getLogsDir() {
-        return getRuntimeSubdir("logs");
-    }
-
-    /**
      * 获取工作区路径
      * @param workspace 工作区路径字符串，如果为空则使用默认工作区
      * @return 规范化后的绝对工作区路径
@@ -110,47 +88,6 @@ public final class RuntimePaths {
     private static Path normalizeWorkspacePath(String workspace, Path defaultWorkspace) {
         Path path = workspace == null || workspace.isBlank() ? defaultWorkspace : Path.of(workspace);
         return path.toAbsolutePath().normalize();
-    }
-
-    /**
-     * 判断给定工作区是否为默认工作区
-     * @param workspace 工作区路径字符串
-     * @return 如果是默认工作区返回 true，否则返回 false
-     */
-    public static boolean isDefaultWorkspace(String workspace) {
-        Path current = getWorkspacePath(workspace);
-        Path def = getWorkspacePath(null);
-        return current.equals(def);
-    }
-
-    /**
-     * 获取 CLI 历史记录文件路径 (~/.ricbot/history/cli_history)
-     * @return CLI 历史记录文件路径
-     */
-    public static Path getCliHistoryPath() {
-        Path dir = Path.of(System.getProperty("user.home"), ".ricbot", "history");
-        ensureDir(dir);
-        return dir.resolve("cli_history");
-    }
-
-    /**
-     * 获取 Bridge 安装目录 (~/.ricbot/bridge)
-     * @return Bridge 安装目录路径
-     */
-    public static Path getBridgeInstallDir() {
-        Path dir = Path.of(System.getProperty("user.home"), ".ricbot", "bridge");
-        ensureDir(dir);
-        return dir;
-    }
-
-    /**
-     * 获取旧版会话目录 (~/.ricbot/sessions)
-     * @return 旧版会话目录路径
-     */
-    public static Path getLegacySessionsDir() {
-        Path dir = Path.of(System.getProperty("user.home"), ".ricbot", "sessions");
-        ensureDir(dir);
-        return dir;
     }
 
     /**

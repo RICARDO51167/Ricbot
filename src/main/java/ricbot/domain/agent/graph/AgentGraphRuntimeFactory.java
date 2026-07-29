@@ -1,10 +1,13 @@
 package ricbot.domain.agent.graph;
 
-import ricbot.domain.agent.AgentNodeType;
+import ricbot.domain.agent.eump.AgentNodeType;
+import ricbot.domain.agent.graph.dto.GraphRetryPolicy;
+import ricbot.domain.agent.graph.enump.GraphFailurePolicy;
 
 /** Versioned graph-id factory shared by fresh Agent runs and process-safe resume paths. */
 public final class AgentGraphRuntimeFactory {
-    public static final String AGENT_GRAPH_ID = "ricbot-agent-runtime-v3";
+    public static final String AGENT_GRAPH_ID = "ricbot-agent-runtime-v4";
+    public static final String LEGACY_AGENT_GRAPH_ID = "ricbot-agent-runtime-v3";
     private AgentGraphRuntimeFactory() { }
 
     public static AgentGraphDefinition definition(int maxSupersteps) {
@@ -50,7 +53,12 @@ public final class AgentGraphRuntimeFactory {
                 .channel("contextCompactedAt", StateReducers.replace())
                 .channel("stopReason", StateReducers.replace())
                 .channel("iterations", StateReducers.replace())
-                .channel("usage", StateReducers.replace())
+                .channel("usageLedger", StateReducers.sumUsage())
+                .channel("budgetState", StateReducers.replace())
+                .channel("middlewareState", StateReducers.replace())
+                .channel("runtimeHints", StateReducers.replace())
+                .channel("toolExposure", StateReducers.replace())
+                .channel("artifactRefs", StateReducers.artifactsById())
                 .channel("finalContent", StateReducers.replace())
                 .channel("error", StateReducers.replace())
                 .channel("goal", StateReducers.replace())

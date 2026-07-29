@@ -2,6 +2,8 @@ package ricbot.domain.agent;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import ricbot.domain.agent.dto.AgentContextService;
+import ricbot.domain.agent.dto.PreparedSessionContext;
 import ricbot.domain.hook.AgentHook;
 import ricbot.domain.memory.MemoryEntry;
 import ricbot.domain.memory.MemoryStore;
@@ -37,18 +39,11 @@ class AgentContextServiceTest {
                         .setConfidence(0.9d)
                         .setTags(List.of("user"))
         ));
-        AtomicReference<String> appliedContext = new AtomicReference<>();
-        AgentHookFactory hookFactory = new AgentHookFactory(new MessageBus(), (channel, chatId, messageId) ->
-                appliedContext.set(channel + ":" + chatId + ":" + messageId)
-        );
-        List<AgentHook> globalHooks = new java.util.ArrayList<>();
+        AgentHookFactory hookFactory = new AgentHookFactory(new MessageBus());
         AgentContextService service = new AgentContextService(
                 workspace,
                 contextBuilder,
-                memoryStore,
                 hookFactory,
-                (channel, chatId, messageId) -> appliedContext.set(channel + ":" + chatId + ":" + messageId),
-                globalHooks,
                 new ContextSelectionService(memoryStore, new ToolTraceSummarizer())
         );
 
@@ -65,9 +60,8 @@ class AgentContextServiceTest {
         InboundMessage msg = new InboundMessage("cli", "user", "direct", "please use demo");
         msg.setMetadata(new HashMap<>(Map.of("message_id", "m-1")));
 
-        AgentRequestContext request = service.buildInteractiveRequest(msg, prepared, List.of(), 20);
+        AgentRequestContext request = service.buildInteractiveRequest(msg, prepared, 20);
 
-        assertEquals("cli:direct:m-1", appliedContext.get());
         assertTrue(request.combinedContext().contains("remember this"));
         assertTrue(request.combinedContext().contains("summary block"));
         assertEquals(1, request.history().size());
@@ -101,10 +95,7 @@ class AgentContextServiceTest {
         AgentContextService service = new AgentContextService(
                 workspace,
                 contextBuilder,
-                memoryStore,
-                new AgentHookFactory(new MessageBus(), (channel, chatId, messageId) -> {}),
-                (channel, chatId, messageId) -> {},
-                new ArrayList<>(),
+                new AgentHookFactory(new MessageBus()),
                 selectionService
         );
         ContextAssembler assembler = new ContextAssembler(
@@ -123,7 +114,7 @@ class AgentContextServiceTest {
         );
         InboundMessage msg = new InboundMessage("cli", "user", "direct", "请按我的偏好回答");
 
-        AgentRequestContext request = service.buildInteractiveRequest(msg, prepared, List.of(), 20);
+        AgentRequestContext request = service.buildInteractiveRequest(msg, prepared, 20);
         ContextAssembler.AssembledContext assembled = assembler.buildInteractiveContext(msg, prepared, 20);
 
         assertEquals(assembled.combinedContext(), request.combinedContext());

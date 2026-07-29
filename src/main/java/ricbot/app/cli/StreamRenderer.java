@@ -106,6 +106,10 @@ public class StreamRenderer {
         }
     }
 
+    public boolean isRenderMarkdown() {
+        return renderMarkdown;
+    }
+
     /**
      * CLI thinking spinner。
      */

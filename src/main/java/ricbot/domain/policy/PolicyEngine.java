@@ -8,7 +8,7 @@ import ricbot.domain.security.CommandRiskAnalyzer;
 import ricbot.domain.security.CommandRiskLevel;
 import ricbot.domain.security.RiskAssessment;
 import ricbot.domain.task.TaskRole;
-import ricbot.domain.workspace.WorkspaceSession;
+import ricbot.domain.workspace.dto.WorkspaceSession;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;

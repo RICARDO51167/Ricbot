@@ -13,10 +13,6 @@ public class ToolParam {
     private String description;
     private boolean required;
     private Object defaultValue;
-    private Map<String, Object> extraSchema;
-
-    public ToolParam() {
-    }
 
     public ToolParam(String name, String type, String description, boolean required) {
         this.name = name;
@@ -33,49 +29,20 @@ public class ToolParam {
         return name;
     }
 
-    public ToolParam setName(String name) {
-        this.name = name;
-        return this;
-    }
-
     public String getType() {
         return type;
-    }
-
-    public ToolParam setType(String type) {
-        this.type = type;
-        return this;
     }
 
     public String getDescription() {
         return description;
     }
 
-    public ToolParam setDescription(String description) {
-        this.description = description;
-        return this;
-    }
-
     public boolean isRequired() {
         return required;
     }
 
-    public ToolParam setRequired(boolean required) {
-        this.required = required;
-        return this;
-    }
-
     public ToolParam setDefaultValue(Object defaultValue) {
         this.defaultValue = defaultValue;
-        return this;
-    }
-
-    public Map<String, Object> getExtraSchema() {
-        return extraSchema;
-    }
-
-    public ToolParam setExtraSchema(Map<String, Object> extraSchema) {
-        this.extraSchema = extraSchema;
         return this;
     }
 
@@ -87,9 +54,6 @@ public class ToolParam {
         }
         if (defaultValue != null) {
             schema.put("default", defaultValue);
-        }
-        if (extraSchema != null && !extraSchema.isEmpty()) {
-            schema.putAll(extraSchema);
         }
         return schema;
     }

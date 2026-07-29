@@ -2,7 +2,8 @@ package ricbot.domain.runtime;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
-import ricbot.domain.agent.graph.GraphExecutionState;
+import ricbot.domain.agent.graph.dto.GraphExecutionState;
+import ricbot.domain.runtime.dto.RuntimeDigest;
 import ricbot.domain.task.TaskFailurePolicy;
 import ricbot.domain.task.TaskRole;
 import ricbot.domain.task.TaskSpec;

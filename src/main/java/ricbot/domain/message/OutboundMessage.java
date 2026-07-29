@@ -16,8 +16,6 @@ public class OutboundMessage {
 
     private String content;
 
-    private String replyTo;
-
     private List<String> media;
 
     private Map<String, Object> metadata;
@@ -59,14 +57,6 @@ public class OutboundMessage {
         this.content = content;
     }
 
-    public String getReplyTo() {
-        return replyTo;
-    }
-
-    public void setReplyTo(String replyTo) {
-        this.replyTo = replyTo;
-    }
-
     public List<String> getMedia() {
         return media;
     }
@@ -89,7 +79,6 @@ public class OutboundMessage {
                 "channel='" + channel + '\'' +
                 ", chatId='" + chatId + '\'' +
                 ", content='" + content + '\'' +
-                ", replyTo='" + replyTo + '\'' +
                 ", media=" + media +
                 ", metadata=" + metadata +
                 '}';

@@ -8,7 +8,7 @@ import java.util.List;
 import java.util.Map;
 
 // 代理请求上下文类，用于封装处理代理请求所需的所有相关信息
-final class AgentRequestContext {
+public final class AgentRequestContext {
 
     // 入站消息对象，包含用户发送的原始消息内容
     private final InboundMessage message;
@@ -43,7 +43,7 @@ final class AgentRequestContext {
      * @param hook              代理钩子
      * @param userPersistedEarly 用户早期持久化标志
      */
-    AgentRequestContext(
+    public AgentRequestContext(
             InboundMessage message,
             String sessionKey,
             Session session,
@@ -57,7 +57,7 @@ final class AgentRequestContext {
         this(message, sessionKey, session, combinedContext, promptContext, history, initialMessages, hook, userPersistedEarly, Map.of());
     }
 
-    AgentRequestContext(
+    public AgentRequestContext(
             InboundMessage message,
             String sessionKey,
             Session session,
@@ -86,17 +86,8 @@ final class AgentRequestContext {
      *
      * @return InboundMessage 对象
      */
-    InboundMessage message() {
+    public InboundMessage message() {
         return message;
-    }
-
-    /**
-     * 获取会话键
-     *
-     * @return 会话键字符串
-     */
-    String sessionKey() {
-        return sessionKey;
     }
 
     /**
@@ -104,7 +95,7 @@ final class AgentRequestContext {
      *
      * @return Session 对象
      */
-    Session session() {
+    public Session session() {
         return session;
     }
 
@@ -113,7 +104,7 @@ final class AgentRequestContext {
      *
      * @return 组合上下文字符串
      */
-    String combinedContext() {
+    public String combinedContext() {
         return combinedContext;
     }
 
@@ -122,7 +113,7 @@ final class AgentRequestContext {
      *
      * @return PromptContextBundle 对象
      */
-    PromptContextBundle promptContext() {
+    public PromptContextBundle promptContext() {
         return promptContext;
     }
 
@@ -131,7 +122,7 @@ final class AgentRequestContext {
      *
      * @return 历史消息列表
      */
-    List<Map<String, Object>> history() {
+    public List<Map<String, Object>> history() {
         return history;
     }
 
@@ -140,7 +131,7 @@ final class AgentRequestContext {
      *
      * @return 初始消息列表
      */
-    List<Map<String, Object>> initialMessages() {
+    public List<Map<String, Object>> initialMessages() {
         return initialMessages;
     }
 
@@ -149,7 +140,7 @@ final class AgentRequestContext {
      *
      * @return AgentHook 对象
      */
-    AgentHook hook() {
+    public AgentHook hook() {
         return hook;
     }
 
@@ -158,11 +149,11 @@ final class AgentRequestContext {
      *
      * @return 布尔值，表示用户是否早期持久化
      */
-    boolean userPersistedEarly() {
+    public boolean userPersistedEarly() {
         return userPersistedEarly;
     }
 
-    Map<String, Object> contextTrace() {
+    public Map<String, Object> contextTrace() {
         return contextTrace;
     }
 }

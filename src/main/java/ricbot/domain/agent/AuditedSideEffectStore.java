@@ -1,5 +1,9 @@
 package ricbot.domain.agent;
 
+import ricbot.domain.agent.dto.SideEffectClaim;
+import ricbot.domain.agent.dto.SideEffectRecord;
+import ricbot.domain.agent.eump.SideEffectStatus;
+import ricbot.domain.agent.interfacep.SideEffectStore;
 import ricbot.domain.trace.TraceEvent;
 import ricbot.domain.trace.TraceEventType;
 import ricbot.domain.trace.TraceStore;
@@ -8,6 +12,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.List;
 
 /** Emits immutable trace evidence for every idempotency-ledger transition. */
 public final class AuditedSideEffectStore implements SideEffectStore {
@@ -15,13 +20,18 @@ public final class AuditedSideEffectStore implements SideEffectStore {
     private final TraceStore traces;
 
     public AuditedSideEffectStore(SideEffectStore delegate, TraceStore traces) {
-        this.delegate = delegate != null ? delegate : SideEffectStore.disabled();
+        this.delegate = java.util.Objects.requireNonNull(delegate, "delegate");
         this.traces = traces;
     }
 
     @Override
     public Optional<SideEffectRecord> load(String idempotencyKey) {
         return delegate.load(idempotencyKey);
+    }
+
+    @Override
+    public List<SideEffectRecord> list() {
+        return delegate.list();
     }
 
     @Override
@@ -49,7 +59,6 @@ public final class AuditedSideEffectStore implements SideEffectStore {
             case SUCCEEDED -> TraceEventType.SIDE_EFFECT_SUCCEEDED;
             case FAILED -> TraceEventType.SIDE_EFFECT_FAILED;
             case UNKNOWN -> TraceEventType.SIDE_EFFECT_FAILED;
-            case COMPENSATED -> TraceEventType.SIDE_EFFECT_COMPENSATED;
         };
         trace(saved, type, "side effect " + saved.status().name().toLowerCase(java.util.Locale.ROOT));
     }

@@ -1,5 +1,8 @@
 package ricbot.domain.agent.graph;
 
+import ricbot.domain.agent.graph.dto.GraphChannelWrite;
+import ricbot.domain.agent.graph.interfacep.StateReducer;
+
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;

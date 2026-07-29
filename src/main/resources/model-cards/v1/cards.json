@@ -1,0 +1,41 @@
+[
+  {
+    "schemaVersion": 1,
+    "id": "dashscope-qwen-chat",
+    "version": "2026-07-29",
+    "provider": "dashscope",
+    "modelPattern": "qwen-*",
+    "apiMode": "openai_compat",
+    "capabilities": {"toolCalling": true, "streaming": true, "vision": false, "jsonMode": true, "reasoningEffort": false},
+    "limits": {"contextWindowTokens": 131072, "maxOutputTokens": 8192},
+    "pricing": null,
+    "source": "Bundled capability declaration; pricing must be supplied by deployment configuration.",
+    "effectiveAt": "2026-07-29T00:00:00Z"
+  },
+  {
+    "schemaVersion": 1,
+    "id": "openai-chat",
+    "version": "2026-07-29",
+    "provider": "openai",
+    "modelPattern": "gpt-*",
+    "apiMode": "openai",
+    "capabilities": {"toolCalling": true, "streaming": true, "vision": true, "jsonMode": true, "reasoningEffort": true},
+    "limits": {"contextWindowTokens": -1, "maxOutputTokens": -1},
+    "pricing": null,
+    "source": "Bundled conservative capability declaration.",
+    "effectiveAt": "2026-07-29T00:00:00Z"
+  },
+  {
+    "schemaVersion": 1,
+    "id": "anthropic-claude",
+    "version": "2026-07-29",
+    "provider": "anthropic",
+    "modelPattern": "claude-*",
+    "apiMode": "anthropic",
+    "capabilities": {"toolCalling": true, "streaming": true, "vision": true, "jsonMode": false, "reasoningEffort": false},
+    "limits": {"contextWindowTokens": -1, "maxOutputTokens": -1},
+    "pricing": null,
+    "source": "Bundled conservative capability declaration.",
+    "effectiveAt": "2026-07-29T00:00:00Z"
+  }
+]

@@ -2,7 +2,10 @@ package ricbot.domain.runtime;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import ricbot.domain.agent.graph.GraphExecutionState;
+import ricbot.domain.agent.graph.dto.GraphExecutionState;
+import ricbot.domain.runtime.dto.RuntimeAggregate;
+import ricbot.domain.runtime.dto.RuntimeDigest;
+import ricbot.domain.runtime.dto.RuntimeEventEnvelope;
 
 import java.util.List;
 import java.util.Map;
@@ -68,7 +71,7 @@ public final class RuntimeReducer {
                                     Map<String, JsonNode> effects, Map<String, JsonNode> patches,
                                     Map<String, JsonNode> verifiers) {
         String type = event.eventType();
-        if (type.startsWith("TASK_") || type.equals("LEGACY_STATE_IMPORTED")) {
+        if (type.startsWith("TASK_")) {
             putTask(payload.path("task").isMissingNode() ? payload : payload.path("task"), tasks);
             JsonNode result = payload.path("result");
             if (!result.isMissingNode()) putResult(result, results);

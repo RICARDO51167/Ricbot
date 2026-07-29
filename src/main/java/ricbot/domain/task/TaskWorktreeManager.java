@@ -2,7 +2,7 @@ package ricbot.domain.task;
 
 import ricbot.domain.workspace.GitWorktreeWorkspaceBackend;
 import ricbot.domain.workspace.WorkspaceLifecycleService;
-import ricbot.domain.workspace.WorkspaceSession;
+import ricbot.domain.workspace.dto.WorkspaceSession;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;

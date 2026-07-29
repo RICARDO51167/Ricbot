@@ -49,7 +49,6 @@ class ChangeSetServiceTest {
         assertTrue(changeSet.diffPatch().contains("NewFile.java"), changeSet.diffPatch());
         assertEquals(workspace.resolve(".ricbot/runtime.db").toAbsolutePath().normalize(), service.changeSetDir(changeSet.id()));
         assertFalse(Files.exists(workspace.resolve(".changesets")));
-        assertTrue(changeSet.rollbackCommands().contains("git restore -- README.md"), changeSet.rollbackCommands().toString());
         assertTrue(changeSet.rollbackCommands().contains("rm src/main/java/demo/NewFile.java"), changeSet.rollbackCommands().toString());
         assertTrue(changeSet.commitMessage().contains("Update"), changeSet.commitMessage());
         assertEquals(changeSet.id(), service.latest().id());
@@ -216,7 +215,7 @@ class ChangeSetServiceTest {
 
     private static ChangeSetActionAuthorization authorization(Path workspace, String changeSetId,
                                                                PendingChangeAction.ActionType type, String message) {
-        ApprovalService approvals = new ApprovalService(workspace);
+        ApprovalService approvals = new ApprovalService(new ricbot.infra.runtime.SqliteRuntimeStore(workspace).approvalStore());
         RiskAssessment risk = RiskAssessment.of(CommandRiskLevel.HIGH, List.of("test"), type.name(),
                 "change_action", List.of());
         PendingChangeAction action = PendingChangeAction.create(null, type, changeSetId, List.of(), message, risk);

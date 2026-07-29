@@ -8,6 +8,8 @@ import ricbot.domain.message.MessageBus;
 import ricbot.domain.message.OutboundMessage;
 import ricbot.domain.session.SessionManager;
 import ricbot.infra.config.Config;
+import ricbot.infra.runtime.SqliteRuntimeStore;
+import ricbot.infra.runtime.SqliteSessionManager;
 import ricbot.integration.llm.api.LLMProvider;
 import ricbot.integration.llm.api.LLMResponse;
 
@@ -29,7 +31,7 @@ public class AgentLoopTest {
         // 创建消息总线，用于组件间通信
         MessageBus bus = new MessageBus();
         // 创建会话管理器，指定工作空间路径
-        SessionManager sessionManager = new SessionManager(workspace);
+        SessionManager sessionManager = new SqliteSessionManager(new SqliteRuntimeStore(workspace));
 
         // 创建一个模拟的 LLM 提供者，用于测试中返回固定的响应
         LLMProvider provider = new LLMProvider("k", "http://localhost") {
@@ -90,12 +92,9 @@ public class AgentLoopTest {
             // 断言出站消息的内容为 "pong"
             assertEquals("pong", out.getContent());
 
-            // 解析会话目录路径
-            Path sessionsDir = workspace.resolve("sessions");
-            // 断言会话目录存在
-            assertTrue(Files.exists(sessionsDir));
-            // 断言会话目录中存在包含 "cli_direct" 的文件，验证会话持久化
-            assertTrue(Files.list(sessionsDir).anyMatch(p -> p.getFileName().toString().contains("cli_direct")));
+            sessionManager.invalidate("cli:direct");
+            var persisted = sessionManager.find("cli:direct").orElseThrow().getMessages();
+            assertEquals("pong", persisted.get(persisted.size() - 1).get("content"));
         } finally {
             // 停止 AgentLoop
             loop.stop();
@@ -105,7 +104,7 @@ public class AgentLoopTest {
     @Test
     void slashCommands_areRoutedWithoutInvokingProvider(@TempDir Path workspace) throws Exception {
         MessageBus bus = new MessageBus();
-        SessionManager sessionManager = new SessionManager(workspace);
+        SessionManager sessionManager = new SqliteSessionManager(new SqliteRuntimeStore(workspace));
         AtomicInteger modelCalls = new AtomicInteger(0);
 
         LLMProvider provider = new LLMProvider("k", "http://localhost") {

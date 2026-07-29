@@ -1,12 +1,15 @@
 package ricbot.domain.agent;
 
+import ricbot.domain.agent.dto.ContextQualityReport;
+import ricbot.domain.agent.dto.ContextSource;
+
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 // 提示词上下文包，用于管理和渲染不同部分的上下文信息
-final class PromptContextBundle {
+public final class PromptContextBundle {
     private static final int DEFAULT_SECTION_ITEM_LIMIT = 8;
     private static final int DEFAULT_SECTION_CHAR_LIMIT = 1_600;
     private static final int BASE_TOTAL_CHAR_LIMIT = 7_000;
@@ -39,7 +42,7 @@ final class PromptContextBundle {
     private final Map<String, List<ContextSource>> sources = new LinkedHashMap<>();
 
     // 构造函数，初始化所有预定义的上下文部分为空列表
-    PromptContextBundle() {
+    public PromptContextBundle() {
         this(BASE_TOTAL_CHAR_LIMIT, SECTION_BUDGETS);
     }
 
@@ -93,11 +96,6 @@ final class PromptContextBundle {
                 sources.computeIfAbsent(section, ignored -> new ArrayList<>()).add(source);
             }
         }
-    }
-
-    // 获取指定部分的内容列表，如果不存在则返回空列表
-    List<String> section(String section) {
-        return sections.getOrDefault(section, List.of());
     }
 
     // 判断所有部分是否都为空

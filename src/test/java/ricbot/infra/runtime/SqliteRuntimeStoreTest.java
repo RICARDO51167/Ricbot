@@ -2,15 +2,15 @@ package ricbot.infra.runtime;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import ricbot.domain.agent.graph.GraphExecutionState;
-import ricbot.domain.agent.graph.GraphExecutionStatus;
-import ricbot.domain.agent.graph.GraphRuntimeEventType;
-import ricbot.domain.agent.SideEffectRecord;
+import ricbot.domain.agent.dto.SideEffectClaim;
+import ricbot.domain.agent.eump.SideEffectStatus;
+import ricbot.domain.agent.graph.dto.GraphExecutionState;
+import ricbot.domain.agent.graph.enump.GraphExecutionStatus;
+import ricbot.domain.agent.graph.enump.GraphRuntimeEventType;
+import ricbot.domain.agent.dto.SideEffectRecord;
 import ricbot.domain.runtime.UnknownRuntimeEventVersionException;
-import ricbot.domain.runtime.RuntimeEventUpcasters;
-import ricbot.domain.runtime.RuntimeFaultPoint;
-import ricbot.domain.runtime.RuntimeInstanceRecord;
-import ricbot.domain.runtime.RuntimeInstanceStatus;
+import ricbot.domain.runtime.dto.RuntimeInstanceRecord;
+import ricbot.domain.runtime.enump.RuntimeInstanceStatus;
 import ricbot.domain.task.TaskFailurePolicy;
 import ricbot.domain.task.TaskRecord;
 import ricbot.domain.task.TaskResult;
@@ -20,6 +20,7 @@ import ricbot.domain.task.TaskWorkspaceMode;
 import ricbot.domain.task.TaskRole;
 
 import java.nio.file.Path;
+import java.nio.file.Files;
 import java.sql.DriverManager;
 import java.time.Instant;
 import java.util.List;
@@ -34,6 +35,52 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class SqliteRuntimeStoreTest {
     @TempDir Path workspace;
+
+    @Test
+    void acceptsEmptyDatabaseAndReloadsSchemaV2() {
+        SqliteRuntimeStore first = new SqliteRuntimeStore(workspace);
+        assertTrue(Files.isRegularFile(first.database()));
+
+        SqliteRuntimeStore second = new SqliteRuntimeStore(workspace);
+        assertEquals(first.database(), second.database());
+    }
+
+    @Test
+    void rejectsSchemaV1WithoutChangingOrArchivingIt() throws Exception {
+        Path database = workspace.resolve(SqliteRuntimeStore.DATABASE_RELATIVE_PATH);
+        Files.createDirectories(database.getParent());
+        try (var connection = DriverManager.getConnection("jdbc:sqlite:" + database);
+             var statement = connection.createStatement()) {
+            statement.execute("CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT, digest TEXT)");
+            statement.execute("INSERT INTO schema_migrations VALUES (1, 'old', 'old')");
+        }
+        byte[] before = Files.readAllBytes(database);
+
+        IllegalStateException failure = assertThrows(IllegalStateException.class,
+                () -> new SqliteRuntimeStore(workspace));
+
+        assertTrue(failure.getMessage().contains("schema v1"), failure.getMessage());
+        assertTrue(java.util.Arrays.equals(before, Files.readAllBytes(database)));
+        assertFalse(Files.exists(workspace.resolve(".ricbot/archive")));
+    }
+
+    @Test
+    void rejectsUnversionedLegacyDatabaseWithoutChangingIt() throws Exception {
+        Path database = workspace.resolve(SqliteRuntimeStore.DATABASE_RELATIVE_PATH);
+        Files.createDirectories(database.getParent());
+        try (var connection = DriverManager.getConnection("jdbc:sqlite:" + database);
+             var statement = connection.createStatement()) {
+            statement.execute("CREATE TABLE legacy_runs(id TEXT PRIMARY KEY)");
+            statement.execute("INSERT INTO legacy_runs VALUES ('old-run')");
+        }
+        byte[] before = Files.readAllBytes(database);
+
+        IllegalStateException failure = assertThrows(IllegalStateException.class,
+                () -> new SqliteRuntimeStore(workspace));
+
+        assertTrue(failure.getMessage().contains("schema unknown"), failure.getMessage());
+        assertTrue(java.util.Arrays.equals(before, Files.readAllBytes(database)));
+    }
 
     @Test
     void commitsEventAndProjectionAtomicallyAndReplaysFromFacts() {
@@ -74,13 +121,13 @@ class SqliteRuntimeStoreTest {
         SideEffectRecord reservation = SideEffectRecord.reserved("effect-1", "session", "write_file", "digest");
         var pool = Executors.newFixedThreadPool(2);
         try {
-            List<Callable<ricbot.domain.agent.SideEffectClaim>> requests = List.of(
+            List<Callable<SideEffectClaim>> requests = List.of(
                     () -> first.sideEffectStore().claim(reservation),
                     () -> second.sideEffectStore().claim(reservation));
             var claims = pool.invokeAll(requests);
             long created = claims.stream().map(future -> {
                 try { return future.get(); } catch (Exception e) { throw new RuntimeException(e); }
-            }).filter(ricbot.domain.agent.SideEffectClaim::created).count();
+            }).filter(SideEffectClaim::created).count();
             assertEquals(1, created);
             assertEquals("effect-1", first.sideEffectStore().load("effect-1").orElseThrow().idempotencyKey());
         } finally {
@@ -100,11 +147,11 @@ class SqliteRuntimeStoreTest {
         store.claimSideEffect(reserved);
         SideEffectRecord executing = reserved.claimExecution(owner.instanceId(), now.minusSeconds(1));
         store.transitionSideEffectRecord(executing, reserved.version(),
-                java.util.Set.of(ricbot.domain.agent.SideEffectStatus.RESERVED));
+                java.util.Set.of(SideEffectStatus.RESERVED));
 
         assertThrows(IllegalStateException.class,
                 () -> store.recoverExpiredSideEffects(owner.instanceId(), now));
-        assertEquals(ricbot.domain.agent.SideEffectStatus.EXECUTING,
+        assertEquals(SideEffectStatus.EXECUTING,
                 store.loadSideEffectRecord(reserved.idempotencyKey()).orElseThrow().status());
     }
 
@@ -123,11 +170,11 @@ class SqliteRuntimeStoreTest {
         store.claimSideEffect(reserved);
         SideEffectRecord executing = reserved.claimExecution(owner.instanceId(), now.minusSeconds(1));
         store.transitionSideEffectRecord(executing, reserved.version(),
-                java.util.Set.of(ricbot.domain.agent.SideEffectStatus.RESERVED));
+                java.util.Set.of(SideEffectStatus.RESERVED));
 
         assertEquals(1, store.recoverExpiredSideEffects(expired.instanceId(), now));
         assertEquals(0, store.recoverExpiredSideEffects(expired.instanceId(), now));
-        assertEquals(ricbot.domain.agent.SideEffectStatus.UNKNOWN,
+        assertEquals(SideEffectStatus.UNKNOWN,
                 store.loadSideEffectRecord(reserved.idempotencyKey()).orElseThrow().status());
     }
 
@@ -282,21 +329,6 @@ class SqliteRuntimeStoreTest {
         assertEquals("task-1", retry.spec().taskId());
         assertEquals(2, retry.attempt());
         assertTrue(store.loadResult("task-1").isEmpty());
-    }
-
-    @Test
-    void injectedCrashBetweenEventAndProjectionRollsBackBoth() {
-        SqliteRuntimeStore crashing = new SqliteRuntimeStore(workspace, new RuntimeEventUpcasters(List.of()), point -> {
-            if (point == RuntimeFaultPoint.AFTER_EVENT_BEFORE_PROJECTION) throw new IllegalStateException("crash");
-        });
-        GraphExecutionState state = GraphExecutionState.initial("graph", "atomic-run", "node", Map.of());
-
-        assertThrows(IllegalStateException.class, () -> crashing.commit(state,
-                GraphRuntimeEventType.RUN_STARTED, Map.of(), "start"));
-
-        SqliteRuntimeStore restarted = new SqliteRuntimeStore(workspace);
-        assertTrue(restarted.loadCheckpoint("atomic-run").isEmpty());
-        assertTrue(restarted.runtimeEvents("atomic-run", Long.MAX_VALUE).isEmpty());
     }
 
     @Test

@@ -2,12 +2,14 @@ package ricbot.domain.agent;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import ricbot.domain.memory.MemoryEntry;
-import ricbot.domain.memory.MemoryWritePolicy;
+import ricbot.domain.agent.dto.ExecutionOutcome;
+import ricbot.domain.agent.dto.PersistenceResult;
 import ricbot.domain.memory.MemoryStore;
 import ricbot.domain.message.InboundMessage;
 import ricbot.domain.session.Session;
 import ricbot.domain.session.SessionManager;
+import ricbot.infra.runtime.SqliteRuntimeStore;
+import ricbot.infra.runtime.SqliteSessionManager;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -19,14 +21,16 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.jupiter.api.Assertions.*;
 
 class SessionPersistenceServiceTest {
+    private static SessionManager sessions(Path workspace) {
+        return new SqliteSessionManager(new SqliteRuntimeStore(workspace));
+    }
 
     @Test
     void persistInteractiveTurn_truncatesToolResultsSkipsBlankAssistantAndClearsRuntimeFlags(@TempDir Path workspace) {
-        SessionManager sessions = new SessionManager(workspace);
+        SessionManager sessions = sessions(workspace);
         SessionPersistenceService service = new SessionPersistenceService(sessions, 12);
         Session session = new Session("cli:direct");
         session.addMessage("assistant", "old reply");
-        session.getMetadata().put(SessionRuntimeKeys.PENDING_USER_TURN_KEY, true);
         session.getMetadata().put(SessionRuntimeKeys.RUNTIME_CHECKPOINT_KEY, Map.of("id", "cp"));
         session.getMetadata().put(SessionRuntimeKeys.RECOVERY_DECISIONS_KEY, Map.of("call-1", "confirm"));
         session.getMetadata().put("_last_interrupt_reason", "manual_stop");
@@ -81,7 +85,6 @@ class SessionPersistenceServiceTest {
         assertTrue(session.getMetadata().containsKey(SessionRuntimeKeys.CONTEXT_TRACE_KEY));
         assertEquals(42, ((Map<?, ?>) session.getMetadata().get(SessionRuntimeKeys.CONTEXT_TRACE_KEY)).get("combined_context_chars"));
         assertEquals("completed", String.valueOf(((Map<?, ?>) session.getMetadata().get(SessionRuntimeKeys.TASK_STATE_KEY)).get("status")));
-        assertFalse(session.getMetadata().containsKey(SessionRuntimeKeys.PENDING_USER_TURN_KEY));
         assertFalse(session.getMetadata().containsKey(SessionRuntimeKeys.RUNTIME_CHECKPOINT_KEY));
         assertFalse(session.getMetadata().containsKey(SessionRuntimeKeys.RECOVERY_DECISIONS_KEY));
         assertFalse(session.getMetadata().containsKey("_last_interrupt_reason"));
@@ -89,7 +92,7 @@ class SessionPersistenceServiceTest {
 
     @Test
     void persistInteractiveTurn_stripsRuntimeContextWrapperFromSavedUserMessage(@TempDir Path workspace) {
-        SessionManager sessions = new SessionManager(workspace);
+        SessionManager sessions = sessions(workspace);
         SessionPersistenceService service = new SessionPersistenceService(sessions, 100);
         Session session = new Session("cli:direct");
 
@@ -122,138 +125,8 @@ class SessionPersistenceServiceTest {
     }
 
     @Test
-    void persistInteractiveTurn_appendsImmediateMemoryCandidates(@TempDir Path workspace) {
-        SessionManager sessions = new SessionManager(workspace);
-        MemoryStore memoryStore = new MemoryStore(workspace);
-        SessionPersistenceService service = new SessionPersistenceService(sessions, 100, memoryStore);
-        Session session = new Session("cli:direct");
-
-        AgentRequestContext request = new AgentRequestContext(
-                new InboundMessage("cli", "user", "direct", "我偏好简短回答"),
-                "cli:direct",
-                session,
-                "",
-                new PromptContextBundle(),
-                List.of(),
-                List.of(),
-                null,
-                false
-        );
-        ExecutionOutcome outcome = new ExecutionOutcome(
-                new AgentRunResult()
-                        .setMessages(List.of(
-                                Map.of("role", "system", "content", "ignored"),
-                                Map.of("role", "user", "content", "我偏好简短回答"),
-                                Map.of("role", "assistant", "content", "记住了")
-                        ))
-                        .setFinalContent("记住了"),
-                "记住了"
-        );
-
-        service.persistInteractiveTurn(request, outcome);
-
-        assertEquals(1, memoryStore.readMemoryCandidates().size());
-    }
-
-    @Test
-    void appendMemoryCandidates_delegatesToPolicy(@TempDir Path workspace) {
-        SessionManager sessions = new SessionManager(workspace);
-        MemoryStore memoryStore = new MemoryStore(workspace);
-        AtomicInteger calls = new AtomicInteger(0);
-        MemoryWritePolicy policy = new MemoryWritePolicy() {
-            @Override
-            public List<MemoryEntry> createCandidates(String userText) {
-                calls.incrementAndGet();
-                assertEquals("普通消息也由 policy 决定", userText);
-                return List.of(new MemoryEntry()
-                        .setType(MemoryEntry.TYPE_PREFERENCE)
-                        .setScope(MemoryEntry.SCOPE_LONG_TERM)
-                        .setSummary("policy candidate")
-                        .setDetails("from test policy")
-                        .setImportance(0.75d)
-                        .setConfidence(0.75d)
-                        .setSource("candidate")
-                        .setTags(List.of("user")));
-            }
-        };
-        SessionPersistenceService service = new SessionPersistenceService(sessions, 100, memoryStore, policy);
-        Session session = new Session("cli:direct");
-
-        AgentRequestContext request = new AgentRequestContext(
-                new InboundMessage("cli", "user", "direct", "普通消息也由 policy 决定"),
-                "cli:direct",
-                session,
-                "",
-                new PromptContextBundle(),
-                List.of(),
-                List.of(),
-                null,
-                false
-        );
-        ExecutionOutcome outcome = new ExecutionOutcome(
-                new AgentRunResult()
-                        .setMessages(List.of(
-                                Map.of("role", "system", "content", "ignored"),
-                                Map.of("role", "user", "content", "普通消息也由 policy 决定"),
-                                Map.of("role", "assistant", "content", "ok")
-                        ))
-                        .setFinalContent("ok"),
-                "ok"
-        );
-
-        service.persistInteractiveTurn(request, outcome);
-
-        assertEquals(1, calls.get());
-        List<MemoryEntry> candidates = memoryStore.readMemoryCandidates();
-        assertEquals(1, candidates.size());
-        assertEquals("policy candidate", candidates.get(0).getSummary());
-    }
-
-    @Test
-    void persistenceFormat_unchanged(@TempDir Path workspace) throws Exception {
-        SessionManager sessions = new SessionManager(workspace);
-        MemoryStore memoryStore = new MemoryStore(workspace);
-        SessionPersistenceService service = new SessionPersistenceService(sessions, 100, memoryStore);
-        Session session = new Session("cli:direct");
-
-        AgentRequestContext request = new AgentRequestContext(
-                new InboundMessage("cli", "user", "direct", "我偏好简短回答"),
-                "cli:direct",
-                session,
-                "",
-                new PromptContextBundle(),
-                List.of(),
-                List.of(),
-                null,
-                false
-        );
-        ExecutionOutcome outcome = new ExecutionOutcome(
-                new AgentRunResult()
-                        .setMessages(List.of(
-                                Map.of("role", "system", "content", "ignored"),
-                                Map.of("role", "user", "content", "我偏好简短回答"),
-                                Map.of("role", "assistant", "content", "记住了")
-                        ))
-                        .setFinalContent("记住了"),
-                "记住了"
-        );
-
-        service.persistInteractiveTurn(request, outcome);
-
-        Path candidatesFile = workspace.resolve("memory").resolve("candidates.jsonl");
-        assertTrue(Files.exists(candidatesFile));
-        String jsonl = Files.readString(candidatesFile);
-        assertTrue(jsonl.contains("\"type\":\"preference\""), jsonl);
-        assertTrue(jsonl.contains("\"memory_type\":\"semantic\""), jsonl);
-        assertTrue(jsonl.contains("\"scope\":\"long_term\""), jsonl);
-        assertTrue(jsonl.contains("\"summary\":\"我偏好简短回答\""), jsonl);
-        assertTrue(jsonl.contains("\"source\":\"candidate\""), jsonl);
-        assertTrue(jsonl.contains("\"tags\":[\"user\"]"), jsonl);
-    }
-
-    @Test
     void persistInteractiveTurnMarksCheckpointCommittedBeforeClearingRuntimeState(@TempDir Path workspace) {
-        SessionManager sessions = new SessionManager(workspace);
+        SessionManager sessions = sessions(workspace);
         SessionPersistenceService service = new SessionPersistenceService(sessions, 100);
         Session session = new Session("cli:direct");
         session.getMetadata().put(SessionRuntimeKeys.RUNTIME_CHECKPOINT_KEY, Map.of(
@@ -282,7 +155,7 @@ class SessionPersistenceServiceTest {
 
         service.persistInteractiveTurn(request, outcome);
 
-        Session restored = new SessionManager(workspace).find("cli:direct").orElseThrow();
+        Session restored = sessions(workspace).find("cli:direct").orElseThrow();
         assertEquals("run-7:1:TOOLS_COMPLETED", restored.getMetadata()
                 .get(SessionRuntimeKeys.LAST_RESTORED_CHECKPOINT_ID_KEY));
         assertFalse(restored.getMetadata().containsKey(SessionRuntimeKeys.RUNTIME_CHECKPOINT_KEY));

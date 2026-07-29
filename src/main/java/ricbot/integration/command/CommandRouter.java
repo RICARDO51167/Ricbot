@@ -19,7 +19,7 @@ import java.util.concurrent.CompletableFuture;
  *    - interceptors (拦截器)
  *
  * 分发顺序：
- * 1. priority：最高优先级，通常在主调度锁外执行（如 /stop /restart）
+ * 1. priority：最高优先级，通常在主调度锁外执行（如 /stop）
  * 2. exact：精确匹配
  * 3. prefix：前缀匹配，按最长前缀优先
  * 4. interceptors：兜底拦截器

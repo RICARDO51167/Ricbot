@@ -9,11 +9,11 @@ import ricbot.domain.trace.TraceRenderer;
 import ricbot.domain.trace.TraceStore;
 import ricbot.domain.workspace.GitWorktreeWorkspaceBackend;
 import ricbot.domain.workspace.LocalWorkspaceBackend;
-import ricbot.domain.workspace.WorkspaceBackend;
-import ricbot.domain.workspace.WorkspaceBackendType;
+import ricbot.domain.workspace.interfacep.WorkspaceBackend;
+import ricbot.domain.workspace.enump.WorkspaceBackendType;
 import ricbot.domain.workspace.WorkspaceLifecycleService;
 import ricbot.domain.workspace.WorkspaceRenderer;
-import ricbot.domain.workspace.WorkspaceSession;
+import ricbot.domain.workspace.dto.WorkspaceSession;
 import ricbot.domain.workspace.WorkspaceSessionStore;
 
 import java.nio.file.Path;

@@ -9,12 +9,9 @@ public record ToolEffectPolicy(
         Concurrency concurrency,
         Duration timeout,
         Approval approval,
-        Retry retry,
-        boolean downstreamIdempotencyKey,
-        boolean stateProbe,
-        boolean compensation
+        Retry retry
 ) {
-    public enum Effect { UNDECLARED, READ_ONLY, IDEMPOTENT, AT_MOST_ONCE, COMPENSATABLE }
+    public enum Effect { UNDECLARED, READ_ONLY, IDEMPOTENT, AT_MOST_ONCE }
     public enum Concurrency { SHARED, SERIAL_PER_RUN, EXCLUSIVE_WORKSPACE }
     public enum Approval { NEVER, RISK_BASED, ALWAYS }
     public enum Retry { NONE, READ_ONLY_3, IDEMPOTENT_3, HUMAN_AUTHORIZED }
@@ -26,9 +23,6 @@ public record ToolEffectPolicy(
         if (timeout.isZero() || timeout.isNegative()) throw new IllegalArgumentException("timeout must be positive");
         approval = Objects.requireNonNullElse(approval, Approval.ALWAYS);
         retry = Objects.requireNonNullElse(retry, Retry.NONE);
-        if (effect == Effect.COMPENSATABLE && !compensation) {
-            throw new IllegalArgumentException("compensatable effect requires compensation support");
-        }
     }
 
     public boolean declared() { return effect != Effect.UNDECLARED; }
@@ -37,22 +31,18 @@ public record ToolEffectPolicy(
 
     public static ToolEffectPolicy undeclared() {
         return new ToolEffectPolicy(Effect.UNDECLARED, Concurrency.EXCLUSIVE_WORKSPACE,
-                Duration.ofMinutes(5), Approval.ALWAYS, Retry.NONE, false, false, false);
+                Duration.ofMinutes(5), Approval.ALWAYS, Retry.NONE);
     }
     public static ToolEffectPolicy readOnly(Duration timeout) {
         return new ToolEffectPolicy(Effect.READ_ONLY, Concurrency.SHARED, timeout, Approval.NEVER,
-                Retry.READ_ONLY_3, false, false, false);
+                Retry.READ_ONLY_3);
     }
     public static ToolEffectPolicy idempotent(Duration timeout, Approval approval) {
         return new ToolEffectPolicy(Effect.IDEMPOTENT, Concurrency.SERIAL_PER_RUN, timeout, approval,
-                Retry.IDEMPOTENT_3, true, true, false);
+                Retry.IDEMPOTENT_3);
     }
     public static ToolEffectPolicy atMostOnce(Duration timeout, Concurrency concurrency, Approval approval) {
         return new ToolEffectPolicy(Effect.AT_MOST_ONCE, concurrency, timeout, approval,
-                Retry.HUMAN_AUTHORIZED, false, false, false);
-    }
-    public static ToolEffectPolicy compensatable(Duration timeout, Approval approval) {
-        return new ToolEffectPolicy(Effect.COMPENSATABLE, Concurrency.SERIAL_PER_RUN, timeout, approval,
-                Retry.HUMAN_AUTHORIZED, true, true, true);
+                Retry.HUMAN_AUTHORIZED);
     }
 }

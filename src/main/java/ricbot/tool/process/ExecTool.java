@@ -16,8 +16,6 @@ import ricbot.infra.execution.ExecutionRequest;
 import ricbot.infra.execution.ExecutionResult;
 import ricbot.infra.execution.LocalExecutionBackend;
 
-import java.io.ByteArrayOutputStream;
-import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -25,8 +23,6 @@ import java.util.*;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -161,7 +157,6 @@ public class ExecTool extends Tool {
                 ToolParam.of("command", "string", "要执行的 shell 命令", true),
                 ToolParam.of("working_dir", "string", "工作目录（默认工作区）", false),
                 ToolParam.of("timeout", "integer", "超时秒数（最大 600）", false)
-                        .setExtraSchema(Map.of("minimum", 1, "maximum", MAX_TIMEOUT))
         );
     }
 
@@ -199,7 +194,7 @@ public class ExecTool extends Tool {
             timeoutOverride = n.intValue();
         }
 
-        return execute(cmd, workingDirOverride, timeoutOverride, context != null && context.approved());
+        return executeCommand(cmd, workingDirOverride, timeoutOverride, context != null && context.approved());
     }
 
     @Override
@@ -221,19 +216,7 @@ public class ExecTool extends Tool {
         return ToolRiskDecision.from(assessment);
     }
 
-    /**
-     * 核心执行逻辑
-     *
-     * @param command          要执行的命令
-     * @param workingDirOverride 覆盖的工作目录
-     * @param timeoutOverride  覆盖的超时时间
-     * @return 执行结果字符串
-     */
-    public String execute(String command, String workingDirOverride, Integer timeoutOverride) {
-        return execute(command, workingDirOverride, timeoutOverride, false);
-    }
-
-    private String execute(String command, String workingDirOverride, Integer timeoutOverride, boolean approved) {
+    private String executeCommand(String command, String workingDirOverride, Integer timeoutOverride, boolean approved) {
         // 确定最终的工作目录：优先使用传入的覆盖值，其次是配置的工作目录，最后是系统用户目录
         String cwd = firstNonBlank(workingDirOverride, this.workingDir, System.getProperty("user.dir"));
 
@@ -476,84 +459,6 @@ public class ExecTool extends Tool {
         }
 
         return result;
-    }
-
-    /**
-     * 构建 ProcessBuilder
-     *
-     * @param command 命令
-     * @param cwd     工作目录
-     * @param env     环境变量
-     * @return ProcessBuilder 实例
-     */
-    private ProcessBuilder buildProcess(String command, String cwd, Map<String, String> env) {
-        List<String> cmd;
-        if (IS_WINDOWS) {
-            cmd = List.of("cmd.exe", "/c", command);
-        } else {
-            cmd = List.of("/bin/sh", "-lc", command);
-        }
-
-        ProcessBuilder pb = new ProcessBuilder(cmd);
-        pb.directory(Path.of(cwd).toFile());
-        pb.environment().clear();
-        pb.environment().putAll(env);
-        return pb;
-    }
-
-    /**
-     * 强制杀死进程
-     *
-     * @param process 进程对象
-     */
-    private void killProcess(Process process) {
-        try {
-            process.destroyForcibly();
-        } catch (Exception ignored) {
-        }
-    }
-
-    /**
-     * 读取输入流所有内容
-     *
-     * @param in 输入流
-     * @return 字符串内容
-     * @throws Exception 异常
-     */
-    private StreamOutput readAll(InputStream in) throws Exception {
-        try (InputStream input = in; ByteArrayOutputStream out = new ByteArrayOutputStream()) {
-            byte[] buffer = new byte[8192];
-            int stored = 0;
-            boolean truncated = false;
-            int read;
-            while ((read = input.read(buffer)) != -1) {
-                if (stored < MAX_CAPTURE_BYTES) {
-                    int keep = Math.min(read, MAX_CAPTURE_BYTES - stored);
-                    out.write(buffer, 0, keep);
-                    stored += keep;
-                    if (keep < read) {
-                        truncated = true;
-                    }
-                } else {
-                    truncated = true;
-                }
-            }
-            return new StreamOutput(out.toString(StandardCharsets.UTF_8), truncated);
-        }
-    }
-
-    private void awaitDrain(Future<?> future, long timeout, TimeUnit unit) {
-        if (future == null) {
-            return;
-        }
-        try {
-            future.get(timeout, unit);
-        } catch (Exception ignored) {
-            future.cancel(true);
-        }
-    }
-
-    private record StreamOutput(String text, boolean truncated) {
     }
 
     private String wrapSandboxCommand(String sandbox, String command, String workspace, String cwd) {

@@ -1,6 +1,8 @@
 package ricbot.domain.agent.context;
 
 import org.junit.jupiter.api.Test;
+import ricbot.domain.agent.context.dto.ContextCompactionResult;
+import ricbot.domain.agent.context.dto.StructuredContextSummary;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;

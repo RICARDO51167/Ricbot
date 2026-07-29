@@ -4,16 +4,18 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import ricbot.domain.agent.graph.GraphExecutionState;
-import ricbot.domain.agent.graph.GraphExecutionStatus;
-import ricbot.domain.agent.graph.GraphPendingWrite;
-import ricbot.domain.agent.graph.GraphRuntimeEvent;
-import ricbot.domain.agent.graph.GraphRuntimeEventType;
-import ricbot.domain.agent.graph.GraphRuntimeStore;
-import ricbot.domain.agent.graph.NodeActivation;
-import ricbot.domain.agent.SideEffectClaim;
-import ricbot.domain.agent.SideEffectRecord;
-import ricbot.domain.agent.SideEffectStore;
+import ricbot.domain.agent.eump.SideEffectStatus;
+import ricbot.domain.agent.graph.dto.GraphExecutionState;
+import ricbot.domain.agent.graph.enump.GraphExecutionStatus;
+import ricbot.domain.agent.graph.dto.GraphPendingWrite;
+import ricbot.domain.agent.graph.dto.GraphRuntimeEvent;
+import ricbot.domain.agent.graph.enump.GraphRuntimeEventType;
+import ricbot.domain.agent.graph.interfacep.GraphRuntimeStore;
+import ricbot.domain.agent.graph.dto.NodeActivation;
+import ricbot.domain.agent.dto.SideEffectClaim;
+import ricbot.domain.agent.dto.SideEffectRecord;
+import ricbot.domain.agent.interfacep.SideEffectStore;
+import ricbot.domain.agent.graph.dto.GraphRetrySchedule;
 import ricbot.domain.security.ApprovalRequest;
 import ricbot.domain.security.ApprovalRequestStore;
 import ricbot.domain.session.Session;
@@ -22,15 +24,12 @@ import ricbot.domain.task.TaskDelivery;
 import ricbot.domain.task.TaskRecord;
 import ricbot.domain.task.TaskResult;
 import ricbot.domain.task.TransactionalTaskStore;
-import ricbot.domain.runtime.ReplayView;
-import ricbot.domain.runtime.RuntimeDigest;
-import ricbot.domain.runtime.RuntimeEventEnvelope;
-import ricbot.domain.runtime.RuntimeEventUpcasters;
-import ricbot.domain.runtime.RuntimeFaultInjector;
-import ricbot.domain.runtime.RuntimeFaultPoint;
-import ricbot.domain.runtime.RuntimeInstanceRecord;
-import ricbot.domain.runtime.RuntimeInstanceStatus;
-import ricbot.domain.runtime.RuntimeAggregate;
+import ricbot.domain.runtime.dto.ReplayView;
+import ricbot.domain.runtime.dto.RuntimeDigest;
+import ricbot.domain.runtime.dto.RuntimeEventEnvelope;
+import ricbot.domain.runtime.dto.RuntimeInstanceRecord;
+import ricbot.domain.runtime.enump.RuntimeInstanceStatus;
+import ricbot.domain.runtime.dto.RuntimeAggregate;
 import ricbot.domain.runtime.RuntimeReducer;
 import ricbot.domain.verification.VerificationReport;
 import ricbot.domain.trace.TraceEvent;
@@ -71,24 +70,12 @@ public final class SqliteRuntimeStore implements GraphRuntimeStore, Transactiona
 
     private final Path database;
     private final String jdbcUrl;
-    private final RuntimeEventUpcasters upcasters;
-    private final RuntimeFaultInjector faults;
     private final Map<String, Consumer<TaskDelivery>> deliveryListeners = new ConcurrentHashMap<>();
 
     public SqliteRuntimeStore(Path workspace) {
-        this(workspace, new RuntimeEventUpcasters(List.of()), RuntimeFaultInjector.none());
-    }
-
-    public SqliteRuntimeStore(Path workspace, RuntimeEventUpcasters upcasters) {
-        this(workspace, upcasters, RuntimeFaultInjector.none());
-    }
-
-    public SqliteRuntimeStore(Path workspace, RuntimeEventUpcasters upcasters, RuntimeFaultInjector faults) {
         if (workspace == null) throw new IllegalArgumentException("workspace is required");
         this.database = workspace.toAbsolutePath().normalize().resolve(DATABASE_RELATIVE_PATH);
         this.jdbcUrl = "jdbc:sqlite:" + database;
-        this.upcasters = upcasters != null ? upcasters : new RuntimeEventUpcasters(List.of());
-        this.faults = faults != null ? faults : RuntimeFaultInjector.none();
         try {
             Files.createDirectories(database.getParent());
             migrate();
@@ -232,7 +219,7 @@ public final class SqliteRuntimeStore implements GraphRuntimeStore, Transactiona
             @Override public List<SideEffectRecord> list() { return listSideEffectRecords(); }
             @Override public SideEffectClaim claim(SideEffectRecord reservation) { return claimSideEffect(reservation); }
             @Override public SideEffectRecord transition(SideEffectRecord record, long expectedVersion,
-                                                         Set<ricbot.domain.agent.SideEffectStatus> allowedSources) {
+                                                         Set<SideEffectStatus> allowedSources) {
                 return transitionSideEffectRecord(record, expectedVersion, allowedSources);
             }
         };
@@ -339,7 +326,7 @@ public final class SqliteRuntimeStore implements GraphRuntimeStore, Transactiona
     }
 
     @Override
-    public void scheduleRetries(GraphExecutionState state, List<ricbot.domain.agent.graph.GraphRetrySchedule> retries) {
+    public void scheduleRetries(GraphExecutionState state, List<GraphRetrySchedule> retries) {
         if (retries == null || retries.isEmpty()) throw new IllegalArgumentException("retries are required");
         mutate(connection -> {
             List<Map<String, Object>> facts = retries.stream().map(retry -> Map.<String, Object>of(
@@ -352,7 +339,7 @@ public final class SqliteRuntimeStore implements GraphRuntimeStore, Transactiona
                     "message", retry.message())).toList();
             commitState(connection, state, GRAPH_EVENT_PREFIX + GraphRuntimeEventType.NODE_RETRY_SCHEDULED.name(),
                     Map.of("retries", facts), "retry:" + state.transition(), List.of(), List.of());
-            for (ricbot.domain.agent.graph.GraphRetrySchedule retry : retries) {
+            for (GraphRetrySchedule retry : retries) {
                 NodeActivation next = retry.activation().nextAttempt();
                 upsertActivation(connection, state.runId(), state.superstep(), next, "RETRY_WAIT",
                         retry.availableAt());
@@ -717,7 +704,7 @@ public final class SqliteRuntimeStore implements GraphRuntimeStore, Transactiona
                     "fork-created", List.of(), List.of());
             List<SideEffectRecord> inherited = sourceAggregate.sideEffects().values().stream()
                     .map(node -> MAPPER.convertValue(node, SideEffectRecord.class))
-                    .filter(effect -> effect.status() == ricbot.domain.agent.SideEffectStatus.SUCCEEDED)
+                    .filter(effect -> effect.status() == SideEffectStatus.SUCCEEDED)
                     .sorted(java.util.Comparator.comparing(SideEffectRecord::idempotencyKey)).toList();
             try (PreparedStatement statement = connection.prepareStatement("""
                     INSERT INTO fork_effect_refs(fork_run_id, source_run_id, idempotency_key,
@@ -806,7 +793,6 @@ public final class SqliteRuntimeStore implements GraphRuntimeStore, Transactiona
         RuntimeEventEnvelope event = insertEvent(connection, state.runId(), eventType,
                 CHECKPOINT_PAYLOAD, payload, deduplicationId, sessionId(state), taskId(state),
                 firstActivation(state), "", correlationId(state), "");
-        faults.check(RuntimeFaultPoint.AFTER_EVENT_BEFORE_PROJECTION);
         try (PreparedStatement statement = connection.prepareStatement("""
                     INSERT INTO runtime_runs(run_id, graph_id, state_json, state_digest, status, superstep,
                                              transition, updated_at, last_event_sequence)
@@ -835,7 +821,6 @@ public final class SqliteRuntimeStore implements GraphRuntimeStore, Transactiona
         acknowledgeDeliveries(connection, state.runId(), acknowledgedDeliveryIds);
         consumeSignals(connection, state.runId(), consumedSignalIds);
         updateProjectionDigests(connection, state.runId(), event.globalSequence());
-        faults.check(RuntimeFaultPoint.AFTER_PROJECTION_BEFORE_COMMIT);
         return event;
     }
 
@@ -942,14 +927,16 @@ public final class SqliteRuntimeStore implements GraphRuntimeStore, Transactiona
         String eventType = result.getString("event_type");
         String payloadType = result.getString("payload_type");
         JsonNode payload = readTree(result.getString("payload_json"));
-        JsonNode current = upcasters.upcast(version, eventType, payloadType, payload);
+        if (version != RuntimeEventEnvelope.CURRENT_SCHEMA_VERSION) {
+            throw new ricbot.domain.runtime.UnknownRuntimeEventVersionException(version);
+        }
         return new RuntimeEventEnvelope(RuntimeEventEnvelope.CURRENT_SCHEMA_VERSION,
                 result.getLong("global_sequence"), result.getLong("stream_sequence"),
                 result.getString("event_id"), result.getString("stream_id"), eventType, payloadType,
                 result.getString("run_id"), result.getString("session_id"), result.getString("task_id"),
                 result.getString("activation_id"), result.getString("causation_id"),
                 result.getString("correlation_id"), result.getString("trace_parent"),
-                Instant.parse(result.getString("occurred_at")), current);
+                Instant.parse(result.getString("occurred_at")), payload);
     }
 
     private GraphRuntimeEvent toGraphEvent(RuntimeEventEnvelope envelope) {
@@ -1074,12 +1061,10 @@ public final class SqliteRuntimeStore implements GraphRuntimeStore, Transactiona
                     new IllegalArgumentException("task not found: " + current.spec().taskId()));
             if (actual.version() != current.version()) throw new IllegalStateException("task version conflict");
             saveTaskResult(connection, result);
-            faults.check(RuntimeFaultPoint.AFTER_TASK_RESULT_BEFORE_DELIVERY);
             TaskRecord next = actual.transition(result.status(), result.childRunId(),
                     result.error().isBlank() ? result.summary() : result.error());
             updateTask(connection, next, actual.version());
             saveDelivery(connection, delivery);
-            faults.check(RuntimeFaultPoint.AFTER_DELIVERY_BEFORE_COMMIT);
             ObjectNode payload = MAPPER.createObjectNode();
             payload.set("task", MAPPER.valueToTree(next));
             payload.set("result", MAPPER.valueToTree(result));
@@ -1214,7 +1199,6 @@ public final class SqliteRuntimeStore implements GraphRuntimeStore, Transactiona
             }
             appendProjectionEvent(connection, runId, "GRAPH_SIGNAL_APPENDED", "ricbot.graph-signal.v1",
                     signal, "signal:approval:" + requestId, "");
-            faults.check(RuntimeFaultPoint.AFTER_SIGNAL_BEFORE_COMMIT);
             return updated;
         });
     }
@@ -1240,7 +1224,6 @@ public final class SqliteRuntimeStore implements GraphRuntimeStore, Transactiona
                             signal, "signal:" + signalId, "");
                 }
             }
-            faults.check(RuntimeFaultPoint.AFTER_SIGNAL_BEFORE_COMMIT);
             return null;
         });
     }
@@ -1316,7 +1299,7 @@ public final class SqliteRuntimeStore implements GraphRuntimeStore, Transactiona
     public SideEffectRecord transitionSideEffectRecord(
             SideEffectRecord record,
             long expectedVersion,
-            Set<ricbot.domain.agent.SideEffectStatus> allowedSources
+            Set<SideEffectStatus> allowedSources
     ) {
         return mutate(connection -> {
             SideEffectRecord current = loadSideEffect(connection, record.idempotencyKey()).orElseThrow(() ->
@@ -1324,7 +1307,7 @@ public final class SqliteRuntimeStore implements GraphRuntimeStore, Transactiona
             if (current.version() != expectedVersion || record.version() != expectedVersion + 1) {
                 throw new IllegalStateException("side effect version conflict: " + record.idempotencyKey());
             }
-            Set<ricbot.domain.agent.SideEffectStatus> allowed = allowedSources != null
+            Set<SideEffectStatus> allowed = allowedSources != null
                     ? Set.copyOf(allowedSources) : Set.of();
             if (!allowed.contains(current.status())) {
                 throw new IllegalStateException("side effect transition is not allowed from " + current.status());
@@ -1439,11 +1422,11 @@ public final class SqliteRuntimeStore implements GraphRuntimeStore, Transactiona
             }
             int recovered = 0;
             for (SideEffectRecord record : executing) {
-                SideEffectRecord unknown = record.clearLease(ricbot.domain.agent.SideEffectStatus.UNKNOWN,
+                SideEffectRecord unknown = record.clearLease(SideEffectStatus.UNKNOWN,
                         Map.of("reason", "owner lease expired", "ownerInstanceId", owner),
                         record.confirmationId());
                 if (updateSideEffect(connection, unknown, record.version(),
-                        ricbot.domain.agent.SideEffectStatus.EXECUTING)) {
+                        SideEffectStatus.EXECUTING)) {
                     appendProjectionEvent(connection, sideEffectRunId(record), "SIDE_EFFECT_UNKNOWN",
                             "ricbot.side-effect.v2", MAPPER.valueToTree(unknown),
                             "side-effect:" + record.idempotencyKey() + ":v" + unknown.version(), record.taskId());
@@ -1705,7 +1688,7 @@ public final class SqliteRuntimeStore implements GraphRuntimeStore, Transactiona
 
     private static boolean updateSideEffect(Connection connection, SideEffectRecord record,
                                             long expectedVersion,
-                                            ricbot.domain.agent.SideEffectStatus expectedStatus)
+                                            SideEffectStatus expectedStatus)
             throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement("""
                 UPDATE side_effects
@@ -1810,13 +1793,16 @@ public final class SqliteRuntimeStore implements GraphRuntimeStore, Transactiona
     }
 
     private void migrate() {
-        int existingVersion = read(SqliteRuntimeStore::schemaVersion);
-        if (existingVersion > 0 && existingVersion < 2) {
-            throw new LegacyRuntimeDatabaseException(database, existingVersion);
+        int existingVersion;
+        try (Connection connection = DriverManager.getConnection(jdbcUrl)) {
+            existingVersion = schemaVersion(connection);
+        } catch (SQLException e) {
+            throw new IllegalStateException("cannot inspect runtime database " + database, e);
         }
-        if (existingVersion > 2) {
-            throw new IllegalStateException("runtime database schema is newer than this binary: v"
-                    + existingVersion);
+        if (existingVersion != 0 && existingVersion != 2) {
+            String version = existingVersion < 0 ? "unknown" : "v" + existingVersion;
+            throw new IllegalStateException("unsupported runtime database schema " + version
+                    + "; only schema v2 is supported: " + database);
         }
         mutate(connection -> {
             try (Statement statement = connection.createStatement()) {
@@ -2074,7 +2060,15 @@ public final class SqliteRuntimeStore implements GraphRuntimeStore, Transactiona
 
     private static int schemaVersion(Connection connection) throws SQLException {
         try (ResultSet tables = connection.getMetaData().getTables(null, null, "schema_migrations", null)) {
-            if (!tables.next()) return 0;
+            if (!tables.next()) {
+                try (Statement statement = connection.createStatement();
+                     ResultSet result = statement.executeQuery("""
+                             SELECT COUNT(*) FROM sqlite_master
+                             WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+                             """)) {
+                    return result.next() && result.getInt(1) == 0 ? 0 : -1;
+                }
+            }
         }
         try (Statement statement = connection.createStatement();
              ResultSet result = statement.executeQuery("SELECT COALESCE(MAX(version), 0) FROM schema_migrations")) {
@@ -2153,16 +2147,6 @@ public final class SqliteRuntimeStore implements GraphRuntimeStore, Transactiona
             try (ResultSet result = statement.executeQuery()) {
                 return result.next() ? Optional.ofNullable(result.getString(1)).filter(value -> !value.isBlank())
                         : Optional.empty();
-            }
-        }
-    }
-
-    private static Optional<String> projectedDigest(Connection connection, String runId) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement(
-                "SELECT state_digest FROM runtime_runs WHERE run_id = ?")) {
-            statement.setString(1, runId);
-            try (ResultSet result = statement.executeQuery()) {
-                return result.next() ? Optional.of(result.getString(1)) : Optional.empty();
             }
         }
     }
@@ -2398,16 +2382,6 @@ public final class SqliteRuntimeStore implements GraphRuntimeStore, Transactiona
         return RuntimeDigest.sha256(rows);
     }
 
-    private static long count(Connection connection, String table) throws SQLException {
-        if (!java.util.Set.of("runtime_runs", "tasks", "task_results", "deliveries", "approvals", "side_effects").contains(table)) {
-            throw new IllegalArgumentException("unsupported count table");
-        }
-        try (Statement statement = connection.createStatement();
-             ResultSet result = statement.executeQuery("SELECT COUNT(*) FROM " + table)) {
-            return result.next() ? result.getLong(1) : 0;
-        }
-    }
-
     private static String firstActivation(GraphExecutionState state) {
         return state.activeNodes().isEmpty() ? "" : state.activeNodes().get(0).activationId();
     }
@@ -2451,11 +2425,6 @@ public final class SqliteRuntimeStore implements GraphRuntimeStore, Transactiona
     private static JsonNode readTree(String json) {
         try { return MAPPER.readTree(json); }
         catch (IOException e) { throw new IllegalStateException("cannot deserialize runtime event", e); }
-    }
-
-    private static <T> T treeValue(JsonNode node, Class<T> type) {
-        try { return MAPPER.treeToValue(node, type); }
-        catch (IOException e) { throw new IllegalStateException("cannot deserialize runtime event payload", e); }
     }
 
     private static String required(String value, String field) {

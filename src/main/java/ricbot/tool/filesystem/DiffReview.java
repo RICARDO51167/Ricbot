@@ -27,9 +27,4 @@ public record DiffReview(
         rollbackHint = rollbackHint != null ? rollbackHint : "";
         affectedAreas = affectedAreas != null ? List.copyOf(affectedAreas) : List.of();
     }
-
-    static String render(String path, String before, String after, CommandRiskLevel riskLevel) {
-        DiffReviewService service = new DiffReviewService();
-        return service.renderMarkdown(service.review(path, before, after, riskLevel));
-    }
 }

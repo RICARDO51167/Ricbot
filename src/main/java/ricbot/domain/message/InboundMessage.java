@@ -1,6 +1,5 @@
 package ricbot.domain.message;
 
-import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -19,8 +18,6 @@ public class InboundMessage {
 
     private String content;
 
-    private LocalDateTime timestamp;
-
     private List<String> media;
 
     private Map<String, Object> metadata;
@@ -28,7 +25,6 @@ public class InboundMessage {
     private String sessionKeyOverride;
 
     public InboundMessage() {
-        this.timestamp = LocalDateTime.now();
         this.media = new ArrayList<>();
         this.metadata = new HashMap<>();
     }
@@ -38,7 +34,6 @@ public class InboundMessage {
         this.senderId = senderId;
         this.chatId = chatId;
         this.content = content;
-        this.timestamp = LocalDateTime.now();
         this.media = new ArrayList<>();
         this.metadata = new HashMap<>();
     }
@@ -81,14 +76,6 @@ public class InboundMessage {
         this.content = content;
     }
 
-    public LocalDateTime getTimestamp() {
-        return timestamp;
-    }
-
-    public void setTimestamp(LocalDateTime timestamp) {
-        this.timestamp = timestamp;
-    }
-
     public List<String> getMedia() {
         return media;
     }
@@ -120,7 +107,6 @@ public class InboundMessage {
                 ", senderId='" + senderId + '\'' +
                 ", chatId='" + chatId + '\'' +
                 ", content='" + content + '\'' +
-                ", timestamp=" + timestamp +
                 ", media=" + media +
                 ", metadata=" + metadata +
                 ", sessionKeyOverride='" + sessionKeyOverride + '\'' +

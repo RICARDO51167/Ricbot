@@ -4,13 +4,15 @@ package ricbot.domain.agent;
 import lombok.Getter;
 import lombok.Setter;
 import lombok.experimental.Accessors;
+import ricbot.domain.agent.interfacep.SideEffectStore;
 import ricbot.domain.config.ProviderCapability;
+import ricbot.domain.config.ModelCard;
+import ricbot.domain.agent.budget.BudgetPolicy;
 import ricbot.domain.hook.AgentHook;
 import ricbot.domain.security.ApprovalService;
 import ricbot.tool.api.ToolRegistry;
 
 import java.nio.file.Path;
-import java.time.Duration;
 import java.util.*;
 
 /**
@@ -39,8 +41,6 @@ public class AgentRunSpec {
     private String compactModel;
     // 最大迭代次数，防止无限循环
     private int maxIterations = 20;
-    // 单次 run 的软超时；仅在每轮开始前检查，不中断正在执行的 Provider/Tool 调用。
-    private Duration runTimeout;
     // 工具结果的最大字符数限制
     private int maxToolResultChars = 16000;
     // Agent 钩子，用于拦截和处理 Agent 生命周期事件
@@ -50,10 +50,6 @@ public class AgentRunSpec {
     // 达到最大迭代次数时的提示消息
     private String maxIterationsMessage =
             "我已达到最大工具调用迭代次数，但仍未完成任务。";
-    // 是否在工具执行出错时立即失败
-    private boolean failOnToolError = false;
-    // 是否允许并发执行工具
-    private boolean concurrentTools = false;
     // 工作空间路径
     private Path workspace;
     /** Runtime database workspace; tool workspace may be an isolated child worktree. */
@@ -68,25 +64,23 @@ public class AgentRunSpec {
     private String providerRetryMode = "standard";
     // 静态/启发式 Provider capability，用于运行时保守降级。
     private ProviderCapability providerCapability;
+    private ModelCard.Pricing modelPricing;
+    private BudgetPolicy budgetPolicy = BudgetPolicy.unlimited();
+    /** Root hard limit; differs from budgetPolicy only for Team child Runs. */
+    private BudgetPolicy rootBudgetPolicy;
+    private boolean contextOffloadEnabled = true;
+    private int offloadPreviewChars = 1200;
+    private int artifactReadChunkChars = 16000;
+    private String timezone = "UTC";
     // 运行模式元数据；普通 agent 模式可为空，team-worker 等适配层用于审计与测试。
     private Map<String, Object> metadata = new LinkedHashMap<>();
     // 适配层声明的允许工具名；实际限制由传入的 ToolRegistry 决定。
     private List<String> allowedTools = new ArrayList<>();
-    /** Durable protocol store for write-tool idempotency and compensation. */
-    private SideEffectStore sideEffectStore = SideEffectStore.disabled();
+    /** Durable protocol store for write-tool idempotency. */
+    private SideEffectStore sideEffectStore;
 
     /** Persistent approval authority used by the graph approval node. */
     private ApprovalService approvalService;
-
-    /**
-     * 进度回调，用于报告执行进度
-     */
-    private ProgressCallback progressCallback;
-
-    /**
-     * 注入 follow-up user message 的回调，用于动态插入用户消息
-     */
-    private InjectionCallback injectionCallback;
 
     private ToolLifecycleCallback toolLifecycleCallback;
 
@@ -112,33 +106,6 @@ public class AgentRunSpec {
     public AgentRunSpec setMaxIterationsMessage(String maxIterationsMessage) {
         this.maxIterationsMessage = maxIterationsMessage;
         return this;
-    }
-
-    /**
-     * 进度回调函数式接口
-     */
-    @FunctionalInterface
-    public interface ProgressCallback {
-        /**
-         * 当有进度更新时调用
-         * @param content 进度内容
-         * @param toolHint 是否为工具提示
-         * @throws Exception 异常
-         */
-        void onProgress(String content, boolean toolHint) throws Exception;
-    }
-
-    /**
-     * 注入回调函数式接口
-     */
-    @FunctionalInterface
-    public interface InjectionCallback {
-        /**
-         * 注入额外的用户消息
-         * @return 消息列表
-         * @throws Exception 异常
-         */
-        List<Map<String, Object>> inject() throws Exception;
     }
 
     interface ToolLifecycleCallback {

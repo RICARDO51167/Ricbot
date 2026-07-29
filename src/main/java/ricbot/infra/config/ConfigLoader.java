@@ -117,14 +117,9 @@ public final class ConfigLoader {
             try {
                 // 将 JSON 文件读取为 Map 结构
                 Map<String, Object> raw = MAPPER.readValue(path.toFile(), JSON_OBJECT_TYPE);
-                // 执行配置迁移逻辑（处理旧版本配置结构）
-                raw = migrateConfig(raw);
                 // 将 Map 转换为 Config 对象
                 config = mapToConfig(raw);
             } catch (Exception e) {
-                if (e instanceof RemovedConfigException removed) {
-                    throw removed;
-                }
                 log.warn("从 {} 加载配置失败，将使用默认配置。", path, e);
             }
         }
@@ -275,71 +270,6 @@ public final class ConfigLoader {
         return obj;
     }
 
-    /**
-     * 迁移旧版本的配置结构。
-     * 对应 Python: _migrate_config(data)
-     *
-     * 目前只迁移：
-     * tools.exec.restrictToWorkspace -> tools.restrictToWorkspace
-     *
-     * @param data 原始配置 Map
-     * @return 迁移后的配置 Map
-     */
-    private static Map<String, Object> migrateConfig(Map<String, Object> data) {
-        // 如果数据为空，返回空 Map
-        if (data == null) {
-            return new LinkedHashMap<>();
-        }
-
-        Map<String, Object> agents = asMap(data.get("agents"));
-        Map<String, Object> defaults = asMap(agents.get("defaults"));
-        if (defaults.containsKey("dream")) {
-            throw new RemovedConfigException(
-                    "配置 agents.defaults.dream 已删除；请移除该配置。长期记忆改为显式候选审批，长会话压缩仍由 Runtime 管理。"
-            );
-        }
-        if (defaults.containsKey("disabled_skills")) {
-            throw new RemovedConfigException("配置 agents.defaults.disabled_skills 已删除；Skill 系统已移除，请删除该字段。");
-        }
-
-        Map<String, Object> channels = asMap(data.get("channels"));
-        if (!channels.isEmpty()) {
-            throw new RemovedConfigException("配置 channels 已删除；运行时仅保留 CLI，请删除该节点。");
-        }
-        if (data.containsKey("api") || data.containsKey("gateway")) {
-            throw new RemovedConfigException("配置 api/gateway 已删除；HTTP Server 已移除，运行时仅保留 CLI。");
-        }
-
-        // 获取 tools 节点
-        Object toolsObj = data.get("tools");
-        // 如果 tools 不是 Map 类型，直接返回原数据
-        if (!(toolsObj instanceof Map<?, ?> rawTools)) {
-            return data;
-        }
-
-        Map<String, Object> tools = asMap(rawTools);
-        if (tools.containsKey("web")) {
-            throw new RemovedConfigException("配置 tools.web 已删除；Web Search/Fetch 工具已移除，请删除该节点。");
-        }
-        if (tools.containsKey("mcp") || tools.containsKey("mcpServers") || tools.containsKey("mcp_servers")) {
-            throw new RemovedConfigException("MCP 配置已删除；请移除 tools.mcp/tools.mcpServers/tools.mcp_servers。");
-        }
-        data.put("tools", tools);
-        // 获取 tools.exec 节点
-        Object execObj = tools.get("exec");
-        // 如果 exec 是 Map 类型
-        if (execObj instanceof Map<?, ?> rawExec) {
-            Map<String, Object> exec = asMap(rawExec);
-            tools.put("exec", exec);
-            // 检查是否存在旧的 restrictToWorkspace 字段，且新位置不存在该字段
-            if (exec.containsKey("restrictToWorkspace") && !tools.containsKey("restrictToWorkspace")) {
-                // 将旧字段移动到新位置
-                tools.put("restrictToWorkspace", exec.remove("restrictToWorkspace"));
-            }
-        }
-        return data;
-    }
-
     // =========================================================
     // Map <-> Config conversion
     // Map 与 Config 对象之间的转换方法
@@ -381,6 +311,25 @@ public final class ConfigLoader {
         ad.setTimezone(string(defaults.get("timezone"), ad.getTimezone()));
         ad.setUnifiedSession(booleanValue(defaults.get("unified_session"), ad.isUnifiedSession()));
         ad.setSessionTtlMinutes(intValue(defaults.get("session_ttl_minutes"), ad.getSessionTtlMinutes()));
+        Map<String, Object> budget = asMap(defaults.get("budget"));
+        Config.BudgetConfig bc = ad.getBudget();
+        bc.setMaxTotalTokens(longValue(budget.get("max_total_tokens"), bc.getMaxTotalTokens()));
+        bc.setMaxCostMicrousd(longValue(budget.get("max_cost_microusd"), bc.getMaxCostMicrousd()));
+        bc.setMaxActiveSeconds(longValue(budget.get("max_active_seconds"), bc.getMaxActiveSeconds()));
+        bc.setMaxToolCalls(longValue(budget.get("max_tool_calls"), bc.getMaxToolCalls()));
+        bc.setFinalizationTokens(longValue(budget.get("finalization_tokens"), bc.getFinalizationTokens()));
+        Map<String, Object> worker = asMap(budget.get("worker"));
+        Config.WorkerBudgetConfig wc = bc.getWorker();
+        wc.setAllocation(string(worker.get("allocation"), wc.getAllocation()));
+        wc.setMaxTotalTokens(longValue(worker.get("max_total_tokens"), wc.getMaxTotalTokens()));
+        wc.setMaxCostMicrousd(longValue(worker.get("max_cost_microusd"), wc.getMaxCostMicrousd()));
+        wc.setMaxActiveSeconds(longValue(worker.get("max_active_seconds"), wc.getMaxActiveSeconds()));
+        wc.setMaxToolCalls(longValue(worker.get("max_tool_calls"), wc.getMaxToolCalls()));
+        Map<String, Object> offload = asMap(defaults.get("context_offload"));
+        Config.ContextOffloadConfig oc = ad.getContextOffload();
+        oc.setEnabled(booleanValue(offload.get("enabled"), oc.isEnabled()));
+        oc.setPreviewChars(intValue(offload.get("preview_chars"), oc.getPreviewChars()));
+        oc.setReadChunkChars(intValue(offload.get("read_chunk_chars"), oc.getReadChunkChars()));
 
         // --- 处理 providers 部分 ---
         Map<String, Object> providers = asMap(data.get("providers"));
@@ -393,18 +342,18 @@ public final class ConfigLoader {
             }
             // 获取 provider 的具体配置 Map
             Map<String, Object> p = asMap(providers.get(name));
-            // 设置 apiKey，兼容 api_key 和 apiKey 两种键名
-            pc.setApiKey(string(p.get("api_key"), string(p.get("apiKey"), pc.getApiKey())));
-            // 设置 apiBase，兼容 api_base 和 apiBase 两种键名
-            pc.setApiBase(string(p.get("api_base"), string(p.get("apiBase"), pc.getApiBase())));
-            // 设置 extraHeaders，兼容 extra_headers 和 extraHeaders 两种键名
-            pc.setExtraHeaders(stringMap(p.containsKey("extra_headers") ? p.get("extra_headers") : p.get("extraHeaders")));
+            pc.setApiKey(string(p.get("api_key"), pc.getApiKey()));
+            pc.setApiBase(string(p.get("api_base"), pc.getApiBase()));
+            pc.setExtraHeaders(stringMap(p.get("extra_headers")));
         }
 
         // --- 处理 model_capabilities 部分 ---
         config.setModelCapabilities(parseModelCapabilities(
-                data.containsKey("model_capabilities") ? data.get("model_capabilities") : data.get("modelCapabilities")
+                data.get("model_capabilities")
         ));
+        Config.ModelCardsConfig modelCards = new Config.ModelCardsConfig();
+        modelCards.setPaths(stringList(asMap(data.get("model_cards")).get("paths")));
+        config.setModelCards(modelCards);
 
         // --- 处理 tools 部分 ---
         Map<String, Object> tools = asMap(data.get("tools"));
@@ -461,6 +410,24 @@ public final class ConfigLoader {
         defaults.put("timezone", ad.getTimezone());
         defaults.put("unified_session", ad.isUnifiedSession());
         defaults.put("session_ttl_minutes", ad.getSessionTtlMinutes());
+        Config.BudgetConfig bc = ad.getBudget();
+        Map<String, Object> workerBudget = new LinkedHashMap<>();
+        workerBudget.put("allocation", bc.getWorker().getAllocation());
+        workerBudget.put("max_total_tokens", bc.getWorker().getMaxTotalTokens());
+        workerBudget.put("max_cost_microusd", bc.getWorker().getMaxCostMicrousd());
+        workerBudget.put("max_active_seconds", bc.getWorker().getMaxActiveSeconds());
+        workerBudget.put("max_tool_calls", bc.getWorker().getMaxToolCalls());
+        Map<String, Object> budget = new LinkedHashMap<>();
+        budget.put("max_total_tokens", bc.getMaxTotalTokens());
+        budget.put("max_cost_microusd", bc.getMaxCostMicrousd());
+        budget.put("max_active_seconds", bc.getMaxActiveSeconds());
+        budget.put("max_tool_calls", bc.getMaxToolCalls());
+        budget.put("finalization_tokens", bc.getFinalizationTokens());
+        budget.put("worker", workerBudget);
+        defaults.put("budget", budget);
+        Config.ContextOffloadConfig oc = ad.getContextOffload();
+        defaults.put("context_offload", Map.of("enabled", oc.isEnabled(), "preview_chars", oc.getPreviewChars(),
+                "read_chunk_chars", oc.getReadChunkChars()));
 
         agents.put("defaults", defaults);
         root.put("agents", agents);
@@ -496,6 +463,7 @@ public final class ConfigLoader {
             modelCapabilities.put(entry.getKey(), value);
         }
         root.put("model_capabilities", modelCapabilities);
+        root.put("model_cards", Map.of("paths", config.getModelCards().getPaths()));
 
         // --- 构建 tools 部分 ---
         Map<String, Object> tools = new LinkedHashMap<>();
@@ -689,15 +657,6 @@ public final class ConfigLoader {
         try { return o != null ? Integer.parseInt(String.valueOf(o)) : def; } catch (Exception e) { return def; }
     }
 
-    private static long longValue(Object o, long def) {
-        if (o instanceof Number n) return n.longValue();
-        try {
-            return o != null ? Long.parseLong(String.valueOf(o)) : def;
-        } catch (Exception e) {
-            return def;
-        }
-    }
-
     /**
      * 获取 Integer 值，如果对象不是数字或解析失败则返回默认值。
      *
@@ -708,6 +667,11 @@ public final class ConfigLoader {
     private static Integer integerValue(Object o, Integer def) {
         if (o instanceof Number n) return n.intValue();
         try { return o != null ? Integer.valueOf(String.valueOf(o)) : def; } catch (Exception e) { return def; }
+    }
+
+    private static Long longValue(Object o, Long def) {
+        if (o instanceof Number n) return n.longValue();
+        try { return o != null ? Long.valueOf(String.valueOf(o)) : def; } catch (Exception e) { return def; }
     }
 
     /**
@@ -735,9 +699,4 @@ public final class ConfigLoader {
         return def;
     }
 
-    private static final class RemovedConfigException extends IllegalArgumentException {
-        private RemovedConfigException(String message) {
-            super(message);
-        }
-    }
 }

@@ -1,18 +1,14 @@
 package ricbot.application.runtime;
 
 import ricbot.domain.agent.graph.AgentGraphRuntime;
-import ricbot.domain.agent.graph.GraphExecutionState;
-import ricbot.domain.agent.graph.GraphExecutionStatus;
-import ricbot.domain.agent.graph.GraphRuntimeEventType;
+import ricbot.domain.agent.graph.dto.GraphExecutionState;
+import ricbot.domain.agent.graph.enump.GraphExecutionStatus;
+import ricbot.domain.agent.graph.enump.GraphRuntimeEventType;
 import ricbot.domain.runtime.AgentRuntime;
-import ricbot.domain.runtime.ReplayView;
-import ricbot.domain.runtime.RunRequest;
-import ricbot.domain.runtime.RunView;
-import ricbot.domain.runtime.RuntimeDigest;
-import ricbot.domain.runtime.RuntimeEventEnvelope;
+import ricbot.domain.runtime.dto.*;
+import ricbot.domain.runtime.dto.RuntimeDigest;
 import ricbot.domain.runtime.RuntimeEventSubscriber;
-import ricbot.domain.runtime.RuntimeSignal;
-import ricbot.domain.runtime.TaskView;
+import ricbot.domain.runtime.dto.RuntimeSignal;
 import ricbot.infra.runtime.SqliteRuntimeStore;
 
 import java.time.Instant;
@@ -56,6 +52,7 @@ public final class LocalAgentRuntime implements AgentRuntime {
 
     @Override public RunView resume(String runId) {
         GraphExecutionState state = require(runId);
+        requireRunnableGraph(state, "resume");
         enterRun(runId);
         try (AgentGraphRuntime graph = graphs.open(requestFor(state), state)) {
             List<Map<String, Object>> pending = store.pendingSignals(runId);
@@ -92,6 +89,7 @@ public final class LocalAgentRuntime implements AgentRuntime {
     public void recoverPending() {
         for (GraphExecutionState state : store.listCheckpoints()) {
             if (state.status().terminal()) continue;
+            if (legacyAgentGraph(state)) continue;
             boolean recoverable = state.status() == GraphExecutionStatus.READY
                     || state.status() == GraphExecutionStatus.RETRY_WAIT
                     || !store.pendingSignals(state.runId()).isEmpty()
@@ -108,7 +106,7 @@ public final class LocalAgentRuntime implements AgentRuntime {
     }
 
     @Override public RunView signal(String runId, RuntimeSignal signal) {
-        require(runId);
+        requireRunnableGraph(require(runId), "signal");
         store.appendSignal(runId, signal.signalId(), signal.type(), signal.payload());
         return resume(runId);
     }
@@ -142,12 +140,13 @@ public final class LocalAgentRuntime implements AgentRuntime {
 
     @Override public ReplayView replay(String runId, long sequence) { return store.replay(runId, sequence); }
     @Override public ReplayView fork(String runId, long sequence, String newRunId) {
+        requireRunnableGraph(require(runId), "fork");
         ReplayView source = store.replay(runId, sequence);
         ReplayView fork = store.fork(runId, sequence, newRunId);
         var worktree = new ricbot.domain.task.TaskWorktreeManager(workspace()).integration(newRunId);
         List<RuntimeEventEnvelope> safeEvents = source.events().stream()
                 .filter(event -> event.globalSequence() <= source.committedSequence()).toList();
-        ricbot.domain.runtime.RuntimeAggregate aggregate = new ricbot.domain.runtime.RuntimeReducer()
+        RuntimeAggregate aggregate = new ricbot.domain.runtime.RuntimeReducer()
                 .reduce(runId, safeEvents);
         List<ricbot.domain.task.TaskResult> patchResults = aggregate.taskResults().values().stream().map(node -> {
             try { return MAPPER.treeToValue(node, ricbot.domain.task.TaskResult.class); }
@@ -209,12 +208,18 @@ public final class LocalAgentRuntime implements AgentRuntime {
         }
     }
     private void leaveRun(String runId) { activeRunThreads.remove(runId, Thread.currentThread()); }
-    private long lastSequence(String runId) {
-        List<RuntimeEventEnvelope> events = store.runtimeEvents(runId, Long.MAX_VALUE);
-        return events.isEmpty() ? 0 : events.get(events.size() - 1).globalSequence();
-    }
     private GraphExecutionState require(String runId) {
         return store.loadCheckpoint(runId).orElseThrow(() -> new IllegalArgumentException("run not found: " + runId));
+    }
+    private static boolean legacyAgentGraph(GraphExecutionState state) {
+        return ricbot.domain.agent.graph.AgentGraphRuntimeFactory.LEGACY_AGENT_GRAPH_ID.equals(state.graphId());
+    }
+    private static void requireRunnableGraph(GraphExecutionState state, String operation) {
+        if (legacyAgentGraph(state)) {
+            throw new IllegalStateException("Run " + state.runId() + " uses legacy graph " + state.graphId()
+                    + " and is read-only in Agent Runtime v4; cannot " + operation
+                    + ". Inspect it with /run report, /run events, or /run replay, then start a new v4 Run.");
+        }
     }
     private RunRequest requestFor(GraphExecutionState state) {
         RunRequest.Mode mode = ricbot.domain.agent.graph.DefaultTeamGraph.GRAPH_ID.equals(state.graphId())

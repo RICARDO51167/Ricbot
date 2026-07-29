@@ -2,12 +2,13 @@ package ricbot.domain.agent;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import ricbot.domain.agent.graph.GraphExecutionStatus;
 import ricbot.integration.llm.api.LLMFailureException;
 import ricbot.integration.llm.api.LLMFailureKind;
 import ricbot.integration.llm.api.LLMProvider;
 import ricbot.integration.llm.api.LLMResponse;
 import ricbot.tool.api.ToolRegistry;
+import ricbot.domain.security.ApprovalService;
+import ricbot.infra.runtime.SqliteRuntimeStore;
 
 import java.nio.file.Path;
 import java.util.List;
@@ -20,7 +21,7 @@ class AgentGraphContextOverflowTest {
     @Test
     void firstOverflowCompactsThenModelCompletes(@TempDir Path workspace) throws Exception {
         AtomicInteger calls = new AtomicInteger();
-        AgentRunResult result = new AgentGraphFactory(provider(calls, false)).runForTest(spec(workspace));
+        AgentRunResult result = factory(provider(calls, false), workspace).runForTest(spec(workspace));
 
         assertEquals("done after compact", result.getFinalContent());
         assertEquals("stop", result.getStopReason());
@@ -36,7 +37,7 @@ class AgentGraphContextOverflowTest {
     @Test
     void secondOverflowFailsWithoutOrdinaryRetry(@TempDir Path workspace) throws Exception {
         AtomicInteger calls = new AtomicInteger();
-        AgentRunResult result = new AgentGraphFactory(provider(calls, true)).runForTest(spec(workspace));
+        AgentRunResult result = factory(provider(calls, true), workspace).runForTest(spec(workspace));
 
         assertNotEquals("stop", result.getStopReason());
         assertTrue(result.getError().contains("context overflow after compaction"), result.getError());
@@ -48,6 +49,12 @@ class AgentGraphContextOverflowTest {
                 .setTools(new ToolRegistry()).setModel("model").setCompactModel("compact-model")
                 .setWorkspace(workspace).setSessionKey("overflow-session")
                 .setContextWindowTokens(16_000).setMaxIterations(4);
+    }
+
+    private static AgentGraphFactory factory(LLMProvider provider, Path workspace) {
+        SqliteRuntimeStore runtime = new SqliteRuntimeStore(workspace);
+        return new AgentGraphFactory(provider, null, false, new ToolRegistry(), runtime.sideEffectStore(),
+                new ApprovalService(runtime.approvalStore()));
     }
 
     private static List<Map<String, Object>> history() {

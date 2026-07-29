@@ -1,5 +1,7 @@
 package ricbot.domain.agent.graph;
 
+import ricbot.domain.agent.graph.interfacep.GraphCondition;
+
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 

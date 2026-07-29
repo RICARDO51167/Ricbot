@@ -1,5 +1,9 @@
 package ricbot.domain.workspace;
 
+import ricbot.domain.workspace.dto.WorkspaceSession;
+import ricbot.domain.workspace.enump.WorkspaceBackendType;
+import ricbot.domain.workspace.enump.WorkspaceSessionStatus;
+
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;
