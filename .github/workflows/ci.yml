@@ -30,7 +30,7 @@ jobs:
 
       - name: Review dependency changes
         if: github.event_name == 'pull_request'
-        uses: actions/dependency-review-action@v4
+        uses: actions/dependency-review-action@v5
 
       - name: Upload test reports
         if: always()
