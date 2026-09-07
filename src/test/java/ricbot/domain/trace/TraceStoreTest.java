@@ -42,6 +42,6 @@ class TraceStoreTest {
         TraceStore.TraceSummary summary = store.summarize("trace_first");
         assertEquals(1, summary.eventCount());
         assertEquals("PASS", summary.verifierStatuses().get(0));
-        assertTrue(summary.path().startsWith("sqlite:.ricbot/runtime.db#traces/"));
+        assertTrue(summary.path().startsWith("sqlite:.ricbot/application.db#traces/"));
     }
 }

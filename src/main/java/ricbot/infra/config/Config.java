@@ -247,9 +247,17 @@ public class Config {
         private int sessionTtlMinutes = 0;
         private BudgetConfig budget = new BudgetConfig();
         private ContextOffloadConfig contextOffload = new ContextOffloadConfig();
+        private ContextManagementConfig contextManagement = new ContextManagementConfig();
+        private ToolRuntimeConfig toolRuntime = new ToolRuntimeConfig();
         public void setBudget(BudgetConfig budget) { this.budget = budget != null ? budget : new BudgetConfig(); }
         public void setContextOffload(ContextOffloadConfig value) {
             this.contextOffload = value != null ? value : new ContextOffloadConfig();
+        }
+        public void setContextManagement(ContextManagementConfig value) {
+            this.contextManagement = value != null ? value : new ContextManagementConfig();
+        }
+        public void setToolRuntime(ToolRuntimeConfig value) {
+            this.toolRuntime = value != null ? value : new ToolRuntimeConfig();
         }
     }
 
@@ -278,6 +286,25 @@ public class Config {
         private boolean enabled = true;
         private int previewChars = 1200;
         private int readChunkChars = 16000;
+        private long maxArtifactBytesPerTool = 67_108_864L;
+    }
+
+    @Data
+    public static class ContextManagementConfig {
+        private double triggerRatio = 0.80;
+        private double warningRatio = 0.60;
+        private double targetRatio = 0.60;
+        private double recentReserveRatio = 0.10;
+        private double safetyMarginRatio = 0.05;
+        private int timeHintIntervalMinutes = 30;
+    }
+
+    @Data
+    public static class ToolRuntimeConfig {
+        private boolean strictSchema = true;
+        private boolean requireReadReceipt = true;
+        private int maxParallelReadCalls = 4;
+        private boolean externalActionsEnabled = false;
     }
 
     @Data

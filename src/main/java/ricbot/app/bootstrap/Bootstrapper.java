@@ -123,6 +123,7 @@ public class Bootstrapper {
                 defaults.getBudget(),
                 defaults.getContextOffload()
         );
+        loop.setRuntimeConfigs(defaults.getContextManagement(), defaults.getToolRuntime());
         
         // 4. 解析并设置提供商能力
         loop.setProviderCapability(new ProviderCapabilityResolver().resolve(

@@ -1,7 +1,6 @@
 package ricbot.domain.verification;
 
-import ricbot.domain.task.TaskResult;
-import ricbot.domain.task.TeamPlan;
+import ricbot.domain.artifact.ArtifactDelta;
 import ricbot.infra.execution.ExecutionBackend;
 import ricbot.infra.execution.ExecutionRequest;
 import ricbot.infra.execution.ExecutionResult;
@@ -35,17 +34,16 @@ public final class WorkspaceVerificationService {
         this.runtime = ricbot.app.bootstrap.RuntimeStoreRegistry.shared(this.trustedWorkspace);
     }
 
-    public VerificationReport verify(String runId, Path integrationWorkspace, TeamPlan plan,
-                                     List<TaskResult> results) {
-        return verify(runId, integrationWorkspace, plan, results, "");
+    public VerificationReport verify(String runId, Path integrationWorkspace, ArtifactDelta delta) {
+        return verify(runId, integrationWorkspace, delta, "");
     }
 
-    public VerificationReport verify(String runId, Path integrationWorkspace, TeamPlan plan,
-                                     List<TaskResult> results, String expectedProfileDigest) {
+    public VerificationReport verify(String runId, Path integrationWorkspace, ArtifactDelta delta,
+                                     String expectedProfileDigest) {
         Path target = integrationWorkspace.toAbsolutePath().normalize();
         VerificationProfile profile = VerificationProfile.load(trustedWorkspace);
         String reportId = "verify-" + UUID.randomUUID();
-        String artifactRef = "sqlite:.ricbot/runtime.db#verification/" + reportId;
+        String artifactRef = "sqlite:.ricbot/application.db#verification/" + reportId;
         if (expectedProfileDigest != null && !expectedProfileDigest.isBlank()
                 && !expectedProfileDigest.equals(profile.digest())) {
             VerificationReport changed = new VerificationReport(reportId, VerificationReport.Status.NEEDS_HUMAN,
@@ -57,9 +55,8 @@ public final class WorkspaceVerificationService {
         List<VerificationCheckResult> checks = new ArrayList<>();
         Set<String> requiredIds = new LinkedHashSet<>();
         List<String> criteria = new ArrayList<>();
-        if (plan != null) plan.tasks().forEach(task -> {
-            requiredIds.addAll(task.requiredCheckIds()); criteria.addAll(task.acceptanceCriteria());
-        });
+        requiredIds.addAll(strings(delta, "requiredChecks"));
+        criteria.addAll(strings(delta, "acceptanceCriteria"));
 
         ExecutionResult diff = execute(target, "git diff --check", 120);
         checks.add(store(reportId, VerificationCheckResult.Stage.DIFF, "diff-check", "git diff --check",
@@ -84,26 +81,25 @@ public final class WorkspaceVerificationService {
             }
             ExecutionResult execution = execute(target, check.command(), check.timeoutSeconds());
             checks.add(store(reportId, check.stage(), check.id(), check.command(), execution,
-                    relatedTasks(plan, check.id())));
+                    relatedRuns(delta, check.id())));
             if (check.required() && failed(execution)) blocked = true;
         }
 
         List<String> unproven = new ArrayList<>();
         for (String id : requiredIds) if (!byId.containsKey(id)) unproven.add("unknown check: " + id);
-        if (plan != null) plan.tasks().stream()
-                .filter(task -> !task.acceptanceCriteria().isEmpty() && task.requiredCheckIds().isEmpty())
-                .forEach(task -> task.acceptanceCriteria().forEach(criterion ->
-                        unproven.add(task.taskId() + ": " + criterion)));
+        if (!criteria.isEmpty() && requiredIds.isEmpty()) {
+            criteria.forEach(criterion -> unproven.add("unbound acceptance criterion: " + criterion));
+        }
         if (profile.checks().stream().noneMatch(check -> check.stage() == VerificationCheckResult.Stage.COMPILE))
             unproven.add("compile check is not configured or detectable");
         if (profile.checks().stream().noneMatch(check -> check.stage() == VerificationCheckResult.Stage.TEST))
             unproven.add("test check is not configured or detectable");
-        if (results != null) results.stream().filter(result -> result.status() == ricbot.domain.task.TaskStatus.FAILED)
-                .forEach(result -> checks.add(new VerificationCheckResult(VerificationCheckResult.Stage.ACCEPTANCE,
-                        "worker-" + result.taskId(), "", VerificationCheckResult.Status.FAIL, null, false, 0,
-                        "scheduler", false, "worker failed: " + result.summary(),
-                        result.artifacts().getOrDefault("report", ""),
-                        List.of(result.taskId()), Instant.now())));
+        for (String failedRun : strings(delta, "failedChildRuns")) {
+            checks.add(new VerificationCheckResult(VerificationCheckResult.Stage.ACCEPTANCE,
+                    "child-" + safe(failedRun), "", VerificationCheckResult.Status.FAIL, null, false, 0,
+                    "durable-runtime", false, "child Run failed: " + failedRun, "",
+                    List.of(failedRun), Instant.now()));
+        }
         if (names.stdout().lines().anyMatch(line -> line.startsWith("D") && isTestPath(line))) {
             unproven.add("test deletion requires human review");
         }
@@ -135,7 +131,7 @@ public final class WorkspaceVerificationService {
                     VerificationProfile.sha256(command.getBytes(StandardCharsets.UTF_8)),
                     status,
                     result.exitCode(), result.timedOut(), result.duration().toMillis(), result.backend(),
-                    result.truncated(), summary, "sqlite:.ricbot/runtime.db#verification/" + reportId + "/" + safe(id),
+                    result.truncated(), summary, "sqlite:.ricbot/application.db#verification/" + reportId + "/" + safe(id),
                     taskIds, Instant.now());
         } catch (Exception e) { throw new IllegalStateException("cannot persist verification check " + id, e); }
     }
@@ -152,9 +148,29 @@ public final class WorkspaceVerificationService {
                 VerificationProfile.sha256(check.command().getBytes(StandardCharsets.UTF_8)),
                 VerificationCheckResult.Status.SKIPPED, null, false, 0, "", false, reason, "", List.of(), Instant.now());
     }
-    private static List<String> relatedTasks(TeamPlan plan, String checkId) {
-        if (plan == null) return List.of();
-        return plan.tasks().stream().filter(task -> task.requiredCheckIds().contains(checkId)).map(task -> task.taskId()).toList();
+    private static List<String> relatedRuns(ArtifactDelta delta, String checkId) {
+        if (delta == null) return List.of();
+        Object raw = delta.metadata().get("checkRunIds");
+        if (!(raw instanceof Map<?, ?> mapping)) return List.of();
+        Object ids = mapping.get(checkId);
+        if (!(ids instanceof Iterable<?> values)) return List.of();
+        List<String> result = new ArrayList<>();
+        for (Object value : values) {
+            String id = value != null ? String.valueOf(value).trim() : "";
+            if (!id.isBlank()) result.add(id);
+        }
+        return List.copyOf(result);
+    }
+    private static List<String> strings(ArtifactDelta delta, String key) {
+        if (delta == null) return List.of();
+        Object raw = delta.metadata().get(key);
+        if (!(raw instanceof Iterable<?> values)) return List.of();
+        List<String> result = new ArrayList<>();
+        for (Object value : values) {
+            String item = value != null ? String.valueOf(value).trim() : "";
+            if (!item.isBlank()) result.add(item);
+        }
+        return List.copyOf(result);
     }
     private static Map<String, String> environment() {
         Map<String, String> env = new LinkedHashMap<>();

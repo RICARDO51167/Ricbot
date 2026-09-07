@@ -1,7 +1,7 @@
 package ricbot.tool.filesystem;
 
 import ricbot.tool.api.Tool;
-import ricbot.tool.api.ToolParam;
+import ricbot.tool.api.BuiltinParameter;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -11,7 +11,7 @@ import java.util.Map;
 /**
  * 列出指定目录下的文件和子目录的工具类。
  */
-public class ListDirTool extends Tool {
+public class ListDirTool extends ricbot.tool.api.BuiltinTool {
     @Override public ricbot.tool.api.ToolEffectPolicy effectPolicy() {
         return ricbot.tool.api.ToolEffectPolicy.readOnly(java.time.Duration.ofSeconds(30));
     }
@@ -36,9 +36,9 @@ public class ListDirTool extends Tool {
     }
 
     @Override
-    public List<ToolParam> getParams() {
+    public List<BuiltinParameter> getParams() {
         return List.of(
-                ToolParam.of("path", "string", "目录路径", false).setDefaultValue(".")
+                BuiltinParameter.of("path", "string", "目录路径", false).defaultValue(".")
         );
     }
 

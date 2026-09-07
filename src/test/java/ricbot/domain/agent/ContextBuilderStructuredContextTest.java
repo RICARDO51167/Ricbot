@@ -23,7 +23,6 @@ class ContextBuilderStructuredContextTest {
         bundle.addItem("memory_recall", "project uses Java 17");
         bundle.addItem("project_notes", "notes/project/decisions.md: use GSSC");
         bundle.addItem("workspace_knowledge", "src/main/java/App.java:1-20");
-        bundle.addItem("team_context", "session=team_1 | state=VERIFYING | goal=finish upgrade");
         bundle.addItem("tool_trace", "grep: ok | result=found files");
 
         List<Map<String, Object>> messages = builder.buildMessages(
@@ -37,21 +36,19 @@ class ContextBuilderStructuredContextTest {
                 bundle
         );
 
-        String system = String.valueOf(messages.get(0).get("content"));
+        String system = String.valueOf(messages.get(1).get("content"));
         assertTrue(system.contains("## recent_history"));
         assertTrue(system.contains("## task_state"));
         assertTrue(system.contains("## user_profile"));
         assertTrue(system.contains("## memory_recall"));
         assertTrue(system.contains("## project_notes"));
         assertTrue(system.contains("## workspace_knowledge"));
-        assertTrue(system.contains("## team_context"));
         assertTrue(system.contains("## tool_trace"));
         assertTrue(system.indexOf("## recent_history") < system.indexOf("## task_state"));
         assertTrue(system.indexOf("## task_state") < system.indexOf("## user_profile"));
         assertTrue(system.indexOf("## memory_recall") < system.indexOf("## project_notes"));
         assertTrue(system.indexOf("## project_notes") < system.indexOf("## workspace_knowledge"));
-        assertTrue(system.indexOf("## workspace_knowledge") < system.indexOf("## team_context"));
-        assertTrue(system.indexOf("## team_context") < system.indexOf("## tool_trace"));
+        assertTrue(system.indexOf("## workspace_knowledge") < system.indexOf("## tool_trace"));
         assertTrue(system.contains("grep: ok | result=found files"));
         assertEquals(system.indexOf("project uses Java 17"), system.lastIndexOf("project uses Java 17"));
     }
@@ -75,12 +72,12 @@ class ContextBuilderStructuredContextTest {
                 bundle
         );
 
-        String system = String.valueOf(messages.get(0).get("content"));
+        String system = String.valueOf(messages.get(1).get("content"));
         assertTrue(system.contains("## tool_trace"));
         assertTrue(system.contains("trace-0"));
         assertTrue(system.contains("trace-3"));
         assertFalse(system.contains("trace-4 x"));
-        assertTrue(system.contains("[truncated]"));
+        assertTrue(system.contains("recover from the recorded ContextSource"));
     }
 
     @Test

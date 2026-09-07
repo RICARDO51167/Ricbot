@@ -60,7 +60,10 @@ final class EvalSummarySupport {
                 count++;
             }
         }
-        return count;
+        if (count > 0) return count;
+        Object tools = result.getRunTrace().get("tools_used");
+        if (tools instanceof List<?> used) return used.size();
+        return result.getToolsUsed() != null ? result.getToolsUsed().size() : 0;
     }
 
     private static int workspaceChangeCount(EvalCaseResult result) {

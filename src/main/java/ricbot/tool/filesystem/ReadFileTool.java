@@ -2,7 +2,7 @@ package ricbot.tool.filesystem;
 
 
 import ricbot.tool.api.Tool;
-import ricbot.tool.api.ToolParam;
+import ricbot.tool.api.BuiltinParameter;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -18,7 +18,7 @@ import java.util.Map;
  * 3. 自动检测并拒绝读取二进制文件，防止乱码或性能问题。
  * 4. 维护读取状态（Read State），如果文件未发生变化且请求范围相同，则提示未变更以节省 token。
  */
-public class ReadFileTool extends Tool {
+public class ReadFileTool extends ricbot.tool.api.BuiltinTool {
 
     /**
      * 工作区根路径
@@ -63,11 +63,12 @@ public class ReadFileTool extends Tool {
     }
 
     @Override
-    public List<ToolParam> getParams() {
+    public List<BuiltinParameter> getParams() {
         return List.of(
-                ToolParam.of("path", "string", "文件路径", true),
-                ToolParam.of("offset", "integer", "起始行号（从 1 开始）", false).setDefaultValue(1),
-                ToolParam.of("limit", "integer", "可选：最大读取行数", false)
+                BuiltinParameter.of("path", "string", "文件路径", true).minLength(1),
+                BuiltinParameter.of("offset", "integer", "起始行号（从 1 开始）", false)
+                        .defaultValue(1).minimum(1),
+                BuiltinParameter.of("limit", "integer", "可选：最大读取行数", false).minimum(1)
         );
     }
 
@@ -112,19 +113,38 @@ public class ReadFileTool extends Tool {
             // 处理默认偏移量
             int off = offset != null ? offset : 1;
 
-            // 检查文件是否自上次读取以来未发生变化，以优化 Token 使用
-            if (FileReadState.isUnchanged(target, off, limit)) {
-                return "文件自上次读取后未发生变化。\n\n" +
-                        FileToolSupport.sliceLines(target, off, limit);
-            }
-
-            // 按行流式读取切片并记录状态
+            // Durable receipts are returned as a state mutation by the v6 Tool contract.
             String content = FileToolSupport.sliceLines(target, off, limit);
-            FileReadState.recordRead(target, off, limit);
-
             return content;
         } catch (Exception e) {
             return "错误：" + e.getMessage();
+        }
+    }
+
+    @Override public ricbot.tool.api.ToolResult execute(ricbot.tool.api.ToolInvocation invocation,
+                                                        ricbot.tool.api.ToolExecutionContext context,
+                                                        ricbot.tool.api.ToolChunkSink chunks) {
+        Object value = execute(invocation.arguments());
+        if (value instanceof String text && text.startsWith("错误")) {
+            return new ricbot.tool.api.ToolResult.Failure("READ_FAILED", text, false, List.of());
+        }
+        try {
+            String logical = String.valueOf(invocation.arguments().get("path"));
+            Path target = FileToolSupport.resolvePath(workspace, logical);
+            int start = invocation.arguments().get("offset") instanceof Number n ? n.intValue() : 1;
+            Integer limit = invocation.arguments().get("limit") instanceof Number n ? n.intValue() : null;
+            long lines;
+            try (var stream = Files.lines(target)) { lines = stream.count(); }
+            int end = limit == null || limit <= 0 ? (int) Math.max(start, lines)
+                    : (int) Math.min(lines, (long) start + limit - 1);
+            boolean eof = limit == null || limit <= 0 || end >= lines;
+            FileReadReceipt receipt = new FileReadReceipt(context.runId(), context.taskId(), context.workspaceId(),
+                    workspace.toAbsolutePath().normalize().relativize(target).toString(), FileToolSupport.sha256(target),
+                    start, end, eof, Files.size(target), "read_file", java.time.Instant.now());
+            return new ricbot.tool.api.ToolResult.Success(value, String.valueOf(value),
+                    List.of(new ricbot.tool.api.ToolStateMutation.RecordFileReadReceipt(receipt.key(), receipt.toMap())), Map.of());
+        } catch (Exception failure) {
+            return new ricbot.tool.api.ToolResult.Failure("RECEIPT_FAILED", failure.getMessage(), false, List.of());
         }
     }
 }

@@ -11,7 +11,7 @@ LOG_DIR="$REPORT_DIR/release-check-logs"
 SMOKE_OUT="target/release-check-eval-smoke"
 REPLAY_OUT="target/release-check-eval-replay"
 COMPARE_OUT="target/release-check-eval-compare"
-BASELINE_DIR=".ricbot/eval-baselines/golden"
+BASELINE_DIR="evals/baselines/golden"
 CONFIG_PATH="${RICBOT_CONFIG:-config/ricbot.config.json}"
 JAR="target/Ricbot-1.0-SNAPSHOT.jar"
 
@@ -28,7 +28,8 @@ REPLAY_STATUS="NOT_RUN"
 SCHEMA_STATUS="NOT_RUN"
 BASELINE_STATUS="MISSING"
 ARCHITECTURE_STATUS="NOT_RUN"
-TEAM_RUNTIME_STATUS="NOT_RUN"
+DURABLE_RUNTIME_STATUS="NOT_RUN"
+DIFF_STATUS="NOT_RUN"
 CONFIG_OUTPUT=""
 SMOKE_OUTPUT=""
 COMPARE_OUTPUT=""
@@ -114,8 +115,9 @@ write_report() {
     echo "| eval replay | $REPLAY_STATUS |"
     echo "| eval compare | $COMPARE_STATUS |"
     echo "| architecture hard-cut | $ARCHITECTURE_STATUS |"
-    echo "| SQLite schema v2 | $SCHEMA_STATUS |"
-    echo "| team runtime golden | $TEAM_RUNTIME_STATUS |"
+    echo "| SQLite schema v3/archive | $SCHEMA_STATUS |"
+    echo "| durable runtime v6 | $DURABLE_RUNTIME_STATUS |"
+    echo "| git diff --check | $DIFF_STATUS |"
     echo
     echo "## Baseline"
     echo
@@ -212,7 +214,7 @@ else
 fi
 
 ARCHITECTURE_LOG="$LOG_DIR/architecture.log"
-FORBIDDEN_TYPES="AgentRunner.java SpawnWorkerService.java SpawnTool.java AutoCompact.java Consolidator.java RuntimeV2QueryService.java RunCheckpoint.java RunCheckpointStore.java RunJournalStore.java RunEventSink.java RunResumeService.java RunRecoveryCoordinator.java RunEventReplayService.java"
+FORBIDDEN_TYPES="AgentRuntime.java AgentRunner.java AgentGraphFactory.java TeamAgentGraphFactory.java UnifiedAgentGraphFactory.java TaskStatus.java SpawnWorkerService.java SpawnTool.java AutoCompact.java Consolidator.java RuntimeV2QueryService.java RunCheckpoint.java RunCheckpointStore.java RunJournalStore.java RunEventSink.java RunResumeService.java RunRecoveryCoordinator.java RunEventReplayService.java SideEffectStore.java SideEffectRecord.java SideEffectCoordinator.java SideEffectApplicationService.java AuditedSideEffectStore.java SideEffectConfirmationRequiredException.java BudgetReservation.java AgentPhaseServices.java"
 : >"$ARCHITECTURE_LOG"
 for forbidden_type in $FORBIDDEN_TYPES; do
   found="$(find src/main/java -name "$forbidden_type" -print)"
@@ -220,7 +222,7 @@ for forbidden_type in $FORBIDDEN_TYPES; do
     printf '%s\n' "$found" >>"$ARCHITECTURE_LOG"
   fi
 done
-for removed_dir in src/main/java/ricbot/application/team src/main/java/ricbot/domain/team src/main/java/ricbot/domain/worker; do
+for removed_dir in src/main/java/ricbot/application/team src/main/java/ricbot/domain/team src/main/java/ricbot/domain/worker src/main/java/ricbot/domain/task src/main/java/ricbot/domain/agent/graph; do
   if [ -d "$removed_dir" ] && find "$removed_dir" -type f -print -quit | grep -q .; then
     echo "$removed_dir" >>"$ARCHITECTURE_LOG"
   fi
@@ -245,10 +247,35 @@ if grep -R -n 'new SqliteRuntimeStore' src/main/java --include='*.java' \
   :
 fi
 if grep -R -n 'Thread\.sleep' src/main/java/ricbot/application/runtime \
-    src/main/java/ricbot/domain/agent/graph src/main/java/ricbot/domain/agent/AgentGraphFactory.java \
     >>"$ARCHITECTURE_LOG" 2>/dev/null; then
   :
 fi
+if grep -R -n '/side-effect' src/main/java --include='*.java' >>"$ARCHITECTURE_LOG" 2>/dev/null; then
+  :
+fi
+if grep -R -n 'side_effects' \
+    src/main/java/ricbot/application/runtime \
+    src/main/java/ricbot/infra/runtime \
+    src/main/java/ricbot/domain/agent \
+    src/main/java/ricbot/app/cli \
+    --include='*.java' \
+    | grep -v 'SqliteRuntimeStore.java' >>"$ARCHITECTURE_LOG" 2>/dev/null; then
+  :
+fi
+if grep -n -E 'RuntimeReducer|new RunState|RunState\.initial' \
+    src/main/java/ricbot/infra/runtime/SqliteDurableRuntimeStore.java >>"$ARCHITECTURE_LOG" 2>/dev/null; then
+  :
+fi
+for required_component in AgentPhaseHandler IngestPhaseHandler ContextCompactPhaseHandler ModelPhaseHandler ToolEffectPhaseHandler DelegatePhaseHandler ChangeActionPhaseHandler; do
+  if [ ! -f "src/main/java/ricbot/application/runtime/${required_component}.java" ]; then
+    echo "missing phase component: $required_component" >>"$ARCHITECTURE_LOG"
+  fi
+done
+for required_component in SqliteRuntimeTransactionFacade SqliteRuntimeJournal SqliteRuntimeModelLedger SqliteRuntimeEffectResourceLedger SqliteRuntimeBudgetLedger SqliteRuntimeForkQueries; do
+  if [ ! -f "src/main/java/ricbot/infra/runtime/${required_component}.java" ]; then
+    echo "missing SQLite component: $required_component" >>"$ARCHITECTURE_LOG"
+  fi
+done
 if ! grep -q 'AgentRuntimeFactory.create' src/main/java/ricbot/domain/agent/AgentRuntimeCoreFactory.java; then
   echo 'missing AgentRuntime production wiring' >>"$ARCHITECTURE_LOG"
 fi
@@ -266,37 +293,49 @@ if [ -s "$ARCHITECTURE_LOG" ]; then
 fi
 ARCHITECTURE_STATUS="PASS"
 
-SCHEMA_LOG="$LOG_DIR/sqlite-schema-v2.log"
-if run_capture "SQLite schema v2" "$SCHEMA_LOG" sh ./mvnw -q \
-  -Dtest=SqliteRuntimeStoreTest test; then
+SCHEMA_LOG="$LOG_DIR/sqlite-schema-v3.log"
+if run_capture "SQLite schema v3 and archive" "$SCHEMA_LOG" sh ./mvnw -q \
+  -Dtest=DurableRuntimeV6Test test; then
   SCHEMA_STATUS="PASS"
 else
   SCHEMA_STATUS="FAIL"
   mark_fail
-  append_final_reason "SQLite schema v2 tests failed"
+  append_final_reason "SQLite schema v3/archive tests failed"
   write_report
-  echo "release-check failed: SQLite schema v2"
+  echo "release-check failed: SQLite schema v3/archive"
   echo "report: $REPORT"
   exit 1
 fi
 
-TEAM_LOG="$LOG_DIR/team-runtime.log"
-if run_capture "team runtime golden" "$TEAM_LOG" sh ./mvnw -q \
-  -Dtest=TeamAgentRuntimeTest,LocalTaskSchedulerTest,PatchLedgerServiceTest,SqliteTaskClaimConcurrencyTest test; then
-  TEAM_RUNTIME_STATUS="PASS"
+DURABLE_RUNTIME_LOG="$LOG_DIR/durable-runtime-v6.log"
+if run_capture "durable runtime v6" "$DURABLE_RUNTIME_LOG" sh ./mvnw -q \
+  -Dtest=DurableRuntimeV6Test,RuntimeBoundaryTest test; then
+  DURABLE_RUNTIME_STATUS="PASS"
 else
-  TEAM_RUNTIME_STATUS="FAIL"
+  DURABLE_RUNTIME_STATUS="FAIL"
   mark_fail
-  append_final_reason "team runtime golden scenarios failed"
+  append_final_reason "durable runtime v6 tests failed"
   write_report
-  echo "release-check failed: team runtime golden"
+  echo "release-check failed: durable runtime v6"
   echo "report: $REPORT"
   exit 1
 fi
 
 PACKAGE_LOG="$LOG_DIR/package.log"
 if run_capture "package" "$PACKAGE_LOG" sh ./mvnw -q -DskipTests package; then
-  PACKAGE_STATUS="PASS"
+  if [ -f "target/site/jacoco/index.html" ] \
+      && [ -f "target/sbom/bom.json" ] \
+      && [ -f "target/sbom/bom.xml" ]; then
+    PACKAGE_STATUS="PASS"
+  else
+    PACKAGE_STATUS="FAIL"
+    mark_fail
+    append_final_reason "package evidence is missing JaCoCo or CycloneDX output"
+    write_report
+    echo "release-check failed: package evidence"
+    echo "report: $REPORT"
+    exit 1
+  fi
 else
   PACKAGE_STATUS="FAIL"
   mark_fail
@@ -309,7 +348,7 @@ else
 fi
 
 CONFIG_LOG="$LOG_DIR/config-doctor.log"
-if run_capture "config doctor" "$CONFIG_LOG" java -jar "$JAR" config doctor -c "$CONFIG_PATH"; then
+if run_capture "config doctor" "$CONFIG_LOG" java -Dricbot.log.file="$LOG_DIR/ricbot.log" -jar "$JAR" config doctor -c "$CONFIG_PATH"; then
   :
 else
   :
@@ -340,7 +379,7 @@ elif [ "$CONFIG_STATUS" != "OK" ]; then
 fi
 
 SMOKE_LOG="$LOG_DIR/eval-smoke.log"
-if run_capture "fixed eval smoke" "$SMOKE_LOG" java -jar "$JAR" eval smoke \
+if run_capture "fixed eval smoke" "$SMOKE_LOG" java -Dricbot.log.file="$LOG_DIR/ricbot.log" -jar "$JAR" eval smoke \
   --scenarios evals/golden.jsonl \
   --workspace target/eval-release-check-workspace \
   --out "$SMOKE_OUT" \
@@ -365,7 +404,7 @@ if [ -z "$SMOKE_ARTIFACTS" ]; then
 fi
 
 REPLAY_LOG="$LOG_DIR/eval-replay.log"
-if run_capture "eval replay" "$REPLAY_LOG" java -jar "$JAR" eval replay \
+if run_capture "eval replay" "$REPLAY_LOG" java -Dricbot.log.file="$LOG_DIR/ricbot.log" -jar "$JAR" eval replay \
   --run "$SMOKE_ARTIFACTS" \
   --workspace target/eval-release-check-replay-workspace \
   --out "$REPLAY_OUT" \
@@ -387,7 +426,7 @@ fi
 if [ -d "$BASELINE_DIR" ] && [ -f "$BASELINE_DIR/summary.json" ] && [ -f "$BASELINE_DIR/cases.jsonl" ]; then
   BASELINE_STATUS="FOUND"
   COMPARE_LOG="$LOG_DIR/eval-compare.log"
-  if run_capture "eval compare" "$COMPARE_LOG" java -jar "$JAR" eval compare \
+  if run_capture "eval compare" "$COMPARE_LOG" java -Dricbot.log.file="$LOG_DIR/ricbot.log" -jar "$JAR" eval compare \
     --baseline "$BASELINE_DIR" \
     --candidate "$SMOKE_ARTIFACTS" \
     --out "$COMPARE_OUT"; then
@@ -438,6 +477,14 @@ else
   append_final_reason "fixed golden baseline is missing"
 fi
 
+DIFF_LOG="$LOG_DIR/git-diff-check.log"
+if run_capture "git diff --check" "$DIFF_LOG" git diff --check; then
+  DIFF_STATUS="PASS"
+else
+  DIFF_STATUS="FAIL"
+  mark_fail
+  append_final_reason "git diff --check failed"
+fi
 write_report
 echo "release-check final_status: $FINAL_STATUS"
 echo "report: $REPORT"

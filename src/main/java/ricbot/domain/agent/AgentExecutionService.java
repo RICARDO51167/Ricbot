@@ -2,7 +2,6 @@ package ricbot.domain.agent;
 
 import ricbot.domain.agent.dto.ExecutionOutcome;
 import ricbot.domain.agent.interfacep.AgentInvocationRuntime;
-import ricbot.domain.agent.interfacep.SideEffectStore;
 import ricbot.domain.config.ProviderCapability;
 import ricbot.domain.config.ModelCard;
 import ricbot.domain.agent.budget.BudgetPolicy;
@@ -15,7 +14,7 @@ import ricbot.tool.api.ToolRegistry;
 import java.nio.file.Path;
 import java.util.Map;
 
-/** Builds immutable invocation input and delegates once to the graph runtime. */
+/** Builds immutable invocation input and delegates once to the durable runtime. */
 final class AgentExecutionService {
     private final AgentInvocationRuntime runner;
     private final ToolRegistry tools;
@@ -27,28 +26,27 @@ final class AgentExecutionService {
     private final int contextWindowTokens;
     private final Integer contextBlockLimit;
     private final ProviderCapability providerCapability;
-    private final SideEffectStore sideEffectStore;
     private final ApprovalService approvalService;
     private final BudgetPolicy budgetPolicy;
     private final Config.ContextOffloadConfig offload;
     private final String timezone;
     private ModelCard.Pricing modelPricing;
+    private Config.ContextManagementConfig contextManagement = new Config.ContextManagementConfig();
+    private Config.ToolRuntimeConfig toolRuntime = new Config.ToolRuntimeConfig();
 
     AgentExecutionService(AgentInvocationRuntime runner, ToolRegistry tools, Path workspace, String model,
                           int maxIterations, int maxToolResultChars, String providerRetryMode,
                           int contextWindowTokens, Integer contextBlockLimit,
-                          ProviderCapability capability, SideEffectStore effects,
-                          ApprovalService approvals) {
+                          ProviderCapability capability, ApprovalService approvals) {
         this(runner, tools, workspace, model, maxIterations, maxToolResultChars, providerRetryMode,
-                contextWindowTokens, contextBlockLimit, capability, effects, approvals,
+                contextWindowTokens, contextBlockLimit, capability, approvals,
                 BudgetPolicy.unlimited(), new Config.ContextOffloadConfig(), "UTC");
     }
 
     AgentExecutionService(AgentInvocationRuntime runner, ToolRegistry tools, Path workspace, String model,
                           int maxIterations, int maxToolResultChars, String providerRetryMode,
                           int contextWindowTokens, Integer contextBlockLimit,
-                          ProviderCapability capability, SideEffectStore effects,
-                          ApprovalService approvals, BudgetPolicy budgetPolicy,
+                          ProviderCapability capability, ApprovalService approvals, BudgetPolicy budgetPolicy,
                           Config.ContextOffloadConfig offload, String timezone) {
         this.runner = runner;
         this.tools = tools;
@@ -60,7 +58,6 @@ final class AgentExecutionService {
         this.contextWindowTokens = contextWindowTokens;
         this.contextBlockLimit = contextBlockLimit;
         this.providerCapability = capability;
-        this.sideEffectStore = java.util.Objects.requireNonNull(effects, "effects");
         this.approvalService = java.util.Objects.requireNonNull(approvals, "approvals");
         this.budgetPolicy = budgetPolicy != null ? budgetPolicy : BudgetPolicy.unlimited();
         this.offload = offload != null ? offload : new Config.ContextOffloadConfig();
@@ -89,11 +86,19 @@ final class AgentExecutionService {
                         + maxIterations + "），但仍未完成任务。")
                 .setWorkspace(workspace).setSessionKey(request.session().getKey())
                 .setContextWindowTokens(contextWindowTokens).setContextBlockLimit(contextBlockLimit)
-                .setProviderCapability(providerCapability).setSideEffectStore(sideEffectStore)
+                .setProviderCapability(providerCapability)
                 .setModelPricing(modelPricing)
                 .setApprovalService(approvalService).setBudgetPolicy(budgetPolicy)
                 .setContextOffloadEnabled(offload.isEnabled()).setOffloadPreviewChars(offload.getPreviewChars())
-                .setArtifactReadChunkChars(offload.getReadChunkChars()).setTimezone(timezone)
+                .setArtifactReadChunkChars(offload.getReadChunkChars())
+                .setMaxArtifactBytesPerTool(offload.getMaxArtifactBytesPerTool())
+                .setContextTriggerRatio(contextManagement.getTriggerRatio())
+                .setContextWarningRatio(contextManagement.getWarningRatio())
+                .setContextTargetRatio(contextManagement.getTargetRatio())
+                .setTimeHintIntervalMinutes(contextManagement.getTimeHintIntervalMinutes())
+                .setExternalActionsEnabled(toolRuntime.isExternalActionsEnabled())
+                .setMaxParallelReadCalls(toolRuntime.getMaxParallelReadCalls())
+                .setRequireReadReceipt(toolRuntime.isRequireReadReceipt()).setTimezone(timezone)
                 .setToolLifecycleCallback(new AgentRunSpec.ToolLifecycleCallback() {
                     public void onToolStart(String name, Map<String, Object> arguments) {
                         synchronized (request.session()) {
@@ -116,4 +121,9 @@ final class AgentExecutionService {
     }
 
     void setModelPricing(ModelCard.Pricing modelPricing) { this.modelPricing = modelPricing; }
+    void setRuntimeConfigs(Config.ContextManagementConfig contextManagement,
+                           Config.ToolRuntimeConfig toolRuntime) {
+        this.contextManagement = contextManagement != null ? contextManagement : new Config.ContextManagementConfig();
+        this.toolRuntime = toolRuntime != null ? toolRuntime : new Config.ToolRuntimeConfig();
+    }
 }

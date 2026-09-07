@@ -18,7 +18,7 @@ class ArtifactStoreTest {
         assertThrows(SecurityException.class, () -> store.read("artifact://run-b/" + ref.artifactId(), 0, 10));
         assertThrows(SecurityException.class, () -> store.read("artifact://run-a/../../etc", 0, 10));
 
-        Files.writeString(Path.of(ref.path()), "tampered");
+        Files.writeString(workspace.resolve(".ricbot/artifacts/root").resolve(ref.path()), "tampered");
         assertThrows(IllegalStateException.class, () -> store.read(ref.uri(), 0, 10));
     }
 }

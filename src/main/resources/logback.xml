@@ -1,5 +1,5 @@
 <configuration>
-    <property name="RICBOT_LOG_FILE" value="${ricbot.log.file:-${user.home}/.ricbot/logs/ricbot.log}"/>
+    <property name="RICBOT_LOG_FILE" value="${ricbot.log.file}"/>
 
     <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
         <file>${RICBOT_LOG_FILE}</file>

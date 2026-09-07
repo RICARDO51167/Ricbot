@@ -16,7 +16,7 @@ public record SessionPreparationService(SessionManager sessionManager) {
     public PreparedSessionContext prepareInteractiveTurn(InboundMessage message, String sessionKey,
                                                    CommandDispatcher dispatcher) {
         Session session = sessionManager.getOrCreate(sessionKey);
-        // Context/Compact graph nodes are the only owners of message compaction.
+        // The fixed durable CONTEXT/COMPACT phases are the only owners of message compaction.
         String raw = message.getContent() != null ? message.getContent().trim() : "";
         OutboundMessage immediate = raw.startsWith("/")
                 ? dispatcher.dispatch(message, session, sessionKey, raw) : null;

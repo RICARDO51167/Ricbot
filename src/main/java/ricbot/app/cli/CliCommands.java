@@ -27,7 +27,9 @@ import ricbot.domain.eval.EvalModelTarget;
 import ricbot.domain.config.ConfigDoctorReport;
 import ricbot.domain.config.ConfigDoctorService;
 import ricbot.infra.config.Config; // 导入配置类
+import ricbot.infra.config.ConfigLoadResult;
 import ricbot.infra.config.ConfigLoader; // 导入配置加载器
+import ricbot.infra.config.ConfigSource;
 import ricbot.infra.config.RuntimePaths; // 导入运行时路径工具类
 import ricbot.integration.llm.provider.ProviderRegistry; // 导入提供商注册表类
 import ricbot.integration.llm.provider.ProviderSpec; // 导入提供商规范类
@@ -112,11 +114,15 @@ public final class CliCommands {
         String workspace = optionValue(doctorArgs, "--workspace", "-w");
         boolean json = hasFlag(doctorArgs, "--json");
 
-        Config loaded = loadRuntimeConfig(configPath, workspace);
-        Path resolvedPath = configPath != null && !configPath.isBlank()
-                ? Path.of(configPath).toAbsolutePath().normalize()
-                : ConfigLoader.getConfigPath();
-        ConfigDoctorReport report = new ConfigDoctorService().diagnose(loaded, resolvedPath);
+        boolean explicit = configPath != null && !configPath.isBlank();
+        Path resolvedPath = explicit ? Path.of(configPath).toAbsolutePath().normalize() : null;
+        ConfigLoadResult loaded = ConfigLoader.loadResult(resolvedPath, explicit);
+        if (workspace != null && !workspace.isBlank()) {
+            loaded.config().getAgents().getDefaults().setWorkspace(workspace);
+        }
+        ConfigDoctorReport report = new ConfigDoctorService().diagnose(loaded,
+                workspace != null && !workspace.isBlank()
+                        ? Map.of("workspace", ConfigSource.CLI_OVERRIDE) : Map.of());
 
         if (json) {
             System.out.println(MAPPER.writeValueAsString(report.toMap()));
@@ -497,7 +503,10 @@ public final class CliCommands {
     }
 
     private static void initLogging(String[] args) {
-        RuntimePaths.configureWorkspaceLogFile(RuntimePaths.workspaceOption(args), null);
+        String configured = System.getProperty("ricbot.log.file");
+        if (configured == null || configured.isBlank()) {
+            RuntimePaths.configureWorkspaceLogFile(RuntimePaths.workspaceOption(args), null);
+        }
     }
 
     // =========================================================
@@ -792,11 +801,11 @@ public final class CliCommands {
             // 初始化标志字符串
             String flags = "";
             // 如果是只读工具，添加 read-only 标志
-            if (tool.effectPolicy().readOnly()) {
+            if (tool.descriptor().effectPolicy().readOnly()) {
                 flags = flags.isEmpty() ? "(read-only" : flags + ", read-only";
             }
             // 如果是独占工具，添加 exclusive 标志
-            if (tool.effectPolicy().concurrency() == ricbot.tool.api.ToolEffectPolicy.Concurrency.EXCLUSIVE_WORKSPACE) {
+            if (tool.descriptor().effectPolicy().concurrency() == ricbot.tool.api.ToolEffectPolicy.Concurrency.EXCLUSIVE_WORKSPACE) {
                 flags = flags.isEmpty() ? "(exclusive" : flags + ", exclusive";
             }
             // 如果有标志，闭合括号
@@ -805,7 +814,8 @@ public final class CliCommands {
             }
             
             // 打印工具名称、描述及标志
-            System.out.println("  - " + tool.getName() + " — " + tool.getDescription() + (flags.isEmpty() ? "" : " " + flags));
+            System.out.println("  - " + tool.descriptor().name() + " — " + tool.descriptor().description()
+                    + (flags.isEmpty() ? "" : " " + flags));
         }
 
     }
@@ -940,6 +950,8 @@ public final class CliCommands {
         sb.append("errorCodes: ").append(String.join(",", report.getErrorCodes())).append("\n\n");
         sb.append("effective config\n");
         sb.append("  configPath: ").append(report.getConfigPath()).append("\n");
+        sb.append("  configSource: ").append(report.getConfigSource()).append("\n");
+        sb.append("  settingSources: ").append(report.getSettingSources()).append("\n");
         sb.append("  workspace: ").append(report.getWorkspace()).append("\n");
         sb.append("  model: ").append(report.getModel()).append("\n");
         sb.append("  inferredProvider: ").append(report.getInferredProvider()).append("\n");

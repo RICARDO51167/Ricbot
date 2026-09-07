@@ -3,7 +3,9 @@ package ricbot.domain.config;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ricbot.infra.config.Config;
+import ricbot.infra.config.ConfigLoadResult;
 import ricbot.infra.config.ConfigLoader;
+import ricbot.infra.config.ConfigSource;
 import ricbot.integration.llm.provider.ProviderRegistry;
 import ricbot.integration.llm.provider.ProviderSpec;
 
@@ -40,10 +42,27 @@ public final class ConfigDoctorService {
         Config rawConfig = config != null ? config : new Config();
         Path resolvedPath = configPath != null ? configPath.toAbsolutePath().normalize() : ConfigLoader.getConfigPath();
         Map<String, Object> rawJson = readRawJson(resolvedPath);
+        ConfigSource source = Files.exists(resolvedPath) ? ConfigSource.FILE : ConfigSource.DEFAULT;
+        Map<String, ConfigSource> sources = settingSources(rawJson, rawConfig).entrySet().stream()
+                .collect(java.util.stream.Collectors.toMap(Map.Entry::getKey,
+                        entry -> ConfigSource.valueOf(entry.getValue())));
+        return diagnose(new ConfigLoadResult(rawConfig, resolvedPath, source, sources), Map.of());
+    }
+
+    public ConfigDoctorReport diagnose(ConfigLoadResult loaded, Map<String, ConfigSource> overrides) {
+        Config rawConfig = loaded.config();
+        Path resolvedPath = loaded.path();
+        Map<String, Object> rawJson = readRawJson(resolvedPath);
         Config resolvedConfig = ConfigLoader.resolveConfigEnvVars(rawConfig);
+        Map<String, ConfigSource> effectiveSources = new LinkedHashMap<>(loaded.settingSources());
+        if (overrides != null) effectiveSources.putAll(overrides);
 
         ConfigDoctorReport report = new ConfigDoctorReport();
         report.setConfigPath(resolvedPath.toString());
+        report.setConfigSource(loaded.source().name());
+        report.setSettingSources(effectiveSources.entrySet().stream().collect(
+                java.util.stream.Collectors.toMap(Map.Entry::getKey,
+                        entry -> entry.getValue().name(), (left, right) -> right, LinkedHashMap::new)));
         report.setWorkspace(resolvedConfig.getWorkspacePath().toString());
 
         String model = resolvedConfig.getAgents().getDefaults().getModel();
@@ -69,9 +88,41 @@ public final class ConfigDoctorService {
         diagnoseEnvironmentPlaceholders(rawJson, report);
         diagnoseProvider(rawConfig, resolvedConfig, providerName, spec, model, apiBase, apiKey, report);
         diagnoseTools(resolvedConfig, rawJson, report);
+        diagnoseRuntime(resolvedConfig, report);
         diagnoseModelCapabilityOverrides(rawJson, resolvedConfig, providerName, model, providerCapability, report);
         diagnoseCostBudget(resolvedConfig, providerName, model, report);
         return report;
+    }
+
+    private static Map<String, String> settingSources(Map<String, Object> rawJson, Config config) {
+        Map<String, String> sources = new LinkedHashMap<>();
+        String base = rawJson.isEmpty() ? ConfigSource.DEFAULT.name() : ConfigSource.FILE.name();
+        sources.put("model", nestedContains(rawJson, "agents", "defaults", "model")
+                ? ConfigSource.FILE.name() : ConfigSource.DEFAULT.name());
+        sources.put("workspace", nestedContains(rawJson, "agents", "defaults", "workspace")
+                ? ConfigSource.FILE.name() : ConfigSource.DEFAULT.name());
+        sources.put("provider", rawJson.containsKey("providers") ? ConfigSource.FILE.name() : base);
+        sources.put("apiBase", rawJson.containsKey("providers") ? ConfigSource.FILE.name() : base);
+        sources.put("execBackend", nestedContains(rawJson, "tools", "exec", "backend")
+                ? ConfigSource.FILE.name() : ConfigSource.DEFAULT.name());
+        sources.put("restrictToWorkspace", nestedContains(rawJson, "tools", "restrict_to_workspace")
+                ? ConfigSource.FILE.name() : ConfigSource.DEFAULT.name());
+        Config.ProviderConfig provider = config.getProvider(config.getAgents().getDefaults().getModel());
+        if (provider != null && provider.getApiKey() != null && ENV_PATTERN.matcher(provider.getApiKey()).find()) {
+            sources.put("apiKey", ConfigSource.ENV.name());
+        }
+        return Map.copyOf(sources);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static boolean nestedContains(Map<String, Object> root, String... path) {
+        Map<String, Object> current = root;
+        for (int i = 0; i < path.length - 1; i++) {
+            Object next = current.get(path[i]);
+            if (!(next instanceof Map<?, ?> map)) return false;
+            current = (Map<String, Object>) map;
+        }
+        return current.containsKey(path[path.length - 1]);
     }
 
     private void diagnoseCostBudget(Config config, String provider, String model, ConfigDoctorReport report) {
@@ -173,6 +224,32 @@ public final class ConfigDoctorService {
             report.addSuggestedFix("除非明确需要跨目录操作，建议设置 tools.restrictToWorkspace=true。");
         }
 
+    }
+
+    private void diagnoseRuntime(Config config, ConfigDoctorReport report) {
+        Config.AgentDefaults defaults = config.getAgents().getDefaults();
+        Config.ContextManagementConfig context = defaults.getContextManagement();
+        if (!(context.getRecentReserveRatio() < context.getTargetRatio()
+                && context.getTargetRatio() <= context.getWarningRatio()
+                && context.getWarningRatio() < context.getTriggerRatio()
+                && context.getTriggerRatio() <= 0.90d)) {
+            report.addError("INVALID_CONTEXT_RATIOS",
+                    "context_management 必须满足 recent_reserve < target <= warning < trigger <= 0.9");
+        }
+        if (context.getSafetyMarginRatio() < 0 || context.getSafetyMarginRatio() >= 1
+                || context.getTargetRatio() + context.getSafetyMarginRatio() >= 1) {
+            report.addError("INVALID_CONTEXT_MARGIN", "安全余量会使可用模型输入无效");
+        }
+        if (context.getTimeHintIntervalMinutes() <= 0) {
+            report.addError("INVALID_HINT_INTERVAL", "time_hint_interval_minutes 必须为正数");
+        }
+        if (defaults.getContextOffload().getMaxArtifactBytesPerTool() <= 0) {
+            report.addError("INVALID_ARTIFACT_LIMIT", "max_artifact_bytes_per_tool 必须为正数");
+        }
+        Config.ToolRuntimeConfig tools = defaults.getToolRuntime();
+        if (tools.getMaxParallelReadCalls() < 1) {
+            report.addError("INVALID_TOOL_PARALLELISM", "max_parallel_read_calls 必须至少为 1");
+        }
     }
 
     private void diagnoseModelCapabilityOverrides(

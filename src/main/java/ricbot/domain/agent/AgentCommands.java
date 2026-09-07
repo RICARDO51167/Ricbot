@@ -1,12 +1,12 @@
 package ricbot.domain.agent;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import ricbot.application.runtime.RunCancellationService;
 import ricbot.application.workspace.WorkspaceApplicationService;
 import ricbot.domain.agent.dto.ContextQualityReport;
-import ricbot.domain.agent.dto.SideEffectRecord;
 import ricbot.domain.change.ChangeSetRenderer;
 import ricbot.domain.change.ChangeSetService;
-import ricbot.domain.change.ChangeActionGraphService;
+import ricbot.domain.change.ChangeActionRuntimeService;
 import ricbot.domain.change.GitChangeSet;
 import ricbot.domain.change.GitChangeSetStatus;
 import ricbot.domain.change.PendingChangeAction;
@@ -17,16 +17,14 @@ import ricbot.domain.policy.PolicyDecision;
 import ricbot.domain.policy.PolicyDecisionType;
 import ricbot.domain.policy.PolicyEngine;
 import ricbot.domain.policy.PolicyRenderer;
-import ricbot.domain.runtime.dto.RunRequest;
-import ricbot.domain.runtime.dto.RunView;
+import ricbot.domain.runtime.*;
 import ricbot.domain.session.Session;
 import ricbot.domain.session.SessionManager;
 import ricbot.domain.security.ApprovalRequest;
 import ricbot.domain.security.ApprovalService;
 import ricbot.domain.security.CommandRiskLevel;
 import ricbot.domain.security.RiskAssessment;
-import ricbot.domain.task.TaskRole;
-import ricbot.domain.task.TaskWorkerRunner;
+import ricbot.domain.policy.PolicyRole;
 import ricbot.domain.trace.TraceEvent;
 import ricbot.domain.trace.TraceEventType;
 import ricbot.domain.trace.TraceRenderer;
@@ -39,10 +37,7 @@ import ricbot.domain.workspace.WorkspaceSessionStore;
 import ricbot.domain.workspace.enump.WorkspaceSessionStatus;
 import ricbot.integration.command.CommandRouter;
 import ricbot.integration.llm.api.LLMProvider;
-import ricbot.domain.agent.graph.dto.GraphExecutionState;
-import ricbot.domain.task.TaskRecord;
 import ricbot.tool.api.ToolRegistry;
-import ricbot.domain.runtime.AgentRuntime;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -64,13 +59,12 @@ final class AgentCommands {
     private final BiConsumer<String, String> sessionInterruptMarker;
     private final ApprovalService approvalService;
     private final ToolRegistry toolRegistry;
-    private final TaskWorkerRunner teamWorkerRunner;
     private final TraceStore traceStore;
     private final WorkspaceApplicationService workspaceApplication;
     private final LLMProvider provider;
     private final RuntimeQueryService runtime;
-    private final AgentRuntime agentRuntime;
-    private final SideEffectApplicationService sideEffects;
+    private final DurableAgentRuntime agentRuntime;
+    private final RunCancellationService cancellations;
 
     AgentCommands(
             SessionManager sessionManager,
@@ -81,9 +75,8 @@ final class AgentCommands {
             BiConsumer<String, String> sessionInterruptMarker,
             ApprovalService approvalService,
             ToolRegistry toolRegistry,
-            TaskWorkerRunner teamWorkerRunner,
             LLMProvider provider,
-            AgentRuntime agentRuntime
+            DurableAgentRuntime agentRuntime
     ) {
         this.sessionManager = sessionManager;
         this.model = model;
@@ -95,13 +88,10 @@ final class AgentCommands {
         this.approvalService = java.util.Objects.requireNonNull(approvalService, "approvalService");
         this.approvalService.setTraceStore(this.traceStore);
         this.toolRegistry = toolRegistry;
-        this.teamWorkerRunner = teamWorkerRunner;
         this.provider = provider;
-        this.runtime = new RuntimeQueryService(this.workspace);
+        this.runtime = new RuntimeQueryService(this.workspace, agentRuntime);
         this.agentRuntime = agentRuntime;
-        this.sideEffects = new SideEffectApplicationService(
-                ricbot.app.bootstrap.RuntimeStoreRegistry.shared(this.workspace).sideEffectStore(),
-                this.approvalService);
+        this.cancellations = new RunCancellationService(agentRuntime, this.runtime, java.time.Clock.systemUTC());
         this.workspaceApplication = new WorkspaceApplicationService(this.workspace, this.sessionManager, this.traceStore);
     }
 
@@ -124,62 +114,30 @@ final class AgentCommands {
         router.prefix("/policy ", this::policy);
         router.exact("/run", this::run);
         router.prefix("/run ", this::run);
-        router.exact("/task", this::taskV2);
-        router.prefix("/task ", this::taskV2);
-        router.exact("/side-effect", this::sideEffect);
-        router.prefix("/side-effect ", this::sideEffect);
         router.prefix("/approve ", this::approve);
         router.prefix("/reject ", this::reject);
     }
 
-    private CompletableFuture<OutboundMessage> sideEffect(CommandRouter.CommandContext ctx) {
-        try {
-            String args = trim(ctx.getArgs());
-            String action = args.isBlank() ? "list" : args.split("\\s+", 2)[0].toLowerCase(java.util.Locale.ROOT);
-            String key = args.contains(" ") ? args.substring(args.indexOf(' ') + 1).trim() : "";
-            Object result = switch (action) {
-                case "list" -> ricbot.app.bootstrap.RuntimeStoreRegistry.shared(workspace).listSideEffectRecords();
-                case "show" -> sideEffects.status(requiredArgument(key, "idempotencyKey"));
-                case "retry" -> {
-                    SideEffectRecord record = sideEffects.status(requiredArgument(key, "idempotencyKey"));
-                    requireNonTerminalSideEffectRun(record);
-                    yield sideEffects.requestRetry(record.idempotencyKey());
-                }
-                default -> throw new IllegalArgumentException(
-                        "用法：/side-effect list | show|retry <idempotencyKey>");
-            };
-            return completedReply(ctx, MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(result));
-        } catch (Exception failure) {
-            return completedReply(ctx, "side-effect error: "
-                    + (failure.getMessage() != null ? failure.getMessage() : failure.getClass().getSimpleName()));
-        }
-    }
-
-    private void requireNonTerminalSideEffectRun(SideEffectRecord record) {
-        GraphExecutionState run = runtime.run(record.runId());
-        if (run == null) throw new IllegalStateException("bound run does not exist: " + record.runId());
-        if (run.status().terminal()) {
-            throw new IllegalStateException("bound run is terminal; use /run fork before controlling its side effects");
-        }
-    }
-
     private CompletableFuture<OutboundMessage> stop(CommandRouter.CommandContext ctx) {
         String sessionKey = sessionKeyResolver.apply(ctx.getMsg());
+        List<RunView> persisted = cancellations.cancelSession(sessionKey, "manual_stop");
         List<Future<?>> tasks = activeTaskRemover.apply(sessionKey);
 
-        int cancelled = 0;
+        int interrupted = 0;
         if (tasks != null) {
             for (Future<?> task : tasks) {
                 if (task != null && !task.isDone() && task.cancel(true)) {
-                    cancelled++;
+                    interrupted++;
                 }
             }
         }
 
-        if (cancelled > 0) {
+        if (!persisted.isEmpty() || interrupted > 0) {
             sessionInterruptMarker.accept(sessionKey, "manual_stop");
         }
-        return completedReply(ctx, cancelled > 0 ? "⏹ 已停止 " + cancelled + " 个任务。" : "没有可停止的任务。");
+        return completedReply(ctx, !persisted.isEmpty() || interrupted > 0
+                ? "⏹ 已持久化取消 " + persisted.size() + " 个 Run，并中断 " + interrupted + " 个本地任务。"
+                : "没有可停止的任务。");
     }
 
     private CompletableFuture<OutboundMessage> startNewSession(CommandRouter.CommandContext ctx) {
@@ -190,10 +148,9 @@ final class AgentCommands {
     }
 
     private CompletableFuture<OutboundMessage> help(CommandRouter.CommandContext ctx) {
-        return completedReply(ctx, "ricbot 命令：\n/new — 开始新对话\n/stop — 停止当前任务"
-                + "\n/run start <goal> [--mode agent|team] — 启动 Graph Run"
-                + "\n/run list|status|report|graph|events|resume|cancel <runId> — Run 管理"
-                + "\n/task list <runId> | /task show|retry|cancel <taskId> — Task 管理"
+        return completedReply(ctx, "ricbot 命令：\n/new — 开始新对话\n/stop — 停止当前运行"
+                + "\n/run start <goal> — 启动 Durable Run"
+                + "\n/run list|show|events|timeline|children|health|cancel|effect-confirm|retry|replay|fork — Run 管理"
                 + "\n/summary — 查看当前任务摘要\n/workspace — Workspace 管理\n/change — ChangeSet 管理"
                 + "\n/trace — Trace 管理\n/approve <requestId> | /reject <requestId> — 审批\n/help — 查看可用命令");
     }
@@ -226,7 +183,16 @@ final class AgentCommands {
                     sb.append("\ncontext: ").append(hintMap.get("context") != null
                             ? hintMap.get("context") : Map.of());
                 }
+                Object modelInput = report.getOrDefault("modelInput", Map.of());
+                if (modelInput instanceof Map<?, ?> input) {
+                    sb.append("\nmodel input: ").append(Map.of(
+                            "utilization", input.get("utilization") != null ? input.get("utilization") : 0,
+                            "mode", input.get("mode") != null ? input.get("mode") : "",
+                            "totalTokens", input.get("totalTokens") != null ? input.get("totalTokens") : 0));
+                }
                 sb.append("\ntool exposure: ").append(report.getOrDefault("tools", Map.of()));
+                sb.append("\nfile receipts: ").append(report.getOrDefault("fileReadReceipts", Map.of()));
+                sb.append("\nexternal actions: ").append(report.getOrDefault("externalActions", Map.of()));
             } catch (RuntimeException ignored) { }
         }
         return completedReply(ctx, sb.toString());
@@ -319,17 +285,17 @@ final class AgentCommands {
                     if (roleRaw.isBlank()) {
                         yield completedReply(ctx, renderer.renderPolicy(engine.policy()));
                     }
-                    yield completedReply(ctx, renderer.renderRole(engine.policy(), parseTeamRole(roleRaw)));
+                    yield completedReply(ctx, renderer.renderRole(engine.policy(), parsePolicyRole(roleRaw)));
                 }
                 case "check" -> {
-                    TaskRole role = parseTeamRole(commandArg(args, 1));
+                    PolicyRole role = parsePolicyRole(commandArg(args, 1));
                     String toolName = commandArg(args, 2);
                     PolicyDecision decision = engine.evaluate(role, toolName, Map.of(), null);
                     tracePolicy(session, decision);
                     yield completedReply(ctx, renderer.renderDecision(decision));
                 }
                 case "check-command" -> {
-                    TaskRole role = parseTeamRole(commandArg(args, 1));
+                    PolicyRole role = parsePolicyRole(commandArg(args, 1));
                     String command = afterNthArg(args, 2);
                     if (command.isBlank()) {
                         throw new IllegalArgumentException("missing command");
@@ -430,7 +396,7 @@ final class AgentCommands {
         }
         return completedReply(ctx, "changeset created\n"
                 + "id: " + changeSet.id() + "\n"
-                + "record: sqlite:.ricbot/runtime.db#changesets/" + changeSet.id() + "\n"
+                + "record: sqlite:.ricbot/application.db#changesets/" + changeSet.id() + "\n"
                 + "diff: stored in the immutable ChangeSet event payload\n\n"
                 + renderer.renderStatus(changeSet));
     }
@@ -493,8 +459,8 @@ final class AgentCommands {
                 message,
                 assessment
         );
-        ChangeActionGraphService.Result graph = new ChangeActionGraphService(workspace, approvalService).start(action, assessment);
-        ApprovalRequest request = approvalService.find(graph.requestId());
+        ChangeActionRuntimeService.Result run = new ChangeActionRuntimeService(workspace, requireAgentRuntime()).start(action);
+        ApprovalRequest request = approvalService.find(run.requestId());
         Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
         traceEvent(session, TraceEventType.CHANGESET_COMMIT_REQUESTED, "change", "changeset commit requested", Map.of(
                 "commitMessage", message,
@@ -503,7 +469,7 @@ final class AgentCommands {
         return completedReply(ctx, "change commit requires approval\n"
                 + "requestId: " + request.requestId() + "\n"
                 + "riskLevel: " + assessment.riskLevel() + "\n"
-                + "runId: " + graph.runId() + "\n"
+                + "runId: " + run.runId() + "\n"
                 + "changeSetId: " + changeSet.id() + "\n"
                 + "commitMessage:\n" + message + "\n\n"
                 + "Run: /approve " + request.requestId());
@@ -532,8 +498,8 @@ final class AgentCommands {
                 "",
                 assessment
         );
-        ChangeActionGraphService.Result graph = new ChangeActionGraphService(workspace, approvalService).start(action, assessment);
-        ApprovalRequest request = approvalService.find(graph.requestId());
+        ChangeActionRuntimeService.Result run = new ChangeActionRuntimeService(workspace, requireAgentRuntime()).start(action);
+        ApprovalRequest request = approvalService.find(run.requestId());
         Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
         traceEvent(session, TraceEventType.CHANGESET_ROLLBACK_REQUESTED, "change", "changeset rollback requested", Map.of(
                 "commands", changeSet.rollbackCommands()
@@ -541,7 +507,7 @@ final class AgentCommands {
         return completedReply(ctx, "change rollback requires approval\n"
                 + "requestId: " + request.requestId() + "\n"
                 + "riskLevel: " + assessment.riskLevel() + "\n"
-                + "runId: " + graph.runId() + "\n"
+                + "runId: " + run.runId() + "\n"
                 + "changeSetId: " + changeSet.id() + "\n"
                 + "commands:\n- " + String.join("\n- ", changeSet.rollbackCommands()) + "\n\n"
                 + "Run: /approve " + request.requestId());
@@ -644,21 +610,30 @@ final class AgentCommands {
             return switch (action) {
                 case "start" -> startRun(ctx, rest);
                 case "list" -> completedReply(ctx, MAPPER.writerWithDefaultPrettyPrinter()
-                        .writeValueAsString(runtime.runs()));
-                case "status", "report", "graph" -> completedReply(ctx, MAPPER.writerWithDefaultPrettyPrinter()
+                        .writeValueAsString(runtime.list()));
+                case "show" -> completedReply(ctx, MAPPER.writerWithDefaultPrettyPrinter()
                         .writeValueAsString(runtime.report(requiredArgument(rest, "runId"))));
                 case "events" -> completedReply(ctx, MAPPER.writerWithDefaultPrettyPrinter()
                         .writeValueAsString(runtime.events(requiredArgument(rest, "runId"))));
+                case "timeline" -> completedReply(ctx, MAPPER.writerWithDefaultPrettyPrinter()
+                        .writeValueAsString(runtime.timeline(requiredArgument(rest, "runId"))));
+                case "children" -> completedReply(ctx, MAPPER.writerWithDefaultPrettyPrinter()
+                        .writeValueAsString(runtime.children(requiredArgument(rest, "runId"))));
+                case "health" -> completedReply(ctx, MAPPER.writerWithDefaultPrettyPrinter()
+                        .writeValueAsString(requireAgentRuntime().health()));
                 case "replay" -> completedReply(ctx, MAPPER.writerWithDefaultPrettyPrinter()
                         .writeValueAsString(replayRun(rest)));
                 case "fork" -> completedReply(ctx, MAPPER.writerWithDefaultPrettyPrinter()
                         .writeValueAsString(forkRun(rest)));
                 case "cancel" -> completedReply(ctx, MAPPER.writerWithDefaultPrettyPrinter()
                         .writeValueAsString(cancelRuntime(rest)));
-                case "resume" -> resumeRun(ctx, requiredArgument(rest, "runId"));
-                default -> completedReply(ctx, "用法：/run start <goal> [--mode agent|team] [--worktree] [--verify]"
-                        + " | /run list | /run status|report|graph|events|resume|cancel <runId>"
-                        + " | /run replay <runId> [eventSequence] | /run fork <runId> [eventSequence] [newRunId]");
+                case "effect-confirm" -> completedReply(ctx, MAPPER.writerWithDefaultPrettyPrinter()
+                        .writeValueAsString(confirmEffect(rest)));
+                case "retry" -> completedReply(ctx, MAPPER.writerWithDefaultPrettyPrinter()
+                        .writeValueAsString(retryRun(rest)));
+                default -> completedReply(ctx, "用法：/run start <goal> | /run list | /run health | /run show|events|timeline|children|cancel|retry <runId>"
+                        + " | /run effect-confirm <runId> <effectId> <succeeded|failed> [resultReference]"
+                        + " | /run replay <runId> [commit] | /run fork <runId> [commit] [newRunId] [--execute]");
             };
         } catch (Exception e) {
             return completedReply(ctx, "run error: " + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()));
@@ -673,70 +648,55 @@ final class AgentCommands {
     }
 
     private Object forkRun(String raw) {
-        String[] parts = trim(raw).split("\\s+");
+        boolean execute = raw.contains("--execute");
+        String[] parts = trim(raw.replace("--execute", "")).split("\\s+");
         if (parts.length == 0 || parts[0].isBlank()) throw new IllegalArgumentException("runId is required");
         long sequence = parts.length > 1 ? Long.parseLong(parts[1]) : Long.MAX_VALUE;
         String newRunId = parts.length > 2 ? parts[2] : "fork-" + java.util.UUID.randomUUID();
-        return requireAgentRuntime().fork(parts[0], sequence, newRunId);
+        return requireAgentRuntime().fork(new ForkSpec(parts[0], sequence, newRunId, execute));
     }
 
-    private CompletableFuture<OutboundMessage> startRun(CommandRouter.CommandContext ctx, String raw) throws Exception {
-        String mode = raw.contains("--mode team") ? "team" : "agent";
-        String goal = raw.replace("--mode team", "").replace("--mode agent", "")
-                .replace("--worktree", "").replace("--verify", "").trim();
+    private CompletableFuture<OutboundMessage> startRun(CommandRouter.CommandContext ctx, String raw) {
+        String goal = trim(raw);
         if (goal.isBlank()) throw new IllegalArgumentException("goal is required");
-        if ("agent".equals(mode)) {
-            if (!(ctx.getLoop() instanceof AgentLoop loop)) throw new IllegalStateException("agent loop is unavailable");
-            InboundMessage message = ctx.getMsg();
-            OutboundMessage response = loop.processDirect(goal, ctx.getKey(), message.getChannel(), message.getChatId(),
-                    message.getMetadata());
-            return CompletableFuture.completedFuture(response);
-        }
         String runId = "run-" + java.util.UUID.randomUUID();
-        RunView started = requireAgentRuntime().start(new RunRequest(
-                runId, ctx.getKey(), RunRequest.Mode.TEAM, goal, workspace, 64,
-                Map.of("cli", true)));
+        RunView started = requireAgentRuntime().start(new RunSpec(runId, "", runId, "", List.of(), goal,
+                "default", 128, Map.of("cli", true, "sessionId", ctx.getKey(),
+                "workspace", workspace.toString())));
         return completedReply(ctx, MAPPER.valueToTree(started).toPrettyString());
     }
 
-    private CompletableFuture<OutboundMessage> resumeRun(CommandRouter.CommandContext ctx, String runId) {
-        return completedReply(ctx, MAPPER.valueToTree(requireAgentRuntime().resume(runId)).toPrettyString());
-    }
-
     private Object cancelRuntime(String raw) {
-        String runId = requiredArgument(raw, "runId");
-        return requireAgentRuntime().cancel(runId, "cancelled from CLI");
+        return cancellations.cancel(requiredArgument(raw, "runId"), "cancelled from CLI");
     }
 
-    private CompletableFuture<OutboundMessage> taskV2(CommandRouter.CommandContext ctx) {
-        String args = trim(ctx.getArgs());
-        String action = args.isBlank() ? "list" : args.split("\\s+", 2)[0].toLowerCase(java.util.Locale.ROOT);
-        String id = afterCommand(args);
-        try {
-            return switch (action) {
-                case "list" -> completedReply(ctx, MAPPER.writerWithDefaultPrettyPrinter()
-                        .writeValueAsString(runtime.tasks(requiredArgument(id, "runId"))));
-                case "show" -> {
-                    TaskRecord task = runtime.task(requiredArgument(id, "taskId"));
-                    if (task == null) throw new IllegalArgumentException("task not found: " + id);
-                    yield completedReply(ctx, MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(Map.of(
-                            "task", task, "result", runtime.result(task.spec().taskId()))));
-                }
-                case "cancel" -> completedReply(ctx, MAPPER.writerWithDefaultPrettyPrinter()
-                        .writeValueAsString(runtime.cancelTask(requiredArgument(id, "taskId"), "cancelled from CLI")));
-                case "retry" -> {
-                    TaskRecord retry = runtime.retryTask(requiredArgument(id, "taskId"));
-                    GraphExecutionState parent = runtime.run(retry.spec().parentRunId());
-                    if (parent != null && !parent.status().terminal()) {
-                        CompletableFuture.runAsync(() -> requireAgentRuntime().resume(parent.runId()));
-                    }
-                    yield completedReply(ctx, MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(retry));
-                }
-                default -> completedReply(ctx, "用法：/task list <runId> | /task show|retry|cancel <taskId>");
-            };
-        } catch (Exception e) {
-            return completedReply(ctx, "task error: " + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()));
+    private Object confirmEffect(String raw) {
+        String[] parts = trim(raw).split("\\s+", 4);
+        if (parts.length < 3 || parts[0].isBlank()) {
+            throw new IllegalArgumentException(
+                    "usage: /run effect-confirm <runId> <effectId> <succeeded|failed> [resultReference]");
         }
+        String outcome = parts[2].toUpperCase(java.util.Locale.ROOT);
+        if (!"SUCCEEDED".equals(outcome) && !"FAILED".equals(outcome)) {
+            throw new IllegalArgumentException("effect outcome must be succeeded or failed");
+        }
+        Map<String, Object> payload = new java.util.LinkedHashMap<>();
+        payload.put("effectId", parts[1]);
+        payload.put("outcome", outcome);
+        if (parts.length == 4 && !parts[3].isBlank()) payload.put("resultReference", parts[3]);
+        return requireAgentRuntime().submit(parts[0], new ExternalEvent.EffectConfirmation(
+                "effect-confirm-" + java.util.UUID.randomUUID(), parts[1], java.time.Instant.now(), payload));
+    }
+
+    private Object retryRun(String raw) {
+        String runId = requiredArgument(raw, "runId");
+        RunState previous = runtime.get(runId).map(RunView::state)
+                .orElseThrow(() -> new IllegalArgumentException("run not found: " + runId));
+        if (!previous.status().terminal()) throw new IllegalStateException("only a terminal run can be retried");
+        String retryId = "run-" + java.util.UUID.randomUUID();
+        return requireAgentRuntime().start(new RunSpec(retryId, previous.spec().parentRunId(),
+                previous.spec().rootRunId(), runId, previous.spec().dependencies(), previous.spec().goal(),
+                previous.spec().executionPolicyRef(), previous.spec().maxSupersteps(), previous.spec().metadata()));
     }
 
     private static String requiredArgument(String value, String name) {
@@ -745,12 +705,9 @@ final class AgentCommands {
         return clean;
     }
 
-    private TaskRole parseTeamRole(String raw) {
-        try {
-            return TaskRole.valueOf(trim(raw).replace('-', '_').toUpperCase(java.util.Locale.ROOT));
-        } catch (Exception e) {
-            throw new IllegalArgumentException("unknown team role: " + raw);
-        }
+    private PolicyRole parsePolicyRole(String raw) {
+        try { return PolicyRole.valueOf(trim(raw).replace('-', '_').toUpperCase(java.util.Locale.ROOT)); }
+        catch (Exception failure) { throw new IllegalArgumentException("unknown role: " + raw); }
     }
 
     private String activeWorkspaceSessionId(Session session) {
@@ -782,23 +739,16 @@ final class AgentCommands {
     private CompletableFuture<OutboundMessage> approve(CommandRouter.CommandContext ctx) {
         String requestId = trim(ctx.getArgs()).split("\\s+")[0];
         ApprovalRequest existing = approvalService.find(requestId);
-        if (existing == null) return completedReply(ctx, "未找到审批请求：" + requestId);
-        if (existing.binding() == null || !existing.binding().bound()) {
-            return completedReply(ctx, "该审批没有绑定 Runtime Activation，已拒绝提交。");
-        }
         try {
-            ApprovalRequest request = ricbot.app.bootstrap.RuntimeStoreRegistry.shared(workspace)
-                    .decideApprovalAndSignal(requestId, true);
-            approvalService.acceptCommitted(request);
-            wakeRuntime(request.binding().runId());
+            String runId = approvalRunId(requestId, existing);
+            String eventId = "approval-" + java.util.UUID.randomUUID();
+            requireAgentRuntime().submit(runId, new ExternalEvent.ApprovalDecision(
+                    eventId, requestId, java.time.Instant.now(), Map.of("requestId", requestId, "approved", true)));
             Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
             traceEvent(session, TraceEventType.APPROVAL_APPROVED, "approval", "approval signal committed", Map.of(
-                    "status", request.status().name(), "runId", request.binding().runId()
-            ), "", "", request.requestId());
-            return completedReply(ctx, "审批 Signal 已提交：" + request.requestId()
-                    + "\nstatus: " + request.status()
-                    + "\nrunId: " + request.binding().runId()
-                    + "\nRuntime 将从审批节点恢复；命令路径未直接执行任何副作用。");
+                    "status", "APPROVED", "runId", runId
+            ), "", "", requestId);
+            return completedReply(ctx, "审批 Event 已提交：" + requestId + "\nrunId: " + runId);
         } catch (IllegalStateException | IllegalArgumentException e) {
             return completedReply(ctx, "无法处理审批请求：" + requestId + "\n" + e.getMessage());
         }
@@ -807,36 +757,41 @@ final class AgentCommands {
     private CompletableFuture<OutboundMessage> reject(CommandRouter.CommandContext ctx) {
         String requestId = trim(ctx.getArgs()).split("\\s+")[0];
         ApprovalRequest existing = approvalService.find(requestId);
-        if (existing == null) return completedReply(ctx, "未找到审批请求：" + requestId);
-        if (existing.binding() == null || !existing.binding().bound()) {
-            return completedReply(ctx, "该审批没有绑定 Runtime Activation，已拒绝提交。");
+        try {
+            String runId = approvalRunId(requestId, existing);
+            String eventId = "approval-" + java.util.UUID.randomUUID();
+            requireAgentRuntime().submit(runId, new ExternalEvent.ApprovalDecision(
+                    eventId, requestId, java.time.Instant.now(), Map.of("requestId", requestId, "approved", false)));
+            Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
+            traceEvent(session, TraceEventType.APPROVAL_REJECTED, "approval", "approval rejection signal committed", Map.of(
+                    "status", "REJECTED", "runId", runId
+            ), "", "", requestId);
+            return completedReply(ctx, "拒绝 Event 已提交：" + requestId + "\nrunId: " + runId);
+        } catch (IllegalStateException | IllegalArgumentException e) {
+            return completedReply(ctx, "无法处理审批请求：" + requestId + "\n" + e.getMessage());
         }
-        ApprovalRequest request = ricbot.app.bootstrap.RuntimeStoreRegistry.shared(workspace)
-                .decideApprovalAndSignal(requestId, false);
-        approvalService.acceptCommitted(request);
-        wakeRuntime(request.binding().runId());
-        Session session = ctx.getSession() != null ? ctx.getSession() : sessionManager.getOrCreate(ctx.getKey());
-        traceEvent(session, TraceEventType.APPROVAL_REJECTED, "approval", "approval rejection signal committed", Map.of(
-                "status", request.status().name()
-        ), "", "", request.requestId());
-        return completedReply(ctx, "拒绝 Signal 已提交：" + request.requestId() + "\nstatus: " + request.status()
-                + "\nRuntime 将从审批节点恢复；命令路径未直接执行任何副作用。");
     }
 
-    private AgentRuntime requireAgentRuntime() {
-        if (agentRuntime == null) throw new IllegalStateException("AgentRuntime is unavailable");
-        return agentRuntime;
-    }
-
-    private void wakeRuntime(String runId) {
-        if (agentRuntime == null) throw new IllegalStateException("AgentRuntime is unavailable");
-        CompletableFuture.runAsync(() -> {
-            try { agentRuntime.resume(runId); }
-            catch (RuntimeException failure) {
-                org.slf4j.LoggerFactory.getLogger(AgentCommands.class)
-                        .error("failed to wake runtime {} after signal", runId, failure);
+    private String approvalRunId(String requestId, ApprovalRequest existing) {
+        if (existing != null) {
+            if (existing.binding() == null || !existing.binding().bound()) {
+                throw new IllegalStateException("该审批没有绑定 Runtime Activation，已拒绝提交。");
             }
-        });
+            return existing.binding().runId();
+        }
+        return runtime.list().stream()
+                .map(RunView::state)
+                .filter(state -> state.status() == RunStatus.WAITING)
+                .filter(state -> state.waitReason() instanceof WaitReason.ApprovalWait)
+                .filter(state -> ((WaitReason.ApprovalWait) state.waitReason()).approvalRequestId().equals(requestId))
+                .map(state -> state.spec().runId())
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("未找到审批请求：" + requestId));
+    }
+
+    private DurableAgentRuntime requireAgentRuntime() {
+        if (agentRuntime == null) throw new IllegalStateException("DurableAgentRuntime is unavailable");
+        return agentRuntime;
     }
 
     private String afterCommand(String args) {

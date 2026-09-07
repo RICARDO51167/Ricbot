@@ -2,7 +2,6 @@ package ricbot.domain.agent;
 
 import ricbot.domain.agent.dto.*;
 import ricbot.domain.agent.interfacep.AgentInvocationRuntime;
-import ricbot.domain.agent.interfacep.SideEffectStore;
 import ricbot.tool.pack.RuntimeToolPacks;
 import ricbot.domain.memory.MemoryStore;
 import ricbot.domain.config.ProviderCapability;
@@ -22,7 +21,7 @@ import ricbot.infra.telemetry.OpenTelemetryRuntime;
 import ricbot.integration.llm.api.LLMProvider;
 import ricbot.domain.session.Session;
 import ricbot.domain.session.SessionManager;
-import ricbot.domain.runtime.AgentRuntime;
+import ricbot.domain.runtime.DurableAgentRuntime;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -82,9 +81,6 @@ public class AgentLoop implements AutoCloseable {
     /** 会话管理器，负责会话的创建、加载和保存 */
     private final SessionManager sessionManager;
     private final OpenTelemetryRuntime telemetryRuntime;
-    /** Durable write-tool idempotency ledger. */
-    private final SideEffectStore sideEffectStore;
-    private final SideEffectApplicationService sideEffectApplicationService;
     /** 记忆存储，用于长期记忆管理 */
     private final MemoryStore memoryStore;
     private final ApprovalService approvalService;
@@ -93,7 +89,7 @@ public class AgentLoop implements AutoCloseable {
     private final ToolRegistry tools;
     /** Agent 运行器，负责执行具体的 LLM 交互循环 */
     private final AgentInvocationRuntime runner;
-    private final AgentRuntime agentRuntime;
+    private final DurableAgentRuntime agentRuntime;
     /** Hook 工厂，负责组合请求级 Hook */
     private final AgentHookFactory hookFactory;
     /** 会话准备服务 */
@@ -239,10 +235,8 @@ public class AgentLoop implements AutoCloseable {
         this.sessionManager = core.persistence().sessionManager();
         this.telemetryRuntime = core.telemetryRuntime();
         this.traceStore = core.traceStore();
-        this.sideEffectStore = core.sideEffectStore();
         this.memoryStore = core.memoryStore();
         this.approvalService = core.approvalService();
-        this.sideEffectApplicationService = core.sideEffectApplicationService();
         this.tools = core.tools();
         this.runner = core.runner();
         this.agentRuntime = core.agentRuntime();
@@ -271,7 +265,6 @@ public class AgentLoop implements AutoCloseable {
                 this.contextWindowTokens,
                 this.contextBlockLimit,
                 this.providerCapability,
-                this.sideEffectStore,
                 this.approvalService,
                 budgetPolicy(this.budgetConfig, ""), this.offloadConfig, timezone
         );
@@ -285,19 +278,7 @@ public class AgentLoop implements AutoCloseable {
                 activeTasks::remove,
                 this::markSessionInterrupted,
                 this.approvalService,
-                this.tools,
-                new AgentTeamWorkerRunner(
-                        this.workspace,
-                        this.runner,
-                        this.model,
-                        Math.min(8, Math.max(1, this.maxIterations)),
-                        this.maxToolResultChars,
-                        this.providerRetryMode,
-                        this.contextWindowTokens,
-                        this.contextBlockLimit,
-                        this.providerCapability
-                ),
-                this.provider,
+                this.tools, this.provider,
                 core.agentRuntime()
         );
 
@@ -315,9 +296,6 @@ public class AgentLoop implements AutoCloseable {
                     this.execConfig, this.approvalService);
         }
         registerCommandRoutes();
-        if (this.agentRuntime instanceof ricbot.application.runtime.LocalAgentRuntime localRuntime) {
-            localRuntime.recoverPending();
-        }
     }
 
     private static ricbot.domain.agent.budget.BudgetPolicy budgetPolicy(Config.BudgetConfig config, String parentRunId) {
@@ -330,6 +308,11 @@ public class AgentLoop implements AutoCloseable {
         if (providerCapability != null) {
             this.providerCapability = providerCapability;
         }
+    }
+
+    public void setRuntimeConfigs(Config.ContextManagementConfig contextManagement,
+                                  Config.ToolRuntimeConfig toolRuntime) {
+        this.agentExecutionService.setRuntimeConfigs(contextManagement, toolRuntime);
     }
 
     public void setModelPricing(ModelCard.Pricing pricing) {

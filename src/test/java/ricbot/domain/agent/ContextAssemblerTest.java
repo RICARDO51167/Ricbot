@@ -69,7 +69,7 @@ class ContextAssemblerTest {
     void buildBundle_ignoresLegacyTeamMetadata(@TempDir Path workspace) {
         MemoryStore memoryStore = new MemoryStore(workspace);
         Session session = new Session("cli:direct");
-        session.getMetadata().put(SessionRuntimeKeys.TEAM_CONTEXT_KEY, Map.of(
+        session.getMetadata().put("team_context", Map.of(
                 "session", Map.of("id", "team_1", "goal", "完成上下文抽离", "state", "PLANNING"),
                 "whiteboardPath", ".team/team_1/WHITEBOARD.md",
                 "whiteboardSummary", "leader note",

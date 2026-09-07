@@ -2,6 +2,7 @@ package ricbot.app.bootstrap;
 
 import ricbot.application.runtime.RuntimeLifecycleManager;
 import ricbot.infra.runtime.SqliteRuntimeStore;
+import ricbot.infra.runtime.SqliteDurableRuntimeStore;
 
 import java.nio.file.Path;
 import java.util.Map;
@@ -12,7 +13,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * 工作区运行时资源的进程组合根。
- * 为每个工作区管理唯一的共享 schema-v2 存储和生命周期管理器，
+ * 为每个工作区管理外围应用存储、唯一的 schema-v3 durable runtime 和生命周期管理器，
  * 实现引用计数、资源获取/释放以及确定的关闭流程。
  */
 public final class RuntimeStoreRegistry {
@@ -48,6 +49,12 @@ public final class RuntimeStoreRegistry {
         SqliteRuntimeStore store = shared(workspace);
         RESOURCES.get(workspace).owners.incrementAndGet();
         return store;
+    }
+
+    public static SqliteDurableRuntimeStore durable(Path rawWorkspace) {
+        Path workspace = rawWorkspace.toAbsolutePath().normalize();
+        shared(workspace);
+        return RESOURCES.get(workspace).durable();
     }
 
     /**
@@ -108,10 +115,12 @@ public final class RuntimeStoreRegistry {
      * @return 新的 {@link RuntimeProcessResources} 实例。
      */
     private static RuntimeProcessResources open(Path workspace) {
+        SqliteDurableRuntimeStore durable = new SqliteDurableRuntimeStore(
+                workspace.resolve(".ricbot/runtime.db"));
         SqliteRuntimeStore store = new SqliteRuntimeStore(workspace);
         RuntimeLifecycleManager lifecycle = new RuntimeLifecycleManager(store);
         lifecycle.start();
-        return new RuntimeProcessResources(store, lifecycle);
+        return new RuntimeProcessResources(store, durable, lifecycle);
     }
 
     /**
@@ -127,16 +136,20 @@ public final class RuntimeStoreRegistry {
     /** 封装单个工作区运行时资源的内部类。 */
     private static final class RuntimeProcessResources {
         private final SqliteRuntimeStore store;
+        private final SqliteDurableRuntimeStore durable;
         private final RuntimeLifecycleManager lifecycle;
         private final AtomicInteger owners = new AtomicInteger();
         private final CopyOnWriteArrayList<AutoCloseable> managed = new CopyOnWriteArrayList<>();
 
-        private RuntimeProcessResources(SqliteRuntimeStore store, RuntimeLifecycleManager lifecycle) {
+        private RuntimeProcessResources(SqliteRuntimeStore store, SqliteDurableRuntimeStore durable,
+                                        RuntimeLifecycleManager lifecycle) {
             this.store = store;
+            this.durable = durable;
             this.lifecycle = lifecycle;
         }
 
         private SqliteRuntimeStore store() { return store; }
+        private SqliteDurableRuntimeStore durable() { return durable; }
         private RuntimeLifecycleManager lifecycle() { return lifecycle; }
 
         /**
@@ -153,6 +166,7 @@ public final class RuntimeStoreRegistry {
             }
             managed.clear();
             lifecycle.close();
+            durable.close();
             store.close();
         }
     }

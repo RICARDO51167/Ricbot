@@ -2,7 +2,6 @@ package ricbot.domain.agent;
 
 import ricbot.domain.agent.dto.AgentPersistenceComponents;
 import ricbot.domain.agent.dto.AgentRuntimeCore;
-import ricbot.domain.agent.interfacep.SideEffectStore;
 import ricbot.domain.memory.MemoryStore;
 import ricbot.domain.security.ApprovalService;
 import ricbot.domain.session.SessionManager;
@@ -59,15 +58,13 @@ public final class AgentRuntimeCoreFactory {
         AgentPersistenceComponents persistence = AgentPersistenceFactory.create(runtimeStore, runtimeSessions);
         OpenTelemetryRuntime telemetry = OpenTelemetryRuntime.fromEnvironment();
         TraceStore traces = new TraceStore(runtimeStore);
-        SideEffectStore sideEffects = new AuditedSideEffectStore(runtimeStore.sideEffectStore(), traces);
         MemoryStore memory = new MemoryStore(workspace);
         ApprovalService approvals = new ApprovalService(runtimeStore.approvalStore(), traces);
-        SideEffectApplicationService sideEffectApplication = new SideEffectApplicationService(sideEffects, approvals);
         ToolRegistry tools = new ToolRegistry();
         AgentRuntimeFactory.Components runtime = AgentRuntimeFactory.create(provider, runtimeStore, tools,
-                sideEffects, approvals, telemetry, model, budgetPolicy, offload, timezone, pricing);
-        return new AgentRuntimeCore(contextBuilder, persistence, telemetry, traces, sideEffects,
-                memory, approvals, sideEffectApplication,
+                approvals, telemetry, model, budgetPolicy, offload, timezone, pricing);
+        return new AgentRuntimeCore(contextBuilder, persistence, telemetry, traces,
+                memory, approvals,
                 tools, runtime.runtime(), runtime.invocations());
     }
 }

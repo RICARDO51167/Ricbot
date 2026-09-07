@@ -10,7 +10,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-/** SQLite projection facade for trace queries; RuntimeEventEnvelope remains the durable fact. */
+/** SQLite projection facade for peripheral trace queries. */
 public class TraceStore {
     private final SqliteRuntimeStore runtime;
 
@@ -63,7 +63,7 @@ public class TraceStore {
     }
 
     public String tracePath(String traceId) {
-        return "sqlite:.ricbot/runtime.db#traces/" + safeTraceId(traceId);
+        return "sqlite:.ricbot/application.db#traces/" + safeTraceId(traceId);
     }
     public String traceIdForSession(String sessionId) {
         String value = clean(sessionId);

@@ -18,6 +18,8 @@ public final class ConfigDoctorReport {
     private final List<String> warnings = new ArrayList<>();
     private final List<String> suggestedFixes = new ArrayList<>();
     private ProviderCapability providerCapability;
+    private String configSource = "DEFAULT";
+    private Map<String, String> settingSources = new LinkedHashMap<>();
 
     public String status() {
         if (!errors.isEmpty()) {
@@ -33,6 +35,8 @@ public final class ConfigDoctorReport {
         Map<String, Object> map = new LinkedHashMap<>();
         map.put("status", status());
         map.put("configPath", configPath);
+        map.put("configSource", configSource);
+        map.put("settingSources", settingSources);
         map.put("workspace", workspace);
         map.put("model", model);
         map.put("inferredProvider", inferredProvider);
@@ -146,5 +150,14 @@ public final class ConfigDoctorReport {
 
     public void setProviderCapability(ProviderCapability providerCapability) {
         this.providerCapability = providerCapability;
+    }
+
+    public String getConfigSource() { return configSource; }
+    public void setConfigSource(String configSource) {
+        this.configSource = configSource != null ? configSource : "DEFAULT";
+    }
+    public Map<String, String> getSettingSources() { return Map.copyOf(settingSources); }
+    public void setSettingSources(Map<String, String> settingSources) {
+        this.settingSources = new LinkedHashMap<>(settingSources != null ? settingSources : Map.of());
     }
 }

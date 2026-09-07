@@ -1,6 +1,6 @@
 package ricbot.domain.security;
 
-/** Durable ownership of an approval by one graph activation and action.
+/** Durable ownership of an approval by one runtime activation and action.
  * @author rcd*/
 public record ApprovalBinding(
         String runId,

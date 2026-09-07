@@ -26,7 +26,22 @@
       "context_offload": {
         "enabled": true,
         "preview_chars": 500,
-        "read_chunk_chars": 4000
+        "read_chunk_chars": 4000,
+        "max_artifact_bytes_per_tool": 67108864
+      },
+      "context_management": {
+        "trigger_ratio": 0.80,
+        "warning_ratio": 0.60,
+        "target_ratio": 0.60,
+        "recent_reserve_ratio": 0.10,
+        "safety_margin_ratio": 0.05,
+        "time_hint_interval_minutes": 30
+      },
+      "tool_runtime": {
+        "strict_schema": true,
+        "require_read_receipt": true,
+        "max_parallel_read_calls": 4,
+        "external_actions_enabled": false
       }
     }
   },

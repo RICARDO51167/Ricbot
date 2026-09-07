@@ -11,11 +11,14 @@ sh ./mvnw -q -Dtest='ricbot.domain.eval.*Test,ricbot.domain.config.*Test' test
 echo "== Ricbot smoke: package =="
 sh ./mvnw -q -DskipTests package
 
+echo "== Ricbot smoke: CLI entrypoint =="
+java -Dricbot.log.file=target/smoke-ricbot.log -jar target/Ricbot-1.0-SNAPSHOT.jar --version
+
 echo "== Ricbot smoke: config doctor =="
-java -jar target/Ricbot-1.0-SNAPSHOT.jar config doctor -c config/ricbot.config.json
+java -Dricbot.log.file=target/smoke-ricbot.log -jar target/Ricbot-1.0-SNAPSHOT.jar config doctor -c config/ricbot.config.json
 
 echo "== Ricbot smoke: fixed eval smoke =="
-java -jar target/Ricbot-1.0-SNAPSHOT.jar eval smoke \
+java -Dricbot.log.file=target/smoke-ricbot.log -jar target/Ricbot-1.0-SNAPSHOT.jar eval smoke \
   --scenarios evals/golden.jsonl \
   --workspace target/eval-smoke-workspace \
   --out target/eval-smoke-artifacts \

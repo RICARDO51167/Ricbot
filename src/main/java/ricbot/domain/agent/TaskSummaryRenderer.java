@@ -18,15 +18,6 @@ final class TaskSummaryRenderer {
         section(out, "Diff Reviews", summary.diffReviews(), "未记录 DiffReview");
         section(out, "Suggested Tests", summary.suggestedTests(), "未生成建议测试");
         section(out, "Rollback Hints", summary.rollbackHints(), "未生成回滚提示");
-        section(out, "Team Findings", summary.teamFindings(), "未记录 Team 状态");
-        section(out, "Worker Findings", summary.workerFindings(), "未记录 Worker Report");
-        section(out, "Developer Plan", summary.developerPlan(), "未记录 Developer Plan");
-        section(out, "Implementation Steps", summary.implementationSteps(), "未记录 Implementation Steps");
-        section(out, "Step Audit", summary.stepAudit(), "未记录 Step Audit");
-        section(out, "Approved Tool Calls", summary.approvedToolCalls(), "未记录已审批工具调用");
-        section(out, "Policy", summary.policySummary(), "未记录 Policy 评估");
-        section(out, "Verifier Report", summary.verifierReports(), "未记录 Verifier Report");
-        section(out, "ChangeSet Recommendation", summary.changeSetRecommendation(), "未记录 ChangeSet 建议");
         section(out, "ChangeSet", changeSetLines(summary), "未记录 ChangeSet");
         section(out, "Workspace", summary.workspaceSummary(), "未记录 Workspace session");
         textSection(out, "Trace Summary", value(summary.traceSummary(), "未记录 Trace Summary"));

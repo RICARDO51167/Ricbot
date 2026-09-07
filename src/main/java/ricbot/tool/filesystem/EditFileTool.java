@@ -6,8 +6,8 @@ import ricbot.domain.security.CommandRiskAnalyzer;
 import ricbot.domain.security.CommandRiskLevel;
 import ricbot.domain.security.RiskAssessment;
 import ricbot.tool.api.Tool;
-import ricbot.tool.api.Tool.ToolExecutionContext;
-import ricbot.tool.api.ToolParam;
+import ricbot.tool.api.ToolExecutionContext;
+import ricbot.tool.api.BuiltinParameter;
 import ricbot.tool.api.ToolRiskDecision;
 
 import java.nio.file.Files;
@@ -19,7 +19,7 @@ import java.util.Map;
 /**
  * 文件编辑工具类
  */
-public class EditFileTool extends Tool {
+public class EditFileTool extends ricbot.tool.api.BuiltinTool {
     @Override public ricbot.tool.api.ToolEffectPolicy effectPolicy() {
         return ricbot.tool.api.ToolEffectPolicy.atMostOnce(java.time.Duration.ofMinutes(2),
                 ricbot.tool.api.ToolEffectPolicy.Concurrency.SERIAL_PER_RUN,
@@ -56,24 +56,19 @@ public class EditFileTool extends Tool {
     }
 
     @Override
-    public List<ToolParam> getParams() {
+    public List<BuiltinParameter> getParams() {
         return List.of(
-                ToolParam.of("path", "string", "要编辑的文件路径", true),
-                ToolParam.of("old_text", "string", "要被替换的文本", true),
-                ToolParam.of("new_text", "string", "替换后的文本", true),
-                ToolParam.of("replace_all", "boolean", "是否替换所有匹配项", false).setDefaultValue(false)
+                BuiltinParameter.of("path", "string", "要编辑的文件路径", true).minLength(1),
+                BuiltinParameter.of("old_text", "string", "要被替换的文本", true).minLength(1),
+                BuiltinParameter.of("new_text", "string", "替换后的文本", true),
+                BuiltinParameter.of("replace_all", "boolean", "是否替换所有匹配项", false).defaultValue(false)
         );
     }
 
-    private String edit(String path, String oldText, String newText, Boolean replaceAll, boolean approved) {
+    private String edit(String path, String oldText, String newText, Boolean replaceAll, ToolExecutionContext context) {
         try {
             Path target = FileToolSupport.resolvePath(workspace, path);
             FileToolSupport.ensureAllowed(target, allowedDir, List.of());
-            String riskGate = approved ? null : riskGate(target, path, oldText, newText, replaceAll);
-            if (riskGate != null) {
-                return riskGate;
-            }
-
             if (!Files.exists(target)) {
                 return "错误：文件不存在：" + target;
             }
@@ -84,12 +79,8 @@ public class EditFileTool extends Tool {
                 return "错误：该文件疑似为二进制文件，无法按文本编辑。";
             }
 
-            String warning = FileReadState.checkRead(target);
-            if (warning != null) {
-                return warning;
-            }
-
             String content = FileToolSupport.readText(target);
+            String currentSha = FileToolSupport.sha256(target);
             if (oldText == null || oldText.isEmpty()) {
                 return "错误：待替换文本不能为空。";
             }
@@ -101,6 +92,15 @@ public class EditFileTool extends Tool {
                 return "错误：在文件中未找到待替换文本。";
             }
 
+            int matches = count(content, oldText);
+            if (!replaceAllFlag && matches != 1) {
+                return "错误：old_text 必须恰好匹配一次；当前匹配 " + matches + " 次。";
+            }
+            String logical = workspace.toAbsolutePath().normalize().relativize(target).toString();
+            if (!hasReceipt(context, logical, currentSha, content, oldText, replaceAllFlag)) {
+                return "错误：缺少覆盖目标内容且 SHA 匹配的 FileReadReceipt，请先读取文件。";
+            }
+
             if (replaceAllFlag) {
                 updated = content.replace(oldText, newText != null ? newText : "");
             } else {
@@ -110,8 +110,8 @@ public class EditFileTool extends Tool {
                 );
             }
 
-            FileToolSupport.writeText(target, updated);
-            FileReadState.recordWrite(target);
+            FileToolSupport.compareAndWrite(target, currentSha, updated,
+                    checked -> FileToolSupport.ensureAllowedForWrite(checked, allowedDir, List.of()));
 
             DiffReview review = diffReviewService.reviewEditFile(target.toString(), content, updated, CommandRiskLevel.MEDIUM);
             return "Success: edited file " + target + diffReviewService.renderMarkdown(review);
@@ -131,7 +131,71 @@ public class EditFileTool extends Tool {
         String oldText = params != null ? (String) params.get("old_text") : null;
         String newText = params != null ? (String) params.get("new_text") : null;
         Boolean replaceAll = params != null ? (Boolean) params.get("replace_all") : null;
-        return edit(path, oldText, newText, replaceAll, context != null && context.approved());
+        return edit(path, oldText, newText, replaceAll, context);
+    }
+
+    @Override public List<String> resourceKeys(ricbot.tool.api.ToolInvocation invocation, ToolExecutionContext context) {
+        try { return List.of("file:" + context.workspaceId() + ":" +
+                FileToolSupport.resolvePath(workspace, String.valueOf(invocation.arguments().get("path"))).normalize()); }
+        catch (Exception ignored) { return List.of("workspace:" + context.workspaceId()); }
+    }
+
+    @Override public ricbot.tool.api.ToolResult execute(ricbot.tool.api.ToolInvocation invocation,
+                                                        ToolExecutionContext context,
+                                                        ricbot.tool.api.ToolChunkSink chunks) {
+        Object value = execute(invocation.arguments(), context);
+        if (value instanceof String text && text.startsWith("错误")) {
+            return new ricbot.tool.api.ToolResult.Failure("EDIT_FAILED", text, false, List.of());
+        }
+        try {
+            Path target = FileToolSupport.resolvePath(workspace, String.valueOf(invocation.arguments().get("path")));
+            String logical = workspace.toAbsolutePath().normalize().relativize(target).toString();
+            String digest = FileToolSupport.sha256(target);
+            long lines; try (var stream = Files.lines(target)) { lines = stream.count(); }
+            FileReadReceipt receipt = new FileReadReceipt(context.runId(), context.taskId(), context.workspaceId(),
+                    logical, digest, 1, (int) Math.max(1, lines), true, Files.size(target), "edit_file", java.time.Instant.now());
+            java.util.Set<String> invalid = context.fileReadReceipts().entrySet().stream()
+                    .filter(entry -> { FileReadReceipt old = FileReadReceipt.from(entry.getValue()); return old != null && logical.equals(old.logicalPath()); })
+                    .map(Map.Entry::getKey).collect(java.util.stream.Collectors.toSet());
+            return new ricbot.tool.api.ToolResult.Success(value, String.valueOf(value), List.of(
+                    new ricbot.tool.api.ToolStateMutation.InvalidateFileReadReceipts(invalid, "file content changed"),
+                    new ricbot.tool.api.ToolStateMutation.RecordFileReadReceipt(receipt.key(), receipt.toMap())), Map.of());
+        } catch (Exception failure) { return new ricbot.tool.api.ToolResult.Failure("RECEIPT_FAILED", failure.getMessage(), false, List.of()); }
+    }
+
+    private static int count(String content, String needle) {
+        int count = 0, from = 0; while ((from = content.indexOf(needle, from)) >= 0) { count++; from += needle.length(); } return count;
+    }
+    private static boolean hasReceipt(ToolExecutionContext context, String logical, String sha,
+                                      String content, String needle, boolean replaceAll) {
+        if (context == null) return false;
+        if (Boolean.FALSE.equals(context.backendCapabilities().get("requireReadReceipt"))) return true;
+        List<FileReadReceipt> receipts = context.fileReadReceipts().values().stream().map(FileReadReceipt::from)
+                .filter(java.util.Objects::nonNull)
+                .filter(receipt -> context.runId().equals(receipt.runId())
+                        && context.workspaceId().equals(receipt.workspaceId())
+                        && logical.equals(receipt.logicalPath()) && sha.equals(receipt.sha256())).toList();
+        if (receipts.isEmpty()) return false;
+        int from = 0;
+        do {
+            int match = content.indexOf(needle, from);
+            if (match < 0) return from > 0;
+            int startLine = 1 + countNewlines(content, 0, match);
+            int endLine = startLine + countNewlines(content, match, match + needle.length());
+            boolean covered = receipts.stream().anyMatch(receipt -> receipt.startLine() <= startLine
+                    && receipt.endLine() >= endLine);
+            if (!covered) return false;
+            from = match + needle.length();
+            if (!replaceAll) return true;
+        } while (from <= content.length());
+        return true;
+    }
+
+    private static int countNewlines(String value, int start, int end) {
+        int count = 0;
+        for (int index = Math.max(0, start); index < Math.min(value.length(), end); index++)
+            if (value.charAt(index) == '\n') count++;
+        return count;
     }
 
     @Override

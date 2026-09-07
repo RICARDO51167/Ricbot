@@ -16,7 +16,7 @@ public final class PromptContextBundle {
     private static final int MIN_TOTAL_CHAR_LIMIT = 4_000;
     private static final int MAX_TOTAL_CHAR_LIMIT = 24_000;
     private static final int BASE_CONTEXT_WINDOW_TOKENS = 32_000;
-    private static final String TRUNCATED_MARKER = "... [truncated]";
+    private static final String TRUNCATED_MARKER = "... [preview shortened; recover from the recorded ContextSource shown by /context]";
 
     // 定义上下文部分的固定顺序
     static final List<String> ORDER = List.of(
@@ -27,7 +27,6 @@ public final class PromptContextBundle {
             "project_notes",    // 项目笔记
             "workspace_knowledge", // 工作区知识库
             "workspace_session", // active workspace session
-            "team_context", // TeamEngine 协作状态
             "trace_context", // Coding Harness trace source
             "tool_trace"        // 工具调用轨迹
     );
@@ -401,7 +400,6 @@ public final class PromptContextBundle {
         out.put("memory_recall", new SectionBudget(8, 2_000));
         out.put("project_notes", new SectionBudget(5, 1_600));
         out.put("workspace_knowledge", new SectionBudget(5, 2_400));
-        out.put("team_context", new SectionBudget(3, 1_000));
         out.put("tool_trace", new SectionBudget(4, 1_200));
         return out;
     }

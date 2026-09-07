@@ -8,8 +8,8 @@ import ricbot.domain.security.CommandRiskAnalyzer;
 import ricbot.domain.security.CommandRiskLevel;
 import ricbot.domain.security.RiskAssessment;
 import ricbot.tool.api.Tool;
-import ricbot.tool.api.Tool.ToolExecutionContext;
-import ricbot.tool.api.ToolParam;
+import ricbot.tool.api.ToolExecutionContext;
+import ricbot.tool.api.BuiltinParameter;
 import ricbot.tool.api.ToolRiskDecision;
 
 import java.nio.file.Files;
@@ -26,7 +26,7 @@ import java.util.Map;
  * 2. 自动创建父目录
  * 3. 写完后更新 read state
  */
-public class WriteFileTool extends Tool {
+public class WriteFileTool extends ricbot.tool.api.BuiltinTool {
     @Override public ricbot.tool.api.ToolEffectPolicy effectPolicy() {
         return ricbot.tool.api.ToolEffectPolicy.idempotent(java.time.Duration.ofMinutes(2),
                 ricbot.tool.api.ToolEffectPolicy.Approval.RISK_BASED);
@@ -89,32 +89,37 @@ public class WriteFileTool extends Tool {
      * @return 参数列表，包含文件路径和文件内容
      */
     @Override
-    public List<ToolParam> getParams() {
+    public List<BuiltinParameter> getParams() {
         return List.of(
-                ToolParam.of("path", "string", "要写入的文件路径", true),
-                ToolParam.of("content", "string", "文件内容", true)
+                BuiltinParameter.of("path", "string", "要写入的文件路径", true).minLength(1),
+                BuiltinParameter.of("content", "string", "文件内容", true)
         );
     }
 
-    private String write(String path, String content, boolean approved) {
+    private String write(String path, String content, ToolExecutionContext context) {
         try {
             // 解析并规范化目标路径
             Path target = FileToolSupport.resolvePath(workspace, path);
             // 校验路径是否在允许范围内
             FileToolSupport.ensureAllowedForWrite(target, allowedDir, List.of());
-            String riskGate = approved ? null : riskGate(target, path, content);
-            if (riskGate != null) {
-                return riskGate;
-            }
             boolean existedBefore = Files.exists(target);
             String before = existedBefore && Files.isRegularFile(target) && !FileToolSupport.isBinary(target)
                     ? FileToolSupport.readText(target)
                     : "";
 
-            // 写入文件内容
-            FileToolSupport.writeText(target, content);
-            // 记录写入状态，以便后续读取操作能感知到变更
-            FileReadState.recordWrite(target);
+            String expectedSha = existedBefore ? FileToolSupport.sha256(target) : null;
+            if (existedBefore) {
+                String logical = workspace.toAbsolutePath().normalize().relativize(target).toString();
+                boolean receipt = context != null && (Boolean.FALSE.equals(
+                        context.backendCapabilities().get("requireReadReceipt")) || context.fileReadReceipts().values().stream()
+                        .map(FileReadReceipt::from).filter(java.util.Objects::nonNull)
+                        .anyMatch(value -> context.runId().equals(value.runId())
+                                && context.workspaceId().equals(value.workspaceId()) && logical.equals(value.logicalPath())
+                                && expectedSha.equals(value.sha256()) && value.full()));
+                if (!receipt) return "错误：覆盖已有文件前必须持有完整且 SHA 匹配的 FileReadReceipt。";
+            }
+            FileToolSupport.compareAndWrite(target, expectedSha, content,
+                    checked -> FileToolSupport.ensureAllowedForWrite(checked, allowedDir, List.of()));
 
             DiffReview review = diffReviewService.reviewWriteFile(
                     target.toString(),
@@ -138,7 +143,35 @@ public class WriteFileTool extends Tool {
     public Object execute(Map<String, Object> params, ToolExecutionContext context) {
         String path = params != null ? (String) params.get("path") : null;
         String content = params != null ? (String) params.get("content") : null;
-        return write(path, content, context != null && context.approved());
+        return write(path, content, context);
+    }
+
+    @Override public List<String> resourceKeys(ricbot.tool.api.ToolInvocation invocation, ToolExecutionContext context) {
+        try { return List.of("file:" + context.workspaceId() + ":" +
+                FileToolSupport.resolvePath(workspace, String.valueOf(invocation.arguments().get("path"))).normalize()); }
+        catch (Exception ignored) { return List.of("workspace:" + context.workspaceId()); }
+    }
+
+    @Override public ricbot.tool.api.ToolResult execute(ricbot.tool.api.ToolInvocation invocation,
+                                                        ToolExecutionContext context,
+                                                        ricbot.tool.api.ToolChunkSink chunks) {
+        Object value = execute(invocation.arguments(), context);
+        if (value instanceof String text && text.startsWith("错误")) {
+            return new ricbot.tool.api.ToolResult.Failure("WRITE_FAILED", text, false, List.of());
+        }
+        try {
+            Path target = FileToolSupport.resolvePath(workspace, String.valueOf(invocation.arguments().get("path")));
+            String logical = workspace.toAbsolutePath().normalize().relativize(target).toString();
+            long lines; try (var stream = Files.lines(target)) { lines = stream.count(); }
+            FileReadReceipt receipt = new FileReadReceipt(context.runId(), context.taskId(), context.workspaceId(), logical,
+                    FileToolSupport.sha256(target), 1, (int) Math.max(1, lines), true, Files.size(target), "write_file", java.time.Instant.now());
+            java.util.Set<String> invalid = context.fileReadReceipts().entrySet().stream()
+                    .filter(entry -> { FileReadReceipt old = FileReadReceipt.from(entry.getValue()); return old != null && logical.equals(old.logicalPath()); })
+                    .map(Map.Entry::getKey).collect(java.util.stream.Collectors.toSet());
+            return new ricbot.tool.api.ToolResult.Success(value, String.valueOf(value), List.of(
+                    new ricbot.tool.api.ToolStateMutation.InvalidateFileReadReceipts(invalid, "file content changed"),
+                    new ricbot.tool.api.ToolStateMutation.RecordFileReadReceipt(receipt.key(), receipt.toMap())), Map.of());
+        } catch (Exception failure) { return new ricbot.tool.api.ToolResult.Failure("RECEIPT_FAILED", failure.getMessage(), false, List.of()); }
     }
 
     @Override

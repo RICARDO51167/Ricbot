@@ -9,7 +9,7 @@ import io.opentelemetry.api.trace.TraceFlags;
 import io.opentelemetry.api.trace.TraceState;
 import io.opentelemetry.context.Context;
 import ricbot.domain.runtime.dto.RuntimeDigest;
-import ricbot.domain.runtime.dto.RuntimeEventEnvelope;
+import ricbot.domain.runtime.RuntimeEvent;
 import ricbot.domain.runtime.RuntimeEventSubscriber;
 
 import java.util.Map;
@@ -30,27 +30,26 @@ public final class RuntimeEventOpenTelemetrySubscriber implements RuntimeEventSu
     }
 
     @Override
-    public void onEvent(RuntimeEventEnvelope event) {
+    public void onEvent(RuntimeEvent event) {
         // 1. 处理 Run Span：创建或获取运行级别的 Span
         String runId = event.runId();
         Span run = runs.computeIfAbsent(runId, id ->
             tracer.spanBuilder("Run " + id)
-                .setParent(parentContext(event.traceParent()))
+                .setParent(parentContext(String.valueOf(event.payload().getOrDefault("traceParent", ""))))
                 .setSpanKind(SpanKind.INTERNAL)
                 .startSpan()
         );
 
         // 2. 为 Run Span 设置通用属性
-        run.setAttribute("ricbot.event.sequence", event.globalSequence());
-        run.setAttribute("ricbot.event.type", event.eventType());
+        run.setAttribute("ricbot.event.sequence", event.sequence());
+        run.setAttribute("ricbot.event.type", event.type());
         run.setAttribute("ricbot.payload.length", event.payload().toString().length());
         run.setAttribute("ricbot.payload.digest", RuntimeDigest.sha256(event.payload()));
-        run.setAttribute("ricbot.correlation.id", event.correlationId());
-        run.setAttribute("ricbot.causation.id", event.causationId());
+        run.setAttribute("ricbot.correlation.id", String.valueOf(event.payload().getOrDefault("correlationId", "")));
+        run.setAttribute("ricbot.causation.id", String.valueOf(event.payload().getOrDefault("causationId", "")));
 
         // 3. 处理 Activation Span：确定激活 ID 并管理对应的 Span
-        String activationKey = !event.activationId().isBlank() ? event.activationId()
-                : !event.taskId().isBlank() ? "task:" + event.taskId() : "";
+        String activationKey = String.valueOf(event.payload().getOrDefault("activationId", ""));
 
         if (!activationKey.isBlank()) {
             String activationId = runId + ":" + activationKey;
@@ -63,11 +62,11 @@ public final class RuntimeEventOpenTelemetrySubscriber implements RuntimeEventSu
             );
 
             activation.setAttribute("ricbot.activation.id", activationKey);
-            activation.setAttribute("ricbot.event.type", event.eventType());
+            activation.setAttribute("ricbot.event.type", event.type());
 
             // 如果事件是终结状态（完成、失败等），则结束该激活 Span
-            if (settled(event.eventType())) {
-                if (event.eventType().contains("FAILED") || event.eventType().contains("UNKNOWN")) {
+            if (settled(event.type())) {
+                if (event.type().contains("FAILED") || event.type().contains("UNKNOWN")) {
                     activation.setStatus(StatusCode.ERROR);
                 }
                 activation.end();
@@ -76,9 +75,9 @@ public final class RuntimeEventOpenTelemetrySubscriber implements RuntimeEventSu
         }
 
         // 4. 处理 Run 的终结状态：结束 Run Span
-        if (event.eventType().endsWith("RUN_COMPLETED") || event.eventType().endsWith("RUN_CANCELLED")
-                || event.eventType().endsWith("RUN_FAILED")) {
-            if (event.eventType().endsWith("RUN_FAILED")) {
+        if (event.type().endsWith("RUN_COMPLETED") || event.type().endsWith("RUN_CANCELLED")
+                || event.type().endsWith("RUN_FAILED")) {
+            if (event.type().endsWith("RUN_FAILED")) {
                 run.setStatus(StatusCode.ERROR);
             }
             run.end();
@@ -117,12 +116,11 @@ public final class RuntimeEventOpenTelemetrySubscriber implements RuntimeEventSu
     /**
      * 根据事件类型生成更具可读性的 Span 名称。
      */
-    private static String spanName(RuntimeEventEnvelope event) {
-        String type = event.eventType();
+    private static String spanName(RuntimeEvent event) {
+        String type = event.type();
 
-        if (!event.taskId().isBlank()) {
-            return "Child Task Run " + event.taskId();
-        }
+        String childRunId = String.valueOf(event.payload().getOrDefault("childRunId", ""));
+        if (!childRunId.isBlank()) return "Child Run " + childRunId;
         if (type.contains("COMPACT")) {
             return "Compact";
         }

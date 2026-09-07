@@ -18,7 +18,7 @@ public final class ChangeSetActionAuthorization {
         }
         if (request.pendingChangeAction() == null) throw new IllegalStateException("approval has no change action");
         if (request.binding() == null || !request.binding().bound()) {
-            throw new IllegalStateException("change action approval is not bound to a graph activation");
+            throw new IllegalStateException("change action approval is not bound to a runtime activation");
         }
         return new ChangeSetActionAuthorization(request);
     }

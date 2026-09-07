@@ -6,7 +6,6 @@ public final class SessionRuntimeKeys {
     public static final String RECOVERY_DECISIONS_KEY = "recovery_decisions";
     public static final String TASK_STATE_KEY = "task_state";
     public static final String TOOL_TRACE_KEY = "tool_trace";
-    public static final String TEAM_CONTEXT_KEY = "team_context";
     public static final String DEVELOPER_TASK_ID_KEY = "developer_task_id";
     public static final String CHANGESET_ID_KEY = "changeset_id";
     public static final String CHANGESET_SUMMARY_KEY = "changeset_summary";

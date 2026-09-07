@@ -27,6 +27,16 @@ public final class RuntimeDigest {
         }
     }
 
+    /** Exact JSON-tree digest used for persisted checkpoint envelopes. */
+    public static String sha256Json(JsonNode value) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                    .digest(CANONICAL.writeValueAsBytes(value)));
+        } catch (Exception failure) {
+            throw new IllegalStateException("cannot calculate JSON digest", failure);
+        }
+    }
+
     private static JsonNode canonicalize(JsonNode node) {
         if (node == null || node.isNull() || node.isValueNode()) return node;
         if (node.isArray()) {

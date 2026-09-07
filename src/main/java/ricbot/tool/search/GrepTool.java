@@ -1,7 +1,7 @@
 package ricbot.tool.search;
 
 import ricbot.tool.api.Tool;
-import ricbot.tool.api.ToolParam;
+import ricbot.tool.api.BuiltinParameter;
 import ricbot.tool.filesystem.FileToolSupport;
 
 import java.io.IOException;
@@ -22,7 +22,7 @@ import java.util.regex.Pattern;
  * 3. 支持 file_glob 过滤
  * 4. 跳过二进制文件
  */
-public class GrepTool extends Tool {
+public class GrepTool extends ricbot.tool.api.BuiltinTool {
     @Override public ricbot.tool.api.ToolEffectPolicy effectPolicy() {
         return ricbot.tool.api.ToolEffectPolicy.readOnly(java.time.Duration.ofSeconds(60));
     }
@@ -70,18 +70,19 @@ public class GrepTool extends Tool {
      * @return 参数列表，包括 pattern, base_dir, file_glob, ignore_case, max_results
      */
     @Override
-    public List<ToolParam> getParams() {
+    public List<BuiltinParameter> getParams() {
         return List.of(
                 // 必选参数：要搜索的正则表达式
-                ToolParam.of("pattern", "string", "要搜索的正则表达式", true),
+                BuiltinParameter.of("pattern", "string", "要搜索的正则表达式", true).minLength(1),
                 // 可选参数：搜索起始目录，默认为当前目录 "."
-                ToolParam.of("base_dir", "string", "搜索起始目录", false).setDefaultValue("."),
+                BuiltinParameter.of("base_dir", "string", "搜索起始目录", false).defaultValue("."),
                 // 可选参数：文件名通配符过滤，如 '**/*.java'
-                ToolParam.of("file_glob", "string", "可选：按文件名通配符过滤，例如 '**/*.java'", false),
+                BuiltinParameter.of("file_glob", "string", "可选：按文件名通配符过滤，例如 '**/*.java'", false),
                 // 可选参数：是否忽略大小写，默认 false
-                ToolParam.of("ignore_case", "boolean", "是否忽略大小写", false).setDefaultValue(false),
+                BuiltinParameter.of("ignore_case", "boolean", "是否忽略大小写", false).defaultValue(false),
                 // 可选参数：最大返回结果数，默认 100
-                ToolParam.of("max_results", "integer", "最多返回的匹配条数", false).setDefaultValue(100)
+                BuiltinParameter.of("max_results", "integer", "最多返回的匹配条数", false)
+                        .defaultValue(100).minimum(1).maximum(10_000)
         );
     }
 

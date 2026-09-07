@@ -1,7 +1,7 @@
 package ricbot.tool.search;
 
 import ricbot.tool.api.Tool;
-import ricbot.tool.api.ToolParam;
+import ricbot.tool.api.BuiltinParameter;
 import ricbot.tool.filesystem.FileToolSupport;
 
 import java.io.IOException;
@@ -18,7 +18,7 @@ import java.util.Map;
  * 2. 支持相对 workspace 的递归匹配
  * 3. 受 allowedDir 限制
  */
-public class GlobTool extends Tool {
+public class GlobTool extends ricbot.tool.api.BuiltinTool {
     @Override public ricbot.tool.api.ToolEffectPolicy effectPolicy() {
         return ricbot.tool.api.ToolEffectPolicy.readOnly(java.time.Duration.ofSeconds(30));
     }
@@ -62,12 +62,12 @@ public class GlobTool extends Tool {
      * @return 参数列表，包含 pattern 和 base_dir
      */
     @Override
-    public List<ToolParam> getParams() {
+    public List<BuiltinParameter> getParams() {
         return List.of(
                 // 必填参数：glob 匹配模式
-                ToolParam.of("pattern", "string", "要匹配的 glob 模式", true),
+                BuiltinParameter.of("pattern", "string", "要匹配的 glob 模式", true).minLength(1),
                 // 可选参数：搜索起始目录，默认为当前目录 "."
-                ToolParam.of("base_dir", "string", "可选：搜索起始目录", false).setDefaultValue(".")
+                BuiltinParameter.of("base_dir", "string", "可选：搜索起始目录", false).defaultValue(".")
         );
     }
 

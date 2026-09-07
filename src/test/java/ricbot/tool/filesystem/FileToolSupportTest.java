@@ -1,161 +1,115 @@
 package ricbot.tool.filesystem;
 
 import org.junit.jupiter.api.Test;
-import ricbot.testsupport.InMemoryApprovalRequestStore;
-import ricbot.tool.api.Tool;
 import org.junit.jupiter.api.io.TempDir;
-import ricbot.domain.security.ApprovalService;
-import ricbot.domain.security.CommandRiskAnalyzer;
-import ricbot.domain.security.PendingToolCall;
-import ricbot.tool.api.ToolRegistry;
-
+import ricbot.tool.api.*;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermission;
+import java.util.Set;
 import java.util.List;
 import java.util.Map;
-
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 
 class FileToolSupportTest {
-
-    @Test
-    void readFile_rejectsOversizedTextFiles(@TempDir Path workspace) throws Exception {
-        Path large = workspace.resolve("large.txt");
-        Files.writeString(large, "a".repeat((int) FileToolSupport.MAX_TEXT_FILE_BYTES + 1));
-
-        ReadFileTool tool = new ReadFileTool(workspace, workspace, List.of());
-        String result = String.valueOf(tool.execute(Map.of("path", "large.txt", "offset", 1, "limit", 10)));
-
-        assertTrue(result.contains("文件超过文本工具大小限制"), result);
+    @Test void readRejectsOversizedFiles(@TempDir Path workspace) throws Exception {
+        Files.writeString(workspace.resolve("large.txt"), "a".repeat((int) FileToolSupport.MAX_TEXT_FILE_BYTES + 1));
+        ToolResult result = new ReadFileTool(workspace, workspace, List.of()).execute(
+                new ToolInvocation("1", "read_file", Map.of("path", "large.txt")), context(workspace, Map.of()),
+                ToolChunkSink.discard());
+        assertInstanceOf(ToolResult.Failure.class, result);
     }
 
-    @Test
-    void writeFile_rejectsOversizedContent(@TempDir Path workspace) {
-        WriteFileTool tool = new WriteFileTool(workspace, workspace);
-        String content = "a".repeat((int) FileToolSupport.MAX_TEXT_FILE_BYTES + 1);
-
-        String result = String.valueOf(tool.execute(Map.of("path", "large.txt", "content", content)));
-
-        assertTrue(result.contains("写入内容超过文本工具大小限制"), result);
+    @Test void newFileDoesNotRequireReceiptButOverwriteDoes(@TempDir Path workspace) throws Exception {
+        WriteFileTool write = new WriteFileTool(workspace, workspace);
+        ToolResult created = write.execute(new ToolInvocation("1", "write_file",
+                Map.of("path", "notes.txt", "content", "alpha\n")), context(workspace, Map.of()), ToolChunkSink.discard());
+        assertInstanceOf(ToolResult.Success.class, created);
+        ToolResult denied = write.execute(new ToolInvocation("2", "write_file",
+                Map.of("path", "notes.txt", "content", "beta\n")), context(workspace, Map.of()), ToolChunkSink.discard());
+        assertInstanceOf(ToolResult.Failure.class, denied);
     }
 
-    @Test
-    void writeFile_allowsNewNestedFileInsideWorkspace(@TempDir Path workspace) throws Exception {
-        WriteFileTool tool = new WriteFileTool(workspace, workspace);
-
-        String result = String.valueOf(tool.execute(Map.of(
-                "path", "reports/summary.txt", "content", "harness report complete\n")));
-
-        assertTrue(result.contains("文件已写入"), result);
-        assertTrue(result.contains("DiffReview"), result);
-        assertTrue(result.contains("summary:"), result);
-        assertTrue(result.contains("addedLines"), result);
-        assertTrue(result.contains("rollbackHint: rm reports/summary.txt"), result);
-        assertEquals("harness report complete\n", Files.readString(workspace.resolve("reports").resolve("summary.txt")));
+    @Test void fullReadReceiptAllowsAtomicOverwrite(@TempDir Path workspace) throws Exception {
+        Files.writeString(workspace.resolve("notes.txt"), "alpha\n");
+        ReadFileTool read = new ReadFileTool(workspace, workspace, List.of());
+        ToolResult.Success readResult = (ToolResult.Success) read.execute(new ToolInvocation("1", "read_file",
+                Map.of("path", "notes.txt")), context(workspace, Map.of()), ToolChunkSink.discard());
+        ToolStateMutation.RecordFileReadReceipt mutation = (ToolStateMutation.RecordFileReadReceipt) readResult.mutations().get(0);
+        Map<String, Object> receipts = Map.of(mutation.key(), mutation.receipt());
+        ToolResult result = new WriteFileTool(workspace, workspace).execute(new ToolInvocation("2", "write_file",
+                Map.of("path", "notes.txt", "content", "beta\n")), context(workspace, receipts), ToolChunkSink.discard());
+        assertInstanceOf(ToolResult.Success.class, result);
+        assertEquals("beta\n", Files.readString(workspace.resolve("notes.txt")));
     }
 
-    @Test
-    void writeAndEditCanRequireApprovalWhenRiskGateEnabled(@TempDir Path workspace) throws Exception {
-        ApprovalService approvalService = new ApprovalService(new InMemoryApprovalRequestStore());
-        CommandRiskAnalyzer analyzer = new CommandRiskAnalyzer(workspace);
-        WriteFileTool write = new WriteFileTool(workspace, workspace, analyzer, approvalService);
-
-        String gated = String.valueOf(write.execute(Map.of("path", "reports/summary.txt", "content", "hello\n")));
-        assertTrue(gated.contains("需要审批后才能执行"), gated);
-        assertTrue(gated.contains("riskLevel: MEDIUM"), gated);
-
-        WriteFileTool plainWrite = new WriteFileTool(workspace, workspace);
-        plainWrite.execute(Map.of("path", "reports/summary.txt", "content", "hello world\n"));
-        Path file = workspace.resolve("reports").resolve("summary.txt");
-        FileReadState.recordRead(file, 1, 10);
-        EditFileTool edit = new EditFileTool(workspace, workspace, analyzer, approvalService);
-        String editGated = String.valueOf(edit.execute(Map.of(
-                "path", "reports/summary.txt", "old_text", "world", "new_text", "ricbot", "replace_all", false)));
-        assertTrue(editGated.contains("需要审批后才能执行"), editGated);
+    @Test void editRequiresUniqueMatchAndFreshReceipt(@TempDir Path workspace) throws Exception {
+        Files.writeString(workspace.resolve("notes.txt"), "same same\n");
+        ToolResult.Success read = (ToolResult.Success) new ReadFileTool(workspace, workspace, List.of()).execute(
+                new ToolInvocation("1", "read_file", Map.of("path", "notes.txt")), context(workspace, Map.of()),
+                ToolChunkSink.discard());
+        var receipt = (ToolStateMutation.RecordFileReadReceipt) read.mutations().get(0);
+        ToolResult duplicate = new EditFileTool(workspace, workspace).execute(new ToolInvocation("2", "edit_file",
+                Map.of("path", "notes.txt", "old_text", "same", "new_text", "new", "replace_all", false)),
+                context(workspace, Map.of(receipt.key(), receipt.receipt())), ToolChunkSink.discard());
+        assertInstanceOf(ToolResult.Failure.class, duplicate);
     }
 
-    @Test
-    void writeFileApprovalCanBeRestoredWithDiffReview(@TempDir Path workspace) throws Exception {
-        ApprovalService approvalService = new ApprovalService(new InMemoryApprovalRequestStore());
-        ToolRegistry registry = new ToolRegistry();
-        registry.register(new WriteFileTool(workspace, workspace, new CommandRiskAnalyzer(workspace), approvalService));
-
-        String gated = String.valueOf(registry.execute("write_file", Map.of("path", "reports/summary.txt", "content", "hello\n")));
-        String requestId = requestId(gated);
-        assertTrue(Files.notExists(workspace.resolve("reports").resolve("summary.txt")));
-
-        approvalService.approve(requestId);
-        PendingToolCall call = approvalService.consumeApprovedToolCall(requestId);
-        String result = String.valueOf(registry.execute(call.toolName(), call.arguments(),
-                Tool.ToolExecutionContext.approvedContext()));
-
-        assertTrue(result.contains("DiffReview"), result);
-        assertTrue(result.contains("suspiciousChanges"), result);
-        assertTrue(result.contains("suggestedTests"), result);
-        assertTrue(result.contains("rollbackHint"), result);
-        assertEquals("hello\n", Files.readString(workspace.resolve("reports").resolve("summary.txt")));
+    @Test void compareAndWriteRejectsStaleSha(@TempDir Path workspace) throws Exception {
+        Path file = workspace.resolve("notes.txt"); Files.writeString(file, "one");
+        String sha = FileToolSupport.sha256(file); Files.writeString(file, "two");
+        assertThrows(java.util.ConcurrentModificationException.class,
+                () -> FileToolSupport.compareAndWrite(file, sha, "three"));
     }
 
-    @Test
-    void editFileApprovalCanBeRestoredWithDiffReview(@TempDir Path workspace) throws Exception {
+    @Test void compareAndWriteRejectsDeletedUpdateAndExistingCreate(@TempDir Path workspace) throws Exception {
         Path file = workspace.resolve("notes.txt");
-        Files.writeString(file, "hello world\n");
-        FileReadState.recordRead(file, 1, 10);
-        ApprovalService approvalService = new ApprovalService(new InMemoryApprovalRequestStore());
-        ToolRegistry registry = new ToolRegistry();
-        registry.register(new EditFileTool(workspace, workspace, new CommandRiskAnalyzer(workspace), approvalService));
+        Files.writeString(file, "one");
+        String sha = FileToolSupport.sha256(file);
+        Files.delete(file);
+        assertThrows(java.util.ConcurrentModificationException.class,
+                () -> FileToolSupport.compareAndWrite(file, sha, "two"));
+        assertFalse(Files.exists(file));
 
-        String gated = String.valueOf(registry.execute("edit_file", Map.of(
-                "path", "notes.txt",
-                "old_text", "world",
-                "new_text", "ricbot",
-                "replace_all", false
-        )));
-        String requestId = requestId(gated);
-        assertEquals("hello world\n", Files.readString(file));
-
-        approvalService.approve(requestId);
-        PendingToolCall call = approvalService.consumeApprovedToolCall(requestId);
-        String result = String.valueOf(registry.execute(call.toolName(), call.arguments(),
-                Tool.ToolExecutionContext.approvedContext()));
-
-        assertTrue(result.contains("DiffReview"), result);
-        assertTrue(result.contains("summary:"), result);
-        assertTrue(result.contains("rollbackHint: git checkout -- notes.txt"), result);
-        assertEquals("hello ricbot\n", Files.readString(file));
+        Files.writeString(file, "external");
+        assertThrows(java.util.ConcurrentModificationException.class,
+                () -> FileToolSupport.compareAndWrite(file, null, "ours"));
+        assertEquals("external", Files.readString(file));
     }
 
-    @Test
-    void readFile_readsRequestedSliceAndDeduplicatesWithoutFullTextRead(@TempDir Path workspace) throws Exception {
+    @Test void compareAndWriteEnforcesUtf8LimitBeforeChangingTarget(@TempDir Path workspace) throws Exception {
         Path file = workspace.resolve("notes.txt");
-        Files.writeString(file, "alpha\nbeta\ngamma\ndelta\n");
-
-        ReadFileTool tool = new ReadFileTool(workspace, workspace, List.of());
-
-        assertEquals("2: beta\n3: gamma", tool.execute(Map.of("path", "notes.txt", "offset", 2, "limit", 2)));
-        String second = String.valueOf(tool.execute(Map.of("path", "notes.txt", "offset", 2, "limit", 2)));
-
-        assertTrue(second.startsWith("文件自上次读取后未发生变化。"), second);
-        assertTrue(second.endsWith("2: beta\n3: gamma"), second);
+        Files.writeString(file, "original");
+        String sha = FileToolSupport.sha256(file);
+        String allowed = "a".repeat((int) FileToolSupport.MAX_TEXT_FILE_BYTES);
+        FileToolSupport.compareAndWrite(file, sha, allowed);
+        assertEquals(FileToolSupport.MAX_TEXT_FILE_BYTES, Files.size(file));
+        String updatedSha = FileToolSupport.sha256(file);
+        assertThrows(java.io.IOException.class, () -> FileToolSupport.compareAndWrite(
+                file, updatedSha, "你".repeat((int) FileToolSupport.MAX_TEXT_FILE_BYTES / 3 + 1)));
+        assertEquals(updatedSha, FileToolSupport.sha256(file));
     }
 
-    @Test
-    void readState_hashesFilesStreamingForEditValidation(@TempDir Path workspace) throws Exception {
-        Path file = workspace.resolve("hash.txt");
-        Files.writeString(file, "a".repeat(256 * 1024));
-
-        FileReadState.recordRead(file, 1, 1);
-
-        assertEquals(null, FileReadState.checkRead(file));
-    }
-
-    private static String requestId(String text) {
-        for (String line : text.split("\\R")) {
-            if (line.startsWith("requestId:")) {
-                return line.substring("requestId:".length()).trim();
-            }
+    @Test void compareAndWritePreservesExecutablePermissions(@TempDir Path workspace) throws Exception {
+        Path file = workspace.resolve("script.sh");
+        Files.writeString(file, "#!/bin/sh\nexit 0\n");
+        try {
+            Set<PosixFilePermission> executable = Set.of(
+                    PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE,
+                    PosixFilePermission.OWNER_EXECUTE, PosixFilePermission.GROUP_READ,
+                    PosixFilePermission.GROUP_EXECUTE, PosixFilePermission.OTHERS_READ,
+                    PosixFilePermission.OTHERS_EXECUTE);
+            Files.setPosixFilePermissions(file, executable);
+            FileToolSupport.compareAndWrite(file, FileToolSupport.sha256(file), "#!/bin/sh\necho ok\n");
+            assertEquals(executable, Files.getPosixFilePermissions(file));
+        } catch (UnsupportedOperationException ignored) {
+            assertTrue(Files.exists(file));
         }
-        throw new AssertionError("missing requestId in: " + text);
+    }
+
+    private static ToolExecutionContext context(Path workspace, Map<String, Object> receipts) {
+        return new ToolExecutionContext("run", "session", "task", "activation", "workspace", workspace,
+                "DEVELOPER", new ToolAuthorizationDecision(ToolAuthorizationDecision.Decision.ALLOW,
+                "test", List.of(), false), Map.of(), receipts, null);
     }
 }

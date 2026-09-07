@@ -14,48 +14,67 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
         <maven.compiler.encoding>UTF-8</maven.compiler.encoding>
+        <slf4j.version>2.0.17</slf4j.version>
+        <logback.version>1.6.3</logback.version>
+        <jackson.version>2.17.2</jackson.version>
+        <opentelemetry.version>1.49.0</opentelemetry.version>
+        <jacoco.version>0.8.13</jacoco.version>
+        <cyclonedx.version>2.9.1</cyclonedx.version>
     </properties>
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>com.fasterxml.jackson</groupId>
+                <artifactId>jackson-bom</artifactId>
+                <version>${jackson.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <dependency>
+                <groupId>io.opentelemetry</groupId>
+                <artifactId>opentelemetry-bom</artifactId>
+                <version>${opentelemetry.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
     <dependencies>
         <!-- 日志门面 -->
         <dependency>
             <groupId>org.slf4j</groupId>
             <artifactId>slf4j-api</artifactId>
-            <version>2.0.13</version>
+            <version>${slf4j.version}</version>
         </dependency>
 
         <dependency>
             <groupId>io.opentelemetry</groupId>
             <artifactId>opentelemetry-api</artifactId>
-            <version>1.49.0</version>
         </dependency>
         <dependency>
             <groupId>io.opentelemetry</groupId>
             <artifactId>opentelemetry-sdk</artifactId>
-            <version>1.49.0</version>
         </dependency>
         <dependency>
             <groupId>io.opentelemetry</groupId>
             <artifactId>opentelemetry-exporter-otlp</artifactId>
-            <version>1.49.0</version>
         </dependency>
 
         <!-- 一个简单的日志实现，控制台输出日志 -->
         <dependency>
             <groupId>ch.qos.logback</groupId>
             <artifactId>logback-classic</artifactId>
-            <version>1.5.6</version>
+            <version>${logback.version}</version>
         </dependency>
 
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>
-            <version>2.17.2</version>
         </dependency>
 
         <dependency>
             <groupId>com.fasterxml.jackson.datatype</groupId>
             <artifactId>jackson-datatype-jsr310</artifactId>
-            <version>2.17.2</version>
         </dependency>
 
         <dependency>
@@ -138,7 +157,7 @@
                 <version>3.5.2</version>
                 <configuration>
                     <useModulePath>false</useModulePath>
-                    <argLine>-Dfile.encoding=UTF-8</argLine>
+                    <argLine>@{argLine} -Dfile.encoding=UTF-8</argLine>
                     <systemPropertyVariables>
                         <ricbot.log.file>${project.build.directory}/ricbot-test.log</ricbot.log.file>
                     </systemPropertyVariables>
@@ -181,6 +200,38 @@
                         </configuration>
                     </execution>
                 </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <version>${jacoco.version}</version>
+                <executions>
+                    <execution>
+                        <goals><goal>prepare-agent</goal></goals>
+                    </execution>
+                    <execution>
+                        <id>report</id>
+                        <phase>test</phase>
+                        <goals><goal>report</goal></goals>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.cyclonedx</groupId>
+                <artifactId>cyclonedx-maven-plugin</artifactId>
+                <version>${cyclonedx.version}</version>
+                <executions>
+                    <execution>
+                        <phase>package</phase>
+                        <goals><goal>makeAggregateBom</goal></goals>
+                    </execution>
+                </executions>
+                <configuration>
+                    <outputDirectory>${project.build.directory}/sbom</outputDirectory>
+                    <outputName>bom</outputName>
+                    <outputFormat>all</outputFormat>
+                    <includeBomSerialNumber>true</includeBomSerialNumber>
+                </configuration>
             </plugin>
         </plugins>
     </build>

@@ -96,7 +96,7 @@ public final class ConfigLoader {
      * @return 配置对象
      */
     public static Config loadConfig() {
-        return loadConfig(null);
+        return loadResult(null, false).config();
     }
 
     /**
@@ -107,24 +107,67 @@ public final class ConfigLoader {
      * @return 配置对象，如果加载失败则返回默认配置
      */
     public static Config loadConfig(Path configPath) {
-        // 确定最终使用的配置路径
-        Path path = resolveConfigPath(configPath);
-        // 创建一个新的配置对象作为基础
-        Config config = defaultConfig();
+        return loadResult(configPath, true).config();
+    }
 
-        // 如果配置文件存在，则尝试读取和解析
-        if (Files.exists(path)) {
-            try {
-                // 将 JSON 文件读取为 Map 结构
-                Map<String, Object> raw = MAPPER.readValue(path.toFile(), JSON_OBJECT_TYPE);
-                // 将 Map 转换为 Config 对象
-                config = mapToConfig(raw);
-            } catch (Exception e) {
-                log.warn("从 {} 加载配置失败，将使用默认配置。", path, e);
+    public static ConfigLoadResult loadResult(Path configPath, boolean explicit) {
+        Path path = resolveConfigPath(configPath);
+        if (!Files.exists(path)) {
+            if (explicit) {
+                throw new ConfigLoadException("CONFIG_NOT_FOUND", path, "configuration file not found", null);
+            }
+            return new ConfigLoadResult(defaultConfig(), path, ConfigSource.DEFAULT, defaultSources());
+        }
+        try {
+            Map<String, Object> raw = MAPPER.readValue(path.toFile(), JSON_OBJECT_TYPE);
+            return new ConfigLoadResult(mapToConfig(raw), path, ConfigSource.FILE, settingSources(raw));
+        } catch (Exception failure) {
+            throw new ConfigLoadException("CONFIG_INVALID", path, "configuration file is invalid", failure);
+        }
+    }
+
+    private static Map<String, ConfigSource> defaultSources() {
+        return Map.of("model", ConfigSource.DEFAULT, "workspace", ConfigSource.DEFAULT,
+                "provider", ConfigSource.DEFAULT, "apiBase", ConfigSource.DEFAULT,
+                "execBackend", ConfigSource.DEFAULT, "restrictToWorkspace", ConfigSource.DEFAULT);
+    }
+
+    private static Map<String, ConfigSource> settingSources(Map<String, Object> raw) {
+        Map<String, ConfigSource> sources = new LinkedHashMap<>(defaultSources());
+        Map<String, Object> agents = asMap(raw.get("agents"));
+        Map<String, Object> defaults = asMap(agents.get("defaults"));
+        if (defaults.containsKey("model")) sources.put("model", ConfigSource.FILE);
+        if (defaults.containsKey("workspace")) sources.put("workspace", ConfigSource.FILE);
+        if (raw.containsKey("providers")) {
+            sources.put("provider", ConfigSource.FILE);
+            sources.put("apiBase", ConfigSource.FILE);
+            sources.put("apiKey", ConfigSource.FILE);
+        }
+        Map<String, Object> tools = asMap(raw.get("tools"));
+        Map<String, Object> exec = asMap(tools.get("exec"));
+        if (exec.containsKey("backend")) sources.put("execBackend", ConfigSource.FILE);
+        if (tools.containsKey("restrict_to_workspace") || tools.containsKey("restrictToWorkspace")) {
+            sources.put("restrictToWorkspace", ConfigSource.FILE);
+        }
+        if (containsEnvironmentPlaceholder(raw)) {
+            sources.put("environmentPlaceholders", ConfigSource.ENV);
+            if (asMap(raw.get("providers")).values().stream()
+                    .map(ConfigLoader::asMap)
+                    .map(provider -> provider.getOrDefault("api_key", provider.get("apiKey")))
+                    .filter(Objects::nonNull)
+                    .map(String::valueOf)
+                    .anyMatch(value -> ENV_PATTERN.matcher(value).find())) {
+                sources.put("apiKey", ConfigSource.ENV);
             }
         }
+        return Map.copyOf(sources);
+    }
 
-        return config;
+    private static boolean containsEnvironmentPlaceholder(Object value) {
+        if (value instanceof String string) return ENV_PATTERN.matcher(string).find();
+        if (value instanceof Map<?, ?> map) return map.values().stream().anyMatch(ConfigLoader::containsEnvironmentPlaceholder);
+        if (value instanceof Collection<?> values) return values.stream().anyMatch(ConfigLoader::containsEnvironmentPlaceholder);
+        return false;
     }
 
     /**
@@ -330,6 +373,22 @@ public final class ConfigLoader {
         oc.setEnabled(booleanValue(offload.get("enabled"), oc.isEnabled()));
         oc.setPreviewChars(intValue(offload.get("preview_chars"), oc.getPreviewChars()));
         oc.setReadChunkChars(intValue(offload.get("read_chunk_chars"), oc.getReadChunkChars()));
+        oc.setMaxArtifactBytesPerTool(longValue(offload.get("max_artifact_bytes_per_tool"),
+                oc.getMaxArtifactBytesPerTool()));
+        Map<String, Object> contextManagement = asMap(defaults.get("context_management"));
+        Config.ContextManagementConfig cm = ad.getContextManagement();
+        cm.setTriggerRatio(doubleValue(contextManagement.get("trigger_ratio"), cm.getTriggerRatio()));
+        cm.setWarningRatio(doubleValue(contextManagement.get("warning_ratio"), cm.getWarningRatio()));
+        cm.setTargetRatio(doubleValue(contextManagement.get("target_ratio"), cm.getTargetRatio()));
+        cm.setRecentReserveRatio(doubleValue(contextManagement.get("recent_reserve_ratio"), cm.getRecentReserveRatio()));
+        cm.setSafetyMarginRatio(doubleValue(contextManagement.get("safety_margin_ratio"), cm.getSafetyMarginRatio()));
+        cm.setTimeHintIntervalMinutes(intValue(contextManagement.get("time_hint_interval_minutes"), cm.getTimeHintIntervalMinutes()));
+        Map<String, Object> toolRuntime = asMap(defaults.get("tool_runtime"));
+        Config.ToolRuntimeConfig tr = ad.getToolRuntime();
+        tr.setStrictSchema(booleanValue(toolRuntime.get("strict_schema"), tr.isStrictSchema()));
+        tr.setRequireReadReceipt(booleanValue(toolRuntime.get("require_read_receipt"), tr.isRequireReadReceipt()));
+        tr.setMaxParallelReadCalls(intValue(toolRuntime.get("max_parallel_read_calls"), tr.getMaxParallelReadCalls()));
+        tr.setExternalActionsEnabled(booleanValue(toolRuntime.get("external_actions_enabled"), tr.isExternalActionsEnabled()));
 
         // --- 处理 providers 部分 ---
         Map<String, Object> providers = asMap(data.get("providers"));
@@ -427,7 +486,19 @@ public final class ConfigLoader {
         defaults.put("budget", budget);
         Config.ContextOffloadConfig oc = ad.getContextOffload();
         defaults.put("context_offload", Map.of("enabled", oc.isEnabled(), "preview_chars", oc.getPreviewChars(),
-                "read_chunk_chars", oc.getReadChunkChars()));
+                "read_chunk_chars", oc.getReadChunkChars(),
+                "max_artifact_bytes_per_tool", oc.getMaxArtifactBytesPerTool()));
+        Config.ContextManagementConfig cm = ad.getContextManagement();
+        defaults.put("context_management", Map.of(
+                "trigger_ratio", cm.getTriggerRatio(), "warning_ratio", cm.getWarningRatio(),
+                "target_ratio", cm.getTargetRatio(), "recent_reserve_ratio", cm.getRecentReserveRatio(),
+                "safety_margin_ratio", cm.getSafetyMarginRatio(),
+                "time_hint_interval_minutes", cm.getTimeHintIntervalMinutes()));
+        Config.ToolRuntimeConfig tr = ad.getToolRuntime();
+        defaults.put("tool_runtime", Map.of("strict_schema", tr.isStrictSchema(),
+                "require_read_receipt", tr.isRequireReadReceipt(),
+                "max_parallel_read_calls", tr.getMaxParallelReadCalls(),
+                "external_actions_enabled", tr.isExternalActionsEnabled()));
 
         agents.put("defaults", defaults);
         root.put("agents", agents);

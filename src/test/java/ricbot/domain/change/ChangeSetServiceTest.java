@@ -3,6 +3,9 @@ package ricbot.domain.change;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import ricbot.domain.verification.VerificationReport;
+import ricbot.domain.artifact.ArtifactDelta;
+import ricbot.domain.artifact.ArtifactIntegrator;
+import ricbot.integration.artifact.GitChangeSetArtifactIntegrator;
 import ricbot.domain.security.ApprovalService;
 import ricbot.domain.security.ApprovalBinding;
 import ricbot.domain.security.CommandRiskLevel;
@@ -11,6 +14,7 @@ import ricbot.domain.security.RiskAssessment;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 import java.time.Instant;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -47,7 +51,7 @@ class ChangeSetServiceTest {
         assertTrue(changeSet.diffSummary().contains("Changed files: 2"), changeSet.diffSummary());
         assertTrue(changeSet.diffPatch().contains("README.md"), changeSet.diffPatch());
         assertTrue(changeSet.diffPatch().contains("NewFile.java"), changeSet.diffPatch());
-        assertEquals(workspace.resolve(".ricbot/runtime.db").toAbsolutePath().normalize(), service.changeSetDir(changeSet.id()));
+        assertEquals(workspace.resolve(".ricbot/application.db").toAbsolutePath().normalize(), service.changeSetDir(changeSet.id()));
         assertFalse(Files.exists(workspace.resolve(".changesets")));
         assertTrue(changeSet.rollbackCommands().contains("rm src/main/java/demo/NewFile.java"), changeSet.rollbackCommands().toString());
         assertTrue(changeSet.commitMessage().contains("Update"), changeSet.commitMessage());
@@ -160,6 +164,34 @@ class ChangeSetServiceTest {
 
         assertEquals(first.commitHash(), second.commitHash());
         assertEquals("2", git(workspace, "rev-list", "--count", "HEAD").trim());
+    }
+
+    @Test
+    void reconcileRecoversGitCommitWhenApplicationRecordWasNotSaved(@TempDir Path workspace) throws Exception {
+        initGitRepo(workspace);
+        Files.writeString(workspace.resolve("README.md"), "initial\nreconcile me\n");
+        ChangeSetService service = new ChangeSetService(workspace);
+        GitChangeSet changeSet = service.createFromWorkingTree("cli:direct", "team_1", "task_1");
+        service.attachVerificationReport(changeSet.id(), passingReport(service, changeSet));
+        service.markApproved(changeSet.id());
+        String message = "Commit before ledger save";
+        ChangeSetActionAuthorization authorization = authorization(workspace, changeSet.id(),
+                PendingChangeAction.ActionType.COMMIT, message);
+        git(workspace, "add", "--", "README.md");
+        git(workspace, "commit", "-m", message, "-m",
+                "Ricbot-Approval: " + authorization.requestId() + "\nRicbot-ChangeSet: " + changeSet.id());
+        String actualCommit = git(workspace, "rev-parse", "HEAD").trim();
+        assertEquals(GitChangeSetStatus.APPROVED, service.load(changeSet.id()).status());
+
+        ArtifactDelta delta = new ArtifactDelta("delta:" + changeSet.id(), "git-patch",
+                changeSet.baseCommit(), List.of("artifact:changeset:" + changeSet.id()), Map.of(
+                "changeSetId", changeSet.id(), "action", "COMMIT", "commitMessage", message));
+        ArtifactIntegrator.IntegrationResult reconciled = new GitChangeSetArtifactIntegrator(service, authorization)
+                .reconcile(delta, Map.of("dispatch", "unknown")).orElseThrow();
+
+        assertEquals("git:commit:" + actualCommit, reconciled.resultReference());
+        assertEquals(GitChangeSetStatus.COMMITTED, service.load(changeSet.id()).status());
+        assertEquals(actualCommit, service.load(changeSet.id()).commitHash());
     }
 
     @Test

@@ -35,6 +35,11 @@ public final class ContextCompactor {
         StructuredContextSummary summarize(List<Map<String, Object>> messages, String prompt) throws Exception;
     }
 
+    /** Signals that source preservation failed; compaction must not degrade or mutate state. */
+    public static final class SourcePersistenceException extends RuntimeException {
+        public SourcePersistenceException(String message, Throwable cause) { super(message, cause); }
+    }
+
     private static final ObjectMapper MAPPER = new ObjectMapper().findAndRegisterModules();
 
     /**
@@ -64,6 +69,12 @@ public final class ContextCompactor {
      */
     public ContextCompactionResult compact(List<Map<String, Object>> input, int availableInputTokens,
                                            String model, SummaryGenerator generator, boolean force) {
+        return compact(input, availableInputTokens, model, generator, force, TRIGGER_RATIO, TARGET_RATIO);
+    }
+
+    public ContextCompactionResult compact(List<Map<String, Object>> input, int availableInputTokens,
+                                           String model, SummaryGenerator generator, boolean force,
+                                           double triggerRatio, double targetRatio) {
         // 1. 标准化输入：确保每条消息都有唯一的 ID 和默认标记
         List<Map<String, Object>> messages = normalize(input);
         
@@ -73,11 +84,15 @@ public final class ContextCompactor {
         // 3. 判断是否需要压缩：
         //    - 如果可用 Token <= 0，或
         //    - 非强制模式下，当前 Token < 可用 Token * 触发比例 (80%)
-        if (availableInputTokens <= 0 || (!force && currentTokens < availableInputTokens * TRIGGER_RATIO)) {
+        double trigger = triggerRatio > 0 && triggerRatio <= 1 ? triggerRatio : TRIGGER_RATIO;
+        double targetRatioSafe = targetRatio > 0 && targetRatio < trigger ? targetRatio : TARGET_RATIO;
+        if (availableInputTokens <= 0 || (!force && currentTokens < availableInputTokens * trigger)) {
             return unchanged(messages, model, currentTokens);
         }
 
-        // 4. 确定需要保留的消息索引（最近的消息 + 与工具调用相关的消息对）
+        // 4. Parse first, then select whole interaction segments. A tool chain is never split.
+        List<ContextSegment> segments = ContextSegment.parse(messages);
+        List<SegmentSpan> spans = spans(segments);
         Set<Integer> preserved = preservedIndexes(messages);
         
         // 5. 收集可被压缩的消息候选者（排除已保留的）
@@ -87,15 +102,20 @@ public final class ContextCompactor {
         // 计算目标 Token 数：
         // - 强制模式：取 (可用Token * 60%) 和 (当前Token * 75%) 中的较小值，至少为 1
         // - 普通模式：取 (可用Token * 60%)
-        int target = force ? Math.min((int) Math.floor(availableInputTokens * TARGET_RATIO),
+        int target = force ? Math.min((int) Math.floor(availableInputTokens * targetRatioSafe),
                 Math.max(1, (int) Math.floor(currentTokens * 0.75d)))
-                : (int) Math.floor(availableInputTokens * TARGET_RATIO);
+                : (int) Math.floor(availableInputTokens * targetRatioSafe);
         
         // 贪心算法：从前往后遍历，累加候选者直到剩余 Token 接近目标
-        for (int index = 0; index < messages.size() && activeTokens > target; index++) {
-            if (preserved.contains(index)) continue; // 跳过必须保留的消息
-            candidates.add(index);
-            activeTokens -= estimate(messages.get(index));
+        for (SegmentSpan span : spans) {
+            if (activeTokens <= target) break;
+            boolean keep = span.indexes().stream().anyMatch(preserved::contains);
+            if (keep) {
+                preserved.addAll(span.indexes());
+                continue;
+            }
+            candidates.addAll(span.indexes());
+            activeTokens -= estimate(span.segment().messages());
         }
 
         // 如果没有候选者可压缩，直接返回不变的结果
@@ -114,6 +134,7 @@ public final class ContextCompactor {
                 try { 
                     summary = generator.summarize(source, prompt); 
                 }
+                catch (SourcePersistenceException failure) { throw failure; }
                 catch (Exception ignored) { /* 第二次失败后选择确定性回退方案 */ }
             }
         }
@@ -170,6 +191,19 @@ public final class ContextCompactor {
         return marks instanceof List<?> list && list.stream().map(String::valueOf)
                 .anyMatch(MessageMark.COMPRESSED.name()::equals);
     }
+
+    private static List<SegmentSpan> spans(List<ContextSegment> segments) {
+        List<SegmentSpan> result = new ArrayList<>();
+        int index = 0;
+        for (ContextSegment segment : segments) {
+            List<Integer> indexes = new ArrayList<>();
+            for (int offset = 0; offset < segment.messages().size(); offset++) indexes.add(index++);
+            result.add(new SegmentSpan(segment, List.copyOf(indexes)));
+        }
+        return List.copyOf(result);
+    }
+
+    private record SegmentSpan(ContextSegment segment, List<Integer> indexes) { }
 
     /**
      * 标准化输入消息列表：

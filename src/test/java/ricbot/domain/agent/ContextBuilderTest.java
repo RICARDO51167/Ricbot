@@ -40,8 +40,9 @@ public class ContextBuilderTest {
         );
 
         assertEquals("system", messages.get(0).get("role"));
-        assertEquals("user", messages.get(1).get("role"));
-        assertEquals("hello", messages.get(1).get("content"));
+        assertEquals("ricbot_initial_context", messages.get(1).get("name"));
+        assertEquals("user", messages.get(2).get("role"));
+        assertEquals("hello", messages.get(2).get("content"));
         assertFalse(messages.stream().anyMatch(m -> "missing_call".equals(String.valueOf(m.get("tool_call_id")))));
         assertEquals("user", messages.get(messages.size() - 1).get("role"));
         assertEquals("next", messages.get(messages.size() - 1).get("content"));

@@ -12,7 +12,6 @@ final class ContextCommandRenderer {
             "project_notes",
             "workspace_knowledge",
             "workspace_session",
-            "team_context",
             "trace_context",
             "tool_trace"
     );

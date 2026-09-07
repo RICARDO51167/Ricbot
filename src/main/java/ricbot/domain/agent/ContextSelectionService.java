@@ -134,7 +134,6 @@ public final class ContextSelectionService {
         }
 
         addWorkspaceSessionContext(bundle, preparedInputs.workspaceContext());
-        addTeamContext(bundle, preparedInputs.teamContext());
 
         // 渲染最近的工具调用轨迹并添加到上下文中
         for (String trace : toolTraceSummarizer.renderRecent(preparedInputs.toolTrace(), 4)) {
@@ -145,125 +144,6 @@ public final class ContextSelectionService {
 
         // 返回选择结果，包含筛选后的历史消息和上下文 bundle
         return new SelectionResult(history, bundle);
-    }
-
-    private void addTeamContext(PromptContextBundle bundle, Map<String, Object> teamContext) {
-        if (teamContext == null || teamContext.isEmpty()) {
-            return;
-        }
-        Map<?, ?> session = teamContext.get("session") instanceof Map<?, ?> map ? map : Map.of();
-        String sessionId = string(session.get("id"));
-        String goal = string(session.get("goal"));
-        String state = string(session.get("state"));
-        String whiteboardPath = string(teamContext.get("whiteboardPath"));
-        String verificationPath = string(teamContext.get("verificationPath"));
-        String whiteboardSummary = string(teamContext.get("whiteboardSummary")).replace("\n", " ");
-        List<String> verifierResults = stringList(teamContext.get("verifierResults"));
-        List<String> verificationReports = stringList(teamContext.get("verificationReports"));
-        List<String> workerResults = stringList(teamContext.get("workerResults"));
-        List<String> workerReports = stringList(teamContext.get("workerReports"));
-        List<String> implementationSteps = stringList(teamContext.get("implementationSteps"));
-        List<String> blockedImplementationSteps = stringList(teamContext.get("blockedImplementationSteps"));
-        List<String> stepAuditSummary = stringList(teamContext.get("stepAuditSummary"));
-        Map<?, ?> stepProgress = teamContext.get("implementationStepProgress") instanceof Map<?, ?> progress ? progress : Map.of();
-        List<String> revisionRequests = stringList(teamContext.get("revisionRequests"));
-        List<String> parts = new ArrayList<>();
-        if (!sessionId.isBlank()) {
-            parts.add("session=" + sessionId);
-        }
-        if (!state.isBlank()) {
-            parts.add("state=" + state);
-        }
-        if (!goal.isBlank()) {
-            parts.add("goal=" + goal);
-        }
-        if (!verifierResults.isEmpty()) {
-            parts.add("verifier=" + String.join("; ", verifierResults));
-        }
-        if (!workerResults.isEmpty()) {
-            parts.add("worker=" + String.join("; ", workerResults));
-        }
-        if (!workerReports.isEmpty()) {
-            parts.add("workerReport=" + abbreviate(String.join("; ", workerReports), 360));
-        }
-        if (!implementationSteps.isEmpty()) {
-            parts.add("implementationSteps=" + abbreviate(String.join("; ", implementationSteps), 360));
-        }
-        if (!blockedImplementationSteps.isEmpty()) {
-            parts.add("blockedSteps=" + abbreviate(String.join("; ", blockedImplementationSteps), 240));
-        }
-        if (!stepAuditSummary.isEmpty()) {
-            parts.add("stepAudit=" + abbreviate(String.join("; ", stepAuditSummary), 300));
-        }
-        if (!stepProgress.isEmpty()) {
-            parts.add("stepProgress=total:" + string(stepProgress.get("total"))
-                    + " draft:" + string(stepProgress.get("draft"))
-                    + " ready:" + string(stepProgress.get("ready"))
-                    + " applied:" + string(stepProgress.get("applied"))
-                    + " blocked:" + string(stepProgress.get("blocked"))
-                    + " next:" + abbreviate(string(stepProgress.get("nextStep")), 180));
-        }
-        if (!verificationReports.isEmpty()) {
-            parts.add("verificationReport=" + abbreviate(String.join("; ", verificationReports), 360));
-        }
-        if (!revisionRequests.isEmpty()) {
-            parts.add("revision=" + String.join("; ", revisionRequests));
-        }
-        if (!whiteboardSummary.isBlank()) {
-            parts.add("whiteboard=" + abbreviate(whiteboardSummary, 360));
-        }
-        Map<String, Object> metadata = new LinkedHashMap<>();
-        metadata.put("team_session", sessionId);
-        metadata.put("team_state", state);
-        bundle.addItem(
-                "team_context",
-                String.join(" | ", parts),
-                0.8d,
-                ContextSource.of("team", sessionId, whiteboardPath, "team whiteboard", 0.8d, metadata)
-        );
-        if (!verificationReports.isEmpty()) {
-            bundle.addItem(
-                    "team_context",
-                    "verification " + abbreviate(String.join("; ", verificationReports), 420),
-                    0.78d,
-                    ContextSource.of("team_verification", sessionId + ":verification", verificationPath, "team verification report", 0.78d, metadata)
-            );
-        }
-        if (!workerReports.isEmpty()) {
-            bundle.addItem(
-                    "team_context",
-                    "worker " + abbreviate(String.join("; ", workerReports), 420),
-                    0.78d,
-                    ContextSource.of("team_worker", sessionId + ":worker", string(teamContext.get("workerPath")),
-                            "team worker report", 0.78d, metadata)
-            );
-        }
-        if (!implementationSteps.isEmpty()) {
-            bundle.addItem(
-                    "team_context",
-                    "implementation steps " + abbreviate(String.join("; ", implementationSteps), 420),
-                    0.77d,
-                    ContextSource.of("team_implementation_steps", sessionId + ":implementation_steps", string(teamContext.get("implementationStepsPath")),
-                            "team implementation steps", 0.77d, metadata)
-            );
-        }
-        if (!stepAuditSummary.isEmpty()) {
-            bundle.addItem(
-                    "team_context",
-                    "step audit " + abbreviate(String.join("; ", stepAuditSummary), 420),
-                    0.76d,
-                    ContextSource.of("team_step_audit", sessionId + ":step_audit", string(teamContext.get("stepAuditPath")),
-                            "team step audit", 0.76d, metadata)
-            );
-        }
-        for (Map<String, Object> event : eventRows(teamContext.get("recentEvents")).stream().limit(2).toList()) {
-            String rendered = "event " + string(event.get("type"))
-                    + " role=" + string(event.get("role"))
-                    + " task=" + string(event.get("taskId"))
-                    + " message=" + abbreviate(string(event.get("message")), 180);
-            bundle.addItem("team_context", rendered, 0.6d,
-                    ContextSource.of("team_event", string(event.get("id")), whiteboardPath, string(event.get("type")), 0.6d, metadata));
-        }
     }
 
     private void addWorkspaceSessionContext(PromptContextBundle bundle, Map<String, Object> workspaceContext) {
@@ -658,31 +538,19 @@ public final class ContextSelectionService {
             String archivedSummary,
             TaskState taskState,
             List<Map<String, Object>> toolTrace,
-            Map<String, Object> teamContext,
             Map<String, Object> workspaceContext
     ) {
         public SessionPreparedInputs {
             toolTrace = toolTrace != null ? List.copyOf(toolTrace) : List.of();
-            teamContext = teamContext != null ? Map.copyOf(teamContext) : Map.of();
             workspaceContext = workspaceContext != null ? Map.copyOf(workspaceContext) : Map.of();
         }
 
         public SessionPreparedInputs(String sessionId, String archivedSummary, TaskState taskState, List<Map<String, Object>> toolTrace) {
-            this(sessionId, archivedSummary, taskState, toolTrace, Map.of(), Map.of());
-        }
-
-        SessionPreparedInputs(
-                String sessionId,
-                String archivedSummary,
-                TaskState taskState,
-                List<Map<String, Object>> toolTrace,
-                Map<String, Object> teamContext
-        ) {
-            this(sessionId, archivedSummary, taskState, toolTrace, teamContext, Map.of());
+            this(sessionId, archivedSummary, taskState, toolTrace, Map.of());
         }
 
         public SessionPreparedInputs(String archivedSummary, TaskState taskState, List<Map<String, Object>> toolTrace) {
-            this("", archivedSummary, taskState, toolTrace, Map.of(), Map.of());
+            this("", archivedSummary, taskState, toolTrace, Map.of());
         }
     }
 

@@ -4,7 +4,6 @@ package ricbot.domain.agent;
 import lombok.Getter;
 import lombok.Setter;
 import lombok.experimental.Accessors;
-import ricbot.domain.agent.interfacep.SideEffectStore;
 import ricbot.domain.config.ProviderCapability;
 import ricbot.domain.config.ModelCard;
 import ricbot.domain.agent.budget.BudgetPolicy;
@@ -28,7 +27,7 @@ import java.util.*;
 @Accessors(chain = true)
 public class AgentRunSpec {
 
-    /** Optional caller-assigned durable Run ID (used by child Task Runs). */
+    /** Optional caller-assigned durable Run ID (including ordinary child Runs). */
     private String runId;
 
     // 初始消息列表，用于启动 Agent 对话
@@ -66,20 +65,25 @@ public class AgentRunSpec {
     private ProviderCapability providerCapability;
     private ModelCard.Pricing modelPricing;
     private BudgetPolicy budgetPolicy = BudgetPolicy.unlimited();
-    /** Root hard limit; differs from budgetPolicy only for Team child Runs. */
+    /** Root hard limit shared by related child Runs. */
     private BudgetPolicy rootBudgetPolicy;
     private boolean contextOffloadEnabled = true;
     private int offloadPreviewChars = 1200;
     private int artifactReadChunkChars = 16000;
+    private long maxArtifactBytesPerTool = 67_108_864L;
+    private double contextTriggerRatio = 0.80d;
+    private double contextWarningRatio = 0.60d;
+    private double contextTargetRatio = 0.60d;
+    private int timeHintIntervalMinutes = 30;
+    private boolean externalActionsEnabled;
+    private int maxParallelReadCalls = 4;
+    private boolean requireReadReceipt = true;
     private String timezone = "UTC";
     // 运行模式元数据；普通 agent 模式可为空，team-worker 等适配层用于审计与测试。
     private Map<String, Object> metadata = new LinkedHashMap<>();
     // 适配层声明的允许工具名；实际限制由传入的 ToolRegistry 决定。
     private List<String> allowedTools = new ArrayList<>();
-    /** Durable protocol store for write-tool idempotency. */
-    private SideEffectStore sideEffectStore;
-
-    /** Persistent approval authority used by the graph approval node. */
+    /** Persistent approval authority used by the durable runtime approval boundary. */
     private ApprovalService approvalService;
 
     private ToolLifecycleCallback toolLifecycleCallback;
@@ -108,7 +112,7 @@ public class AgentRunSpec {
         return this;
     }
 
-    interface ToolLifecycleCallback {
+    public interface ToolLifecycleCallback {
         void onToolStart(String toolName, Map<String, Object> arguments);
 
         void onToolFinish(Map<String, Object> event);

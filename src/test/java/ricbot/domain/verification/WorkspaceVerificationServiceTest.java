@@ -2,13 +2,7 @@ package ricbot.domain.verification;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import ricbot.domain.task.TaskFailurePolicy;
-import ricbot.domain.task.TaskResult;
-import ricbot.domain.task.TaskSpec;
-import ricbot.domain.task.TaskStatus;
-import ricbot.domain.task.TaskWorkspaceMode;
-import ricbot.domain.task.TeamPlan;
-import ricbot.domain.task.TaskRole;
+import ricbot.domain.artifact.ArtifactDelta;
 import ricbot.infra.execution.ExecutionBackend;
 import ricbot.infra.execution.ExecutionRequest;
 import ricbot.infra.execution.ExecutionResult;
@@ -16,7 +10,6 @@ import ricbot.infra.execution.ExecutionResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -34,10 +27,10 @@ class WorkspaceVerificationServiceTest {
                  "acceptance":[{"id":"api-contract","command":"accept-safe","timeoutSeconds":10}]}
                 """);
         RecordingBackend backend = new RecordingBackend(0);
-        TeamPlan plan = plan(List.of("api-contract"), List.of("API contract is preserved"));
+        ArtifactDelta delta = delta(List.of("api-contract"), List.of("API contract is preserved"));
 
         VerificationReport report = new WorkspaceVerificationService(workspace, backend)
-                .verify("run-1", workspace, plan, List.of(result()));
+                .verify("run-1", workspace, delta);
 
         assertEquals(VerificationReport.Status.PASS, report.status());
         assertEquals(List.of("git diff --check", "git diff --name-status HEAD", "git diff --binary HEAD",
@@ -50,7 +43,7 @@ class WorkspaceVerificationServiceTest {
     void unknownOrUnprovenAcceptanceNeedsHuman(@TempDir Path workspace) throws Exception {
         Files.writeString(workspace.resolve("mvnw"), "");
         VerificationReport report = new WorkspaceVerificationService(workspace, new RecordingBackend(0))
-                .verify("run-2", workspace, plan(List.of("unknown-check"), List.of("manual UX review")), List.of(result()));
+                .verify("run-2", workspace, delta(List.of("unknown-check"), List.of("manual UX review")));
 
         assertEquals(VerificationReport.Status.NEEDS_HUMAN, report.status());
         assertTrue(report.unprovenCriteria().stream().anyMatch(value -> value.contains("unknown check")));
@@ -61,7 +54,7 @@ class WorkspaceVerificationServiceTest {
         Files.writeString(workspace.resolve("mvnw"), "");
         RecordingBackend backend = new RecordingBackend(1);
         VerificationReport report = new WorkspaceVerificationService(workspace, backend)
-                .verify("run-3", workspace, plan(List.of(), List.of()), List.of(result()));
+                .verify("run-3", workspace, delta(List.of(), List.of()));
 
         assertEquals(VerificationReport.Status.REJECT, report.status());
         assertTrue(report.checks().stream().anyMatch(check -> check.stage() == VerificationCheckResult.Stage.TEST
@@ -84,24 +77,19 @@ class WorkspaceVerificationServiceTest {
         RecordingBackend backend = new RecordingBackend(0);
 
         VerificationReport report = new WorkspaceVerificationService(workspace, backend)
-                .verify("run-profile", workspace, plan(List.of(), List.of()), List.of(result()), pinned);
+                .verify("run-profile", workspace, delta(List.of(), List.of()), pinned);
 
         assertEquals(VerificationReport.Status.NEEDS_HUMAN, report.status());
         assertTrue(backend.commands.isEmpty());
-        assertTrue(report.artifactDirectory().startsWith("sqlite:.ricbot/runtime.db#verification/"));
+        assertTrue(report.artifactDirectory().startsWith("sqlite:.ricbot/application.db#verification/"));
         assertEquals(report.reportId(), new ricbot.infra.runtime.SqliteRuntimeStore(workspace)
                 .verificationReports().get(0).reportId());
     }
 
-    private static TeamPlan plan(List<String> checks, List<String> criteria) {
-        TaskSpec task = new TaskSpec("task-1", "run", "activation", 0, 0, TaskRole.DEVELOPER, "change code",
-                List.of(), List.of(), TaskWorkspaceMode.ISOLATED_WORKTREE, TaskFailurePolicy.FAIL_FAST, false,
-                checks, criteria);
-        return new TeamPlan("plan", "run", 0, List.of(task));
-    }
-    private static TaskResult result() {
-        return new TaskResult(2, "task-1", "run", "child", TaskStatus.SUCCEEDED, 0, "done", Map.of(),
-                "patch", List.of("src/A.java"), List.of("test-safe"), "", Instant.now());
+    private static ArtifactDelta delta(List<String> checks, List<String> criteria) {
+        return new ArtifactDelta("delta-1", "git-patch", "HEAD", List.of("git:working-tree"),
+                Map.of("requiredChecks", checks, "acceptanceCriteria", criteria,
+                        "checkRunIds", Map.of("api-contract", List.of("run-child"))));
     }
     private static final class RecordingBackend implements ExecutionBackend {
         private final List<String> commands = new ArrayList<>();

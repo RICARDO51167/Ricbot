@@ -7,7 +7,7 @@ import ricbot.tool.api.ToolEffectPolicy;
 import java.time.Duration;
 import java.util.Map;
 
-public final class ArtifactListTool extends Tool {
+public final class ArtifactListTool extends ricbot.tool.api.BuiltinTool {
     private final ArtifactStore store;
     public ArtifactListTool(ArtifactStore store) { this.store = store; }
     public String getName() { return "artifact_list"; }

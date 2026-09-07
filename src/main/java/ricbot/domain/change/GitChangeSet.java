@@ -7,6 +7,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
+/**
+ * Git-backed artifact data retained at the compatibility edge. The legacy
+ * teamSessionId/taskId columns remain readable for existing application data;
+ * they do not represent v6 schedulers, statuses, or runtime ownership.
+ */
 public record GitChangeSet(
         String id,
         String sessionId,

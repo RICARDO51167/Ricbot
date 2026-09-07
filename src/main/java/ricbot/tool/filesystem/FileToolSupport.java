@@ -11,6 +11,12 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
+import java.security.MessageDigest;
+import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.PosixFilePermissions;
+import java.util.EnumSet;
+import java.util.Set;
+import java.util.HexFormat;
 
 /**
  * 文件工具公共辅助类，提供路径解析、权限校验、文件读写、二进制检测、目录列表等通用功能。
@@ -18,6 +24,11 @@ import java.util.Locale;
 public final class FileToolSupport {
     public static final long MAX_TEXT_FILE_BYTES = 2L * 1024L * 1024L;
     private static final int BINARY_SAMPLE_BYTES = 8192;
+    private static final Object[] WRITE_LOCKS = new Object[64];
+
+    static {
+        for (int i = 0; i < WRITE_LOCKS.length; i++) WRITE_LOCKS[i] = new Object();
+    }
 
     private FileToolSupport() {
     }
@@ -99,6 +110,106 @@ public final class FileToolSupport {
                 StandardOpenOption.TRUNCATE_EXISTING,
                 StandardOpenOption.WRITE
         );
+    }
+
+    public static String sha256(Path path) throws IOException { return sha256(Files.readAllBytes(path)); }
+    public static String sha256(String content) { return sha256((content != null ? content : "").getBytes(StandardCharsets.UTF_8)); }
+    private static String sha256(byte[] bytes) {
+        try { return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes)); }
+        catch (Exception failure) { throw new IllegalStateException("cannot calculate file digest", failure); }
+    }
+
+    /**
+     * Guarded create/update for Ricbot writers. A null expected SHA means create-only; a non-null
+     * SHA means update-only. Arbitrary external writers that ignore Ricbot coordination can still
+     * race the final filesystem rename, so this deliberately does not claim universal file CAS.
+     */
+    public static void compareAndWrite(Path path, String expectedSha, String content) throws IOException {
+        compareAndWrite(path, expectedSha, content, ignored -> { });
+    }
+
+    public static void compareAndWrite(Path path, String expectedSha, String content,
+                                       WritePathGuard pathGuard) throws IOException {
+        Path target = path.toAbsolutePath().normalize();
+        String safeContent = content != null ? content : "";
+        byte[] bytes = safeContent.getBytes(StandardCharsets.UTF_8);
+        if (bytes.length > MAX_TEXT_FILE_BYTES) {
+            throw new IOException("写入内容超过文本工具大小限制：" + MAX_TEXT_FILE_BYTES + " bytes");
+        }
+        Object lock = WRITE_LOCKS[Math.floorMod(target.hashCode(), WRITE_LOCKS.length)];
+        synchronized (lock) {
+            WritePathGuard guard = pathGuard != null ? pathGuard : ignored -> { };
+            guard.validate(target);
+            guardedWrite(target, expectedSha, bytes, guard);
+        }
+    }
+
+    private static void guardedWrite(Path target, String expectedSha, byte[] bytes,
+                                     WritePathGuard pathGuard) throws IOException {
+        boolean update = expectedSha != null && !expectedSha.isBlank();
+        boolean exists = Files.exists(target, LinkOption.NOFOLLOW_LINKS);
+        if (update && (!exists || !expectedSha.equals(sha256(target)))) conflict(target);
+        if (!update && exists) conflict(target);
+
+        Path parent = target.getParent();
+        if (parent != null) Files.createDirectories(parent);
+        Set<PosixFilePermission> permissions = update ? posixPermissions(target) : null;
+        Path temp = createSiblingTemp(parent, permissions);
+        try {
+            Files.write(temp, bytes, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+            if (permissions != null) Files.setPosixFilePermissions(temp, permissions);
+
+            exists = Files.exists(target, LinkOption.NOFOLLOW_LINKS);
+            if (update && (!exists || !expectedSha.equals(sha256(target)))) conflict(target);
+            if (!update && exists) conflict(target);
+            pathGuard.validate(target);
+
+            if (update) {
+                try {
+                    Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE,
+                            StandardCopyOption.REPLACE_EXISTING);
+                } catch (AtomicMoveNotSupportedException ignored) {
+                    if (!Files.exists(target, LinkOption.NOFOLLOW_LINKS)
+                            || !expectedSha.equals(sha256(target))) conflict(target);
+                    Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING);
+                }
+            } else {
+                Files.move(temp, target);
+            }
+        } finally {
+            Files.deleteIfExists(temp);
+        }
+    }
+
+    private static Path createSiblingTemp(Path parent, Set<PosixFilePermission> permissions) throws IOException {
+        Path directory = parent != null ? parent : Path.of(".").toAbsolutePath().normalize();
+        try {
+            Set<PosixFilePermission> requested = permissions != null ? permissions : EnumSet.of(
+                    PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE,
+                    PosixFilePermission.GROUP_READ, PosixFilePermission.GROUP_WRITE,
+                    PosixFilePermission.OTHERS_READ, PosixFilePermission.OTHERS_WRITE);
+            return Files.createTempFile(directory, ".ricbot-write-", ".tmp",
+                    PosixFilePermissions.asFileAttribute(requested));
+        } catch (UnsupportedOperationException ignored) {
+            return Files.createTempFile(directory, ".ricbot-write-", ".tmp");
+        }
+    }
+
+    private static Set<PosixFilePermission> posixPermissions(Path path) throws IOException {
+        try {
+            return Files.getPosixFilePermissions(path, LinkOption.NOFOLLOW_LINKS);
+        } catch (UnsupportedOperationException ignored) {
+            return null;
+        }
+    }
+
+    private static void conflict(Path path) {
+        throw new java.util.ConcurrentModificationException("file changed since it was read: " + path);
+    }
+
+    @FunctionalInterface
+    public interface WritePathGuard {
+        void validate(Path path) throws IOException;
     }
 
     /**

@@ -4,10 +4,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import ricbot.domain.verification.VerificationReport;
 import ricbot.domain.workspace.RuntimeArtifactFilter;
 import ricbot.infra.runtime.SqliteRuntimeStore;
-import ricbot.domain.agent.dto.SideEffectClaim;
-import ricbot.domain.agent.dto.SideEffectRecord;
-import ricbot.domain.agent.eump.SideEffectStatus;
-import ricbot.domain.agent.interfacep.SideEffectStore;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -16,27 +12,18 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.security.MessageDigest;
-import java.time.Duration;
 import java.time.Instant;
 import java.util.HexFormat;
 
 public class ChangeSetService {
     private static final ObjectMapper MAPPER = new ObjectMapper().findAndRegisterModules();
-    private static final Duration ACTION_LEASE = Duration.ofSeconds(30);
-
     private final Path workspace;
     private final SqliteRuntimeStore runtime;
-    private final SideEffectStore actionLedger;
-    private final String instanceId;
 
     public ChangeSetService(Path workspace) {
         this.workspace = workspace.toAbsolutePath().normalize();
         this.runtime = ricbot.app.bootstrap.RuntimeStoreRegistry.shared(this.workspace);
-        this.actionLedger = runtime.sideEffectStore();
-        this.instanceId = ricbot.app.bootstrap.RuntimeStoreRegistry.lifecycle(this.workspace)
-                .instance().instanceId();
     }
 
     public GitChangeSet createFromWorkingTree(String sessionId, String teamSessionId, String taskId) {
@@ -173,18 +160,7 @@ public class ChangeSetService {
                 : generateCommitMessage(current);
         if (authorization == null) throw new IllegalStateException("changeset commit requires approval authorization");
         authorization.require(PendingChangeAction.ActionType.COMMIT, changeSetId, message);
-        String baseHead = git(targetWorkspace, "rev-parse", "HEAD").trim();
-        Map<String, Object> actionIdentity = new java.util.LinkedHashMap<>();
-        actionIdentity.put("action", "COMMIT");
-        actionIdentity.put("changeSetId", changeSetId);
-        actionIdentity.put("message", message);
-        actionIdentity.put("verifiedDiffDigest", current.verifiedDiffDigest());
-        if (current.status() == GitChangeSetStatus.COMMITTED) {
-            SideEffectClaim completedClaim = claimAction(authorization, "changeset_commit", actionIdentity);
-            GitChangeSet recovered = recoverCommit(completedClaim.record(), current, targetWorkspace,
-                    authorization.requestId());
-            if (recovered != null) return recovered;
-        }
+        if (current.status() == GitChangeSetStatus.COMMITTED) return current;
         requireCommitEligible(current);
         if (current.changedFiles().isEmpty()) {
             throw new IllegalStateException("changeset has no changed files: " + changeSetId);
@@ -192,29 +168,15 @@ public class ChangeSetService {
         if (!changedFilesStillPresent(current)) {
             throw new IllegalStateException("working tree no longer contains all changeset files: " + changeSetId);
         }
-        SideEffectClaim claim = claimAction(authorization, "changeset_commit", actionIdentity);
-        if (!claim.created()) {
-            GitChangeSet recovered = recoverCommit(claim.record(), current, targetWorkspace, authorization.requestId());
-            if (recovered != null) return recovered;
+        for (String path : current.changedFiles()) {
+            git(targetWorkspace, "add", "--", path);
         }
-        SideEffectRecord executing = beginExecution(claim.record(),
-                Map.of("baseHead", baseHead, "verifiedDiffDigest", current.verifiedDiffDigest()));
-        try {
-            for (String path : current.changedFiles()) {
-                git(targetWorkspace, "add", "--", path);
-            }
-            git(targetWorkspace, "commit", "-m", message, "-m",
-                    "Ricbot-Approval: " + authorization.requestId() + "\nRicbot-ChangeSet: " + changeSetId);
-            String commitHash = git(targetWorkspace, "rev-parse", "HEAD").trim();
-            GitChangeSet committed = current.withCommitMessage(message).withCommitResult(commitHash);
-            save(committed);
-            completeExecution(executing, SideEffectStatus.SUCCEEDED,
-                    Map.of("commitHash", commitHash, "changeSetId", changeSetId), authorization.requestId());
-            return committed;
-        } catch (RuntimeException failure) {
-            markUnknown(executing, failure);
-            throw failure;
-        }
+        git(targetWorkspace, "commit", "-m", message, "-m",
+                "Ricbot-Approval: " + authorization.requestId() + "\nRicbot-ChangeSet: " + changeSetId);
+        String commitHash = git(targetWorkspace, "rev-parse", "HEAD").trim();
+        GitChangeSet committed = current.withCommitMessage(message).withCommitResult(commitHash);
+        save(committed);
+        return committed;
     }
 
     /** Enforces commit safety for every adapter, not only the CLI. */
@@ -270,134 +232,46 @@ public class ChangeSetService {
         authorization.require(PendingChangeAction.ActionType.ROLLBACK, changeSetId, "");
         Path targetWorkspace = commandWorkspace(current);
         ensureGitRepository(targetWorkspace);
+        if (current.status() == GitChangeSetStatus.ROLLED_BACK) return current;
         if (current.rollbackCommands().isEmpty()) {
             throw new IllegalStateException("changeset has no rollback commands: " + changeSetId);
         }
-        Map<String, Object> actionIdentity = Map.of("action", "ROLLBACK", "changeSetId", changeSetId,
-                "changeDigest", sha256(current.diffPatch().getBytes(StandardCharsets.UTF_8)));
-        SideEffectClaim claim = claimAction(authorization, "changeset_rollback", actionIdentity);
-        if (!claim.created()) {
-            GitChangeSet recovered = recoverRollback(claim.record(), current, targetWorkspace,
-                    authorization.requestId());
-            if (recovered != null) return recovered;
+        List<String> executed = new ArrayList<>();
+        for (String command : current.rollbackCommands()) {
+            executeRollbackCommand(targetWorkspace, command);
+            executed.add(command);
         }
-        SideEffectRecord executing = beginExecution(claim.record(),
-                Map.of("diffDigest", currentDiffDigest(current)));
-        try {
-            List<String> executed = new ArrayList<>();
-            for (String command : current.rollbackCommands()) {
-                executeRollbackCommand(targetWorkspace, command);
-                executed.add(command);
-            }
-            GitChangeSet rolledBack = current.withRollbackResult("executed " + executed.size()
-                    + " rollback command(s): " + String.join("; ", executed));
-            save(rolledBack);
-            completeExecution(executing, SideEffectStatus.SUCCEEDED,
-                    Map.of("changeSetId", changeSetId, "commands", executed), authorization.requestId());
-            return rolledBack;
-        } catch (RuntimeException failure) {
-            markUnknown(executing, failure);
-            throw failure;
-        }
+        GitChangeSet rolledBack = current.withRollbackResult("executed " + executed.size()
+                + " rollback command(s): " + String.join("; ", executed));
+        save(rolledBack);
+        return rolledBack;
     }
 
-    private SideEffectClaim claimAction(ChangeSetActionAuthorization authorization, String operation,
-                                         Map<String, Object> identity) {
-        byte[] bytes;
-        try { bytes = MAPPER.writeValueAsBytes(identity); }
-        catch (Exception e) { throw new IllegalStateException("cannot encode change action identity", e); }
-        SideEffectRecord reservation = SideEffectRecord.reserved(authorization.requestId(),
-                authorization.runId(), "changeset:" + authorization.action().changeSetId(), "",
-                authorization.activationId(), operation, sha256(bytes), identity);
-        SideEffectClaim claim = actionLedger.claim(reservation);
-        SideEffectRecord stored = claim.record();
-        if (!stored.sessionKey().equals(reservation.sessionKey()) || !stored.toolName().equals(operation)
-                || !stored.argumentsDigest().equals(reservation.argumentsDigest())) {
-            throw new IllegalStateException("approval request was reused for a different change action");
-        }
-        return claim;
-    }
-
-    private GitChangeSet recoverCommit(SideEffectRecord record, GitChangeSet current, Path targetWorkspace,
-                                        String requestId) {
-        if (record.status() == SideEffectStatus.SUCCEEDED) return require(current.id());
-        if (record.status() == SideEffectStatus.RESERVED || record.status() == SideEffectStatus.RETRY_AUTHORIZED) {
-            return null;
-        }
-        if (record.status() != SideEffectStatus.EXECUTING && record.status() != SideEffectStatus.UNKNOWN) {
-            throw new IllegalStateException("commit result requires human reconciliation: " + requestId);
-        }
+    public GitChangeSet reconcileCommit(String changeSetId, String requestId) {
+        GitChangeSet current = require(changeSetId);
+        if (current.status() == GitChangeSetStatus.COMMITTED) return current;
+        Path targetWorkspace = commandWorkspace(current);
         String head = git(targetWorkspace, "rev-parse", "HEAD").trim();
         String body = git(targetWorkspace, "log", "-1", "--format=%B");
         if (body.contains("Ricbot-Approval: " + requestId)
                 && body.contains("Ricbot-ChangeSet: " + current.id())) {
             GitChangeSet recovered = current.withCommitResult(head);
             save(recovered);
-            completeExecution(record, SideEffectStatus.SUCCEEDED,
-                    Map.of("commitHash", head, "changeSetId", current.id(), "recovered", true), requestId);
             return recovered;
         }
-        String baseHead = record.result() instanceof Map<?, ?> map && map.get("baseHead") != null
-                ? String.valueOf(map.get("baseHead")) : "";
-        if (head.equals(baseHead)) {
-            throw new IllegalStateException("commit execution may not be repeated without an explicit retry authorization: "
-                    + requestId);
-        }
-        throw new IllegalStateException("commit result is unknown; human confirmation required: " + requestId);
+        return null;
     }
 
-    private GitChangeSet recoverRollback(SideEffectRecord record, GitChangeSet current, Path targetWorkspace,
-                                         String requestId) {
-        if (record.status() == SideEffectStatus.SUCCEEDED) return require(current.id());
-        if (record.status() == SideEffectStatus.RESERVED || record.status() == SideEffectStatus.RETRY_AUTHORIZED) {
-            return null;
-        }
-        if (record.status() != SideEffectStatus.EXECUTING && record.status() != SideEffectStatus.UNKNOWN) {
-            throw new IllegalStateException("rollback result requires human reconciliation: " + requestId);
-        }
+    public GitChangeSet reconcileRollback(String changeSetId) {
+        GitChangeSet current = require(changeSetId);
+        if (current.status() == GitChangeSetStatus.ROLLED_BACK) return current;
+        Path targetWorkspace = commandWorkspace(current);
         if (statusRows(targetWorkspace).isEmpty()) {
             GitChangeSet recovered = current.withRollbackResult("rollback recovered after restart");
             save(recovered);
-            completeExecution(record, SideEffectStatus.SUCCEEDED,
-                    Map.of("changeSetId", current.id(), "recovered", true), requestId);
             return recovered;
         }
-        throw new IllegalStateException("rollback execution may not be repeated without an explicit retry authorization: "
-                + requestId);
-    }
-
-    private SideEffectRecord beginExecution(SideEffectRecord record, Object evidence) {
-        SideEffectRecord current = record;
-        if (current.status() == SideEffectStatus.RETRY_AUTHORIZED) {
-            SideEffectRecord reserved = current.clearLease(SideEffectStatus.RESERVED, null,
-                    current.confirmationId());
-            current = actionLedger.transition(reserved, current.version(),
-                    Set.of(SideEffectStatus.RETRY_AUTHORIZED));
-        }
-        if (current.status() != SideEffectStatus.RESERVED) {
-            throw new IllegalStateException("side effect execution requires RESERVED status: "
-                    + current.idempotencyKey());
-        }
-        SideEffectRecord executing = current.claimExecution(instanceId, Instant.now().plus(ACTION_LEASE), evidence);
-        return actionLedger.transition(executing, current.version(), Set.of(SideEffectStatus.RESERVED));
-    }
-
-    private SideEffectRecord completeExecution(SideEffectRecord current, SideEffectStatus status, Object result,
-                                               String confirmationId) {
-        return actionLedger.transition(current.clearLease(status, result, confirmationId), current.version(),
-                Set.of(SideEffectStatus.EXECUTING, SideEffectStatus.UNKNOWN));
-    }
-
-    private void markUnknown(SideEffectRecord executing, RuntimeException failure) {
-        try {
-            actionLedger.transition(executing.clearLease(SideEffectStatus.UNKNOWN,
-                            Map.of("errorType", failure.getClass().getName(), "message",
-                                    failure.getMessage() != null ? failure.getMessage() : "change action failed"),
-                            executing.confirmationId()),
-                    executing.version(), Set.of(SideEffectStatus.EXECUTING));
-        } catch (RuntimeException transitionFailure) {
-            failure.addSuppressed(transitionFailure);
-        }
+        return null;
     }
 
     public boolean changedFilesStillPresent(GitChangeSet changeSet) {
@@ -559,9 +433,6 @@ public class ChangeSetService {
         if (files.size() == 1) {
             int slash = first.lastIndexOf('/');
             return slash >= 0 ? first.substring(slash + 1) : first;
-        }
-        if (files.stream().allMatch(path -> path.contains("/domain/task/"))) {
-            return "task runtime";
         }
         if (files.stream().allMatch(path -> path.contains("/domain/change/"))) {
             return "changeset workflow";

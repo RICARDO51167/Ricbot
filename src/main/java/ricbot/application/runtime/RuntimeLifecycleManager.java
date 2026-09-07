@@ -122,7 +122,7 @@ public final class RuntimeLifecycleManager implements AutoCloseable {
     /**
      * 检查并恢复过期的运行时实例。
      * 遍历所有过期的实例，如果对应的进程仍然匹配（同一主机且进程未重启），则跳过；
-     * 否则标记为已过期并恢复相关副作用。
+     * 否则标记为已过期。Durable Effect 的租约恢复由 v6 Store 负责。
      * @param now 当前时间点
      * @return 恢复的死锁数量
      */
@@ -141,8 +141,7 @@ public final class RuntimeLifecycleManager implements AutoCloseable {
                 // 发生竞态条件，跳过该实例
                 continue;
             }
-            // 恢复与该实例相关的副作用（如清理资源等）
-            recovered += store.recoverExpiredSideEffects(expired.instanceId(), now);
+            recovered++;
         }
         return recovered;
     }

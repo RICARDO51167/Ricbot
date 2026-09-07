@@ -30,15 +30,45 @@ class ConfigLoaderTest {
     }
 
     @Test
-    void loadConfig_withInvalidJsonFallsBackToDefault(@TempDir Path tempDir) throws Exception {
+    void explicitInvalidJsonFailsWithStableCode(@TempDir Path tempDir) throws Exception {
         Path configPath = tempDir.resolve("ricbot.config.json");
         Files.writeString(configPath, "{ invalid json");
 
-        Config config = ConfigLoader.loadConfig(configPath);
+        ConfigLoadException failure = assertThrows(ConfigLoadException.class,
+                () -> ConfigLoader.loadConfig(configPath));
 
-        assertNotNull(config);
-        assertNotNull(config.getAgents());
-        assertEquals(new Config().getAgents().getDefaults().getModel(), config.getAgents().getDefaults().getModel());
+        assertEquals("CONFIG_INVALID", failure.code());
+        assertEquals(configPath.toAbsolutePath().normalize(), failure.path());
+    }
+
+    @Test
+    void explicitMissingFailsButImplicitFirstRunUsesDefaults(@TempDir Path tempDir) {
+        Path missing = tempDir.resolve("missing.json");
+        ConfigLoadException failure = assertThrows(ConfigLoadException.class,
+                () -> ConfigLoader.loadConfig(missing));
+        assertEquals("CONFIG_NOT_FOUND", failure.code());
+
+        ConfigLoader.setConfigPath(missing);
+        ConfigLoadResult implicit = ConfigLoader.loadResult(null, false);
+        assertEquals(ConfigSource.DEFAULT, implicit.source());
+        assertEquals(ConfigSource.DEFAULT, implicit.settingSources().get("model"));
+        assertNotNull(implicit.config());
+    }
+
+    @Test
+    void loadResultReportsFileAndEnvironmentProvenance(@TempDir Path tempDir) throws Exception {
+        Path configPath = tempDir.resolve("sources.json");
+        Files.writeString(configPath, """
+                {"agents":{"defaults":{"model":"qwen-plus"}},
+                 "providers":{"dashscope":{"api_key":"${DASHSCOPE_API_KEY}"}},
+                 "tools":{"exec":{"backend":"docker"}}}
+                """);
+        ConfigLoadResult result = ConfigLoader.loadResult(configPath, true);
+        assertEquals(ConfigSource.FILE, result.source());
+        assertEquals(ConfigSource.FILE, result.settingSources().get("model"));
+        assertEquals(ConfigSource.FILE, result.settingSources().get("execBackend"));
+        assertEquals(ConfigSource.ENV, result.settingSources().get("apiKey"));
+        assertEquals(ConfigSource.ENV, result.settingSources().get("environmentPlaceholders"));
     }
 
     @Test

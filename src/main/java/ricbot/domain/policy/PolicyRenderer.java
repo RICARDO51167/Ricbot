@@ -1,13 +1,11 @@
 package ricbot.domain.policy;
 
-import ricbot.domain.task.TaskRole;
-
 public class PolicyRenderer {
     public String renderPolicy(RoleToolPolicy policy) {
         RoleToolPolicy safe = policy != null ? policy : RoleToolPolicy.defaultPolicy();
         StringBuilder sb = new StringBuilder("role tool policy\n");
         sb.append("source: ").append(safe.source()).append("\n");
-        for (TaskRole role : TaskRole.values()) {
+        for (PolicyRole role : PolicyRole.values()) {
             sb.append(renderRole(safe, role)).append("\n");
         }
         if (!safe.extraRules().isEmpty()) {
@@ -22,9 +20,9 @@ public class PolicyRenderer {
         return sb.toString().trim();
     }
 
-    public String renderRole(RoleToolPolicy policy, TaskRole role) {
+    public String renderRole(RoleToolPolicy policy, PolicyRole role) {
         RoleToolPolicy safe = policy != null ? policy : RoleToolPolicy.defaultPolicy();
-        TaskRole safeRole = role != null ? role : TaskRole.LEADER;
+        PolicyRole safeRole = role != null ? role : PolicyRole.LEADER;
         RoleToolPolicy.RolePolicy rp = safe.forRole(safeRole);
         return safeRole + "\n"
                 + "  allow: " + renderList(rp.allow()) + "\n"

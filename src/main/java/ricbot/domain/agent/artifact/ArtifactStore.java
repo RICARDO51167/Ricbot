@@ -14,7 +14,6 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.EnumSet;
 import java.util.List;
-import java.util.UUID;
 import java.util.HexFormat;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -23,49 +22,63 @@ import java.util.regex.Pattern;
 public final class ArtifactStore {
     private static final ObjectMapper MAPPER = new ObjectMapper().findAndRegisterModules();
     private static final Pattern URI = Pattern.compile("artifact://([^/]+)/([A-Za-z0-9._-]+)");
-    private final Path root;
+    public static final long DEFAULT_MAX_ARTIFACT_BYTES = 67_108_864L;
+    private final ArtifactResolver resolver;
+    private final Path refsRoot;
     private final String rootRunId;
     private final String runId;
     private final String taskId;
 
     public ArtifactStore(Path runtimeWorkspace, String rootRunId, String runId, String taskId) {
-        Path workspace = runtimeWorkspace.toAbsolutePath().normalize();
         this.rootRunId = safeSegment(rootRunId != null && !rootRunId.isBlank() ? rootRunId : runId);
         this.runId = safeSegment(runId);
         this.taskId = taskId != null ? taskId.trim() : "";
-        this.root = workspace.resolve(".ricbot/artifacts").resolve(this.rootRunId).resolve(this.runId).normalize();
-        if (!root.startsWith(workspace.resolve(".ricbot/artifacts").normalize())) {
-            throw new IllegalArgumentException("artifact root escapes runtime workspace");
-        }
+        this.resolver = new ArtifactResolver(runtimeWorkspace, this.rootRunId);
+        this.refsRoot = resolver.root().resolve("refs").resolve(this.runId);
     }
 
     public ArtifactRef writeText(String content, String source, int summaryChars) throws Exception {
+        return writeText(content, source, summaryChars, DEFAULT_MAX_ARTIFACT_BYTES);
+    }
+
+    public ArtifactRef writeText(String content, String source, int summaryChars, long maxBytes) throws Exception {
         String text = content != null ? content : "";
         byte[] bytes = text.getBytes(StandardCharsets.UTF_8);
+        if (bytes.length > Math.max(1, maxBytes)) {
+            throw new IllegalArgumentException("artifact exceeds configured maximum: " + bytes.length + " bytes");
+        }
         String digest = sha256(bytes);
-        String id = "art-" + digest.substring(0, 16) + "-" + UUID.randomUUID().toString().substring(0, 8);
-        Path directory = root.resolve(id);
-        Files.createDirectories(directory);
-        harden(directory);
-        Path contentFile = directory.resolve("content.txt");
-        Path temp = directory.resolve("content.tmp");
-        Files.write(temp, bytes);
-        harden(temp);
-        move(temp, contentFile);
+        String id = "art-" + digest.substring(0, 24);
+        String blobPath = "blobs/" + digest;
+        Path contentFile = resolver.resolveBlob(blobPath);
+        Files.createDirectories(contentFile.getParent());
+        harden(contentFile.getParent());
+        if (!Files.exists(contentFile)) {
+            Path temp = Files.createTempFile(contentFile.getParent(), digest, ".tmp");
+            Files.write(temp, bytes);
+            harden(temp);
+            move(temp, contentFile);
+        } else if (!digest.equals(sha256(Files.readAllBytes(contentFile)))) {
+            throw new IllegalStateException("existing artifact blob failed integrity check");
+        }
         String preview = text.substring(0, Math.min(Math.max(0, summaryChars), text.length()));
         ArtifactRef ref = new ArtifactRef(id, "artifact://" + runId + "/" + id,
-                contentFile.toString(), digest, bytes.length, text.length(), "text/plain; charset=utf-8",
+                blobPath, digest, bytes.length, text.length(), "text/plain; charset=utf-8",
                 preview, source, rootRunId, runId, taskId, Instant.now());
-        Path manifestTemp = directory.resolve("manifest.tmp");
-        MAPPER.writerWithDefaultPrettyPrinter().writeValue(manifestTemp.toFile(), ref);
+        Files.createDirectories(refsRoot);
+        harden(refsRoot);
+        Path manifest = resolver.resolveRef(runId, id);
+        Path manifestTemp = Files.createTempFile(refsRoot, id, ".tmp");
+        MAPPER.writerWithDefaultPrettyPrinter().writeValue(manifestTemp.toFile(),
+                new ArtifactManifest(ArtifactManifest.SCHEMA_VERSION, ref, blobPath));
         harden(manifestTemp);
-        move(manifestTemp, directory.resolve("manifest.json"));
+        move(manifestTemp, manifest);
         return ref;
     }
 
     public String read(String uri, int offsetChars, int limitChars) throws Exception {
         ArtifactRef ref = require(uri);
-        String content = Files.readString(Path.of(ref.path()), StandardCharsets.UTF_8);
+        String content = Files.readString(resolver.resolveBlob(ref.path()), StandardCharsets.UTF_8);
         verify(ref, content);
         int offset = Math.max(0, offsetChars);
         if (offset >= content.length()) return "";
@@ -75,7 +88,7 @@ public final class ArtifactStore {
 
     public List<String> grep(String uri, String expression, int maxMatches) throws Exception {
         ArtifactRef ref = require(uri);
-        String content = Files.readString(Path.of(ref.path()), StandardCharsets.UTF_8);
+        String content = Files.readString(resolver.resolveBlob(ref.path()), StandardCharsets.UTF_8);
         verify(ref, content);
         Pattern pattern = Pattern.compile(expression != null ? expression : "");
         List<String> matches = new ArrayList<>();
@@ -87,15 +100,32 @@ public final class ArtifactStore {
     }
 
     public List<ArtifactRef> list() throws Exception {
-        if (!Files.isDirectory(root)) return List.of();
-        try (var paths = Files.list(root)) {
+        if (!Files.isDirectory(refsRoot)) return List.of();
+        try (var paths = Files.list(refsRoot)) {
             List<ArtifactRef> refs = new ArrayList<>();
             for (Path path : paths.sorted(Comparator.comparing(Path::toString)).toList()) {
-                Path manifest = path.resolve("manifest.json");
-                if (Files.isRegularFile(manifest)) refs.add(MAPPER.readValue(manifest.toFile(), ArtifactRef.class));
+                if (Files.isRegularFile(path) && path.getFileName().toString().endsWith(".json")) {
+                    refs.add(readManifest(path).reference());
+                }
             }
             return List.copyOf(refs);
         }
+    }
+
+    /** Resume-time integrity verification using only relocatable reference fields. */
+    public static void verifyReference(Path runtimeWorkspace, Object raw) {
+        try {
+            ArtifactRef ref = raw instanceof ArtifactRef value ? value : MAPPER.convertValue(raw, ArtifactRef.class);
+            String root = ref.rootRunId() != null && !ref.rootRunId().isBlank() ? ref.rootRunId() : ref.runId();
+            ArtifactResolver resolver = new ArtifactResolver(runtimeWorkspace, root);
+            Path blob = resolver.resolveBlob(ref.path());
+            if (!Files.isRegularFile(blob) || Files.isSymbolicLink(blob))
+                throw new IllegalStateException("artifact blob is missing: " + ref.artifactId());
+            byte[] bytes = Files.readAllBytes(blob);
+            if (bytes.length != ref.byteSize()) throw new IllegalStateException("artifact byte size mismatch: " + ref.artifactId());
+            if (!sha256(bytes).equals(ref.sha256())) throw new IllegalStateException("artifact integrity check failed: " + ref.artifactId());
+        } catch (RuntimeException failure) { throw failure; }
+        catch (Exception failure) { throw new IllegalStateException("cannot validate artifact reference", failure); }
     }
 
     private ArtifactRef require(String uri) throws Exception {
@@ -104,13 +134,19 @@ public final class ArtifactStore {
             throw new SecurityException("artifact is not owned by current run");
         }
         String id = safeSegment(matcher.group(2));
-        Path manifest = root.resolve(id).resolve("manifest.json").normalize();
-        if (!manifest.startsWith(root) || !Files.isRegularFile(manifest)) throw new IllegalArgumentException("artifact not found");
-        ArtifactRef ref = MAPPER.readValue(manifest.toFile(), ArtifactRef.class);
+        Path manifest = resolver.resolveRef(runId, id);
+        if (!Files.isRegularFile(manifest) || Files.isSymbolicLink(manifest)) throw new IllegalArgumentException("artifact not found");
+        ArtifactManifest stored = readManifest(manifest);
+        ArtifactRef ref = stored.reference();
         if (!runId.equals(ref.runId()) || !id.equals(ref.artifactId())) throw new SecurityException("artifact manifest ownership mismatch");
-        Path content = Path.of(ref.path()).toAbsolutePath().normalize();
-        if (!content.startsWith(root.resolve(id)) || Files.isSymbolicLink(content)) throw new SecurityException("unsafe artifact content path");
+        Path content = resolver.resolveBlob(stored.blobPath());
+        if (!Files.isRegularFile(content)) throw new IllegalStateException("artifact blob is missing");
+        if (Files.size(content) != ref.byteSize()) throw new IllegalStateException("artifact byte size mismatch");
         return ref;
+    }
+
+    private static ArtifactManifest readManifest(Path path) throws Exception {
+        return MAPPER.readValue(path.toFile(), ArtifactManifest.class);
     }
 
     private static void verify(ArtifactRef ref, String content) {

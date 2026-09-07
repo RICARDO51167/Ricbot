@@ -33,7 +33,7 @@ class EvalGoldenScenariosTest {
             assertEquals(0, summary.getSkipped());
             assertEquals(1, summary.getExpectedFailed());
             assertEquals(0, summary.getUnexpectedPassed());
-            assertEquals(23, summary.getTotalModelCalls());
+            assertEquals(21, summary.getTotalModelCalls());
             assertEquals(8, summary.getTotalToolCalls());
             assertEquals(3, summary.getTotalWorkspaceChanges());
             assertTrue(summary.getDurationP50Ms() >= 0);
@@ -54,7 +54,7 @@ class EvalGoldenScenariosTest {
                 8_000,
                 24,
                 4_000,
-                "none",
+                config.getAgents().getDefaults().getProviderRetryMode(),
                 config.getTools().getExec(),
                 true,
                 null,

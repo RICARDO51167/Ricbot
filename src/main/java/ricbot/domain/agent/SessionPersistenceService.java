@@ -48,8 +48,12 @@ final class SessionPersistenceService {
     PersistenceResult persistInteractiveTurn(AgentRequestContext request, ExecutionOutcome outcome) {
         // 获取当前会话对象
         Session session = request.session();
-        // 计算需要跳过保存的消息数量：1(当前用户消息) + 历史消息数 + (如果用户早期已持久化则+1)
-        int saveSkip = 1 + request.history().size() + (request.userPersistedEarly() ? 1 : 0);
+        // The compiler may add more stable/dynamic context layers over time. Skip the exact
+        // initial request prefix instead of assuming there is only one system message.
+        int initialCount = request.initialMessages() != null ? request.initialMessages().size() : 0;
+        int saveSkip = initialCount > 0
+                ? Math.max(0, initialCount - (request.userPersistedEarly() ? 0 : 1))
+                : 1 + request.history().size() + (request.userPersistedEarly() ? 1 : 0);
         // 保存本轮产生的新消息到会话中，跳过已存在的消息
         saveTurn(session, outcome.runResult().getMessages(), saveSkip);
         // 更新工具调用轨迹
@@ -91,8 +95,9 @@ final class SessionPersistenceService {
     ) {
         // 获取当前会话对象
         Session session = request.session();
-        // 保存本轮产生的新消息到会话中，跳过历史消息
-        saveTurn(session, outcome.runResult().getMessages(), 1 + request.history().size());
+        // Skip the exact model-input prefix; only newly generated messages belong to the turn.
+        saveTurn(session, outcome.runResult().getMessages(),
+                request.initialMessages() != null ? request.initialMessages().size() : 0);
         // 更新工具调用轨迹
         updateToolTrace(session, outcome.runResult());
         updateRunTrace(session, outcome.runResult());

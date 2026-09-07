@@ -33,7 +33,7 @@ class TraceRendererTest {
         String rendered = new TraceRenderer().renderSummary(store.summarize("trace_render"), store.loadEvents("trace_render"));
 
         assertTrue(rendered.contains("trace trace_render"), rendered);
-        assertTrue(rendered.contains("path: sqlite:.ricbot/runtime.db#traces/trace_render"), rendered);
+        assertTrue(rendered.contains("path: sqlite:.ricbot/application.db#traces/trace_render"), rendered);
         assertTrue(rendered.contains("eventTypes: CHANGESET_COMMIT_REQUESTED"), rendered);
         assertTrue(rendered.contains("approvals: approval_1"), rendered);
         assertTrue(rendered.contains("changeSets: changeset_1"), rendered);

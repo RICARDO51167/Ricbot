@@ -28,6 +28,10 @@ jobs:
       - name: Production release gate
         run: sh scripts/release-check.sh
 
+      - name: Review dependency changes
+        if: github.event_name == 'pull_request'
+        uses: actions/dependency-review-action@v4
+
       - name: Upload test reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -43,5 +47,10 @@ jobs:
             target/eval-replay-artifacts/
             target/release-check-report.md
             target/release-check-logs/
+            target/release-check-eval-smoke/
+            target/release-check-eval-replay/
+            target/release-check-eval-compare/
+            target/site/jacoco/
+            target/sbom/
             target/ricbot-test.log
           if-no-files-found: ignore

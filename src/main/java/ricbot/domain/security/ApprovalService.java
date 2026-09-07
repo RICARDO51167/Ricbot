@@ -255,6 +255,10 @@ public class ApprovalService {
         }
         ensureNotExpired(existing);
         if (existing.status() != ApprovalRequest.ApprovalStatus.PENDING) {
+            if (decision == ApprovalDecision.REJECTED
+                    && existing.status() == ApprovalRequest.ApprovalStatus.REJECTED) {
+                return existing;
+            }
             if (decision == ApprovalDecision.APPROVED
                     && existing.status() == ApprovalRequest.ApprovalStatus.APPROVED
                     && (existing.pendingToolCall() != null || existing.pendingChangeAction() != null)) {

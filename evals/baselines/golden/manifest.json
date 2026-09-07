@@ -1,0 +1,26 @@
+{
+  "run_id" : "20260726-071228-dfdfd26f",
+  "started_at" : "2026-07-26T07:12:28.967350Z",
+  "scenarios_path" : "<PROJECT_ROOT>/evals/golden.jsonl",
+  "scenario_count" : 12,
+  "workspace" : "<PROJECT_ROOT>/target/eval-baseline-workspace",
+  "model" : "smoke-model",
+  "provider" : "openai",
+  "provider_mode" : "smoke",
+  "context_window_tokens" : 64000,
+  "max_tool_iterations" : 20,
+  "max_tool_result_chars" : 16000,
+  "tool_schema_sha256" : "da0762960062f4883a6457d194853b2933d530b54a9215e34c7b8ad64fc7bb7f",
+  "workspace_snapshot_before" : {
+    "available" : true,
+    "path" : "<PROJECT_ROOT>/target/eval-baseline-workspace",
+    "file_count" : 5,
+    "total_bytes" : 132770,
+    "truncated" : false,
+    "sha256" : "cf47d830b2adc031a53dd8af17ceccc7df605015088be499bb0e3868420fe9f9"
+  },
+  "include_tags" : [ ],
+  "exclude_tags" : [ ],
+  "restore_workspace" : true,
+  "restore_session" : true
+}

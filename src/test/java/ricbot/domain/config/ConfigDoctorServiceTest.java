@@ -13,6 +13,20 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ConfigDoctorServiceTest {
+    @Test
+    void reportsNonSecretConfigurationSources(@TempDir Path temp) throws Exception {
+        Path configPath = temp.resolve("sources.json");
+        Files.writeString(configPath, """
+                {"agents":{"defaults":{"model":"qwen-plus"}},
+                 "providers":{"dashscope":{"api_key":"${SECRET_FOR_TEST}"}},
+                 "tools":{"exec":{"backend":"local"}}}
+                """);
+        ConfigDoctorReport report = doctor().diagnose(ConfigLoader.loadConfig(configPath), configPath);
+        assertEquals("FILE", report.getConfigSource());
+        assertEquals("FILE", report.getSettingSources().get("model"));
+        assertEquals("ENV", report.getSettingSources().get("apiKey"));
+        assertFalse(report.toMap().toString().contains("SECRET_FOR_TEST_VALUE"));
+    }
 
     @Test
     void minimalConfig_reportsOk(@TempDir Path tempDir) throws Exception {

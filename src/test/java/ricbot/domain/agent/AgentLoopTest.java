@@ -59,7 +59,7 @@ public class AgentLoopTest {
                 workspace,          // 工作空间路径
                 "gpt-4o-mini",      // 模型名称
                 5,                  // 最大迭代次数
-                2000,               // 上下文窗口大小
+                8000,               // 上下文窗口大小
                 50,                 // 上下文块限制
                 10_000,             // 最大工具结果字符数
                 "standard",         // 重试模式
@@ -130,7 +130,7 @@ public class AgentLoopTest {
                 workspace,
                 "gpt-4o-mini",
                 5,
-                2000,
+                8000,
                 50,
                 10_000,
                 "standard",exec,true,

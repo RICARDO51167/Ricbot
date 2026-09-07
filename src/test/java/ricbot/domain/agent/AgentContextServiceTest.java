@@ -71,7 +71,8 @@ class AgentContextServiceTest {
         assertTrue(request.contextTrace().containsKey("prompt_context_budget"));
         Map<?, ?> budget = (Map<?, ?>) request.contextTrace().get("prompt_context_budget");
         assertTrue(budget.containsKey("sections"));
-        String systemPrompt = String.valueOf(request.initialMessages().get(0).get("content"));
+        String systemPrompt = String.valueOf(request.initialMessages().stream()
+                .filter(message -> "ricbot_initial_context".equals(message.get("name"))).findFirst().orElseThrow().get("content"));
         assertTrue(systemPrompt.contains("remember this"));
         assertEquals(systemPrompt.indexOf("remember this"), systemPrompt.lastIndexOf("remember this"));
         Map<String, Object> current = request.initialMessages().get(request.initialMessages().size() - 1);
@@ -122,8 +123,10 @@ class AgentContextServiceTest {
         assertEquals(assembled.history(), request.history());
         assertEquals(assembled.initialMessages().size(), request.initialMessages().size());
         assertEquals(assembled.initialMessages().get(assembled.initialMessages().size() - 1), request.initialMessages().get(request.initialMessages().size() - 1));
-        assertTrue(String.valueOf(request.initialMessages().get(0).get("content")).contains("用户偏好简短回答"));
-        assertTrue(String.valueOf(request.initialMessages().get(0).get("content")).contains("summary block"));
+        String dynamicContext = String.valueOf(request.initialMessages().stream()
+                .filter(message -> "ricbot_initial_context".equals(message.get("name"))).findFirst().orElseThrow().get("content"));
+        assertTrue(dynamicContext.contains("用户偏好简短回答"));
+        assertTrue(dynamicContext.contains("summary block"));
         assertEquals(assembled.contextTrace().get("combined_context_chars"), request.contextTrace().get("combined_context_chars"));
         assertTrue(request.combinedContext().contains("用户偏好简短回答"));
         assertTrue(request.combinedContext().contains("summary block"));

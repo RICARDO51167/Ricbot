@@ -78,11 +78,17 @@ public class ContextBuilder {
         List<Map<String, Object>> messages = new ArrayList<>();
 
         // 1. 构建运行时上下文（包含时间、时区、渠道、ChatID等信息）
-        String runtime = buildRuntimeContext(channel, chatId, timezone);
-
-        // 2. 构建系统提示词，并作为第一条消息加入列表
-        // 系统提示词包含了身份定义、运行时上下文、会话摘要及结构化上下文
-        messages.add(systemMessage(buildSystemPrompt(sessionSummary, runtime, channel, promptContext)));
+        // Stable identity stays cacheable. Dynamic time/workspace/task data is compiled before each MODEL call.
+        messages.add(systemMessage(buildSystemPrompt(null, "", "", null)));
+        String initialContext = String.join("\n", java.util.stream.Stream.of(
+                        sessionSummary != null ? sessionSummary.trim() : "",
+                        promptContext != null ? promptContext.render() : "")
+                .filter(value -> !value.isBlank()).toList());
+        if (!initialContext.isBlank()) {
+            Map<String, Object> context = new LinkedHashMap<>();
+            context.put("role", "system"); context.put("name", "ricbot_initial_context");
+            context.put("content", initialContext); messages.add(context);
+        }
 
         // 3. 处理历史消息
         // 如果历史消息不为空，则进行清洗（去除非法或不完整的消息）后加入列表

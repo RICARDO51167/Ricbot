@@ -8,6 +8,10 @@ import ricbot.domain.security.ApprovalService;
 import ricbot.domain.security.CommandRiskAnalyzer;
 import ricbot.domain.security.PendingToolCall;
 import ricbot.tool.api.ToolRegistry;
+import ricbot.tool.api.ToolResult;
+import ricbot.tool.api.ToolInvocation;
+import ricbot.tool.api.ToolExecutionContext;
+import ricbot.tool.api.ToolChunkSink;
 
 import java.nio.file.Path;
 import java.util.List;
@@ -28,7 +32,7 @@ public class ExecToolTest {
     }
 
     @Test
-    void hugeOutput_isDrainedButNotFullyCaptured(@TempDir Path workspace) throws Exception {
+    void hugeOutput_isPreservedForRuntimeOffload(@TempDir Path workspace) throws Exception {
         ExecTool tool = new ExecTool(5, workspace.toString(), null, null, true, "", "", List.of());
 
         String result = String.valueOf(tool.execute(java.util.Map.of(
@@ -36,7 +40,8 @@ public class ExecToolTest {
 
         assertFalse(result.startsWith("错误：命令执行超时"), result);
         assertTrue(result.contains("line-0"), result);
-        assertTrue(result.contains("已截断") || result.contains("输出过长"), result);
+        assertTrue(result.contains("line-19999"));
+        assertFalse(result.contains("已截断") || result.contains("输出过长"));
     }
 
     @Test
@@ -81,7 +86,7 @@ public class ExecToolTest {
     }
 
     @Test
-    void highRiskCommandCreatesPendingCallAndApprovedExecutionBypassesRiskGate(@TempDir Path workspace) {
+    void highRiskCommandCreatesPendingCallAndApprovedExecutionBypassesRiskGate(@TempDir Path workspace) throws Exception {
         ApprovalService approvalService = new ApprovalService(new InMemoryApprovalRequestStore());
         ExecTool tool = new ExecTool(
                 5,
@@ -98,14 +103,17 @@ public class ExecToolTest {
         ToolRegistry registry = new ToolRegistry();
         registry.register(tool);
 
-        String gated = String.valueOf(registry.execute("exec", java.util.Map.of("command", "touch approved.txt")));
+        String gated = String.valueOf(tool.execute(java.util.Map.of("command", "touch approved.txt")));
         String requestId = requestId(gated);
         assertTrue(gated.contains("riskLevel: MEDIUM"), gated);
 
         approvalService.approve(requestId);
         PendingToolCall call = approvalService.consumeApprovedToolCall(requestId);
-        String result = String.valueOf(registry.execute(call.toolName(), call.arguments(),
-                Tool.ToolExecutionContext.approvedContext()));
+        ToolResult executed;
+        try { executed = tool.execute(new ToolInvocation("approved", call.toolName(), call.arguments()),
+                ToolExecutionContext.approvedContext(), ToolChunkSink.discard()); }
+        catch (Exception failure) { throw new AssertionError(failure); }
+        String result = String.valueOf(((ToolResult.Success) executed).value());
 
         assertFalse(result.contains("需要审批后才能执行"), result);
         assertTrue(java.nio.file.Files.exists(workspace.resolve("approved.txt")));

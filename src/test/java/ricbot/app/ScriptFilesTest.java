@@ -20,7 +20,7 @@ class ScriptFilesTest {
         assertFalse(content.contains("sk-"));
         assertFalse(content.contains("Bearer "));
         assertFalse(content.contains("api.openai.com"));
-        assertTrue(content.contains(".ricbot/eval-baselines/golden"));
+        assertTrue(content.contains("evals/baselines/golden"));
         assertTrue(content.contains("## Baseline"));
         assertTrue(content.contains("## Eval Compare"));
         assertTrue(content.contains("## Final Decision"));
@@ -28,6 +28,8 @@ class ScriptFilesTest {
         assertTrue(content.contains("OPTIONAL_CREDENTIALS_MISSING"));
         assertTrue(content.contains("eval compare has new cases"));
         assertTrue(content.contains("baseline missing"));
+        assertTrue(content.contains("target/site/jacoco/index.html"));
+        assertTrue(content.contains("target/sbom/bom.json"));
         Process process = new ProcessBuilder("sh", "-n", script.toString()).start();
         String stderr = new String(process.getErrorStream().readAllBytes());
         assertTrue(process.waitFor() == 0, stderr);
@@ -41,7 +43,9 @@ class ScriptFilesTest {
         assertTrue(content.startsWith("#!/usr/bin/env sh"));
         assertTrue(content.contains("create_baseline"));
         assertTrue(content.contains("show_baseline"));
-        assertTrue(content.contains(".ricbot/eval-baselines"));
+        assertTrue(content.contains("evals/baselines"));
+        assertTrue(content.contains("target/eval-baseline-candidate"));
+        assertTrue(content.contains("promote --from"));
         assertFalse(content.contains("sk-"));
         assertFalse(content.contains("Bearer "));
         assertFalse(content.contains("api.openai.com"));

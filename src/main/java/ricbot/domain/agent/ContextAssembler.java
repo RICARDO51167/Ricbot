@@ -38,7 +38,6 @@ public final class ContextAssembler {
                         prepared.archivedSummary(),
                         prepared.taskStateSnapshot(),
                         recentToolTrace(prepared.session()),
-                        Map.of(),
                         workspaceContext(prepared.session())
                 ),
                 prepared.session().getMessages(),

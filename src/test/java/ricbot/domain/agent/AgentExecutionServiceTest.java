@@ -42,8 +42,7 @@ class AgentExecutionServiceTest {
     private static AgentExecutionService service(AgentInvocationRuntime runner, Path workspace) {
         SqliteRuntimeStore runtime = new SqliteRuntimeStore(workspace);
         return new AgentExecutionService(runner, new ToolRegistry(), workspace, "model", 4, 4000,
-                "standard", 8000, 24, null, runtime.sideEffectStore(),
-                new ApprovalService(runtime.approvalStore()));
+                "standard", 8000, 24, null, new ApprovalService(runtime.approvalStore()));
     }
 
     private static AgentRequestContext request() {

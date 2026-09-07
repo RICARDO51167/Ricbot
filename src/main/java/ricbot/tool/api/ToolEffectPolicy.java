@@ -11,7 +11,7 @@ public record ToolEffectPolicy(
         Approval approval,
         Retry retry
 ) {
-    public enum Effect { UNDECLARED, READ_ONLY, IDEMPOTENT, AT_MOST_ONCE }
+    public enum Effect { UNDECLARED, READ_ONLY, STATE_MUTATION, IDEMPOTENT, AT_MOST_ONCE }
     public enum Concurrency { SHARED, SERIAL_PER_RUN, EXCLUSIVE_WORKSPACE }
     public enum Approval { NEVER, RISK_BASED, ALWAYS }
     public enum Retry { NONE, READ_ONLY_3, IDEMPOTENT_3, HUMAN_AUTHORIZED }

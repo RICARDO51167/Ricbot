@@ -1,111 +1,26 @@
 package ricbot.tool.api;
 
-import java.util.*;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 
-/**
- * 所有工具的抽象基类
- */
-public abstract class Tool {
+/** Tool contract used behind the v6 Effect Runtime. */
+public interface Tool {
+    ToolDescriptor descriptor();
 
-    public abstract String getName();
+    default ToolRiskEvidence assessRisk(ToolInvocation invocation, ToolExecutionContext context) {
+        return ToolRiskEvidence.allow();
+    }
 
-    public abstract String getDescription();
-
-    /** Undeclared tools are intentionally refused by the runtime. */
-    public ToolEffectPolicy effectPolicy() { return ToolEffectPolicy.undeclared(); }
-
-    public List<ToolParam> getParams() {
+    default List<String> resourceKeys(ToolInvocation invocation, ToolExecutionContext context) {
         return List.of();
     }
 
-    public Map<String, Object> castParams(Map<String, Object> params) {
-        return params != null ? params : new LinkedHashMap<>();
+    /** Optional recovery hook for a write whose dispatch outcome is UNKNOWN. */
+    default Optional<ToolResult> reconcile(ToolInvocation invocation, ToolExecutionContext context,
+                                           Map<String, Object> executionEvidence) throws Exception {
+        return Optional.empty();
     }
 
-    public List<String> validateParams(Map<String, Object> params) {
-        List<String> errors = new ArrayList<>();
-        Map<String, Object> actual = params != null ? params : Collections.emptyMap();
-
-        for (ToolParam param : getParams()) {
-            if (param.isRequired() && !actual.containsKey(param.getName())) {
-                errors.add("缺少必填参数 '" + param.getName() + "'");
-                continue;
-            }
-
-            if (!actual.containsKey(param.getName())) {
-                continue;
-            }
-
-            Object value = actual.get(param.getName());
-            String expectedType = param.getType();
-
-            if (!ToolParam.typeMatches(expectedType, value)) {
-                errors.add("参数 '" + param.getName() + "' 的类型应为 " + expectedType);
-            }
-        }
-
-        return errors;
-    }
-
-    public Map<String, Object> toSchema() {
-        Map<String, Object> properties = new LinkedHashMap<>();
-        List<String> required = new ArrayList<>();
-
-        for (ToolParam param : getParams()) {
-            properties.put(param.getName(), param.toSchema());
-            if (param.isRequired()) {
-                required.add(param.getName());
-            }
-        }
-
-        Map<String, Object> parameters = new LinkedHashMap<>();
-        parameters.put("type", "object");
-        parameters.put("properties", properties);
-        if (!required.isEmpty()) {
-            parameters.put("required", required);
-        }
-
-        Map<String, Object> function = new LinkedHashMap<>();
-        function.put("name", getName());
-        function.put("description", getDescription());
-        function.put("parameters", parameters);
-
-        Map<String, Object> schema = new LinkedHashMap<>();
-        schema.put("type", "function");
-        schema.put("function", function);
-
-        return schema;
-    }
-
-    public Object execute(Map<String, Object> params, ToolExecutionContext context) throws Exception {
-        return execute(params);
-    }
-
-    public abstract Object execute(Map<String, Object> params) throws Exception;
-
-    /** Evaluates risk before the tool is allowed to produce a side effect. */
-    public ToolRiskDecision assessRisk(Map<String, Object> params) {
-        return ToolRiskDecision.allow();
-    }
-
-    public static final class ToolExecutionContext {
-        private final boolean approved;
-
-        private ToolExecutionContext(boolean approved) {
-            this.approved = approved;
-        }
-
-        public static ToolExecutionContext normal() {
-            return new ToolExecutionContext(false);
-        }
-
-        public static ToolExecutionContext approvedContext() {
-            return new ToolExecutionContext(true);
-        }
-
-        public boolean approved() {
-            return approved;
-        }
-
-    }
+    ToolResult execute(ToolInvocation invocation, ToolExecutionContext context, ToolChunkSink chunks) throws Exception;
 }

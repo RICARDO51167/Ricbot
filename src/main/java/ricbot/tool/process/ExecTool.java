@@ -1,8 +1,8 @@
 package ricbot.tool.process;
 
 import ricbot.tool.api.Tool;
-import ricbot.tool.api.Tool.ToolExecutionContext;
-import ricbot.tool.api.ToolParam;
+import ricbot.tool.api.ToolExecutionContext;
+import ricbot.tool.api.BuiltinParameter;
 import ricbot.tool.api.ToolRiskDecision;
 import ricbot.infra.config.RuntimePaths;
 import ricbot.infra.security.NetworkSecurity;
@@ -36,7 +36,7 @@ import java.util.regex.Pattern;
  * 4. 限制 working_dir 越界
  * 5. 控制 timeout / output 长度
  */
-public class ExecTool extends Tool {
+public class ExecTool extends ricbot.tool.api.BuiltinTool {
     @Override public ricbot.tool.api.ToolEffectPolicy effectPolicy() {
         return ricbot.tool.api.ToolEffectPolicy.atMostOnce(java.time.Duration.ofSeconds(MAX_TIMEOUT),
                 ricbot.tool.api.ToolEffectPolicy.Concurrency.EXCLUSIVE_WORKSPACE,
@@ -49,9 +49,9 @@ public class ExecTool extends Tool {
 
     // 最大超时时间（秒）
     private static final int MAX_TIMEOUT = 600;
-    // 最大输出字符数
-    private static final int MAX_OUTPUT = 10_000;
-    private static final int MAX_CAPTURE_BYTES = 64 * 1024;
+    // Preserve complete output up to the v6 per-tool artifact boundary. Result policy/offload
+    // decides what the model sees; the execution backend must not destroy recoverable output.
+    private static final int MAX_CAPTURE_BYTES = 64 * 1024 * 1024;
 
     // 默认超时时间
     private final int timeout;
@@ -148,15 +148,16 @@ public class ExecTool extends Tool {
 
     @Override
     public String getDescription() {
-        return "执行一条 shell 命令并返回输出。输出最多保留 10,000 字符；默认超时 60 秒。";
+        return "执行一条 shell 命令并返回输出。大输出由 Runtime 完整 Offload 并生成预览；默认超时 60 秒。";
     }
 
     @Override
-    public List<ToolParam> getParams() {
+    public List<BuiltinParameter> getParams() {
         return List.of(
-                ToolParam.of("command", "string", "要执行的 shell 命令", true),
-                ToolParam.of("working_dir", "string", "工作目录（默认工作区）", false),
-                ToolParam.of("timeout", "integer", "超时秒数（最大 600）", false)
+                BuiltinParameter.of("command", "string", "要执行的 shell 命令", true).minLength(1),
+                BuiltinParameter.of("working_dir", "string", "工作目录（默认工作区）", false),
+                BuiltinParameter.of("timeout", "integer", "超时秒数（最大 600）", false)
+                        .minimum(1).maximum(MAX_TIMEOUT)
         );
     }
 
@@ -289,10 +290,12 @@ public class ExecTool extends Tool {
             }
             String rendered = output.toString().trim();
             if (rendered.isBlank()) rendered = "（无输出）";
-            if (rendered.length() > MAX_OUTPUT) rendered = rendered.substring(0, MAX_OUTPUT) + "\n...（已截断）";
             return execution.exitCode() != 0
                     ? "[退出码 " + execution.exitCode() + ", backend=" + execution.backend() + "]\n" + rendered
                     : rendered;
+        } catch (ricbot.infra.execution.ExecutionInterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw interrupted;
         } catch (Exception e) {
             return "错误：" + e.getMessage();
         }
